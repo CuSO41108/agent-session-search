@@ -2426,8 +2426,9 @@ function ContextMenu({
 }): ReactElement {
   const l = (en: string, zh: string) => localize(language, en, zh);
   const menu = useClampedContextMenuStyle(state);
-  const localOnlyDisabled = state.session.environmentKind !== "local";
+  const localOnlyDisabled = isRemoteSession(state.session);
   const migrationDisabled = state.session.environmentKind === "ssh";
+  const canDelete = state.session.environmentKind !== "ssh";
   const revealTitle = localOnlyDisabled ? remoteRevealTitle(language) : l(`Show in ${revealLabel}`, `在${revealLabel}中显示`);
   const openAppTitle = localOnlyDisabled ? remoteOpenAppTitle(language) : l("Open native app", "打开原生应用");
   const migrateTitle = migrationDisabled
@@ -2484,10 +2485,12 @@ function ContextMenu({
       <button onClick={onReveal} disabled={localOnlyDisabled} title={revealTitle}>
         <FolderOpen size={14} /> Show in {revealLabel}
       </button>
-      <hr />
-      <button className="danger" onClick={onDelete}>
-        <Trash2 size={14} /> {l("Delete Session", "删除会话")}
-      </button>
+      {canDelete ? <>
+        <hr />
+        <button className="danger" onClick={onDelete}>
+          <Trash2 size={14} /> {l("Delete Session", "删除会话")}
+        </button>
+      </> : null}
     </div>
   );
 }
