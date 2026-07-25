@@ -5,7 +5,6 @@ const { execFile, execFileSync, spawn } = require("node:child_process");
 const { createHash, randomUUID } = require("node:crypto");
 const fs = require("node:fs");
 const fsp = require("node:fs/promises");
-const { createRequire } = require("node:module");
 const os = require("node:os");
 const path = require("node:path");
 const { promisify } = require("node:util");
@@ -566,6 +565,7 @@ async function stageUpdate(manifest, options = {}) {
       npmCommand,
       nodePath: options.nodePath,
       packagePath: stagedPackagePath,
+      runtimeSourcePath: packagePath,
       env: installEnvironment,
       timeoutMs: options.electronInstallTimeoutMs,
     });
@@ -886,6 +886,26 @@ async function ensureInstalledElectron(options = {}) {
     await fsp.writeFile(pathFile, relativeExecutable, "utf8");
     return true;
   };
+  const repairFromRuntimeSource = async () => {
+    const sourceRoot = options.runtimeSourcePath;
+    if (!sourceRoot || sourceRoot === packagePath) return false;
+    if (!isElectronRuntimeReady(sourceRoot)) return false;
+    const sourceElectronPath = path.join(sourceRoot, "node_modules", "electron");
+    let sourcePackageVersion = "";
+    let sourceDistVersion = "";
+    try {
+      sourcePackageVersion = String(JSON.parse(await fsp.readFile(path.join(sourceElectronPath, "package.json"), "utf8")).version || "").trim();
+      sourceDistVersion = (await fsp.readFile(path.join(sourceElectronPath, "dist", "version"), "utf8")).trim().replace(/^v/, "");
+    } catch {
+      return false;
+    }
+    if (sourcePackageVersion !== expectedVersion || sourceDistVersion !== expectedVersion) return false;
+    await removeRuntimeDirectory(distPath).catch(() => undefined);
+    await fsp.rm(pathFile, { force: true }).catch(() => undefined);
+    await fsp.cp(path.join(sourceElectronPath, "dist"), distPath, { recursive: true, force: true });
+    await fsp.copyFile(path.join(sourceElectronPath, "path.txt"), pathFile);
+    return true;
+  };
   const repairFromCachedArchive = async () => {
     const archivePath = options.findCachedArchiveImpl
       ? await options.findCachedArchiveImpl({ expectedVersion, environment: nodeEnvironment, homeDir, platform: options.platform || process.platform, arch: options.arch || process.arch })
@@ -900,8 +920,26 @@ async function ensureInstalledElectron(options = {}) {
     if (options.extractArchiveImpl) {
       await options.extractArchiveImpl({ archivePath, distPath, electronModulePath });
     } else {
-      const extractArchive = createRequire(path.join(electronModulePath, "package.json"))("extract-zip");
-      await extractArchive(archivePath, { dir: distPath });
+      // Extract in a Node subprocess. Running extract-zip inside Electron's main
+      // process can deadlock while holding the update UI on "validating".
+      const extractScript = [
+        "const { createRequire } = require(\"node:module\");",
+        `const requireFromElectron = createRequire(${JSON.stringify(path.join(electronModulePath, "package.json"))});`,
+        "const extractZip = requireFromElectron(\"extract-zip\");",
+        `extractZip(${JSON.stringify(archivePath)}, { dir: ${JSON.stringify(distPath)} }).then(`,
+        "  () => process.exit(0),",
+        "  (error) => {",
+        "    console.error(error instanceof Error ? (error.stack || error.message) : String(error));",
+        "    process.exit(1);",
+        "  }",
+        ");",
+      ].join("");
+      await run(nodePath, ["-e", extractScript], {
+        cwd: electronModulePath,
+        env: nodeEnvironment,
+        timeout,
+        maxBuffer: 16 * 1024 * 1024,
+      });
     }
     await repairMissingPathFile();
     return true;
@@ -933,6 +971,7 @@ async function ensureInstalledElectron(options = {}) {
     }
   };
   try {
+    if (await attemptRepair(repairFromRuntimeSource)) return;
     if (await attemptRepair(() => repairViaInstallScript(false))) return;
     if (await attemptRepair(repairMissingPathFile)) return;
     if (await attemptRepair(repairFromCachedArchive)) return;
