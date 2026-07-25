@@ -72,7 +72,7 @@ import {
 import { applyMigrationLengthPolicy, createMigrationCompressor } from "../core/session-migration-compression";
 import { migrateSession, portableSessionFrom } from "../core/session-migration";
 import { runLocalSessionMigration } from "./local-session-migration";
-import { targetFilePath, writeMigratedSession } from "../core/session-migration-writers";
+import { targetFilePathForRemoteEnvironment, writeMigratedSession } from "../core/session-migration-writers";
 import { assertMigrationTargetEnabled, isMigrationTarget, migrationTargetDescriptor } from "../core/migration-targets";
 import { writeDbPointer } from "../core/app-paths";
 import { routeResumeSession } from "../core/resume-router";
@@ -1340,7 +1340,7 @@ async function writeMigratedSessionToSshEnvironment(
   try {
     const written = await writeMigratedSession({ target, session, homeDir: tempHome, now });
     const remoteHome = await remoteHomeDir(environment);
-    const remotePath = targetFilePath(target, session.projectPath, written.sessionId, remoteHome, now);
+    const remotePath = targetFilePathForRemoteEnvironment(target, session.projectPath, written.sessionId, remoteHome, now);
     const content = await fs.readFile(written.filePath);
     await runRemotePython(environment, REMOTE_WRITE_FILE_SCRIPT, {
       path: remotePath,
