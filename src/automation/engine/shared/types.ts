@@ -44,6 +44,7 @@ export type { AgentMcpBinding, McpServerDefinition, McpToolDefinition, McpTransp
 export type { EvaluationCaseResult, EvaluationDataset, EvaluationDatasetItem, EvaluationEvaluator, EvaluationExperiment, EvaluationRun, EvaluationRunPage, EvaluationRunSummary, EvaluationScore, EvaluatorKind, ListEvaluationRunsRequest } from "./evaluation/types";
 export type { WorkflowDraftState, WorkflowGrillMessage, WorkflowStoreState } from "./workflow/draft";
 export type { WorkflowV2GenerationReviewFinding, WorkflowV2GenerationReviewResult, WorkflowV2GenerationReviewState, WorkflowV2GenerationReviewStatus, WorkflowV2GenerationReviewVerdict } from "./workflow-v2/generation-review";
+export type { WorkflowNodeConversation } from "./workflow-v2/conversation";
 export type {
   SendWorkflowNodeMessageRequest,
   CompleteWorkflowNodeConversationRequest,

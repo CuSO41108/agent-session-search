@@ -660,6 +660,67 @@ describe("AgentHub chat sessions", () => {
     }
   });
 
+  test("publishes coalesced workflow projections without constructing full snapshots", async () => {
+    vi.useFakeTimers();
+    const hub = new AgentHub();
+      const listener = vi.fn();
+      const snapshotSpy = vi.spyOn(hub, "snapshot");
+      const projectionSpy = vi.spyOn(hub, "workflowProjection");
+    const unsubscribe = hub.onChange(listener);
+    listener.mockClear();
+    snapshotSpy.mockClear();
+    try {
+      for (let index = 0; index < 20; index += 1) {
+        (hub as any).emitWorkflowStreaming("store", { workflows: { upsert: [], remove: [] } });
+        (hub as any).emitWorkflowStreaming("conversations", { conversations: { upsert: [], remove: [] } });
+        (hub as any).emitWorkflowStreaming("tasks", { tasks: { upsert: [], remove: [] } });
+      }
+
+      await vi.advanceTimersByTimeAsync(40);
+
+      expect(listener).toHaveBeenCalledTimes(1);
+      expect(listener.mock.calls[0]?.[0]).toMatchObject({ kind: "workflow" });
+      expect(listener.mock.calls[0]?.[0].patch).toMatchObject({ workflows: { upsert: [], remove: [] }, conversations: { upsert: [], remove: [] }, tasks: { upsert: [], remove: [] } });
+      expect(listener.mock.calls[0]?.[0].payload).not.toHaveProperty("workflowStore");
+      expect(snapshotSpy).not.toHaveBeenCalled();
+      expect(projectionSpy).not.toHaveBeenCalled();
+
+      (hub as any).emitWorkflow();
+      expect(listener).toHaveBeenCalledTimes(2);
+      expect(snapshotSpy).not.toHaveBeenCalled();
+    } finally {
+      unsubscribe();
+      await hub.shutdown();
+      vi.useRealTimers();
+    }
+  });
+
+  test("publishes workflow-owned task deltas as a direct task patch", async () => {
+    vi.useFakeTimers();
+    const hub = new AgentHub();
+    const task = (hub as any).createTaskState({ prompt: "Stream workflow task", configuredAgentId: "default-agent", workDir: "/tmp/project" });
+    task.planningWorkflowId = "wf";
+    (hub as any).tasks.set(task.id, task);
+    const listener = vi.fn();
+    const projectionSpy = vi.spyOn(hub, "workflowProjection");
+    const unsubscribe = hub.onChange(listener);
+    listener.mockClear();
+    projectionSpy.mockClear();
+    try {
+      (hub as any).handleAgentEvent(task, { type: "delta", content: "Working" });
+      await vi.advanceTimersByTimeAsync(40);
+
+      expect(listener).toHaveBeenCalledTimes(1);
+      expect(listener.mock.calls[0]?.[0].patch?.tasks?.upsert).toEqual([expect.objectContaining({ id: task.id, messages: [expect.objectContaining({ content: "Working" })] })]);
+      expect(listener.mock.calls[0]?.[0].payload).not.toHaveProperty("tasks");
+      expect(projectionSpy).not.toHaveBeenCalled();
+    } finally {
+      unsubscribe();
+      await hub.shutdown();
+      vi.useRealTimers();
+    }
+  });
+
   test("creates default agents once without binding their later edits to runtime configs", () => {
     const hub = new AgentHub();
     (hub as any).channels = [

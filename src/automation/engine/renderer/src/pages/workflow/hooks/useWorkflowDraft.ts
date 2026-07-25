@@ -38,8 +38,8 @@ export interface WorkflowDraftController {
   stopWorkflowGrill: () => Promise<void>;
   createNewWorkflow: () => Promise<void>;
   resetWorkflowSession: () => Promise<void>;
-  buildWorkflowDefinition: () => Promise<void>;
-  sendWorkflowReply: () => Promise<void>;
+  buildWorkflowDefinition: (objectiveOverride?: string) => Promise<void>;
+  sendWorkflowReply: (textOverride?: string) => Promise<void>;
   updateWorkflowNode: (nodeId: string, update: Partial<WorkflowV2Node>) => Promise<void>;
   updateWorkflowDefinition: (definition: WorkflowV2Definition) => Promise<void>;
   selectWorkflow: (workflowId: string) => Promise<void>;
@@ -143,10 +143,10 @@ export function useWorkflowDraft({
     setSnapshot(next);
   }, [resetWorkflowLocalDraft, setSnapshot, snapshotRef, workflows]);
 
-  const buildWorkflowDefinition = useCallback(async (): Promise<void> => {
+  const buildWorkflowDefinition = useCallback(async (objectiveOverride?: string): Promise<void> => {
     const workflow = await ensureActiveWorkflow();
     if (!workflow) return;
-    const objective = workflowObjectiveInput.trim();
+    const objective = (objectiveOverride ?? workflowObjectiveInput).trim();
     const definition = { ...structuredClone(workflow.definition), objective };
     const next = await workflows.patchDraft({
       workflowId: workflow.workflowId,
@@ -161,11 +161,11 @@ export function useWorkflowDraft({
     setSnapshot(next);
   }, [ensureActiveWorkflow, setSnapshot, workflowObjectiveInput, workflows]);
 
-  const sendWorkflowReply = useCallback(async (): Promise<void> => {
+  const sendWorkflowReply = useCallback(async (textOverride?: string): Promise<void> => {
     const workflow = await ensureActiveWorkflow();
     if (!workflow) return;
     const starting = workflow.messages.length === 0;
-    const text = (starting ? workflowObjectiveInput : workflowReplyInput).trim();
+    const text = (textOverride ?? (starting ? workflowObjectiveInput : workflowReplyInput)).trim();
     if (!text || workflowGrillBusy || workflow.status === "running") return;
 
     const requestToken = requestTokenRef.current + 1;

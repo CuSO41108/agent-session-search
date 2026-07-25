@@ -150,7 +150,12 @@ function dateBoundary(value: string, endOfDay: boolean): number | undefined {
   return Number.isNaN(date.getTime()) ? undefined : date.getTime();
 }
 
-export function WorkflowRunCenter({ runs, conversations = [], artifacts = [], loading = false, error, open, selectedRunId, language = "en", onSelectRun, onClose }: WorkflowRunCenterProps) {
+export function WorkflowRunCenter(props: WorkflowRunCenterProps) {
+  if (!props.open) return null;
+  return <WorkflowRunCenterOpen {...props} />;
+}
+
+function WorkflowRunCenterOpen({ runs, conversations = [], artifacts = [], loading = false, error, selectedRunId, language = "en", onSelectRun, onClose }: WorkflowRunCenterProps) {
   const [activeRunId, setActiveRunId] = useState<string | undefined>(selectedRunId);
   const [statusFilter, setStatusFilter] = useState<WorkflowStatus | "all">("all");
   const [sourceFilter, setSourceFilter] = useState<WorkflowRunTriggerSource | "all">("all");
@@ -176,19 +181,31 @@ export function WorkflowRunCenter({ runs, conversations = [], artifacts = [], lo
   }, [activeRunId, runs, selectedRunId]);
 
   useEffect(() => {
-    if (!open) return;
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") onClose();
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [onClose, open]);
+  }, [onClose]);
 
-  const selectedNodeIds = useMemo(() => new Set(selectedRun?.progress.map((item) => item.nodeId) ?? []), [selectedRun]);
+  const selectedProgressByNodeId = useMemo(() => new Map(selectedRun?.progress.map((item) => [item.nodeId, item]) ?? []), [selectedRun]);
+  const selectedEventsByNodeId = useMemo(() => {
+    const result = new Map<string, WorkflowRunState["events"]>();
+    for (const event of selectedRun?.events ?? []) {
+      if (!event.nodeId) continue;
+      const events = result.get(event.nodeId) ?? [];
+      events.push(event);
+      result.set(event.nodeId, events);
+    }
+    for (const events of result.values()) events.sort((left, right) => left.at - right.at);
+    return result;
+  }, [selectedRun]);
+  const selectedConversationsByNodeId = useMemo(() => new Map(
+    conversations.filter((item) => item.runId === selectedRun?.runId).map((item) => [item.nodeId, item]),
+  ), [conversations, selectedRun?.runId]);
+  const selectedArtifacts = useMemo(() => artifacts.filter((artifact) => artifact.target === selectedRun?.runId), [artifacts, selectedRun?.runId]);
   const selectedTimeline = useMemo<Map<string, WorkflowRunTimelineSegment[]>>(() => selectedRun ? getWorkflowRunTimeline(selectedRun) : new Map<string, WorkflowRunTimelineSegment[]>(), [selectedRun]);
   const selectedTimelineBounds = useMemo(() => selectedRun ? getWorkflowRunTimelineBounds(selectedRun) : undefined, [selectedRun]);
-  if (!open) return null;
-
   const labels = language === "zh"
     ? { title: "运行历史", close: "关闭运行历史", empty: "还没有运行记录", loading: "正在加载运行历史", loadMore: "加载更多运行记录", noMatches: "没有符合筛选条件的 Run", choose: "选择一条运行记录查看详情", back: "返回运行列表", detail: "运行详情", readOnly: "只读快照", timeline: "节点时间线", messages: "消息历史", outputs: "输出摘要", artifacts: "历史产物", inputSummary: "输入摘要", inputRequested: "请求输入", result: "结果", config: "冻结配置", agent: "Agent", agentRevision: "Agent 版本", graph: "图版本", started: "开始", finished: "结束", duration: "耗时", trigger: "触发来源", approvedBy: "确认人", nodes: "节点", noEvents: "暂无事件记录", notStarted: "未开始", runtime: "Runtime", channel: "Channel", model: "模型", attempts: "尝试次数", executionDetails: "执行明细", tokenUsage: "Token 用量", provider: "计量风格", inputTokens: "输入 tokens", outputTokens: "输出 tokens", reasoningTokens: "推理 tokens", cachedInput: "缓存输入（OpenAI）", cacheRead: "缓存读取（Anthropic）", cacheWrite: "缓存写入（Anthropic）", cacheWrite5m: "缓存写入 · 5 分钟", cacheWrite1h: "缓存写入 · 1 小时", totalTokens: "总 tokens", cost: "成本", filters: "筛选运行" }
     : { title: "Run history", close: "Close run history", empty: "No runs yet", loading: "Loading run history", loadMore: "Load more runs", noMatches: "No runs match the filters", choose: "Select a run to view its details", back: "Back to run list", detail: "Run details", readOnly: "Read-only snapshot", timeline: "Node timeline", messages: "Message history", outputs: "Outputs", artifacts: "Artifacts", inputSummary: "Input summary", inputRequested: "Input requested", result: "Result", config: "Frozen configuration", agent: "Agent", agentRevision: "Agent revision", graph: "Graph version", started: "Started", finished: "Finished", duration: "Duration", trigger: "Trigger source", approvedBy: "Approved by", nodes: "Nodes", noEvents: "No events recorded", notStarted: "Not started", runtime: "Runtime", channel: "Channel", model: "Model", attempts: "Attempts", executionDetails: "Execution details", tokenUsage: "Token usage", provider: "Accounting style", inputTokens: "Input tokens", outputTokens: "Output tokens", reasoningTokens: "Reasoning tokens", cachedInput: "Cached input (OpenAI)", cacheRead: "Cache read (Anthropic)", cacheWrite: "Cache write (Anthropic)", cacheWrite5m: "Cache write · 5 min", cacheWrite1h: "Cache write · 1 hour", totalTokens: "Total tokens", cost: "Cost", filters: "Filter runs" };
@@ -234,7 +251,7 @@ export function WorkflowRunCenter({ runs, conversations = [], artifacts = [], lo
                   <div className="workflow-run-center-metrics"><span><b>{labels.started}</b>{formatDate(selectedRun.startedAt, language)}</span><span><b>{labels.finished}</b>{selectedRun.finishedAt ? formatDate(selectedRun.finishedAt, language) : "—"}</span><span><b>{labels.duration}</b>{formatDuration(selectedRun)}</span><span><b>{labels.trigger}</b>{triggerSourceLabel(selectedRun.triggerSource, language)}</span><span><b>{labels.graph}</b>v{selectedRun.workflowV2Plan.graphVersion}</span></div>
                 </header>
                 {selectedRun.lastError ? <div className="workflow-run-center-error"><CircleAlert size={15} /><span>{selectedRun.lastError}</span></div> : null}
-                {artifacts.filter((artifact) => artifact.target === selectedRun.runId).length > 0 ? <section className="workflow-run-center-section workflow-run-center-artifacts"><header><GitBranch size={14} /><strong>{labels.artifacts}</strong></header><div className="workflow-run-center-artifact-list">{artifacts.filter((artifact) => artifact.target === selectedRun.runId).map((artifact) => <article key={artifact.id}><strong>{artifact.title}</strong><small>{artifact.kind === "file" ? artifactFileName(artifact.path) : artifact.kind === "url" ? artifactUrlPreview(artifact.url) : "text"}</small>{artifact.description ? <p>{artifact.description}</p> : null}{artifact.kind === "text" && artifact.content ? <pre>{artifact.content.slice(0, 4000)}</pre> : null}</article>)}</div></section> : null}
+                {selectedArtifacts.length > 0 ? <section className="workflow-run-center-section workflow-run-center-artifacts"><header><GitBranch size={14} /><strong>{labels.artifacts}</strong></header><div className="workflow-run-center-artifact-list">{selectedArtifacts.map((artifact) => <article key={artifact.id}><strong>{artifact.title}</strong><small>{artifact.kind === "file" ? artifactFileName(artifact.path) : artifact.kind === "url" ? artifactUrlPreview(artifact.url) : "text"}</small>{artifact.description ? <p>{artifact.description}</p> : null}{artifact.kind === "text" && artifact.content ? <pre>{artifact.content.slice(0, 4000)}</pre> : null}</article>)}</div></section> : null}
                 <section className="workflow-run-center-section">
                   <header><GitBranch size={14} /><strong>{labels.config}</strong></header>
                   <div className="workflow-run-center-config-grid"><span><b>{labels.approvedBy}</b>{selectedRun.workflowV2Plan.approvedBy || "—"}</span><span><b>{labels.nodes}</b>{selectedRun.workflowV2Plan.nodes.length}</span><span><b>{language === "zh" ? "上下文预算" : "Context budget"}</b>{selectedRun.workflowV2Plan.budget.context.maxContextTokens ?? "—"}</span><span><b>{labels.agent}</b>{selectedRun.configurationSnapshot?.configuredAgentId ?? "—"}</span><span><b>{labels.agentRevision}</b>{selectedRun.configurationSnapshot?.agentRevision ?? "—"}</span><span><b>{labels.runtime}</b>{selectedRun.configurationSnapshot?.runtimeId ?? "—"}</span><span><b>{labels.channel}</b>{selectedRun.configurationSnapshot?.channelId ?? "—"}</span><span><b>{labels.model}</b>{selectedRun.configurationSnapshot?.modelId ?? "—"}</span></div>
@@ -243,10 +260,10 @@ export function WorkflowRunCenter({ runs, conversations = [], artifacts = [], lo
                   <header><CalendarClock size={14} /><strong>{labels.timeline}</strong></header>
                   <div className="workflow-run-center-timeline">
                     {selectedRun.workflowV2Plan.nodes.map((node) => {
-                      const progress = selectedRun.progress.find((item) => item.nodeId === node.nodeId);
-                      const events = selectedRun.events.filter((event) => event.nodeId === node.nodeId).sort((left, right) => left.at - right.at);
+                      const progress = selectedProgressByNodeId.get(node.nodeId);
+                      const events = selectedEventsByNodeId.get(node.nodeId) ?? [];
                       const eventError = [...events].reverse().find((event) => event.error)?.error;
-                      const conversation = conversations.find((item) => item.runId === selectedRun.runId && item.nodeId === node.nodeId);
+                      const conversation = selectedConversationsByNodeId.get(node.nodeId);
                       const messages = conversation?.messages.length ? conversation.messages : progress?.messages ?? [];
                       const telemetry = progress?.telemetry ?? conversation?.telemetry;
                       const timelineSegments = selectedTimeline.get(node.nodeId) ?? [];
@@ -293,7 +310,7 @@ export function WorkflowRunCenter({ runs, conversations = [], artifacts = [], lo
                             <div className="workflow-run-center-events">
                               {events.map((event, index) => <span key={`${event.type}-${event.at}-${index}`}>{eventLabel(event.type, language)} · {formatDate(event.at, language)}{event.attempt ? ` · #${event.attempt}` : ""}{event.detail ? ` · ${event.detail}` : ""}{event.question ? ` · ${event.question}` : ""}{event.answer ? ` · ${event.answer}` : ""}{event.intervention ? ` · ${event.intervention.source}${event.intervention.reviewVerdict ? ` · ${event.intervention.reviewVerdict.decision}` : ""}` : ""}</span>)}
                             </div>
-                          ) : <small className="workflow-run-center-no-events">{selectedNodeIds.has(node.nodeId) ? labels.noEvents : labels.notStarted}</small>}
+                          ) : <small className="workflow-run-center-no-events">{selectedProgressByNodeId.has(node.nodeId) ? labels.noEvents : labels.notStarted}</small>}
                           {messages.length > 0 ? <details className="workflow-run-center-messages">
                             <summary><MessageSquareText size={13} /><span>{labels.messages}</span><em>{messages.length}</em></summary>
                             <div className="workflow-run-center-message-list">

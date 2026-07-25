@@ -42,7 +42,7 @@ export class WorkflowV2ConversationManager {
     now: () => number;
     createSession: (input: CreateWorkflowNodeConversationInput & { emit: (event: AgentEvent) => void }) => WorkflowNodeInteractiveSession;
     onStarting?: (input: CreateWorkflowNodeConversationInput) => Promise<void>;
-    onChanged?: (delivery: "stream" | "immediate") => void;
+    onChanged?: (delivery: "stream" | "immediate", conversation: WorkflowNodeConversation) => void;
     onCompleted?: (conversation: WorkflowNodeConversation, content: string) => void | Promise<void>;
   }) {}
 
@@ -293,7 +293,7 @@ export class WorkflowV2ConversationManager {
 
   private changed(conversation: WorkflowNodeConversation, delivery: "stream" | "immediate" = "immediate"): void {
     conversation.updatedAt = this.deps.now();
-    this.deps.onChanged?.(delivery);
+    this.deps.onChanged?.(delivery, structuredClone(conversation));
   }
 
   private mutableRequired(conversationId: string): WorkflowNodeConversation {

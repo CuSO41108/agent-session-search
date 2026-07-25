@@ -1,7 +1,16 @@
+import type {
+  RegisteredArtifact,
+  TaskRun,
+  WorkflowDraftState,
+  WorkflowNodeConversation,
+  WorkflowStoreState,
+} from "../../automation/contracts";
+
 export const AUTOMATION_CHANNELS = {
   health: "automation:health",
   snapshot: "automation:snapshot",
   snapshotChanged: "automation:snapshot-changed",
+  change: "automation:change",
   runtimeSaveChannels: "automation:runtime:save-channels",
   runtimeSaveAgents: "automation:runtime:save-agents",
   runtimeTestChannel: "automation:runtime:test-channel",
@@ -66,6 +75,40 @@ export const AUTOMATION_CHANNELS = {
   workflowOutputReveal: "automation:workflow:output-reveal",
   approvalResolve: "automation:approval:resolve",
 } as const;
+
+export const AUTOMATION_CHANGE_PROTOCOL_VERSION = 1 as const;
+
+export interface WorkflowAutomationProjection {
+  workflowStore: WorkflowStoreState;
+  workflowNodeConversations: WorkflowNodeConversation[];
+  workflowDraft: WorkflowDraftState | undefined;
+  tasks: TaskRun[];
+  artifacts: RegisteredArtifact[];
+}
+
+export interface AutomationEntityPatch<T> {
+  upsert: T[];
+  remove: string[];
+}
+
+export interface WorkflowAutomationPatch {
+  activeWorkflowId?: string | null;
+  workflows?: AutomationEntityPatch<WorkflowDraftState>;
+  runs?: AutomationEntityPatch<WorkflowStoreState["runs"][number]>;
+  conversations?: AutomationEntityPatch<WorkflowNodeConversation>;
+  tasks?: AutomationEntityPatch<TaskRun>;
+  artifacts?: AutomationEntityPatch<RegisteredArtifact>;
+}
+
+export interface AutomationChange {
+  protocolVersion: typeof AUTOMATION_CHANGE_PROTOCOL_VERSION;
+  sequence: number;
+  detectedAt: number;
+  domain: "workflow";
+  entityId: "workflow-state";
+  operation: "patch";
+  payload: WorkflowAutomationPatch;
+}
 
 export interface AutomationHealth {
   state: "idle" | "initializing" | "ready" | "error" | "stopped";

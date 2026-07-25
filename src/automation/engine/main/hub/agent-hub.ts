@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import type { McpServerDefinition } from "../../shared/mcp/types";
+import type { WorkflowAutomationPatch, WorkflowAutomationProjection } from "../../../../shared/ipc/automation";
 import type {
   AgentChannel,
   ConfiguredAgent,
@@ -346,7 +347,13 @@ interface ResolvedConfiguredAgent {
   reasoningEffort?: string;
   runtime: AgentRuntime | undefined;
 }
-type Listener = (snapshot: AppSnapshot) => void;
+export type AgentHubChange =
+  | { kind: "snapshot"; snapshot: AppSnapshot }
+  | { kind: "workflow"; detectedAt: number; payload: Partial<WorkflowAutomationProjection>; patch?: WorkflowAutomationPatch };
+
+type WorkflowProjectionScope = "store" | "conversations" | "tasks" | "artifacts";
+
+type Listener = (change: AgentHubChange) => void;
 export class AgentHub {
   private runtimes = new Map<AgentId, AgentRuntime>();
   private chats = new Map<string, ChatState>();
@@ -378,6 +385,7 @@ export class AgentHub {
   private workflowMcpManagedToken: string | undefined = undefined;
   private persistTimer: ReturnType<typeof setTimeout> | undefined = undefined;
   private streamingEmitTimer: ReturnType<typeof setTimeout> | undefined = undefined;
+  private streamingEmitKind: "snapshot" | "workflow" | undefined = undefined;
   private idleSweepTimer: ReturnType<typeof setInterval> | undefined = undefined;
   private persistInFlight: Promise<void> | undefined = undefined;
   private persistenceWriteBlocked = false;
@@ -423,7 +431,7 @@ export class AgentHub {
       now: () => Date.now(),
       createWorkflowId: () => `wf_${randomUUID()}`,
       createRunId: () => `run_${randomUUID()}`,
-      onChange: () => this.emit(),
+      onChange: () => this.emitWorkflow(),
     });
     this.executorFactory =
       executorFactory ??
@@ -444,7 +452,9 @@ export class AgentHub {
           attempt: input.attempt ?? 1,
         });
       },
-      onChanged: (delivery) => delivery === "stream" ? this.emitStreaming() : this.emit(),
+      onChanged: (delivery, conversation) => delivery === "stream"
+        ? this.emitWorkflowStreaming("conversations", { conversations: { upsert: [conversation], remove: [] } })
+        : this.emitWorkflow(),
       onCompleted: async (conversation, content) => {
         const workflow = this.workflowStore.workflows.get(conversation.workflowId);
         const node = workflow?.workflowV2Plan?.definition.nodes.find((candidate) => candidate.id === conversation.nodeId);
@@ -481,13 +491,13 @@ export class AgentHub {
       createRunId: () => `run_${randomUUID()}`,
       cloneDraft: (draft) => this.cloneWorkflowDraft(draft),
       clearDraftRequest: (workflowId) => this.activeWorkflowDraftRequests.delete(workflowId),
-      changed: () => this.emit(),
+      changed: () => this.emitWorkflow(),
     });
     this.workflowContextService = new WorkflowContextService({
       store: this.workflowStore,
       cloneDraft: (draft) => this.cloneWorkflowDraft(draft),
       now: () => Date.now(),
-      changed: () => this.emit(),
+      changed: () => this.emitWorkflow(),
       limits: {
         maxContextAppendChars: MAX_WORKFLOW_CONTEXT_APPEND_CHARS,
         maxArtifactsPerAppend: MAX_WORKFLOW_ARTIFACTS_PER_APPEND,
@@ -535,7 +545,7 @@ export class AgentHub {
       runtime: this.workflowRuntime,
       store: this.workflowStore,
       cloneDraft: (draft) => this.cloneWorkflowDraft(draft),
-      changed: () => this.emit(),
+      changed: () => this.emitWorkflow(),
       now: () => Date.now(),
     });
     this.workflowDraftService = new WorkflowDraftService({
@@ -548,7 +558,7 @@ export class AgentHub {
       cloneDraft: (draft) => this.cloneWorkflowDraft(draft),
       patchDraft: (draft, patch) => this.applyWorkflowDraftPatch(draft, patch),
       clearDraftRequests: () => this.activeWorkflowDraftRequests.clear(),
-      changed: () => this.emit(),
+      changed: () => this.emitWorkflow(),
       snapshot: () => this.snapshot(),
     });
     this.installRestoredConfiguredAgents([]);
@@ -904,10 +914,7 @@ export class AgentHub {
   }
 
   async shutdown(): Promise<void> {
-    if (this.streamingEmitTimer) {
-      clearTimeout(this.streamingEmitTimer);
-      this.streamingEmitTimer = undefined;
-    }
+    this.cancelStreamingEmit();
     if (this.idleSweepTimer) {
       clearInterval(this.idleSweepTimer);
       this.idleSweepTimer = undefined;
@@ -1087,7 +1094,7 @@ export class AgentHub {
     });
     this.workflowStore.workflows.set(next.workflowId, next);
     this.workflowStore.activeId = next.workflowId;
-    this.emit();
+    this.emitWorkflow();
     return this.snapshot();
   }
 
@@ -1136,7 +1143,7 @@ export class AgentHub {
     });
     this.workflowStore.workflows.set(next.workflowId, next);
     if (this.workflowStore.activeId === next.workflowId) this.workflowStore.activeId = next.workflowId;
-    this.emit();
+    this.emitWorkflow();
     return this.snapshot();
   }
   materializeWorkflowDraft(workflowId: string, input: MaterializeWorkflowDraftRequest): WorkflowOperationResult {
@@ -1181,7 +1188,7 @@ export class AgentHub {
       cloneDraft: (draft) => this.cloneWorkflowDraft(draft),
     });
     this.workflowStore.workflows.set(workflow.workflowId, workflow);
-    this.emit();
+    this.emitWorkflow();
     return { ok: true, workflowId: workflow.workflowId, revision: workflow.revision };
   }
   confirmWorkflow(input: ConfirmWorkflowRequest): WorkflowOperationResult {
@@ -1200,7 +1207,7 @@ export class AgentHub {
       return { ok: false, workflowId: workflow.workflowId, revision: workflow.revision, error: error instanceof Error ? error.message : "Workflow script governance could not be frozen." };
     }
     this.workflowStore.workflows.set(workflow.workflowId, this.cloneWorkflowDraft({ ...workflow, workflowV2Plan: frozenPlan, confirmedRevision: workflow.revision, error: undefined, updatedAt: Date.now() }));
-    this.emit();
+    this.emitWorkflow();
     return { ok: true, workflowId: workflow.workflowId, revision: workflow.revision };
   }
 
@@ -1211,14 +1218,14 @@ export class AgentHub {
     const reviewer = this.resolveConfiguredAgent(workflow.reviewerConfiguredAgentId, workflow.reviewerModelId);
     if (!reviewer?.runtime?.available) {
       this.workflowStore.workflows.set(workflow.workflowId, this.cloneWorkflowDraft({ ...workflow, generationReview: { status: "failed", reviewerConfiguredAgentId: workflow.reviewerConfiguredAgentId, reviewerModelId: workflow.reviewerModelId, reviewedRevision: workflow.revision, error: "The selected Workflow Reviewer Agent is unavailable.", updatedAt: Date.now() }, updatedAt: Date.now() }));
-      this.emit();
+      this.emitWorkflow();
       return this.snapshot();
     }
     const executionMode = this.selectExecutionMode(reviewer.runtimeAgentId, "workflow", "oneshot");
     await this.workflowGenerationReviewCoordinator.run({
         workflow,
         askReviewer: (prompt, signal) => this.askWorkflowAgent({ planningWorkflowId: workflow.workflowId, prompt, configuredAgentId: workflow.reviewerConfiguredAgentId, runtimeId: reviewer.runtimeAgentId, executionMode, continuationPolicy: this.defaultContinuationPolicy(reviewer.runtimeAgentId, "workflow", executionMode), runtimeConfig: { model: workflow.reviewerModelId, ...(reviewer.reasoningEffort ? { reasoningEffort: reviewer.reasoningEffort } : {}) }, workDir: workflow.workDir || this.workDir }, undefined, signal),
-        publish: (next) => { this.workflowStore.workflows.set(next.workflowId, next); this.emit(); },
+        publish: (next) => { this.workflowStore.workflows.set(next.workflowId, next); this.emitWorkflow(); },
         current: () => this.workflowStore.workflows.get(workflow.workflowId),
         flush: () => this.flushPersistence(),
         clone: (next) => this.cloneWorkflowDraft(next),
@@ -1228,7 +1235,7 @@ export class AgentHub {
 
   async interruptWorkflowReview(input: InterruptWorkflowReviewRequest): Promise<AppSnapshot> {
     const workflow = this.workflowStore.workflows.get(input.workflowId);
-    if (workflow) await this.workflowGenerationReviewCoordinator.interrupt({ workflow, publish: (next) => { this.workflowStore.workflows.set(next.workflowId, next); this.emit(); }, flush: () => this.flushPersistence(), clone: (next) => this.cloneWorkflowDraft(next) });
+    if (workflow) await this.workflowGenerationReviewCoordinator.interrupt({ workflow, publish: (next) => { this.workflowStore.workflows.set(next.workflowId, next); this.emitWorkflow(); }, flush: () => this.flushPersistence(), clone: (next) => this.cloneWorkflowDraft(next) });
     return this.snapshot();
   }
 
@@ -1301,13 +1308,13 @@ export class AgentHub {
       if (!this.workflowStore.activeId) this.workflowStore.activeId = workflow.workflowId;
       changed = true;
     }
-    if (changed) this.emit();
+    if (changed) this.emitWorkflow();
   }
 
   selectWorkflow(workflowId: string): AppSnapshot {
     if (this.workflowStore.workflows.has(workflowId)) {
       this.workflowStore.activeId = workflowId;
-      this.emit();
+      this.emitWorkflow();
     }
     return this.snapshot();
   }
@@ -1322,7 +1329,7 @@ export class AgentHub {
       revision: workflow.revision + 1,
       updatedAt: Date.now(),
     }));
-    this.emit();
+    this.emitWorkflow();
     return this.snapshot();
   }
 
@@ -1341,7 +1348,7 @@ export class AgentHub {
     if (this.workflowStore.activeId === workflowId || (this.workflowStore.activeId && !this.workflowStore.workflows.has(this.workflowStore.activeId))) {
       this.workflowStore.activeId = [...this.workflowStore.workflows.values()].sort((left, right) => right.updatedAt - left.updatedAt)[0]?.workflowId;
     }
-    this.emit();
+    this.emitWorkflow();
     return this.snapshot();
   }
 
@@ -1384,7 +1391,7 @@ export class AgentHub {
       cloneDraft: (draft) => this.cloneWorkflowDraft(draft),
     });
     this.workflowStore.workflows.set(next.workflowId, next);
-    this.emit();
+    this.emitWorkflow();
     return { ok: true, workflowId: next.workflowId, revision: next.revision };
   }
 
@@ -1626,6 +1633,17 @@ export class AgentHub {
     };
   }
 
+  workflowProjection(scopes: ReadonlySet<WorkflowProjectionScope> = new Set(["store", "conversations", "tasks", "artifacts"])): Partial<WorkflowAutomationProjection> {
+    return {
+      ...(scopes.has("store") ? { workflowStore: this.cloneWorkflowStore(), workflowDraft: this.activeWorkflowDraft() } : {}),
+      ...(scopes.has("conversations") ? { workflowNodeConversations: this.workflowNodeConversations.list() } : {}),
+      ...(scopes.has("tasks") ? { tasks: [...this.tasks.values()]
+        .sort((left, right) => right.updatedAt - left.updatedAt)
+        .map((task) => serializeTask({ task, cloneConversation: (conversation) => this.runtimeRouter.cloneConversation(conversation) })) } : {}),
+      ...(scopes.has("artifacts") ? { artifacts: this.artifacts.map((artifact) => ({ ...artifact })) } : {}),
+    };
+  }
+
   async registerArtifact(input: RegisterArtifactRequest): Promise<{ ok: boolean; error?: string; artifact?: RegisteredArtifact }> {
     const result = await registerArtifactValue({
       request: input,
@@ -1660,7 +1678,7 @@ export class AgentHub {
 
   onChange(listener: Listener): () => void {
     this.listeners.add(listener);
-    listener(this.snapshot());
+    listener({ kind: "snapshot", snapshot: this.snapshot() });
     return () => this.listeners.delete(listener);
   }
 
@@ -1826,7 +1844,7 @@ export class AgentHub {
       resolveConfiguredAgent: (configuredAgentId, modelId) => this.resolveConfiguredAgent(configuredAgentId, modelId),
       createUserMessage: (content) => createUserMessage(content),
       createErrorMessage: (content) => createErrorMessage(content),
-      emit: () => this.emit(),
+      emit: () => input.planningWorkflowId || input.workflowRunId ? this.emitWorkflow() : this.emit(),
       run: (nextTask, preparedResolved) => {
         void this.runChat(nextTask, nextTask.prompt, preparedResolved);
       },
@@ -1983,7 +2001,7 @@ export class AgentHub {
                 updatedAt: Date.now(),
               }));
               this.workflowStore.activeId = input.workflowId;
-              this.emit();
+              this.emitWorkflow();
             }
             return;
           }
@@ -2094,7 +2112,8 @@ export class AgentHub {
     task.messages.push(createErrorMessage("Stopped"));
     task.updatedAt = Date.now();
     this.finishTeamStepFromTask(task);
-    this.emit();
+    if (task.planningWorkflowId || task.workflowRunId) this.emitWorkflow();
+    else this.emit();
   }
 
   updateTaskProgress(taskId: string, progress: TaskProgress): AppSnapshot {
@@ -2103,7 +2122,8 @@ export class AgentHub {
     task.progress = progress;
     task.updatedAt = Date.now();
     this.activeTaskId = task.id;
-    this.emit();
+    if (task.planningWorkflowId || task.workflowRunId) this.emitWorkflow();
+    else this.emit();
     return this.snapshot();
   }
 
@@ -2117,7 +2137,8 @@ export class AgentHub {
     if (this.activeTaskId === taskId) {
       this.activeTaskId = [...this.tasks.values()].sort((left, right) => right.updatedAt - left.updatedAt)[0]?.id;
     }
-    this.emit();
+    if (task.planningWorkflowId || task.workflowRunId) this.emitWorkflow();
+    else this.emit();
     await this.flushPersistence();
 
     if (stop) {
@@ -2311,13 +2332,13 @@ export class AgentHub {
 
     if (reduced.type === "delta") {
       this.workflowStore.workflows.set(workflowId, reduced.workflow);
-      this.emitStreaming();
+      this.emitWorkflowStreaming("store", { workflows: { upsert: [this.cloneWorkflowDraft(reduced.workflow)], remove: [] } });
       return;
     }
 
     if (reduced.type === "event") {
       this.workflowStore.workflows.set(workflowId, reduced.workflow);
-      this.emit();
+      this.emitWorkflow();
       return;
     }
 
@@ -2348,7 +2369,7 @@ export class AgentHub {
       cloneDraft: (draft) => this.cloneWorkflowDraft(draft),
     });
     this.workflowStore.workflows.set(workflowId, next);
-    this.emit();
+    this.emitWorkflow();
   }
 
   private failWorkflowDraftRequest(workflowId: string, requestId: string, error: string): void {
@@ -2364,7 +2385,7 @@ export class AgentHub {
       error,
       cloneDraft: (draft) => this.cloneWorkflowDraft(draft),
     }));
-    this.emit();
+    this.emitWorkflow();
   }
 
   private waitForWorkflowRunToSettle(runId: string): Promise<WorkflowRunState> {
@@ -2552,12 +2573,14 @@ export class AgentHub {
       finishTaskRun: (task) => this.finishTeamStepFromTask(task),
       emit: () => {
         this.activeStops.delete(run.id);
-        this.emit();
+        if (run instanceof TaskState && (run.planningWorkflowId || run.workflowRunId)) this.emitWorkflow();
+        else this.emit();
       },
     });
   }
 
   private async runChat(run: RunState, prompt: string, resolved: ResolvedConfiguredAgent): Promise<void> {
+    const workflowOwned = run instanceof TaskState && Boolean(run.planningWorkflowId || run.workflowRunId);
     await runAgentExecutionValue({
       run,
       prompt,
@@ -2578,11 +2601,12 @@ export class AgentHub {
         this.activeStops.set(runId, stop);
       },
       clearStop: (runId) => this.activeStops.delete(runId),
-      emit: () => this.emit(),
+      emit: () => workflowOwned ? this.emitWorkflow() : this.emit(),
     });
   }
 
   private handleAgentEvent(run: RunState, event: AgentEvent): void {
+    const workflowOwned = run instanceof TaskState && Boolean(run.planningWorkflowId || run.workflowRunId);
     handleAgentEventValue({
       run,
       event,
@@ -2593,7 +2617,20 @@ export class AgentHub {
         return stop;
       },
       finishTaskRun: (task) => this.finishTeamStepFromTask(task),
-      emit: () => event.type === "delta" ? this.emitStreaming() : this.emit(),
+      emit: () => {
+        if (workflowOwned) {
+          if (event.type === "delta") this.emitWorkflowStreaming("tasks", {
+            tasks: {
+              upsert: [serializeTask({ task: run, cloneConversation: (conversation) => this.runtimeRouter.cloneConversation(conversation) })],
+              remove: [],
+            },
+          });
+          else this.emitWorkflow();
+          return;
+        }
+        if (event.type === "delta") this.emitStreaming();
+        else this.emit();
+      },
     });
   }
 
@@ -2610,25 +2647,102 @@ export class AgentHub {
   }
 
   private emit(): void {
-    if (this.streamingEmitTimer) {
-      clearTimeout(this.streamingEmitTimer);
-      this.streamingEmitTimer = undefined;
-    }
+    this.cancelStreamingEmit();
     this.publishSnapshot();
   }
 
+  private emitWorkflow(scopes?: WorkflowProjectionScope | WorkflowProjectionScope[]): void {
+    this.cancelStreamingEmit();
+    this.publishWorkflowProjection(this.workflowScopeSet(scopes));
+  }
+
   private emitStreaming(): void {
-    if (this.streamingEmitTimer) return;
+    this.scheduleStreamingEmit("snapshot");
+  }
+
+  private emitWorkflowStreaming(scopes?: WorkflowProjectionScope | WorkflowProjectionScope[], directPatch?: WorkflowAutomationPatch): void {
+    this.scheduleStreamingEmit("workflow", scopes, directPatch);
+  }
+
+  private pendingWorkflowScopes = new Set<WorkflowProjectionScope>();
+  private pendingWorkflowPatch: WorkflowAutomationPatch | undefined;
+
+  private scheduleStreamingEmit(kind: "snapshot" | "workflow", scopes?: WorkflowProjectionScope | WorkflowProjectionScope[], directPatch?: WorkflowAutomationPatch): void {
+    if (kind === "workflow") for (const scope of this.workflowScopeSet(scopes)) this.pendingWorkflowScopes.add(scope);
+    if (kind === "workflow" && directPatch) this.pendingWorkflowPatch = this.mergeWorkflowPatches(this.pendingWorkflowPatch, directPatch);
+    if (this.streamingEmitTimer) {
+      if (this.streamingEmitKind === "snapshot" || this.streamingEmitKind === kind) return;
+      clearTimeout(this.streamingEmitTimer);
+    }
+    this.streamingEmitKind = kind;
     this.streamingEmitTimer = setTimeout(() => {
+      const pendingKind = this.streamingEmitKind;
       this.streamingEmitTimer = undefined;
-      this.publishSnapshot();
+      this.streamingEmitKind = undefined;
+      if (pendingKind === "workflow") {
+        const pendingScopes = new Set(this.pendingWorkflowScopes);
+        const pendingPatch = this.pendingWorkflowPatch;
+        this.pendingWorkflowScopes.clear();
+        this.pendingWorkflowPatch = undefined;
+        this.publishWorkflowProjection(pendingScopes, pendingPatch);
+      }
+      else this.publishSnapshot();
     }, 32);
+  }
+
+  private cancelStreamingEmit(): void {
+    if (this.streamingEmitTimer) clearTimeout(this.streamingEmitTimer);
+    this.streamingEmitTimer = undefined;
+    this.streamingEmitKind = undefined;
+    this.pendingWorkflowScopes.clear();
+    this.pendingWorkflowPatch = undefined;
   }
 
   private publishSnapshot(): void {
     const snapshot = this.snapshot();
-    for (const listener of this.listeners) listener(snapshot);
+    for (const listener of this.listeners) listener({ kind: "snapshot", snapshot });
     this.schedulePersist();
+  }
+
+  private workflowScopeSet(scopes?: WorkflowProjectionScope | WorkflowProjectionScope[]): Set<WorkflowProjectionScope> {
+    return new Set(scopes ? (Array.isArray(scopes) ? scopes : [scopes]) : ["store", "conversations", "tasks", "artifacts"]);
+  }
+
+  private publishWorkflowProjection(scopes: ReadonlySet<WorkflowProjectionScope>, directPatch?: WorkflowAutomationPatch): void {
+    const projectionScopes = new Set(scopes);
+    if (directPatch?.workflows) projectionScopes.delete("store");
+    if (directPatch?.conversations) projectionScopes.delete("conversations");
+    if (directPatch?.tasks) projectionScopes.delete("tasks");
+    if (directPatch?.artifacts) projectionScopes.delete("artifacts");
+    const payload = projectionScopes.size > 0 ? this.workflowProjection(projectionScopes) : {};
+    const detectedAt = Date.now();
+    for (const listener of this.listeners) listener({ kind: "workflow", detectedAt, payload, ...(directPatch ? { patch: directPatch } : {}) });
+    this.schedulePersist();
+  }
+
+  private mergeWorkflowPatches(previous: WorkflowAutomationPatch | undefined, next: WorkflowAutomationPatch): WorkflowAutomationPatch {
+    if (!previous) return next;
+    const mergeEntities = <T>(left: { upsert: T[]; remove: string[] } | undefined, right: { upsert: T[]; remove: string[] } | undefined, idOf: (value: T) => string) => {
+      if (!left && !right) return undefined;
+      const upsert = new Map<string, T>();
+      for (const value of [...(left?.upsert ?? []), ...(right?.upsert ?? [])]) upsert.set(idOf(value), value);
+      const remove = new Set([...(left?.remove ?? []), ...(right?.remove ?? [])]);
+      for (const id of upsert.keys()) remove.delete(id);
+      return { upsert: [...upsert.values()], remove: [...remove] };
+    };
+    const workflows = mergeEntities(previous.workflows, next.workflows, (value) => value.workflowId);
+    const runs = mergeEntities(previous.runs, next.runs, (value) => value.runId);
+    const conversations = mergeEntities(previous.conversations, next.conversations, (value) => value.conversationId);
+    const tasks = mergeEntities(previous.tasks, next.tasks, (value) => value.id);
+    const artifacts = mergeEntities(previous.artifacts, next.artifacts, (value) => value.id);
+    return {
+      ...(workflows ? { workflows } : {}),
+      ...(runs ? { runs } : {}),
+      ...(conversations ? { conversations } : {}),
+      ...(tasks ? { tasks } : {}),
+      ...(artifacts ? { artifacts } : {}),
+      ...(next.activeWorkflowId !== undefined ? { activeWorkflowId: next.activeWorkflowId } : previous.activeWorkflowId !== undefined ? { activeWorkflowId: previous.activeWorkflowId } : {}),
+    };
   }
 
   private restorePersistedState(raw: unknown): boolean {

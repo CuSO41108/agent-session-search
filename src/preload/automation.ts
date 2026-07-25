@@ -48,7 +48,7 @@ import type {
   McpInstalledEntry,
   McpSetupStatus,
 } from "../automation/engine/shared/mcp-config";
-import { AUTOMATION_CHANNELS, type AutomationHealth } from "../shared/ipc/automation";
+import { AUTOMATION_CHANNELS, type AutomationChange, type AutomationHealth } from "../shared/ipc/automation";
 
 export type AutomationIpcRenderer = Pick<IpcRenderer, "invoke" | "on" | "removeListener">;
 
@@ -127,6 +127,11 @@ export function createAutomationApi(ipc: AutomationIpcRenderer) {
       const listener = (_event: Electron.IpcRendererEvent, snapshot: AppSnapshot) => callback(snapshot);
       ipc.on(AUTOMATION_CHANNELS.snapshotChanged, listener);
       return () => ipc.removeListener(AUTOMATION_CHANNELS.snapshotChanged, listener);
+    },
+    onChange: (callback: (change: AutomationChange) => void): (() => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, change: AutomationChange) => callback(change);
+      ipc.on(AUTOMATION_CHANNELS.change, listener);
+      return () => ipc.removeListener(AUTOMATION_CHANNELS.change, listener);
     },
     onAgentTestEvent: (callback: (event: AgentTestEvent) => void): (() => void) => {
       const listener = (_event: Electron.IpcRendererEvent, event: AgentTestEvent) => callback(event);
