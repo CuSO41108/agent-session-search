@@ -1,4 +1,5 @@
 import type {
+  AgentRecallMcpContext,
   AgentChannel,
   ConfiguredAgent,
   RuntimeConversation,
@@ -47,6 +48,8 @@ export class ConfiguredAgentExecutionService {
       prompt: string;
       workDir?: string;
       runtimeConversation?: RuntimeConversation;
+      developerInstructions?: string;
+      agentRecallMcp?: AgentRecallMcpContext;
     },
     onEvent?: (event: WorkflowAgentEvent) => void,
     signal?: AbortSignal,
@@ -60,6 +63,8 @@ export class ConfiguredAgentExecutionService {
       prompt: string;
       workDir?: string;
       runtimeConversation?: RuntimeConversation;
+      developerInstructions?: string;
+      agentRecallMcp?: AgentRecallMcpContext;
     },
     allowContinuation: boolean,
     onEvent?: (event: WorkflowAgentEvent) => void,
@@ -82,6 +87,10 @@ export class ConfiguredAgentExecutionService {
       executionMode: "oneshot",
       continuationPolicy: runtimeConversation ? "resume-preferred" : "fresh",
       ...(runtimeConversation ? { runtimeConversation } : {}),
+      ...(input.developerInstructions?.trim()
+        ? { developerInstructions: input.developerInstructions.trim() }
+        : {}),
+      ...(input.agentRecallMcp ? { agentRecallMcp: { ...input.agentRecallMcp } } : {}),
       workDir: input.workDir ?? this.dependencies.defaultWorkDir(),
     };
     const response = onEvent || signal

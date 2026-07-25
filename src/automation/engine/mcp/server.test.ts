@@ -7,10 +7,16 @@ import { RUNTIME_IDS } from "../shared/runtime-catalog";
 import { callMcpTool, mcpToolDefinitions, resolveBridgeDiscoveryPath } from "./server";
 
 const originalEnv = process.env.AGENT_RECALL_WORKFLOW_MCP_BRIDGE;
+const originalBridgeEnv = process.env.AGENT_RECALL_MCP_BRIDGE;
+const originalStudioToken = process.env.AGENT_RECALL_STUDIO_TOKEN;
 describe("MCP server tools", () => {
   afterEach(() => {
     if (originalEnv === undefined) delete process.env.AGENT_RECALL_WORKFLOW_MCP_BRIDGE;
     else process.env.AGENT_RECALL_WORKFLOW_MCP_BRIDGE = originalEnv;
+    if (originalBridgeEnv === undefined) delete process.env.AGENT_RECALL_MCP_BRIDGE;
+    else process.env.AGENT_RECALL_MCP_BRIDGE = originalBridgeEnv;
+    if (originalStudioToken === undefined) delete process.env.AGENT_RECALL_STUDIO_TOKEN;
+    else process.env.AGENT_RECALL_STUDIO_TOKEN = originalStudioToken;
     vi.restoreAllMocks();
   });
 
@@ -61,6 +67,24 @@ describe("MCP server tools", () => {
     expect(resolveBridgeDiscoveryPath()).toBe("/tmp/custom-bridge.json");
   });
 
+  test("adds Studio and Workspace tools only for a scoped employee execution", () => {
+    delete process.env.AGENT_RECALL_STUDIO_TOKEN;
+    expect(mcpToolDefinitions().map((tool) => tool.name)).not.toContain("studio_send_message");
+
+    process.env.AGENT_RECALL_STUDIO_TOKEN = "studio-scope";
+    expect(mcpToolDefinitions().map((tool) => tool.name)).toEqual(expect.arrayContaining([
+      "studio_list_members",
+      "studio_send_message",
+      "studio_post",
+      "studio_read_messages",
+      "studio_read_range",
+      "studio_search",
+      "workspace_reserve",
+      "workspace_release",
+      "workspace_status",
+    ]));
+  });
+
 
   test("serves workflow tools from the long-lived agent stdio server", async () => {
     const tsxCli = path.resolve("node_modules", "tsx", "dist", "cli.mjs");
@@ -107,6 +131,38 @@ describe("MCP server tools", () => {
       expect.objectContaining({
         method: "POST",
         headers: expect.objectContaining({ authorization: "Bearer secret" }),
+      }),
+    );
+  });
+
+  test("forwards the scoped Studio token separately from the bridge token", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "agent-recall-studio-mcp-server-"));
+    const discoveryPath = path.join(dir, "bridge.json");
+    process.env.AGENT_RECALL_MCP_BRIDGE = discoveryPath;
+    process.env.AGENT_RECALL_STUDIO_TOKEN = "studio-scope";
+    await writeFile(
+      discoveryPath,
+      JSON.stringify({ host: "127.0.0.1", port: 48125, token: "bridge-secret" }),
+      "utf8",
+    );
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ ok: true }),
+    } as Response);
+
+    await callMcpTool("studio_send_message", {
+      toMemberId: "member-2",
+      content: "Please review",
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://127.0.0.1:48125/mcp/studio/send-message",
+      expect.objectContaining({
+        headers: expect.objectContaining({
+          authorization: "Bearer bridge-secret",
+          "x-agent-recall-studio-token": "studio-scope",
+        }),
       }),
     );
   });

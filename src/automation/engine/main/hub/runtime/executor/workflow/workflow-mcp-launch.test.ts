@@ -2,7 +2,10 @@ import { mkdtemp, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, test } from "vitest";
-import { workflowMcpLaunchConfig } from "./workflow-mcp-launch";
+import {
+  agentRecallMcpLaunchConfig,
+  workflowMcpLaunchConfig,
+} from "./workflow-mcp-launch";
 
 describe("workflowMcpLaunchConfig", () => {
   test("builds a development stdio server scoped to one workflow", () => {
@@ -34,5 +37,38 @@ describe("workflowMcpLaunchConfig", () => {
 
   test("does not expose workflow tools outside a planning workflow", () => {
     expect(workflowMcpLaunchConfig("C:/app/mcp-bridge.json", undefined)).toBeUndefined();
+  });
+
+  test("combines workflow and studio scope in one managed MCP launch", () => {
+    const serverScriptPath = path.join(
+      process.cwd(),
+      "src",
+      "automation",
+      "engine",
+      "mcp",
+      "server.ts",
+    );
+    const config = agentRecallMcpLaunchConfig(
+      "C:/app/mcp-bridge.json",
+      {
+        workflowId: "wf-1",
+        studioToken: "studio-scope",
+      },
+      {
+        cwd: process.cwd(),
+        mainBundlePath: path.join(process.cwd(), "missing", "index.js"),
+        serverScriptPath,
+      },
+    );
+
+    expect(config).toMatchObject({
+      command: process.execPath,
+      args: expect.any(Array),
+      env: expect.objectContaining({
+        AGENT_RECALL_MCP_BRIDGE: "C:/app/mcp-bridge.json",
+        AGENT_RECALL_WORKFLOW_ID: "wf-1",
+        AGENT_RECALL_STUDIO_TOKEN: "studio-scope",
+      }),
+    });
   });
 });

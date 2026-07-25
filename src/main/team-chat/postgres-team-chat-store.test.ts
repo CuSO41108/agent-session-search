@@ -203,6 +203,60 @@ describe("PostgresTeamChatStore", () => {
     expect(result.rows[0]?.status).toBe("interrupted");
   });
 
+  it("provides scoped message lookup, causal counts, and workspace reservations", async () => {
+    await store.createRoom(roomFixture());
+    await store.insertMessage({
+      ...messageFixture(MESSAGE_ONE_ID, "authentication changed", "2026-07-23T08:01:00.000Z"),
+      recipientMemberId: "builder",
+    });
+    await store.insertMessage({
+      ...messageFixture(MESSAGE_TWO_ID, "review authentication", "2026-07-23T08:02:00.000Z"),
+      senderType: "agent",
+      senderAgentId: "builder",
+      senderName: "Builder",
+      recipientMemberId: "reviewer",
+    });
+    await store.insertDispatch({
+      id: "019c0000-0000-7000-8000-000000000022",
+      roomId: ROOM_ID,
+      rootMessageId: MESSAGE_ONE_ID,
+      sourceMessageId: MESSAGE_ONE_ID,
+      targetAgentId: "builder",
+      hop: 0,
+      status: "completed",
+      createdAt: "2026-07-23T08:01:00.000Z",
+      updatedAt: "2026-07-23T08:01:00.000Z",
+    });
+
+    await expect(store.listDirectedContext(ROOM_ID, "reviewer", undefined, 10))
+      .resolves.toMatchObject({
+        messages: [expect.objectContaining({ id: MESSAGE_TWO_ID })],
+        truncated: false,
+      });
+    await expect(store.getMessages(ROOM_ID, [MESSAGE_TWO_ID]))
+      .resolves.toEqual([expect.objectContaining({ id: MESSAGE_TWO_ID })]);
+    await expect(store.readMessageRange(ROOM_ID, { after: 1, limit: 10 }))
+      .resolves.toEqual([expect.objectContaining({ id: MESSAGE_TWO_ID })]);
+    await expect(store.searchMessages(ROOM_ID, "authentication", 10))
+      .resolves.toHaveLength(2);
+    await expect(store.countRootDispatches(MESSAGE_ONE_ID)).resolves.toBe(1);
+
+    const reservation = {
+      roomId: ROOM_ID,
+      memberId: "builder",
+      relativePath: "src/auth.ts",
+      reason: "editing",
+      expiresAt: "2030-07-23T08:10:00.000Z",
+      createdAt: "2026-07-23T08:03:00.000Z",
+      updatedAt: "2026-07-23T08:03:00.000Z",
+    };
+    await expect(store.reserveWorkspacePaths([reservation])).resolves.toEqual([reservation]);
+    await expect(store.listWorkspaceReservations(ROOM_ID)).resolves.toEqual([reservation]);
+    await expect(store.releaseWorkspacePaths(ROOM_ID, "builder", ["src/auth.ts"]))
+      .resolves.toBe(1);
+    await expect(store.listWorkspaceReservations(ROOM_ID)).resolves.toEqual([]);
+  });
+
   it("updates membership atomically and archives the room", async () => {
     const room = roomFixture();
     await store.createRoom(room);

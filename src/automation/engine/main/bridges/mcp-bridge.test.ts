@@ -1,7 +1,7 @@
 import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 import { runtimeDefinition } from "../../shared/runtime-catalog";
 import { AgentHub } from "../hub/agent-hub";
 import { startMcpBridge, type McpBridgeServer } from "./mcp-bridge";
@@ -46,6 +46,33 @@ describe("MCP bridge", () => {
       port: bridge.port,
       token: bridge.token,
     });
+  });
+
+  test("routes Studio tools through the same bridge port with a scoped token", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "agent-recall-studio-bridge-"));
+    const handleMcpRequest = vi.fn(async () => ({ ok: true, members: [] }));
+    bridge = await startMcpBridge(new AgentHub(), {
+      discoveryPath: path.join(dir, "bridge.json"),
+      studio: { handleMcpRequest },
+    });
+
+    const response = await fetch(`http://${bridge.host}:${bridge.port}/mcp/studio/list-members`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${bridge.token}`,
+        "content-type": "application/json",
+        "x-agent-recall-studio-token": "studio-scope",
+      },
+      body: "{}",
+    });
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({ ok: true, members: [] });
+    expect(handleMcpRequest).toHaveBeenCalledWith(
+      "studio-scope",
+      "/mcp/studio/list-members",
+      {},
+    );
   });
 
   test("registers an artifact for a validated file via the bridge", async () => {

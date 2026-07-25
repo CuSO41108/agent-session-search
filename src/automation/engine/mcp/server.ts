@@ -35,6 +35,15 @@ const TOOL_ROUTES: Record<string, string> = {
   workflow_context_append: "/mcp/workflow/context/append",
   workflow_run_context_append: "/mcp/workflow/run-context/append",
   workflow_node_complete: "/mcp/workflow/node/complete",
+  studio_list_members: "/mcp/studio/list-members",
+  studio_send_message: "/mcp/studio/send-message",
+  studio_post: "/mcp/studio/post",
+  studio_read_messages: "/mcp/studio/read-messages",
+  studio_read_range: "/mcp/studio/read-range",
+  studio_search: "/mcp/studio/search",
+  workspace_reserve: "/mcp/workspace/reserve",
+  workspace_release: "/mcp/workspace/release",
+  workspace_status: "/mcp/workspace/status",
 };
 
 function objectSchema(properties: Record<string, unknown>, required: string[] = []): Record<string, unknown> {
@@ -242,6 +251,78 @@ export function mcpToolDefinitions(): McpToolDefinition[] {
       ),
     },
   ];
+  if (process.env.AGENT_RECALL_STUDIO_TOKEN) {
+    tools.push(
+      {
+        name: "studio_list_members",
+        description: "List employees in the current AgentRecall studio and their current availability.",
+        inputSchema: objectSchema({}),
+      },
+      {
+        name: "studio_send_message",
+        description: "Send a visible directed message to another studio employee and asynchronously activate that employee.",
+        inputSchema: objectSchema({
+          toMemberId: { type: "string" },
+          content: { type: "string", minLength: 1 },
+          replyTo: { type: "string" },
+        }, ["toMemberId", "content"]),
+      },
+      {
+        name: "studio_post",
+        description: "Post visible studio information without activating another employee.",
+        inputSchema: objectSchema({
+          content: { type: "string", minLength: 1 },
+          replyTo: { type: "string" },
+        }, ["content"]),
+      },
+      {
+        name: "studio_read_messages",
+        description: "Read specific messages from the current studio by ID.",
+        inputSchema: objectSchema({
+          messageIds: { type: "array", minItems: 1, maxItems: 50, items: { type: "string" } },
+        }, ["messageIds"]),
+      },
+      {
+        name: "studio_read_range",
+        description: "Read a bounded sequence range from the current studio timeline.",
+        inputSchema: objectSchema({
+          after: { type: "integer", minimum: 0 },
+          before: { type: "integer", minimum: 1 },
+          limit: { type: "integer", minimum: 1, maximum: 100 },
+        }),
+      },
+      {
+        name: "studio_search",
+        description: "Search visible messages in the current studio.",
+        inputSchema: objectSchema({
+          query: { type: "string", minLength: 1 },
+          limit: { type: "integer", minimum: 1, maximum: 50 },
+        }, ["query"]),
+      },
+      {
+        name: "workspace_reserve",
+        description: "Declare relative project paths that this employee intends to modify.",
+        inputSchema: objectSchema({
+          paths: { type: "array", minItems: 1, maxItems: 50, items: { type: "string" } },
+          reason: { type: "string" },
+        }, ["paths"]),
+      },
+      {
+        name: "workspace_release",
+        description: "Release relative project paths reserved by this employee.",
+        inputSchema: objectSchema({
+          paths: { type: "array", minItems: 1, maxItems: 50, items: { type: "string" } },
+        }, ["paths"]),
+      },
+      {
+        name: "workspace_status",
+        description: "List active path reservations in the current studio.",
+        inputSchema: objectSchema({
+          paths: { type: "array", maxItems: 50, items: { type: "string" } },
+        }),
+      },
+    );
+  }
   if (process.env.AGENT_RECALL_WORKFLOW_RUN_ID && process.env.AGENT_RECALL_WORKFLOW_NODE_ID) {
     tools.push({
       name: "workflow_node_complete",
@@ -261,6 +342,7 @@ export function mcpToolDefinitions(): McpToolDefinition[] {
 }
 
 export function resolveBridgeDiscoveryPath(): string {
+  if (process.env.AGENT_RECALL_MCP_BRIDGE) return process.env.AGENT_RECALL_MCP_BRIDGE;
   if (process.env.AGENT_RECALL_WORKFLOW_MCP_BRIDGE) return process.env.AGENT_RECALL_WORKFLOW_MCP_BRIDGE;
   if (process.platform === "darwin") return path.join(os.homedir(), "Library", "Application Support", "AgentRecall", "mcp-bridge.json");
   if (process.platform === "win32") return path.join(process.env.APPDATA || os.homedir(), "AgentRecall", "mcp-bridge.json");
@@ -291,6 +373,9 @@ export async function callMcpTool(name: string, args: unknown): Promise<unknown>
     headers: {
       authorization: `Bearer ${discovery.token}`,
       "content-type": "application/json",
+      ...(process.env.AGENT_RECALL_STUDIO_TOKEN
+        ? { "x-agent-recall-studio-token": process.env.AGENT_RECALL_STUDIO_TOKEN }
+        : {}),
     },
     body: JSON.stringify({
       ...(args && typeof args === "object" && !Array.isArray(args) ? args as Record<string, unknown> : {}),

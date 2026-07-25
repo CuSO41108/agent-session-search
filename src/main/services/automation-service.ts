@@ -229,6 +229,10 @@ export class NativeAutomationService {
     this.bridge = await this.startBridgeService(this.hubInstance, {
       discoveryPath: this.paths.discoveryPath,
       bundledSkillsRoot: this.paths.bundledSkillsPath,
+      studio: {
+        handleMcpRequest: (token, route, body) =>
+          this.teamChat.handleMcpRequest(token, route, body),
+      },
     });
     this.hubInstance.setWorkflowMcpDiscoveryPath(this.bridge.discoveryPath);
     await this.hubInstance.initialize();

@@ -8,12 +8,25 @@ export interface WorkflowMcpLaunchConfig {
   env: Record<string, string>;
 }
 
-export function workflowMcpLaunchConfig(
+interface AgentRecallMcpLaunchContext {
+  workflowId?: string;
+  runId?: string;
+  nodeId?: string;
+  studioToken?: string;
+}
+
+interface AgentRecallMcpLaunchOptions {
+  mainBundlePath?: string;
+  cwd?: string;
+  serverScriptPath?: string;
+}
+
+export function agentRecallMcpLaunchConfig(
   discoveryPath: string | undefined,
-  workflowId: string | undefined,
-  options: { mainBundlePath?: string; cwd?: string; serverScriptPath?: string; runId?: string; nodeId?: string } = {},
+  context: AgentRecallMcpLaunchContext,
+  options: AgentRecallMcpLaunchOptions = {},
 ): WorkflowMcpLaunchConfig | undefined {
-  if (!discoveryPath || !workflowId) return undefined;
+  if (!discoveryPath || (!context.workflowId && !context.studioToken)) return undefined;
   const mainBundlePath = options.mainBundlePath ?? fileURLToPath(import.meta.url);
   const compiledServer = [
     process.env.AGENT_RECALL_WORKFLOW_MCP_SERVER,
@@ -25,10 +38,12 @@ export function workflowMcpLaunchConfig(
       command: process.execPath,
       args: [compiledServer],
       env: {
+        AGENT_RECALL_MCP_BRIDGE: discoveryPath,
         AGENT_RECALL_WORKFLOW_MCP_BRIDGE: discoveryPath,
-        AGENT_RECALL_WORKFLOW_ID: workflowId,
-        ...(options.runId ? { AGENT_RECALL_WORKFLOW_RUN_ID: options.runId } : {}),
-        ...(options.nodeId ? { AGENT_RECALL_WORKFLOW_NODE_ID: options.nodeId } : {}),
+        ...(context.workflowId ? { AGENT_RECALL_WORKFLOW_ID: context.workflowId } : {}),
+        ...(context.runId ? { AGENT_RECALL_WORKFLOW_RUN_ID: context.runId } : {}),
+        ...(context.nodeId ? { AGENT_RECALL_WORKFLOW_NODE_ID: context.nodeId } : {}),
+        ...(context.studioToken ? { AGENT_RECALL_STUDIO_TOKEN: context.studioToken } : {}),
         ELECTRON_RUN_AS_NODE: "1",
       },
     };
@@ -45,11 +60,29 @@ export function workflowMcpLaunchConfig(
     command: process.execPath,
     args: [tsxCli, serverScript],
     env: {
+      AGENT_RECALL_MCP_BRIDGE: discoveryPath,
       AGENT_RECALL_WORKFLOW_MCP_BRIDGE: discoveryPath,
-      AGENT_RECALL_WORKFLOW_ID: workflowId,
-      ...(options.runId ? { AGENT_RECALL_WORKFLOW_RUN_ID: options.runId } : {}),
-      ...(options.nodeId ? { AGENT_RECALL_WORKFLOW_NODE_ID: options.nodeId } : {}),
+      ...(context.workflowId ? { AGENT_RECALL_WORKFLOW_ID: context.workflowId } : {}),
+      ...(context.runId ? { AGENT_RECALL_WORKFLOW_RUN_ID: context.runId } : {}),
+      ...(context.nodeId ? { AGENT_RECALL_WORKFLOW_NODE_ID: context.nodeId } : {}),
+      ...(context.studioToken ? { AGENT_RECALL_STUDIO_TOKEN: context.studioToken } : {}),
       ELECTRON_RUN_AS_NODE: "1",
     },
   };
+}
+
+export function workflowMcpLaunchConfig(
+  discoveryPath: string | undefined,
+  workflowId: string | undefined,
+  options: AgentRecallMcpLaunchOptions & { runId?: string; nodeId?: string } = {},
+): WorkflowMcpLaunchConfig | undefined {
+  return agentRecallMcpLaunchConfig(
+    discoveryPath,
+    {
+      ...(workflowId ? { workflowId } : {}),
+      ...(options.runId ? { runId: options.runId } : {}),
+      ...(options.nodeId ? { nodeId: options.nodeId } : {}),
+    },
+    options,
+  );
 }

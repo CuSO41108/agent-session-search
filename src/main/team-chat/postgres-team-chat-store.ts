@@ -7,11 +7,13 @@ import type {
   TeamChatRoom,
   TeamChatRoomAgent,
   TeamChatRoomSummary,
+  TeamChatWorkspaceReservation,
 } from "../../shared/team-chat";
 import type {
   TeamChatAgentSession,
   TeamChatContextPage,
   TeamChatDispatchUpdate,
+  TeamChatMessageRange,
   TeamChatStore,
 } from "./team-chat-store";
 
@@ -173,6 +175,79 @@ export class PostgresTeamChatStore implements TeamChatStore {
     };
   }
 
+  async listDirectedContext(
+    roomId: string,
+    memberId: string,
+    afterMessageId: string | undefined,
+    limit: number,
+  ): Promise<TeamChatContextPage> {
+    const result = await this.database.query<MessageRow>(
+      `SELECT ${MESSAGE_COLUMNS}
+       FROM agent_recall.chat_messages
+       WHERE room_id = $1
+         AND (
+           sender_agent_id = $2
+           OR recipient_member_id = $2
+           OR sender_type = 'system'
+           OR delivery_type = 'post'
+         )
+         AND (
+           $3::uuid IS NULL
+           OR sequence > (
+             SELECT sequence
+             FROM agent_recall.chat_messages
+             WHERE room_id = $1 AND id = $3::uuid
+           )
+         )
+       ORDER BY sequence DESC
+       LIMIT $4`,
+      [roomId, memberId, afterMessageId ?? null, limit + 1],
+    );
+    const truncated = result.rows.length > limit;
+    return {
+      messages: result.rows.slice(0, limit).map(mapMessageRow).reverse(),
+      truncated,
+    };
+  }
+
+  async getMessages(roomId: string, messageIds: string[]): Promise<TeamChatMessage[]> {
+    if (messageIds.length === 0) return [];
+    const result = await this.database.query<MessageRow>(
+      `SELECT ${MESSAGE_COLUMNS}
+       FROM agent_recall.chat_messages
+       WHERE room_id = $1 AND id = ANY($2::uuid[])
+       ORDER BY sequence`,
+      [roomId, messageIds],
+    );
+    return result.rows.map(mapMessageRow);
+  }
+
+  async readMessageRange(roomId: string, range: TeamChatMessageRange): Promise<TeamChatMessage[]> {
+    const result = await this.database.query<MessageRow>(
+      `SELECT ${MESSAGE_COLUMNS}
+       FROM agent_recall.chat_messages
+       WHERE room_id = $1
+         AND ($2::bigint IS NULL OR sequence > $2::bigint)
+         AND ($3::bigint IS NULL OR sequence < $3::bigint)
+       ORDER BY sequence
+       LIMIT $4`,
+      [roomId, range.after ?? null, range.before ?? null, range.limit],
+    );
+    return result.rows.map(mapMessageRow);
+  }
+
+  async searchMessages(roomId: string, query: string, limit: number): Promise<TeamChatMessage[]> {
+    const result = await this.database.query<MessageRow>(
+      `SELECT ${MESSAGE_COLUMNS}
+       FROM agent_recall.chat_messages
+       WHERE room_id = $1 AND content ILIKE $2
+       ORDER BY sequence DESC
+       LIMIT $3`,
+      [roomId, `%${query}%`, limit],
+    );
+    return result.rows.map(mapMessageRow).reverse();
+  }
+
   async insertMessage(message: TeamChatMessage): Promise<TeamChatMessage> {
     let sequence = 0;
     await this.database.transaction(async (transaction) => {
@@ -243,6 +318,16 @@ export class PostgresTeamChatStore implements TeamChatStore {
     return dispatch;
   }
 
+  async countRootDispatches(rootMessageId: string): Promise<number> {
+    const result = await this.database.query<{ count: unknown }>(
+      `SELECT COUNT(*)::integer AS count
+       FROM agent_recall.chat_dispatches
+       WHERE root_message_id = $1`,
+      [rootMessageId],
+    );
+    return Number(result.rows[0]?.count ?? 0);
+  }
+
   async updateDispatch(dispatchId: string, patch: TeamChatDispatchUpdate): Promise<void> {
     await this.database.query(
       `UPDATE agent_recall.chat_dispatches
@@ -311,6 +396,69 @@ export class PostgresTeamChatStore implements TeamChatStore {
       "DELETE FROM agent_recall.chat_agent_sessions WHERE room_id = $1 AND agent_id = $2",
       [roomId, agentId],
     );
+  }
+
+  async listWorkspaceReservations(
+    roomId: string,
+    relativePaths?: string[],
+  ): Promise<TeamChatWorkspaceReservation[]> {
+    await this.database.query(
+      "DELETE FROM agent_recall.chat_workspace_reservations WHERE expires_at <= NOW()",
+    );
+    if (relativePaths && relativePaths.length === 0) return [];
+    const result = await this.database.query<WorkspaceReservationRow>(
+      `SELECT room_id, member_id, relative_path, reason, expires_at, created_at, updated_at
+       FROM agent_recall.chat_workspace_reservations
+       WHERE room_id = $1
+         AND ($2::text[] IS NULL OR relative_path = ANY($2::text[]))
+       ORDER BY relative_path`,
+      [roomId, relativePaths ?? null],
+    );
+    return result.rows.map(mapWorkspaceReservationRow);
+  }
+
+  async reserveWorkspacePaths(
+    reservations: TeamChatWorkspaceReservation[],
+  ): Promise<TeamChatWorkspaceReservation[]> {
+    if (reservations.length === 0) return [];
+    await this.database.transaction(async (transaction) => {
+      for (const reservation of reservations) {
+        await transaction.query(
+          `INSERT INTO agent_recall.chat_workspace_reservations
+            (room_id, member_id, relative_path, reason, expires_at, created_at, updated_at)
+           VALUES ($1, $2, $3, $4, $5, $6, $7)
+           ON CONFLICT (room_id, relative_path) DO UPDATE SET
+             member_id = EXCLUDED.member_id,
+             reason = EXCLUDED.reason,
+             expires_at = EXCLUDED.expires_at,
+             updated_at = EXCLUDED.updated_at`,
+          [
+            reservation.roomId,
+            reservation.memberId,
+            reservation.relativePath,
+            reservation.reason ?? null,
+            reservation.expiresAt,
+            reservation.createdAt,
+            reservation.updatedAt,
+          ],
+        );
+      }
+    });
+    return reservations.map((reservation) => ({ ...reservation }));
+  }
+
+  async releaseWorkspacePaths(
+    roomId: string,
+    memberId: string,
+    relativePaths: string[],
+  ): Promise<number> {
+    if (relativePaths.length === 0) return 0;
+    const result = await this.database.query(
+      `DELETE FROM agent_recall.chat_workspace_reservations
+       WHERE room_id = $1 AND member_id = $2 AND relative_path = ANY($3::text[])`,
+      [roomId, memberId, relativePaths],
+    );
+    return result.rowCount;
   }
 
   private async insertRoomAgent(database: PostgresQueryable, agent: TeamChatRoomAgent): Promise<void> {
@@ -392,6 +540,16 @@ type AgentSessionRow = Record<string, unknown> & {
   updated_at: unknown;
 };
 
+type WorkspaceReservationRow = Record<string, unknown> & {
+  room_id: unknown;
+  member_id: unknown;
+  relative_path: unknown;
+  reason: unknown;
+  expires_at: unknown;
+  created_at: unknown;
+  updated_at: unknown;
+};
+
 function mapRoomSummaryRow(row: RoomSummaryRow): TeamChatRoomSummary {
   const lastMessage = nullableString(row.last_message);
   const lastMessageAt = row.last_message_at === null || row.last_message_at === undefined
@@ -461,6 +619,19 @@ function mapAgentSessionRow(row: AgentSessionRow): TeamChatAgentSession {
     modelId: String(row.model_id),
     runtimeConversation,
     ...(lastContextMessageId ? { lastContextMessageId } : {}),
+    updatedAt: toIsoString(row.updated_at),
+  };
+}
+
+function mapWorkspaceReservationRow(row: WorkspaceReservationRow): TeamChatWorkspaceReservation {
+  const reason = nullableString(row.reason);
+  return {
+    roomId: String(row.room_id),
+    memberId: String(row.member_id),
+    relativePath: String(row.relative_path),
+    ...(reason ? { reason } : {}),
+    expiresAt: toIsoString(row.expires_at),
+    createdAt: toIsoString(row.created_at),
     updatedAt: toIsoString(row.updated_at),
   };
 }

@@ -15,21 +15,33 @@ interface RegisterTeamChatIpcOptions {
 }
 
 const idSchema = z.string().trim().min(1).max(200);
-const agentIdsSchema = z.array(idSchema).min(1).max(24).superRefine((ids, context) => {
-  if (new Set(ids).size !== ids.length) {
-    context.addIssue({ code: "custom", message: "Room Agents must be unique." });
+const memberSchema = z.object({
+  memberId: idSchema.optional(),
+  configuredAgentId: idSchema,
+  displayName: z.string().trim().min(1).max(120),
+}).strict();
+const membersSchema = z.array(memberSchema).min(1).max(24).superRefine((members, context) => {
+  const memberIds = members
+    .map((member) => member.memberId)
+    .filter((memberId): memberId is string => Boolean(memberId));
+  if (new Set(memberIds).size !== memberIds.length) {
+    context.addIssue({ code: "custom", message: "Studio employee IDs must be unique." });
+  }
+  const names = members.map((member) => member.displayName.toLocaleLowerCase());
+  if (new Set(names).size !== names.length) {
+    context.addIssue({ code: "custom", message: "Studio employee names must be unique." });
   }
 });
 const roomCreateSchema = z.object({
   name: z.string().trim().min(1).max(120),
   workDir: z.string().trim().max(4_096),
-  agentIds: agentIdsSchema,
+  members: membersSchema,
 }).strict();
 const roomUpdateSchema = z.object({
   roomId: idSchema,
   name: z.string().trim().min(1).max(120).optional(),
   workDir: z.string().trim().max(4_096).optional(),
-  agentIds: agentIdsSchema.optional(),
+  members: membersSchema.optional(),
 }).strict();
 const messageListSchema = z.object({
   roomId: idSchema,
@@ -39,6 +51,12 @@ const messageListSchema = z.object({
 const messageSendSchema = z.object({
   roomId: idSchema,
   content: z.string().trim().min(1).max(100_000),
+  targetMemberIds: z.array(idSchema).min(1).max(8).superRefine((memberIds, context) => {
+    if (new Set(memberIds).size !== memberIds.length) {
+      context.addIssue({ code: "custom", message: "Message recipients must be unique." });
+    }
+  }),
+  replyToMessageId: idSchema.optional(),
 }).strict();
 const agentSessionResetSchema = z.object({
   roomId: idSchema,

@@ -1,10 +1,12 @@
 import { randomUUID } from "node:crypto";
+import path from "node:path";
 import type {
   ConfiguredAgent,
   RuntimeConversation,
   WorkflowAgentEvent,
 } from "../../automation/contracts";
 import { supportsConfiguredAgentConversation } from "../../automation/engine/main/platform/configured-agent-execution-service";
+import type { AgentRecallMcpContext } from "../../automation/engine/shared/types";
 import type {
   CreateTeamChatRoomRequest,
   ListTeamChatMessagesRequest,
@@ -19,9 +21,11 @@ import type {
   TeamChatRoomAgent,
   TeamChatRoomMemberInput,
   TeamChatRoomSummary,
+  TeamChatWorkspaceReservation,
   UpdateTeamChatRoomRequest,
 } from "../../shared/team-chat";
 import {
+  buildStudioDeveloperInstructions,
   buildTeamChatPrompt,
   resolveTeamChatTargets,
 } from "./team-chat-routing";
@@ -32,6 +36,20 @@ import type {
 } from "./team-chat-store";
 
 const CONTEXT_MESSAGE_LIMIT = 40;
+const MAX_ROOT_DISPATCHES = 8;
+const STUDIO_SCOPE_LIFETIME_MS = 60 * 60 * 1_000;
+const WORKSPACE_RESERVATION_LIFETIME_MS = 10 * 60 * 1_000;
+
+interface StudioExecutionScope {
+  roomId: string;
+  memberId: string;
+  dispatchId: string;
+  rootMessageId: string;
+  sourceMessageId: string;
+  hop: number;
+  controller: AbortController;
+  expiresAt: number;
+}
 
 interface TeamChatServiceDependencies {
   configuredAgents: () => ConfiguredAgent[];
@@ -41,6 +59,8 @@ interface TeamChatServiceDependencies {
       prompt: string;
       workDir?: string;
       runtimeConversation?: RuntimeConversation;
+      developerInstructions?: string;
+      agentRecallMcp?: AgentRecallMcpContext;
     },
     onEvent?: (event: WorkflowAgentEvent) => void,
     signal?: AbortSignal,
@@ -56,8 +76,11 @@ type TeamChatEventListener = (event: TeamChatEvent) => void;
 export class TeamChatService {
   private readonly listeners = new Set<TeamChatEventListener>();
   private readonly rootControllers = new Map<string, AbortController>();
+  private readonly rootActivityCounts = new Map<string, number>();
+  private readonly rootDispatchCounts = new Map<string, number>();
   private readonly memberQueueTails = new Map<string, Promise<void>>();
   private readonly activeWorkPromises = new Set<Promise<void>>();
+  private readonly studioScopes = new Map<string, StudioExecutionScope>();
   private store: TeamChatStore | undefined;
   private connectionQueue: Promise<void> = Promise.resolve();
   private pendingConnection: Promise<TeamChatConnectionStatus> | undefined;
@@ -223,6 +246,9 @@ export class TeamChatService {
     if (!content) throw new Error("Enter a message before sending.");
     const targets = resolveTeamChatTargets(request.targetMemberIds, this.routableRoomMembers(room));
     if (targets.length === 0) throw new Error("Select at least one available employee.");
+    if (targets.length > MAX_ROOT_DISPATCHES) {
+      throw new Error(`Select up to ${MAX_ROOT_DISPATCHES} employees for one message.`);
+    }
 
     const messageId = this.id();
     const createdAt = this.timestamp();
@@ -247,18 +273,17 @@ export class TeamChatService {
 
     const controller = new AbortController();
     this.rootControllers.set(messageId, controller);
-    const work = Promise.allSettled(targets.map((targetAgentId) => this.enqueueMemberExecution({
-      room,
-      targetAgentId,
-      sourceMessage: message,
-      rootMessage: message,
-      hop: 0,
-      controller,
-    }))).then(() => undefined).finally(() => {
-      if (this.rootControllers.get(messageId) === controller) this.rootControllers.delete(messageId);
-      this.emit({ type: "turn-finished", roomId: room.id, rootMessageId: messageId });
-    });
-    this.trackWork(work);
+    this.rootDispatchCounts.set(messageId, targets.length);
+    for (const targetAgentId of targets) {
+      void this.enqueueMemberExecution({
+        room,
+        targetAgentId,
+        sourceMessage: message,
+        rootMessage: message,
+        hop: 0,
+        controller,
+      });
+    }
     return { message, rootMessageId: messageId };
   }
 
@@ -269,6 +294,278 @@ export class TeamChatService {
     return true;
   }
 
+  async handleMcpRequest(
+    token: string | undefined,
+    route: string,
+    body: unknown,
+  ): Promise<unknown> {
+    const scope = this.requireStudioScope(token);
+    const normalizedRoute = route.replace(/^\/?mcp\//u, "").replace(/^\/+/u, "");
+    const input = asRecord(body);
+    switch (normalizedRoute) {
+      case "studio/list-members":
+        return this.listStudioMembers(scope);
+      case "studio/send-message":
+        return this.sendStudioMessage(scope, input);
+      case "studio/post":
+        return this.postStudioMessage(scope, input);
+      case "studio/read-messages":
+        return this.readStudioMessages(scope, input);
+      case "studio/read-range":
+        return this.readStudioRange(scope, input);
+      case "studio/search":
+        return this.searchStudioMessages(scope, input);
+      case "workspace/reserve":
+        return this.reserveWorkspace(scope, input);
+      case "workspace/release":
+        return this.releaseWorkspace(scope, input);
+      case "workspace/status":
+        return this.workspaceStatus(scope, input);
+      default:
+        throw new Error("Unknown Studio collaboration tool.");
+    }
+  }
+
+  private async listStudioMembers(scope: StudioExecutionScope): Promise<unknown> {
+    const room = await this.requireStudioRoom(scope);
+    return {
+      studio: { id: room.id, name: room.name, workDir: room.workDir },
+      currentMemberId: scope.memberId,
+      members: this.routableRoomMembers(room)
+        .sort((left, right) => left.position - right.position)
+        .map((member) => ({
+          memberId: member.agentId,
+          displayName: member.displayName,
+          configuredAgentId: member.configuredAgentId,
+          enabled: member.enabled,
+          state: this.memberQueueTails.has(`${room.id}:${member.agentId}`) ? "busy" : "idle",
+          self: member.agentId === scope.memberId,
+        })),
+    };
+  }
+
+  private async sendStudioMessage(
+    scope: StudioExecutionScope,
+    input: Record<string, unknown>,
+  ): Promise<unknown> {
+    const room = await this.requireStudioRoom(scope);
+    const sender = room.agents.find((member) => member.agentId === scope.memberId);
+    const toMemberId = requiredString(input.toMemberId, "toMemberId");
+    const content = requiredString(input.content, "content");
+    if (toMemberId === scope.memberId) {
+      throw new Error("studio_send_message must target another studio employee.");
+    }
+    const target = this.routableRoomMembers(room)
+      .find((member) => member.agentId === toMemberId && member.enabled);
+    if (!target) throw new Error("The target studio employee is unavailable.");
+    const replyTo = optionalString(input.replyTo);
+    if (replyTo) await this.requireRoomMessage(room.id, replyTo);
+
+    const persistedDispatchCount = await this.requireStore().countRootDispatches(scope.rootMessageId);
+    const dispatchCount = Math.max(
+      persistedDispatchCount,
+      this.rootDispatchCounts.get(scope.rootMessageId) ?? 0,
+    );
+    if (dispatchCount >= MAX_ROOT_DISPATCHES) {
+      await this.insertSystemMessage(
+        room.id,
+        scope.rootMessageId,
+        scope.sourceMessageId,
+        scope.hop + 1,
+        `Studio collaboration stopped after ${MAX_ROOT_DISPATCHES} employee activations.`,
+      );
+      return {
+        ok: false,
+        error: `This collaboration chain reached its ${MAX_ROOT_DISPATCHES}-activation limit.`,
+      };
+    }
+
+    const createdAt = this.timestamp();
+    const message = await this.requireStore().insertMessage({
+      id: this.id(),
+      roomId: room.id,
+      sequence: 0,
+      senderType: "agent",
+      senderAgentId: scope.memberId,
+      recipientMemberId: target.agentId,
+      senderName: sender?.displayName ?? "Studio employee",
+      content,
+      deliveryType: "message",
+      rootMessageId: scope.rootMessageId,
+      sourceMessageId: replyTo ?? scope.sourceMessageId,
+      hop: scope.hop + 1,
+      status: "final",
+      createdAt,
+      updatedAt: createdAt,
+    });
+    this.emit({ type: "message-created", roomId: room.id, rootMessageId: scope.rootMessageId, message });
+    this.emit({ type: "rooms-changed" });
+
+    const rootMessage = await this.requireRoomMessage(room.id, scope.rootMessageId);
+    this.rootDispatchCounts.set(scope.rootMessageId, dispatchCount + 1);
+    void this.enqueueMemberExecution({
+      room,
+      targetAgentId: target.agentId,
+      sourceMessage: message,
+      rootMessage,
+      hop: scope.hop + 1,
+      controller: scope.controller,
+    });
+    return {
+      ok: true,
+      message,
+      activatedMemberId: target.agentId,
+    };
+  }
+
+  private async postStudioMessage(
+    scope: StudioExecutionScope,
+    input: Record<string, unknown>,
+  ): Promise<unknown> {
+    const room = await this.requireStudioRoom(scope);
+    const sender = room.agents.find((member) => member.agentId === scope.memberId);
+    const content = requiredString(input.content, "content");
+    const replyTo = optionalString(input.replyTo);
+    if (replyTo) await this.requireRoomMessage(room.id, replyTo);
+    const createdAt = this.timestamp();
+    const message = await this.requireStore().insertMessage({
+      id: this.id(),
+      roomId: room.id,
+      sequence: 0,
+      senderType: "agent",
+      senderAgentId: scope.memberId,
+      senderName: sender?.displayName ?? "Studio employee",
+      content,
+      deliveryType: "post",
+      rootMessageId: scope.rootMessageId,
+      sourceMessageId: replyTo ?? scope.sourceMessageId,
+      hop: scope.hop + 1,
+      status: "final",
+      createdAt,
+      updatedAt: createdAt,
+    });
+    this.emit({ type: "message-created", roomId: room.id, rootMessageId: scope.rootMessageId, message });
+    this.emit({ type: "rooms-changed" });
+    return { ok: true, message };
+  }
+
+  private async readStudioMessages(
+    scope: StudioExecutionScope,
+    input: Record<string, unknown>,
+  ): Promise<unknown> {
+    await this.requireStudioRoom(scope);
+    const messageIds = stringArray(input.messageIds, "messageIds", 1, 50);
+    return { messages: await this.requireStore().getMessages(scope.roomId, messageIds) };
+  }
+
+  private async readStudioRange(
+    scope: StudioExecutionScope,
+    input: Record<string, unknown>,
+  ): Promise<unknown> {
+    await this.requireStudioRoom(scope);
+    const after = optionalBoundedInteger(input.after, "after", 0, Number.MAX_SAFE_INTEGER);
+    const before = optionalBoundedInteger(input.before, "before", 1, Number.MAX_SAFE_INTEGER);
+    const limit = optionalBoundedInteger(input.limit, "limit", 1, 100) ?? 50;
+    return {
+      messages: await this.requireStore().readMessageRange(scope.roomId, {
+        ...(after === undefined ? {} : { after }),
+        ...(before === undefined ? {} : { before }),
+        limit,
+      }),
+    };
+  }
+
+  private async searchStudioMessages(
+    scope: StudioExecutionScope,
+    input: Record<string, unknown>,
+  ): Promise<unknown> {
+    await this.requireStudioRoom(scope);
+    const query = requiredString(input.query, "query");
+    const limit = optionalBoundedInteger(input.limit, "limit", 1, 50) ?? 20;
+    return {
+      messages: await this.requireStore().searchMessages(scope.roomId, query, limit),
+    };
+  }
+
+  private async reserveWorkspace(
+    scope: StudioExecutionScope,
+    input: Record<string, unknown>,
+  ): Promise<unknown> {
+    await this.requireStudioRoom(scope);
+    const paths = normalizeWorkspacePaths(input.paths, 1);
+    const reason = optionalString(input.reason);
+    const store = this.requireStore();
+    const existing = await store.listWorkspaceReservations(scope.roomId, paths);
+    const conflicts = existing.filter((reservation) => reservation.memberId !== scope.memberId);
+    if (conflicts.length > 0) return { ok: false, conflicts };
+
+    const updatedAt = this.timestamp();
+    const expiresAt = new Date(
+      new Date(updatedAt).getTime() + WORKSPACE_RESERVATION_LIFETIME_MS,
+    ).toISOString();
+    const existingByPath = new Map(existing.map((reservation) => [reservation.relativePath, reservation]));
+    const reservations: TeamChatWorkspaceReservation[] = paths.map((relativePath) => ({
+      roomId: scope.roomId,
+      memberId: scope.memberId,
+      relativePath,
+      ...(reason ? { reason } : {}),
+      expiresAt,
+      createdAt: existingByPath.get(relativePath)?.createdAt ?? updatedAt,
+      updatedAt,
+    }));
+    await store.reserveWorkspacePaths(reservations);
+    return { ok: true, reservations };
+  }
+
+  private async releaseWorkspace(
+    scope: StudioExecutionScope,
+    input: Record<string, unknown>,
+  ): Promise<unknown> {
+    await this.requireStudioRoom(scope);
+    const paths = normalizeWorkspacePaths(input.paths, 1);
+    const released = await this.requireStore().releaseWorkspacePaths(
+      scope.roomId,
+      scope.memberId,
+      paths,
+    );
+    return { ok: true, released };
+  }
+
+  private async workspaceStatus(
+    scope: StudioExecutionScope,
+    input: Record<string, unknown>,
+  ): Promise<unknown> {
+    await this.requireStudioRoom(scope);
+    const paths = input.paths === undefined ? undefined : normalizeWorkspacePaths(input.paths, 0);
+    return {
+      reservations: await this.requireStore().listWorkspaceReservations(scope.roomId, paths),
+    };
+  }
+
+  private requireStudioScope(token: string | undefined): StudioExecutionScope {
+    const scope = token ? this.studioScopes.get(token) : undefined;
+    if (!scope || scope.expiresAt <= Date.now()) {
+      if (token) this.studioScopes.delete(token);
+      throw new Error("The Studio execution scope is invalid or expired.");
+    }
+    return scope;
+  }
+
+  private async requireStudioRoom(scope: StudioExecutionScope): Promise<TeamChatRoom> {
+    const room = await this.requireStore().getRoom(scope.roomId);
+    if (!room || room.archived) throw new Error("The scoped Studio is unavailable.");
+    if (!room.agents.some((member) => member.agentId === scope.memberId && member.enabled)) {
+      throw new Error("The scoped Studio employee is unavailable.");
+    }
+    return room;
+  }
+
+  private async requireRoomMessage(roomId: string, messageId: string): Promise<TeamChatMessage> {
+    const message = (await this.requireStore().getMessages(roomId, [messageId]))[0];
+    if (!message) throw new Error("The referenced Studio message was not found.");
+    return message;
+  }
+
   private enqueueMemberExecution(input: {
     room: TeamChatRoom;
     targetAgentId: string;
@@ -277,6 +574,7 @@ export class TeamChatService {
     hop: number;
     controller: AbortController;
   }): Promise<void> {
+    this.retainRootActivity(input.rootMessage.id);
     const key = `${input.room.id}:${input.targetAgentId}`;
     const prior = this.memberQueueTails.get(key) ?? Promise.resolve();
     const next = prior
@@ -287,6 +585,7 @@ export class TeamChatService {
     this.memberQueueTails.set(key, next);
     void next.finally(() => {
       if (this.memberQueueTails.get(key) === next) this.memberQueueTails.delete(key);
+      this.releaseRootActivity(input.room.id, input.rootMessage.id, input.controller);
     });
     this.trackWork(next);
     return next;
@@ -359,6 +658,17 @@ export class TeamChatService {
       agentName: target.displayName,
     });
 
+    const studioToken = randomUUID();
+    this.studioScopes.set(studioToken, {
+      roomId: input.room.id,
+      memberId: target.agentId,
+      dispatchId,
+      rootMessageId: input.rootMessage.id,
+      sourceMessageId: input.sourceMessage.id,
+      hop: input.hop,
+      controller: input.controller,
+      expiresAt: Date.now() + STUDIO_SCOPE_LIFETIME_MS,
+    });
     try {
       let attemptSawDelta = false;
       const executeAttempt = (
@@ -382,6 +692,8 @@ export class TeamChatService {
             }),
             workDir: input.room.workDir || undefined,
             ...(currentSession ? { runtimeConversation: currentSession.runtimeConversation } : {}),
+            developerInstructions: buildStudioDeveloperInstructions(input.room, target),
+            agentRecallMcp: { studioToken },
           },
           (event) => {
             if (event.type !== "delta" || input.controller.signal.aborted) return;
@@ -506,6 +818,8 @@ export class TeamChatService {
         status,
         ...(interrupted ? {} : { error: safeError }),
       });
+    } finally {
+      this.studioScopes.delete(studioToken);
     }
   }
 
@@ -516,25 +830,19 @@ export class TeamChatService {
     agentSession?: TeamChatAgentSession,
   ): Promise<TeamChatContextPage> {
     const store = this.requireStore();
-    const page = agentSession?.lastContextMessageId
-      ? await store.listMessagesAfter(roomId, agentSession.lastContextMessageId, CONTEXT_MESSAGE_LIMIT)
-      : await store.listMessages({ roomId, limit: CONTEXT_MESSAGE_LIMIT }).then((result) => ({
-          messages: result.messages,
-          truncated: Boolean(result.nextBefore),
-        }));
-    const messages = page.messages.filter((message) =>
-      message.id === triggerMessage.id ||
-      message.senderAgentId === memberId ||
-      message.recipientMemberId === memberId ||
-      message.senderType === "system" ||
-      message.deliveryType === "post");
+    const page = await store.listDirectedContext(
+      roomId,
+      memberId,
+      agentSession?.lastContextMessageId,
+      CONTEXT_MESSAGE_LIMIT,
+    );
+    const messages = page.messages;
 
     if (
       triggerMessage.sourceMessageId &&
       !messages.some((message) => message.id === triggerMessage.sourceMessageId)
     ) {
-      const recent = await store.listMessages({ roomId, limit: 100 });
-      const parent = recent.messages.find((message) => message.id === triggerMessage.sourceMessageId);
+      const parent = (await store.getMessages(roomId, [triggerMessage.sourceMessageId]))[0];
       if (parent) messages.unshift(parent);
     }
     return { messages, truncated: page.truncated };
@@ -667,7 +975,10 @@ export class TeamChatService {
       await Promise.allSettled([...this.activeWorkPromises]);
     }
     this.rootControllers.clear();
+    this.rootActivityCounts.clear();
+    this.rootDispatchCounts.clear();
     this.memberQueueTails.clear();
+    this.studioScopes.clear();
     const current = this.store;
     this.store = undefined;
     if (current) await current.close();
@@ -676,6 +987,31 @@ export class TeamChatService {
   private trackWork(work: Promise<void>): void {
     this.activeWorkPromises.add(work);
     void work.finally(() => this.activeWorkPromises.delete(work));
+  }
+
+  private retainRootActivity(rootMessageId: string): void {
+    this.rootActivityCounts.set(
+      rootMessageId,
+      (this.rootActivityCounts.get(rootMessageId) ?? 0) + 1,
+    );
+  }
+
+  private releaseRootActivity(
+    roomId: string,
+    rootMessageId: string,
+    controller: AbortController,
+  ): void {
+    const remaining = (this.rootActivityCounts.get(rootMessageId) ?? 1) - 1;
+    if (remaining > 0) {
+      this.rootActivityCounts.set(rootMessageId, remaining);
+      return;
+    }
+    this.rootActivityCounts.delete(rootMessageId);
+    this.rootDispatchCounts.delete(rootMessageId);
+    if (this.rootControllers.get(rootMessageId) === controller) {
+      this.rootControllers.delete(rootMessageId);
+    }
+    this.emit({ type: "turn-finished", roomId, rootMessageId });
   }
 
   private enqueueConnection(
@@ -773,4 +1109,75 @@ function isNativeConversationUnavailable(error: unknown): boolean {
     new RegExp(`${unavailable}.{0,80}${conversation}`, "u").test(message) ||
     /no rollout found/u.test(message)
   );
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+}
+
+function requiredString(value: unknown, field: string): string {
+  const result = optionalString(value);
+  if (!result) throw new Error(`${field} is required.`);
+  return result;
+}
+
+function optionalString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function stringArray(
+  value: unknown,
+  field: string,
+  minimum: number,
+  maximum: number,
+): string[] {
+  if (!Array.isArray(value)) throw new Error(`${field} must be an array.`);
+  const strings = value.map((item) => {
+    if (typeof item !== "string" || !item.trim()) {
+      throw new Error(`${field} must contain non-empty strings.`);
+    }
+    return item.trim();
+  });
+  if (strings.length < minimum || strings.length > maximum) {
+    throw new Error(`${field} must contain between ${minimum} and ${maximum} items.`);
+  }
+  return [...new Set(strings)];
+}
+
+function optionalBoundedInteger(
+  value: unknown,
+  field: string,
+  minimum: number,
+  maximum: number,
+): number | undefined {
+  if (value === undefined) return undefined;
+  if (!Number.isInteger(value) || Number(value) < minimum || Number(value) > maximum) {
+    throw new Error(`${field} must be an integer between ${minimum} and ${maximum}.`);
+  }
+  return Number(value);
+}
+
+function normalizeWorkspacePaths(value: unknown, minimum: number): string[] {
+  const paths = stringArray(value, "paths", minimum, 50).map((rawPath) => {
+    if (
+      rawPath.includes("\0") ||
+      path.posix.isAbsolute(rawPath) ||
+      path.win32.isAbsolute(rawPath)
+    ) {
+      throw new Error("Workspace reservations require project-relative paths.");
+    }
+    const slashPath = rawPath.replaceAll("\\", "/");
+    const segments = slashPath.split("/");
+    if (segments.includes("..")) {
+      throw new Error("Workspace reservations require project-relative paths without '..'.");
+    }
+    const normalized = path.posix.normalize(slashPath).replace(/^\.\//u, "");
+    if (!normalized || normalized === ".") {
+      throw new Error("Workspace reservations require non-empty project-relative paths.");
+    }
+    return normalized;
+  });
+  return [...new Set(paths)];
 }

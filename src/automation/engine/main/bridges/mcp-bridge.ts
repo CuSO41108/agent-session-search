@@ -26,11 +26,20 @@ export interface StartMcpBridgeOptions {
   discoveryPath: string;
   bundledSkillsRoot?: string;
   fetcher?: typeof fetch;
+  studio?: {
+    handleMcpRequest(
+      token: string | undefined,
+      route: string,
+      body: unknown,
+    ): Promise<unknown>;
+  };
 }
 
 interface McpBridgeRuntimeOptions {
   bundledSkillsRoot?: string;
   fetcher?: typeof fetch;
+  studio?: StartMcpBridgeOptions["studio"];
+  studioToken?: string;
 }
 
 function jsonResponse(response: http.ServerResponse, statusCode: number, payload: unknown): void {
@@ -233,6 +242,10 @@ function upsertAgent(hub: AgentHub, agent: ConfiguredAgent, existingId?: string)
 }
 
 async function routeWorkflowRequest(hub: AgentHub, route: string, body: unknown, options: McpBridgeRuntimeOptions = {}): Promise<unknown> {
+  if (route.startsWith("/mcp/studio/") || route.startsWith("/mcp/workspace/")) {
+    if (!options.studio) return { ok: false, error: "Studio collaboration is unavailable." };
+    return options.studio.handleMcpRequest(options.studioToken, route, body);
+  }
   const record = asRecord(body);
   if (route === "/mcp/agent-templates/list" || route === "/mcp/skill-templates/list") return skillTemplateListPayload();
   if (route === "/mcp/skills/search-online") {
@@ -403,6 +416,9 @@ export async function startMcpBridge(hub: AgentHub, options: StartMcpBridgeOptio
         const runtimeOptions: McpBridgeRuntimeOptions = {};
         if (options.bundledSkillsRoot) runtimeOptions.bundledSkillsRoot = options.bundledSkillsRoot;
         if (options.fetcher) runtimeOptions.fetcher = options.fetcher;
+        if (options.studio) runtimeOptions.studio = options.studio;
+        const studioToken = request.headers["x-agent-recall-studio-token"];
+        if (typeof studioToken === "string") runtimeOptions.studioToken = studioToken;
         const payload = await routeWorkflowRequest(hub, request.url ?? "", body, runtimeOptions);
         jsonResponse(response, 200, payload);
       } catch (error) {

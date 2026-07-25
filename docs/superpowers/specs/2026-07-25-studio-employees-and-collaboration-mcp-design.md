@@ -193,8 +193,8 @@ stdio MCP 将令牌放入 bridge 请求头。bridge 不接受工具参数覆盖�
 首版提供：
 
 - `studio_list_members()`：列出当前工作室员工及运行状态。
-- `studio_send_message(toMemberId, content, replyTo?, artifactIds?)`：发送并启动目标员工。
-- `studio_post(content, replyTo?, artifactIds?)`：发布可见但不触发员工的消息。
+- `studio_send_message(toMemberId, content, replyTo?)`：发送并启动目标员工。
+- `studio_post(content, replyTo?)`：发布可见但不触发员工的消息。
 - `studio_read_messages(messageIds)`：读取明确消息。
 - `studio_read_range(after?, before?, limit?)`：读取有界消息区间。
 - `studio_search(query, limit?)`：搜索当前工作室消息。

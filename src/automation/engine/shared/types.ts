@@ -312,6 +312,10 @@ export interface RuntimeConfig {
   [key: string]: unknown;
 }
 
+export interface AgentRecallMcpContext {
+  studioToken?: string;
+}
+
 export interface RuntimeRequest {
   runtimeId: AgentId;
   executionMode: RuntimeExecutionMode;
@@ -321,6 +325,7 @@ export interface RuntimeRequest {
   planningWorkflowId?: string;
   workflowRunId?: string;
   workflowNodeId?: string;
+  agentRecallMcp?: AgentRecallMcpContext;
 }
 
 export interface RuntimeResumeCapabilities {
@@ -461,6 +466,7 @@ export interface WorkflowAgentRequest extends RuntimeRequest {
   planningWorkflowId?: string;
   requestId?: string;
   prompt: string;
+  developerInstructions?: string;
   configuredAgentId: string;
   workDir?: string;
 }

@@ -80,6 +80,7 @@ export function buildWorkflowAgentExecution<TResolved extends {
   continuationPolicy: WorkflowAgentRequest["continuationPolicy"];
   runtimeConfig: WorkflowAgentRequest["runtimeConfig"];
   runtimeConversation?: RuntimeConversation;
+  agentRecallMcp?: WorkflowAgentRequest["agentRecallMcp"];
   prompt: string;
   runtime: NonNullable<TResolved["runtime"]>;
   channelId: string;
@@ -105,8 +106,14 @@ export function buildWorkflowAgentExecution<TResolved extends {
   return {
     requestId: input.request.requestId ?? input.createRequestId(),
     ...(input.request.planningWorkflowId ? { planningWorkflowId: input.request.planningWorkflowId } : {}),
+    ...(input.request.agentRecallMcp
+      ? { agentRecallMcp: structuredClone(input.request.agentRecallMcp) }
+      : {}),
     configuredAgentId: resolved.agent.id,
-    developerInstructions: resolved.agent.instructions?.trim() ?? "",
+    developerInstructions: [
+      resolved.agent.instructions?.trim(),
+      input.request.developerInstructions?.trim(),
+    ].filter(Boolean).join("\n\n"),
     runtimeId: input.request.runtimeId,
     executionMode: input.request.executionMode,
     continuationPolicy: input.request.continuationPolicy,

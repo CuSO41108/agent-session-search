@@ -13,11 +13,15 @@ describe("createTeamChatApi", () => {
     await api.disconnect();
     await api.listRooms();
     await api.getRoom("room-1");
-    await api.createRoom({ name: "Room", workDir: "", agentIds: ["builder"] });
+    await api.createRoom({
+      name: "Room",
+      workDir: "",
+      members: [{ configuredAgentId: "builder", displayName: "Builder" }],
+    });
     await api.updateRoom({ roomId: "room-1", name: "Renamed" });
     await api.archiveRoom("room-1");
     await api.listMessages({ roomId: "room-1", limit: 50 });
-    await api.sendMessage({ roomId: "room-1", content: "hello" });
+    await api.sendMessage({ roomId: "room-1", content: "hello", targetMemberIds: ["member-1"] });
     await api.stopTurn("message-1");
     await api.resetAgentSession({ roomId: "room-1", agentId: "builder" });
 
@@ -28,11 +32,19 @@ describe("createTeamChatApi", () => {
       [TEAM_CHAT_CHANNELS.connectionDisconnect],
       [TEAM_CHAT_CHANNELS.roomsList],
       [TEAM_CHAT_CHANNELS.roomsGet, "room-1"],
-      [TEAM_CHAT_CHANNELS.roomsCreate, { name: "Room", workDir: "", agentIds: ["builder"] }],
+      [TEAM_CHAT_CHANNELS.roomsCreate, {
+        name: "Room",
+        workDir: "",
+        members: [{ configuredAgentId: "builder", displayName: "Builder" }],
+      }],
       [TEAM_CHAT_CHANNELS.roomsUpdate, { roomId: "room-1", name: "Renamed" }],
       [TEAM_CHAT_CHANNELS.roomsArchive, "room-1"],
       [TEAM_CHAT_CHANNELS.messagesList, { roomId: "room-1", limit: 50 }],
-      [TEAM_CHAT_CHANNELS.messagesSend, { roomId: "room-1", content: "hello" }],
+      [TEAM_CHAT_CHANNELS.messagesSend, {
+        roomId: "room-1",
+        content: "hello",
+        targetMemberIds: ["member-1"],
+      }],
       [TEAM_CHAT_CHANNELS.turnsStop, "message-1"],
       [TEAM_CHAT_CHANNELS.agentSessionReset, { roomId: "room-1", agentId: "builder" }],
     ]);

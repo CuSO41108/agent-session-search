@@ -195,4 +195,44 @@ describe("ConfiguredAgentExecutionService", () => {
       workDir: "/synthetic/repo",
     });
   });
+
+  it("forwards studio instructions and the managed MCP scope to the Runtime request", async () => {
+    const channel: AgentChannel = {
+      id: "codex-main",
+      agentId: "codex",
+      label: "Codex",
+      models: [{ id: "gpt-5", label: "GPT-5" }],
+    };
+    const agent: ConfiguredAgent = {
+      id: "codex-profile",
+      name: "Codex",
+      description: "",
+      runtimeAgentId: "codex",
+      channelId: channel.id,
+      modelId: "gpt-5",
+      tags: [],
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    const execute = vi.fn(async () => ({ content: "done" }));
+    const service = new ConfiguredAgentExecutionService({
+      agents: () => [agent],
+      channels: () => [channel],
+      defaultWorkDir: () => "/synthetic/repo",
+      execute,
+    });
+
+    await service.runConversation({
+      configuredAgentId: agent.id,
+      prompt: "Review",
+      developerInstructions: "You are Codex2 in this studio.",
+      agentRecallMcp: { studioToken: "scope-token" },
+    });
+
+    expect(execute).toHaveBeenCalledWith(expect.objectContaining({
+      configuredAgentId: "codex-profile",
+      developerInstructions: "You are Codex2 in this studio.",
+      agentRecallMcp: { studioToken: "scope-token" },
+    }));
+  });
 });

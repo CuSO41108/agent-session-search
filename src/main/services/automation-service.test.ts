@@ -3,6 +3,7 @@ import type { AppSnapshot } from "../../automation/contracts";
 import type { AgentHub } from "../../automation/engine/main/hub/agent-hub";
 import type { McpRegistryStore } from "../../automation/engine/main/mcp-registry-store";
 import type { McpAgentManagementService } from "../../automation/engine/main/mcp/agent-management-service";
+import type { StartMcpBridgeOptions } from "../../automation/engine/main/bridges/mcp-bridge";
 import type { EvaluationService } from "./evaluation-service";
 import type { TeamChatService } from "../team-chat/team-chat-service";
 import type { PostgresDatabase } from "../../core/postgres/database";
@@ -44,8 +45,19 @@ function fixture() {
       return { state: "ready", mode: "local", databaseLabel: "Local database" } as const;
     }),
     close: vi.fn(async () => { calls.push("team-chat-close"); }),
+    handleMcpRequest: vi.fn(async () => ({ ok: true })),
   } as unknown as TeamChatService;
   const agents = {} as McpAgentManagementService;
+  const startBridge = vi.fn(async (_hub: AgentHub, _options: StartMcpBridgeOptions) => {
+    calls.push("bridge");
+    return {
+      host: "127.0.0.1",
+      port: 2,
+      token: "test-token",
+      discoveryPath: "/user-data/automation-mcp-bridge.json",
+      stop: async () => { calls.push("bridge-stop"); },
+    };
+  });
   const service = new NativeAutomationService(
     {
       database: {} as PostgresDatabase,
@@ -67,19 +79,19 @@ function fixture() {
         return { host: "127.0.0.1", port: 1, baseUrl: "http://127.0.0.1:1", stop: async () => { calls.push("router-stop"); } };
       }),
       setRouterBaseUrl: vi.fn(),
-      startBridge: vi.fn(async () => {
-        calls.push("bridge");
-        return {
-          host: "127.0.0.1",
-          port: 2,
-          token: "test-token",
-          discoveryPath: "/user-data/automation-mcp-bridge.json",
-          stop: async () => { calls.push("bridge-stop"); },
-        };
-      }),
+      startBridge,
     },
   );
-  return { service, calls, hub, registry, evaluations, teamChats, emit: (value: AppSnapshot) => { current = value; listener?.(value); } };
+  return {
+    service,
+    calls,
+    hub,
+    registry,
+    evaluations,
+    teamChats,
+    startBridge,
+    emit: (value: AppSnapshot) => { current = value; listener?.(value); },
+  };
 }
 
 describe("NativeAutomationService", () => {
@@ -94,7 +106,7 @@ describe("NativeAutomationService", () => {
   });
 
   it("initializes the native engine once in dependency order", async () => {
-    const { service, calls, hub, teamChats } = fixture();
+    const { service, calls, hub, teamChats, startBridge } = fixture();
 
     await Promise.all([service.initialize(), service.initialize()]);
 
@@ -102,6 +114,17 @@ describe("NativeAutomationService", () => {
     expect(teamChats.connect).toHaveBeenCalledTimes(1);
     expect(hub.loadModelChannels).toHaveBeenCalledWith("/user-data/runtime-channels.json");
     expect(hub.loadPersistedState).toHaveBeenCalledWith(expect.any(Object));
+    const bridgeOptions = startBridge.mock.calls[0]?.[1];
+    await expect(bridgeOptions?.studio?.handleMcpRequest(
+      "studio-token",
+      "/mcp/studio/list-members",
+      {},
+    )).resolves.toEqual({ ok: true });
+    expect(teamChats.handleMcpRequest).toHaveBeenCalledWith(
+      "studio-token",
+      "/mcp/studio/list-members",
+      {},
+    );
     expect(service.health()).toEqual({ state: "ready" });
   });
 

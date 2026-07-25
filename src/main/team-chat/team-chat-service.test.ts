@@ -12,6 +12,7 @@ import type {
   TeamChatMessagePage,
   TeamChatRoom,
   TeamChatRoomSummary,
+  TeamChatWorkspaceReservation,
 } from "../../shared/team-chat";
 import { TeamChatService } from "./team-chat-service";
 import type {
@@ -25,6 +26,7 @@ class MemoryTeamChatStore implements TeamChatStore {
   readonly messages: TeamChatMessage[] = [];
   readonly dispatches: TeamChatDispatch[] = [];
   readonly sessions: TeamChatAgentSession[] = [];
+  readonly reservations: TeamChatWorkspaceReservation[] = [];
   initialized = false;
   closed = false;
 
@@ -75,6 +77,55 @@ class MemoryTeamChatStore implements TeamChatStore {
       truncated: messages.length > limit,
     };
   }
+  async listDirectedContext(
+    roomId: string,
+    memberId: string,
+    afterMessageId: string | undefined,
+    limit: number,
+  ) {
+    const marker = afterMessageId
+      ? this.messages.find((message) => message.roomId === roomId && message.id === afterMessageId)?.sequence
+      : undefined;
+    const messages = this.messages.filter((message) =>
+      message.roomId === roomId &&
+      (marker === undefined || message.sequence > marker) &&
+      (
+        message.senderAgentId === memberId ||
+        message.recipientMemberId === memberId ||
+        message.senderType === "system" ||
+        message.deliveryType === "post"
+      ));
+    return {
+      messages: messages.slice(-limit).map((message) => structuredClone(message)),
+      truncated: messages.length > limit,
+    };
+  }
+  async getMessages(roomId: string, messageIds: string[]): Promise<TeamChatMessage[]> {
+    const ids = new Set(messageIds);
+    return this.messages
+      .filter((message) => message.roomId === roomId && ids.has(message.id))
+      .map((message) => structuredClone(message));
+  }
+  async readMessageRange(
+    roomId: string,
+    range: { after?: number; before?: number; limit: number },
+  ): Promise<TeamChatMessage[]> {
+    return this.messages
+      .filter((message) =>
+        message.roomId === roomId &&
+        (range.after === undefined || message.sequence > range.after) &&
+        (range.before === undefined || message.sequence < range.before))
+      .slice(0, range.limit)
+      .map((message) => structuredClone(message));
+  }
+  async searchMessages(roomId: string, query: string, limit: number): Promise<TeamChatMessage[]> {
+    return this.messages
+      .filter((message) =>
+        message.roomId === roomId &&
+        message.content.toLocaleLowerCase().includes(query.toLocaleLowerCase()))
+      .slice(-limit)
+      .map((message) => structuredClone(message));
+  }
   async insertMessage(message: TeamChatMessage): Promise<TeamChatMessage> {
     const saved = {
       ...structuredClone(message),
@@ -86,6 +137,9 @@ class MemoryTeamChatStore implements TeamChatStore {
   async insertDispatch(dispatch: TeamChatDispatch): Promise<TeamChatDispatch> {
     this.dispatches.push(structuredClone(dispatch));
     return structuredClone(dispatch);
+  }
+  async countRootDispatches(rootMessageId: string): Promise<number> {
+    return this.dispatches.filter((dispatch) => dispatch.rootMessageId === rootMessageId).length;
   }
   async updateDispatch(dispatchId: string, patch: TeamChatDispatchUpdate): Promise<void> {
     const dispatch = this.dispatches.find((item) => item.id === dispatchId);
@@ -114,6 +168,48 @@ class MemoryTeamChatStore implements TeamChatStore {
       session.roomId === roomId && session.agentId === agentId);
     if (index >= 0) this.sessions.splice(index, 1);
   }
+  async listWorkspaceReservations(
+    roomId: string,
+    relativePaths?: string[],
+  ): Promise<TeamChatWorkspaceReservation[]> {
+    const paths = relativePaths ? new Set(relativePaths) : undefined;
+    return this.reservations
+      .filter((reservation) =>
+        reservation.roomId === roomId &&
+        (!paths || paths.has(reservation.relativePath)))
+      .map((reservation) => structuredClone(reservation));
+  }
+  async reserveWorkspacePaths(
+    reservations: TeamChatWorkspaceReservation[],
+  ): Promise<TeamChatWorkspaceReservation[]> {
+    for (const reservation of reservations) {
+      const index = this.reservations.findIndex((item) =>
+        item.roomId === reservation.roomId && item.relativePath === reservation.relativePath);
+      if (index >= 0) this.reservations[index] = structuredClone(reservation);
+      else this.reservations.push(structuredClone(reservation));
+    }
+    return reservations.map((reservation) => structuredClone(reservation));
+  }
+  async releaseWorkspacePaths(
+    roomId: string,
+    memberId: string,
+    relativePaths: string[],
+  ): Promise<number> {
+    const paths = new Set(relativePaths);
+    let released = 0;
+    for (let index = this.reservations.length - 1; index >= 0; index -= 1) {
+      const reservation = this.reservations[index]!;
+      if (
+        reservation.roomId === roomId &&
+        reservation.memberId === memberId &&
+        paths.has(reservation.relativePath)
+      ) {
+        this.reservations.splice(index, 1);
+        released += 1;
+      }
+    }
+    return released;
+  }
 }
 
 function configuredAgent(id = "codex-profile", name = "Codex"): ConfiguredAgent {
@@ -135,6 +231,8 @@ type ExecuteInput = {
   prompt: string;
   workDir?: string;
   runtimeConversation?: RuntimeConversation;
+  developerInstructions?: string;
+  agentRecallMcp?: { studioToken?: string };
 };
 
 async function createFixture(options: {
@@ -239,7 +337,234 @@ describe("TeamChatService studio employees", () => {
       workDir: "/synthetic/repo",
     });
     expect(calls[0]?.prompt).toContain(`To: Codex (${target.agentId})`);
+    expect(calls[0]?.developerInstructions).toContain(`Your employee identity: Codex (${target.agentId})`);
+    expect(calls[0]?.agentRecallMcp?.studioToken).toEqual(expect.any(String));
     expect(fixture.store.dispatches[0]?.targetAgentId).toBe(target.agentId);
+  });
+
+  it("bounds one user message to the collaboration activation limit", async () => {
+    const fixture = await createFixture({
+      members: Array.from({ length: 9 }, (_, index) => ({
+        configuredAgentId: "codex-profile",
+        displayName: `Codex${index + 1}`,
+      })),
+    });
+
+    await expect(fixture.service.sendMessage({
+      roomId: fixture.room.id,
+      content: "Run everywhere",
+      targetMemberIds: fixture.room.agents.map((member) => member.agentId),
+    })).rejects.toThrow(/up to 8/i);
+    expect(fixture.store.messages).toEqual([]);
+  });
+
+  it("lets an employee explicitly message a coworker through its scoped Studio MCP", async () => {
+    let studioService: TeamChatService;
+    let coworkerId = "";
+    const tokens: string[] = [];
+    const fixture = await createFixture({
+      executeAgent: async (input) => {
+        const token = input.agentRecallMcp?.studioToken;
+        if (!token) throw new Error("missing Studio token");
+        tokens.push(token);
+        if (input.prompt.includes("To: Codex (")) {
+          await studioService.handleMcpRequest(token, "studio/send-message", {
+            toMemberId: coworkerId,
+            content: "Please review src/auth.ts",
+          });
+        }
+        return { output: "done", durationMs: 1 };
+      },
+    });
+    studioService = fixture.service;
+    coworkerId = fixture.room.agents[1]!.agentId;
+
+    const sent = await fixture.service.sendMessage({
+      roomId: fixture.room.id,
+      content: "Implement auth",
+      targetMemberIds: [fixture.room.agents[0]!.agentId],
+    });
+    await waitForRoot(fixture.events, sent.rootMessageId);
+    await vi.waitFor(() => expect(fixture.store.dispatches).toHaveLength(2));
+    await vi.waitFor(() => expect(tokens).toHaveLength(2));
+
+    expect(fixture.store.messages).toContainEqual(expect.objectContaining({
+      senderAgentId: fixture.room.agents[0]!.agentId,
+      recipientMemberId: coworkerId,
+      content: "Please review src/auth.ts",
+      deliveryType: "message",
+    }));
+    await expect(fixture.service.handleMcpRequest(tokens[0], "studio/list-members", {}))
+      .rejects.toThrow(/scope.*expired/i);
+  });
+
+  it("posts without activating coworkers and scopes message reads to the current studio", async () => {
+    const toolResults: unknown[] = [];
+    let studioService: TeamChatService;
+    const fixture = await createFixture({
+      executeAgent: async (input) => {
+        const token = input.agentRecallMcp?.studioToken;
+        if (!token) throw new Error("missing Studio token");
+        toolResults.push(await studioService.handleMcpRequest(token, "studio/list-members", {}));
+        toolResults.push(await studioService.handleMcpRequest(token, "studio/post", {
+          content: "Draft is in src/auth.ts",
+        }));
+        toolResults.push(await studioService.handleMcpRequest(token, "studio/search", {
+          query: "Draft",
+          limit: 10,
+        }));
+        return { output: "done", durationMs: 1 };
+      },
+    });
+    studioService = fixture.service;
+
+    const sent = await fixture.service.sendMessage({
+      roomId: fixture.room.id,
+      content: "Create a draft",
+      targetMemberIds: [fixture.room.agents[0]!.agentId],
+    });
+    await waitForRoot(fixture.events, sent.rootMessageId);
+
+    expect(fixture.store.dispatches).toHaveLength(1);
+    expect(toolResults[0]).toMatchObject({
+      members: [
+        expect.objectContaining({ memberId: fixture.room.agents[0]!.agentId }),
+        expect.objectContaining({ memberId: fixture.room.agents[1]!.agentId }),
+      ],
+    });
+    expect(toolResults[2]).toMatchObject({ messages: expect.any(Array) });
+    expect((toolResults[2] as { messages: TeamChatMessage[] }).messages)
+      .toContainEqual(expect.objectContaining({ content: "Draft is in src/auth.ts" }));
+  });
+
+  it("validates and coordinates shared workspace path reservations", async () => {
+    const toolResults: Record<string, unknown> = {};
+    let studioService: TeamChatService;
+    const fixture = await createFixture({
+      executeAgent: async (input) => {
+        const token = input.agentRecallMcp?.studioToken;
+        if (!token) throw new Error("missing Studio token");
+        await expect(studioService.handleMcpRequest(token, "workspace/reserve", {
+          paths: ["/outside.ts"],
+        })).rejects.toThrow(/relative/i);
+        await expect(studioService.handleMcpRequest(token, "workspace/reserve", {
+          paths: ["../outside.ts"],
+        })).rejects.toThrow(/relative/i);
+        toolResults.reserve = await studioService.handleMcpRequest(token, "workspace/reserve", {
+          paths: ["src/auth.ts", "src/auth.ts"],
+          reason: "editing",
+        });
+        toolResults.status = await studioService.handleMcpRequest(token, "workspace/status", {});
+        toolResults.release = await studioService.handleMcpRequest(token, "workspace/release", {
+          paths: ["src/auth.ts"],
+        });
+        return { output: "done", durationMs: 1 };
+      },
+    });
+    studioService = fixture.service;
+
+    const sent = await fixture.service.sendMessage({
+      roomId: fixture.room.id,
+      content: "Edit auth",
+      targetMemberIds: [fixture.room.agents[0]!.agentId],
+    });
+    await waitForRoot(fixture.events, sent.rootMessageId);
+
+    expect(toolResults.reserve).toMatchObject({ ok: true, reservations: [{ relativePath: "src/auth.ts" }] });
+    expect(toolResults.status).toMatchObject({ reservations: [{ relativePath: "src/auth.ts" }] });
+    expect(toolResults.release).toEqual({ ok: true, released: 1 });
+    expect(fixture.store.reservations).toEqual([]);
+  });
+
+  it("reports path reservations held by another employee without replacing them", async () => {
+    let studioService: TeamChatService;
+    let coworkerId = "";
+    let conflict: unknown;
+    const fixture = await createFixture({
+      executeAgent: async (input) => {
+        const token = input.agentRecallMcp?.studioToken;
+        if (!token) throw new Error("missing Studio token");
+        if (input.prompt.includes("To: Codex (")) {
+          await studioService.handleMcpRequest(token, "workspace/reserve", {
+            paths: ["src/shared.ts"],
+            reason: "editing",
+          });
+          await studioService.handleMcpRequest(token, "studio/send-message", {
+            toMemberId: coworkerId,
+            content: "Please take another look",
+          });
+        } else {
+          conflict = await studioService.handleMcpRequest(token, "workspace/reserve", {
+            paths: ["src/shared.ts"],
+            reason: "reviewing",
+          });
+        }
+        return { output: "done", durationMs: 1 };
+      },
+    });
+    studioService = fixture.service;
+    coworkerId = fixture.room.agents[1]!.agentId;
+
+    const sent = await fixture.service.sendMessage({
+      roomId: fixture.room.id,
+      content: "Coordinate this edit",
+      targetMemberIds: [fixture.room.agents[0]!.agentId],
+    });
+    await waitForRoot(fixture.events, sent.rootMessageId);
+
+    expect(conflict).toMatchObject({
+      ok: false,
+      conflicts: [expect.objectContaining({
+        memberId: fixture.room.agents[0]!.agentId,
+        relativePath: "src/shared.ts",
+      })],
+    });
+    expect(fixture.store.reservations[0]?.memberId).toBe(fixture.room.agents[0]!.agentId);
+  });
+
+  it("stops employee-to-employee activation after eight dispatches in one causal chain", async () => {
+    let studioService: TeamChatService;
+    let store: MemoryTeamChatStore;
+    let coworkerId = "";
+    let deliveryResult: unknown;
+    let calls = 0;
+    const fixture = await createFixture({
+      executeAgent: async (input) => {
+        calls += 1;
+        const token = input.agentRecallMcp?.studioToken;
+        if (!token) throw new Error("missing Studio token");
+        const current = store.dispatches[0]!;
+        for (let index = 1; index < 8; index += 1) {
+          store.dispatches.push({
+            ...current,
+            id: `synthetic-${index}`,
+            targetAgentId: `synthetic-member-${index}`,
+          });
+        }
+        deliveryResult = await studioService.handleMcpRequest(token, "studio/send-message", {
+          toMemberId: coworkerId,
+          content: "This should not activate",
+        });
+        return { output: "done", durationMs: 1 };
+      },
+    });
+    studioService = fixture.service;
+    store = fixture.store;
+    coworkerId = fixture.room.agents[1]!.agentId;
+
+    const sent = await fixture.service.sendMessage({
+      roomId: fixture.room.id,
+      content: "Start bounded collaboration",
+      targetMemberIds: [fixture.room.agents[0]!.agentId],
+    });
+    await waitForRoot(fixture.events, sent.rootMessageId);
+
+    expect(deliveryResult).toMatchObject({ ok: false, error: expect.stringMatching(/8-activation/i) });
+    expect(calls).toBe(1);
+    expect(fixture.store.messages).toContainEqual(expect.objectContaining({
+      senderType: "system",
+      content: expect.stringMatching(/stopped after 8/i),
+    }));
   });
 
   it("keeps Runtime sessions isolated between two employees using one profile", async () => {

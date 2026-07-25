@@ -76,29 +76,74 @@ describe("registerTeamChatIpc", () => {
 
   it("bounds room names and member selection before delegation", async () => {
     const { invoke, service } = setup();
+    const member = (index: number) => ({
+      configuredAgentId: `agent-${index}`,
+      displayName: `Employee ${index}`,
+    });
 
     await expect(invoke(TEAM_CHAT_CHANNELS.roomsCreate, {
-      name: "x".repeat(121), workDir: "", agentIds: ["builder"],
+      name: "x".repeat(121), workDir: "", members: [member(1)],
     })).rejects.toThrow(/too big|too long|maximum/i);
     await expect(invoke(TEAM_CHAT_CHANNELS.roomsCreate, {
-      name: "Room", workDir: "", agentIds: [],
+      name: "Room", workDir: "", members: [],
     })).rejects.toThrow(/too small|at least/i);
     await expect(invoke(TEAM_CHAT_CHANNELS.roomsCreate, {
-      name: "Room", workDir: "", agentIds: Array.from({ length: 25 }, (_, index) => `agent-${index}`),
+      name: "Room", workDir: "", members: Array.from({ length: 25 }, (_, index) => member(index)),
     })).rejects.toThrow(/too big|maximum/i);
-    expect(service.createRoom).not.toHaveBeenCalled();
+    await expect(invoke(TEAM_CHAT_CHANNELS.roomsCreate, {
+      name: "Room",
+      workDir: "",
+      members: [
+        { configuredAgentId: "codex", displayName: "Codex" },
+        { configuredAgentId: "codex", displayName: "codex" },
+      ],
+    })).rejects.toThrow(/unique/i);
+    await expect(invoke(TEAM_CHAT_CHANNELS.roomsCreate, {
+      name: "Room",
+      workDir: "",
+      members: [
+        { configuredAgentId: "codex", displayName: "Codex" },
+        { configuredAgentId: "codex", displayName: "Codex2" },
+      ],
+    })).resolves.toMatchObject({ id: "room-1" });
+    expect(service.createRoom).toHaveBeenCalledOnce();
+    expect(service.createRoom).toHaveBeenCalledWith({
+      name: "Room",
+      workDir: "",
+      members: [
+        { configuredAgentId: "codex", displayName: "Codex" },
+        { configuredAgentId: "codex", displayName: "Codex2" },
+      ],
+    });
   });
 
   it("bounds message length and pagination, then delegates valid requests", async () => {
     const { invoke, service } = setup();
 
-    await expect(invoke(TEAM_CHAT_CHANNELS.messagesSend, { roomId: "room-1", content: "x".repeat(100_001) }))
+    await expect(invoke(TEAM_CHAT_CHANNELS.messagesSend, {
+      roomId: "room-1",
+      content: "x".repeat(100_001),
+      targetMemberIds: ["builder"],
+    }))
       .rejects.toThrow(/too big|too long|maximum/i);
     await expect(invoke(TEAM_CHAT_CHANNELS.messagesList, { roomId: "room-1", limit: 101 }))
       .rejects.toThrow(/too big|less than or equal|maximum/i);
-    await expect(invoke(TEAM_CHAT_CHANNELS.messagesSend, { roomId: "room-1", content: "hello" }))
+    await expect(invoke(TEAM_CHAT_CHANNELS.messagesSend, {
+      roomId: "room-1",
+      content: "hello",
+      targetMemberIds: [],
+    })).rejects.toThrow(/too small|at least/i);
+    await expect(invoke(TEAM_CHAT_CHANNELS.messagesSend, {
+      roomId: "room-1",
+      content: "hello",
+      targetMemberIds: ["builder"],
+    }))
       .resolves.toMatchObject({ rootMessageId: "message-1" });
-    expect(service.sendMessage).toHaveBeenCalledWith({ roomId: "room-1", content: "hello" });
+    expect(service.sendMessage).toHaveBeenCalledWith({
+      roomId: "room-1",
+      content: "hello",
+      targetMemberIds: ["builder"],
+    });
   });
 
   it("validates and delegates a room Agent conversation reset", async () => {
