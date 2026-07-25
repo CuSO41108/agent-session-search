@@ -20,6 +20,7 @@ export interface TeamChatConnectionStatus {
 export interface TeamChatRoomAgent {
   roomId: string;
   agentId: string;
+  configuredAgentId: string;
   displayName: string;
   runtimeId: string;
   channelId: string;
@@ -57,10 +58,13 @@ export interface TeamChatRoom {
 export interface TeamChatMessage {
   id: string;
   roomId: string;
+  sequence: number;
   senderType: TeamChatSenderType;
   senderAgentId?: string;
+  recipientMemberId?: string;
   senderName: string;
   content: string;
+  deliveryType: "message" | "reply" | "post";
   rootMessageId: string;
   sourceMessageId?: string;
   hop: number;
@@ -84,17 +88,33 @@ export interface TeamChatDispatch {
   updatedAt: string;
 }
 
+export interface TeamChatRoomMemberInput {
+  memberId?: string;
+  configuredAgentId: string;
+  displayName: string;
+}
+
+export interface TeamChatWorkspaceReservation {
+  roomId: string;
+  memberId: string;
+  relativePath: string;
+  reason?: string;
+  expiresAt: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface CreateTeamChatRoomRequest {
   name: string;
   workDir: string;
-  agentIds: string[];
+  members: TeamChatRoomMemberInput[];
 }
 
 export interface UpdateTeamChatRoomRequest {
   roomId: string;
   name?: string;
   workDir?: string;
-  agentIds?: string[];
+  members?: TeamChatRoomMemberInput[];
 }
 
 export interface ListTeamChatMessagesRequest {
@@ -111,6 +131,8 @@ export interface TeamChatMessagePage {
 export interface SendTeamChatMessageRequest {
   roomId: string;
   content: string;
+  targetMemberIds: string[];
+  replyToMessageId?: string;
 }
 
 export interface ResetTeamChatAgentSessionRequest {

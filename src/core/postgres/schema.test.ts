@@ -40,11 +40,40 @@ describe("AgentRecall PostgreSQL schema", () => {
       "evaluation_results",
       "chat_rooms",
       "chat_messages",
+      "chat_workspace_reservations",
       "openviking_workspaces",
       "openviking_import_jobs",
       "openviking_imported_turns",
     ]));
-    expect(names).toHaveLength(53);
+    expect(names).toHaveLength(54);
+    await database.close();
+  });
+
+  it("upgrades Team Chat rooms to employee instances and directed messages", async () => {
+    const database = new PostgresDatabase(new PGliteTestPool(), {
+      migrationLock: false,
+      migrations: POSTGRES_MIGRATIONS,
+    });
+    await database.initialize();
+
+    const memberColumns = await database.query<{ column_name: string }>(`
+      select column_name
+      from information_schema.columns
+      where table_schema = 'agent_recall' and table_name = 'chat_room_agents'
+    `);
+    expect(memberColumns.rows.map((row) => row.column_name)).toContain("configured_agent_id");
+
+    const messageColumns = await database.query<{ column_name: string }>(`
+      select column_name
+      from information_schema.columns
+      where table_schema = 'agent_recall' and table_name = 'chat_messages'
+    `);
+    expect(messageColumns.rows.map((row) => row.column_name)).toEqual(expect.arrayContaining([
+      "recipient_member_id",
+      "delivery_type",
+      "sequence",
+    ]));
+
     await database.close();
   });
 

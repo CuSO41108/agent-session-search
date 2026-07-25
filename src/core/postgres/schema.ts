@@ -825,4 +825,60 @@ export const POSTGRES_MIGRATIONS: readonly PostgresMigration[] = [{
         ON agent_recall.openviking_imported_turns (workspace_id, imported_at);
     `,
   ],
+}, {
+  version: 5,
+  name: "add studio employees and directed collaboration",
+  statements: [
+    `
+      ALTER TABLE agent_recall.chat_room_agents
+        ADD COLUMN configured_agent_id text;
+
+      UPDATE agent_recall.chat_room_agents
+      SET configured_agent_id = agent_id
+      WHERE configured_agent_id IS NULL;
+
+      ALTER TABLE agent_recall.chat_room_agents
+        ALTER COLUMN configured_agent_id SET NOT NULL;
+
+      ALTER TABLE agent_recall.chat_messages
+        ADD COLUMN recipient_member_id text,
+        ADD COLUMN delivery_type varchar(16) NOT NULL DEFAULT 'message'
+          CHECK (delivery_type IN ('message', 'reply', 'post')),
+        ADD COLUMN sequence bigint;
+
+      WITH ranked AS (
+        SELECT
+          id,
+          row_number() OVER (
+            PARTITION BY room_id
+            ORDER BY created_at, id
+          ) AS sequence
+        FROM agent_recall.chat_messages
+      )
+      UPDATE agent_recall.chat_messages AS messages
+      SET sequence = ranked.sequence
+      FROM ranked
+      WHERE messages.id = ranked.id;
+
+      ALTER TABLE agent_recall.chat_messages
+        ALTER COLUMN sequence SET NOT NULL;
+
+      CREATE UNIQUE INDEX chat_messages_room_sequence_idx
+        ON agent_recall.chat_messages (room_id, sequence);
+
+      CREATE TABLE agent_recall.chat_workspace_reservations (
+        room_id uuid NOT NULL REFERENCES agent_recall.chat_rooms(id) ON DELETE CASCADE,
+        member_id text NOT NULL,
+        relative_path text NOT NULL,
+        reason text,
+        expires_at timestamptz NOT NULL,
+        created_at timestamptz NOT NULL,
+        updated_at timestamptz NOT NULL,
+        PRIMARY KEY (room_id, relative_path)
+      );
+
+      CREATE INDEX chat_workspace_reservations_expiry_idx
+        ON agent_recall.chat_workspace_reservations (expires_at);
+    `,
+  ],
 }];
