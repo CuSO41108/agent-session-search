@@ -79,4 +79,3 @@ compensationAdapter?: string;
 - 输出 Schema 不合格不会提前物化产物；
 - 节点重试/继续语义与保存点一致；
 - Agent 与脚本生成同一种事务报告。
-

@@ -78,4 +78,3 @@
 - `git diff --check` 通过；
 - 文档链接和状态合同与当前实现一致；
 - 旧 Workflow 启动警告和新 Workflow 原子预检均可验证。
-
