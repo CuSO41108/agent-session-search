@@ -21,6 +21,7 @@ function setup() {
     createRoom: vi.fn(async (request) => ({ id: "room-1", ...request })),
     updateRoom: vi.fn(async (request) => request),
     archiveRoom: vi.fn(async () => undefined),
+    deleteRoom: vi.fn(async () => undefined),
     listMessages: vi.fn(async () => ({ messages: [] })),
     sendMessage: vi.fn(async (request) => ({ rootMessageId: "message-1", message: request })),
     stopTurn: vi.fn(async () => true),
@@ -44,7 +45,7 @@ describe("registerTeamChatIpc", () => {
 
     fixture.emit(event);
 
-    expect([...fixture.handlers.keys()]).toHaveLength(13);
+    expect([...fixture.handlers.keys()]).toHaveLength(14);
     expect([...fixture.handlers.keys()].every((channel) => channel.startsWith("team-chat:"))).toBe(true);
     expect(fixture.send).toHaveBeenCalledWith(TEAM_CHAT_CHANNELS.event, event);
   });
@@ -166,13 +167,22 @@ describe("registerTeamChatIpc", () => {
     expect(service.resetAgentSession).toHaveBeenCalledWith("room-1", "builder");
   });
 
+  it("validates and delegates permanent room deletion", async () => {
+    const { invoke, service } = setup();
+
+    await expect(invoke(TEAM_CHAT_CHANNELS.roomsDelete, "")).rejects.toThrow();
+    await expect(invoke(TEAM_CHAT_CHANNELS.roomsDelete, "room-1")).resolves.toBeUndefined();
+
+    expect(service.deleteRoom).toHaveBeenCalledWith("room-1");
+  });
+
   it("removes registered handlers and the service listener on dispose", () => {
     const fixture = setup();
 
     fixture.dispose();
     fixture.emit({ type: "rooms-changed" });
 
-    expect(fixture.ipc.removeHandler).toHaveBeenCalledTimes(13);
+    expect(fixture.ipc.removeHandler).toHaveBeenCalledTimes(14);
     expect(fixture.send).not.toHaveBeenCalled();
   });
 });

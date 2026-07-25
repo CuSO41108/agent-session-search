@@ -59,6 +59,22 @@ class MemoryTeamChatStore implements TeamChatStore {
     const room = this.rooms.find((item) => item.id === roomId);
     if (room) Object.assign(room, { archived: true, updatedAt });
   }
+  async deleteRoom(roomId: string): Promise<boolean> {
+    const index = this.rooms.findIndex((room) => room.id === roomId);
+    if (index < 0) return false;
+    this.rooms.splice(index, 1);
+    for (const collection of [
+      this.messages,
+      this.dispatches,
+      this.sessions,
+      this.reservations,
+    ]) {
+      for (let itemIndex = collection.length - 1; itemIndex >= 0; itemIndex -= 1) {
+        if (collection[itemIndex]?.roomId === roomId) collection.splice(itemIndex, 1);
+      }
+    }
+    return true;
+  }
   async listMessages(request: ListTeamChatMessagesRequest): Promise<TeamChatMessagePage> {
     const limit = request.limit ?? 100;
     return {
@@ -306,6 +322,16 @@ describe("TeamChatService studio employees", () => {
       "codex-profile",
     ]);
     expect(room.agents.map((member) => member.displayName)).toEqual(["Codex", "Codex2"]);
+  });
+
+  it("permanently deletes a studio and removes it from the room list", async () => {
+    const fixture = await createFixture();
+
+    await expect(fixture.service.deleteRoom(fixture.room.id)).resolves.toBeUndefined();
+
+    await expect(fixture.service.getRoom(fixture.room.id)).resolves.toBeUndefined();
+    await expect(fixture.service.listRooms()).resolves.toEqual([]);
+    expect(fixture.events).toContainEqual({ type: "rooms-changed" });
   });
 
   it("requires explicit recipients and invokes only the selected employee", async () => {

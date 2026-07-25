@@ -129,6 +129,14 @@ export class PostgresTeamChatStore implements TeamChatStore {
     );
   }
 
+  async deleteRoom(roomId: string): Promise<boolean> {
+    const result = await this.database.query(
+      "DELETE FROM agent_recall.chat_rooms WHERE id = $1",
+      [roomId],
+    );
+    return result.rowCount > 0;
+  }
+
   async listMessages(request: ListTeamChatMessagesRequest): Promise<TeamChatMessagePage> {
     const limit = request.limit ?? 100;
     const result = await this.database.query<MessageRow>(

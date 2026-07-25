@@ -34,6 +34,7 @@ export function createTeamChatApi(ipc: TeamChatIpcRenderer) {
     updateRoom: (request: UpdateTeamChatRoomRequest): Promise<TeamChatRoom> =>
       ipc.invoke(TEAM_CHAT_CHANNELS.roomsUpdate, request),
     archiveRoom: (roomId: string): Promise<void> => ipc.invoke(TEAM_CHAT_CHANNELS.roomsArchive, roomId),
+    deleteRoom: (roomId: string): Promise<void> => ipc.invoke(TEAM_CHAT_CHANNELS.roomsDelete, roomId),
     listMessages: (request: ListTeamChatMessagesRequest): Promise<TeamChatMessagePage> =>
       ipc.invoke(TEAM_CHAT_CHANNELS.messagesList, request),
     sendMessage: (request: SendTeamChatMessageRequest): Promise<SendTeamChatMessageResult> =>

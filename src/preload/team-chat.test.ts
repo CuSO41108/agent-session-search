@@ -20,6 +20,7 @@ describe("createTeamChatApi", () => {
     });
     await api.updateRoom({ roomId: "room-1", name: "Renamed" });
     await api.archiveRoom("room-1");
+    await api.deleteRoom("room-1");
     await api.listMessages({ roomId: "room-1", limit: 50 });
     await api.sendMessage({ roomId: "room-1", content: "hello", targetMemberIds: ["member-1"] });
     await api.stopTurn("message-1");
@@ -39,6 +40,7 @@ describe("createTeamChatApi", () => {
       }],
       [TEAM_CHAT_CHANNELS.roomsUpdate, { roomId: "room-1", name: "Renamed" }],
       [TEAM_CHAT_CHANNELS.roomsArchive, "room-1"],
+      [TEAM_CHAT_CHANNELS.roomsDelete, "room-1"],
       [TEAM_CHAT_CHANNELS.messagesList, { roomId: "room-1", limit: 50 }],
       [TEAM_CHAT_CHANNELS.messagesSend, {
         roomId: "room-1",

@@ -272,4 +272,26 @@ describe("PostgresTeamChatStore", () => {
     await store.archiveRoom(ROOM_ID, "2026-07-23T08:04:00.000Z");
     await expect(store.listRooms()).resolves.toEqual([]);
   });
+
+  it("permanently deletes a room and its dependent Chat data", async () => {
+    await store.createRoom(roomFixture());
+    await store.insertMessage(
+      messageFixture(MESSAGE_ONE_ID, "delete this room", "2026-07-23T08:01:00.000Z"),
+    );
+    await store.reserveWorkspacePaths([{
+      roomId: ROOM_ID,
+      memberId: "builder",
+      relativePath: "src/delete.ts",
+      expiresAt: "2030-07-23T08:10:00.000Z",
+      createdAt: "2026-07-23T08:03:00.000Z",
+      updatedAt: "2026-07-23T08:03:00.000Z",
+    }]);
+
+    await expect(store.deleteRoom(ROOM_ID)).resolves.toBe(true);
+    await expect(store.deleteRoom(ROOM_ID)).resolves.toBe(false);
+    await expect(store.getRoom(ROOM_ID)).resolves.toBeUndefined();
+    await expect(store.listMessages({ roomId: ROOM_ID, limit: 10 }))
+      .resolves.toEqual({ messages: [] });
+    await expect(store.listWorkspaceReservations(ROOM_ID)).resolves.toEqual([]);
+  });
 });

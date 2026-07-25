@@ -86,6 +86,7 @@ export function registerTeamChatIpc({ ipc, service, send, ensureReady }: Registe
   handle(TEAM_CHAT_CHANNELS.roomsCreate, (value) => service.createRoom(roomCreateSchema.parse(value)));
   handle(TEAM_CHAT_CHANNELS.roomsUpdate, (value) => service.updateRoom(roomUpdateSchema.parse(value)));
   handle(TEAM_CHAT_CHANNELS.roomsArchive, (value) => service.archiveRoom(idSchema.parse(value)));
+  handle(TEAM_CHAT_CHANNELS.roomsDelete, (value) => service.deleteRoom(idSchema.parse(value)));
   handle(TEAM_CHAT_CHANNELS.messagesList, (value) => service.listMessages(messageListSchema.parse(value)));
   handle(TEAM_CHAT_CHANNELS.messagesSend, (value) => service.sendMessage(messageSendSchema.parse(value)));
   handle(TEAM_CHAT_CHANNELS.turnsStop, (value) => service.stopTurn(idSchema.parse(value)));

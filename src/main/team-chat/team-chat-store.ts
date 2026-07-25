@@ -47,6 +47,7 @@ export interface TeamChatStore {
   createRoom(room: TeamChatRoom): Promise<TeamChatRoom>;
   updateRoom(room: TeamChatRoom): Promise<TeamChatRoom>;
   archiveRoom(roomId: string, updatedAt: string): Promise<void>;
+  deleteRoom(roomId: string): Promise<boolean>;
   listMessages(request: ListTeamChatMessagesRequest): Promise<TeamChatMessagePage>;
   listMessagesAfter(roomId: string, afterMessageId: string, limit: number): Promise<TeamChatContextPage>;
   listDirectedContext(

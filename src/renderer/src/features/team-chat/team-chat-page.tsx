@@ -7,10 +7,12 @@ import {
   FolderOpen,
   LoaderCircle,
   MessageCircleMore,
+  MoreHorizontal,
   Pencil,
   Plus,
   RotateCcw,
   Send,
+  Trash2,
   UsersRound,
   X,
 } from "lucide-react";
@@ -162,6 +164,7 @@ export function TeamChatPage({ language }: { language: LanguageMode }): ReactEle
   const [streams, setStreams] = useState<Record<string, StreamDraft>>({});
   const [resettingAgentIds, setResettingAgentIds] = useState<Set<string>>(() => new Set());
   const [createOpen, setCreateOpen] = useState(false);
+  const [roomActionsOpen, setRoomActionsOpen] = useState(false);
   const composerRef = useRef<HTMLTextAreaElement>(null);
   const transcriptEndRef = useRef<HTMLDivElement>(null);
   const skipNextAutoScrollRef = useRef(false);
@@ -288,6 +291,7 @@ export function TeamChatPage({ language }: { language: LanguageMode }): ReactEle
     setActiveRootMessageId(undefined);
     setStreams({});
     setResettingAgentIds(new Set());
+    setRoomActionsOpen(false);
     setMentionMenuOpen(false);
     if (!selectedRoomId || connection.state !== "ready") {
       setActiveRoom(undefined);
@@ -432,7 +436,29 @@ export function TeamChatPage({ language }: { language: LanguageMode }): ReactEle
     if (!activeRoom) return;
     if (!window.confirm(l(`Archive “${activeRoom.name}”?`, `归档“${activeRoom.name}”？`))) return;
     try {
+      setRoomActionsOpen(false);
       await api.archiveRoom(activeRoom.id);
+      await loadRooms();
+    } catch (error) {
+      setFeedback(errorMessage(error));
+    }
+  };
+
+  const deleteRoom = async (): Promise<void> => {
+    if (!activeRoom) return;
+    const confirmed = window.confirm(l(
+      `Permanently delete “${activeRoom.name}” and all of its messages? This cannot be undone.`,
+      `永久删除“${activeRoom.name}”及其中的全部消息？此操作无法撤销。`,
+    ));
+    if (!confirmed) return;
+    setRoomActionsOpen(false);
+    setFeedback(undefined);
+    try {
+      await api.deleteRoom(activeRoom.id);
+      setActiveRoom(undefined);
+      setMessages([]);
+      setStreams({});
+      setActiveRootMessageId(undefined);
       await loadRooms();
     } catch (error) {
       setFeedback(errorMessage(error));
@@ -545,9 +571,30 @@ export function TeamChatPage({ language }: { language: LanguageMode }): ReactEle
                     />
                     <span title={activeRoom.workDir}>{activeRoom.workDir || l("No working directory", "未设置工作目录")}</span>
                   </div>
-                  <button type="button" onClick={() => void archiveRoom()} title={l("Archive room", "归档房间")}>
-                    <Archive size={15} />
-                  </button>
+                  <div className="team-chat-room-actions">
+                    <button
+                      type="button"
+                      aria-haspopup="menu"
+                      aria-expanded={roomActionsOpen}
+                      onClick={() => setRoomActionsOpen((current) => !current)}
+                      title={l("Room actions", "房间操作")}
+                      aria-label={l("Room actions", "房间操作")}
+                    >
+                      <MoreHorizontal size={16} />
+                    </button>
+                    {roomActionsOpen ? (
+                      <div className="team-chat-room-menu" role="menu">
+                        <button type="button" role="menuitem" onClick={() => void archiveRoom()}>
+                          <Archive size={14} />
+                          {l("Archive studio", "归档工作室")}
+                        </button>
+                        <button className="danger" type="button" role="menuitem" onClick={() => void deleteRoom()}>
+                          <Trash2 size={14} />
+                          {l("Delete permanently", "永久删除")}
+                        </button>
+                      </div>
+                    ) : null}
+                  </div>
                 </header>
                 <div className="team-chat-transcript">
                   {nextBefore ? (

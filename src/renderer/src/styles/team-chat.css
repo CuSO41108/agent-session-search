@@ -108,7 +108,7 @@
 }
 
 .team-chat-rail-head button,
-.team-chat-room-head > button {
+.team-chat-room-actions > button {
   display: grid;
   place-items: center;
   width: 26px;
@@ -118,9 +118,54 @@
 }
 
 .team-chat-rail-head button:hover,
-.team-chat-room-head > button:hover {
+.team-chat-room-actions > button:hover {
   color: var(--text);
   background: var(--panel-hover);
+}
+
+.team-chat-room-actions {
+  position: relative;
+  flex: 0 0 auto;
+}
+
+.team-chat-room-menu {
+  position: absolute;
+  z-index: 20;
+  top: calc(100% + 5px);
+  right: 0;
+  display: grid;
+  width: 164px;
+  padding: 5px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--panel-bg);
+  box-shadow: var(--shadow-dialog);
+}
+
+.team-chat-room-menu button {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 7px;
+  width: 100%;
+  height: 30px;
+  padding: 0 8px;
+  color: var(--text-muted);
+  font-size: 10px;
+  text-align: left;
+}
+
+.team-chat-room-menu button:hover {
+  color: var(--text);
+  background: var(--panel-hover);
+}
+
+.team-chat-room-menu button.danger {
+  color: var(--danger);
+}
+
+.team-chat-room-menu button.danger:hover {
+  background: var(--danger-soft);
 }
 
 .team-chat-room-list,

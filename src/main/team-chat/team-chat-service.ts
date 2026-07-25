@@ -76,6 +76,7 @@ type TeamChatEventListener = (event: TeamChatEvent) => void;
 export class TeamChatService {
   private readonly listeners = new Set<TeamChatEventListener>();
   private readonly rootControllers = new Map<string, AbortController>();
+  private readonly rootRoomIds = new Map<string, string>();
   private readonly rootActivityCounts = new Map<string, number>();
   private readonly rootDispatchCounts = new Map<string, number>();
   private readonly memberQueueTails = new Map<string, Promise<void>>();
@@ -222,6 +223,20 @@ export class TeamChatService {
     this.emit({ type: "rooms-changed" });
   }
 
+  async deleteRoom(roomId: string): Promise<void> {
+    const store = this.requireStore();
+    const room = await store.getRoom(roomId);
+    if (!room) throw new Error("Team Chat room was not found.");
+    for (const [rootMessageId, activeRoomId] of this.rootRoomIds) {
+      if (activeRoomId === roomId) this.rootControllers.get(rootMessageId)?.abort();
+    }
+    for (const [token, scope] of this.studioScopes) {
+      if (scope.roomId === roomId) this.studioScopes.delete(token);
+    }
+    if (!await store.deleteRoom(roomId)) throw new Error("Team Chat room was not found.");
+    this.emit({ type: "rooms-changed" });
+  }
+
   async listMessages(request: ListTeamChatMessagesRequest): Promise<TeamChatMessagePage> {
     return this.requireStore().listMessages(request);
   }
@@ -273,6 +288,7 @@ export class TeamChatService {
 
     const controller = new AbortController();
     this.rootControllers.set(messageId, controller);
+    this.rootRoomIds.set(messageId, room.id);
     this.rootDispatchCounts.set(messageId, targets.length);
     for (const targetAgentId of targets) {
       void this.enqueueMemberExecution({
@@ -975,6 +991,7 @@ export class TeamChatService {
       await Promise.allSettled([...this.activeWorkPromises]);
     }
     this.rootControllers.clear();
+    this.rootRoomIds.clear();
     this.rootActivityCounts.clear();
     this.rootDispatchCounts.clear();
     this.memberQueueTails.clear();
@@ -1008,6 +1025,7 @@ export class TeamChatService {
     }
     this.rootActivityCounts.delete(rootMessageId);
     this.rootDispatchCounts.delete(rootMessageId);
+    this.rootRoomIds.delete(rootMessageId);
     if (this.rootControllers.get(rootMessageId) === controller) {
       this.rootControllers.delete(rootMessageId);
     }
