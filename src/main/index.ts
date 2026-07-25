@@ -1346,10 +1346,30 @@ async function writeMigratedSessionToSshEnvironment(
       path: remotePath,
       contentBase64: content.toString("base64"),
     });
+    if (target === "codex") {
+      await updateRemoteCodexSessionIndex(environment, remoteHome, session, written.sessionId, now);
+    }
     return { sessionId: written.sessionId, filePath: remotePath };
   } finally {
     await fs.rm(tempHome, { recursive: true, force: true });
   }
+}
+
+async function updateRemoteCodexSessionIndex(
+  environment: SessionEnvironment,
+  remoteHome: string,
+  session: PortableSession,
+  sessionId: string,
+  now: Date,
+): Promise<void> {
+  const indexPath = `${remoteHome.replace(/[\\/]+$/, "")}/.codex/session_index.jsonl`;
+  const title = session.title || session.messages.find((message) => message.role === "user")?.content || sessionId;
+  await runRemotePython(environment, REMOTE_UPDATE_CODEX_INDEX_SCRIPT, {
+    path: indexPath,
+    id: sessionId,
+    threadName: title,
+    updatedAt: now.toISOString(),
+  });
 }
 
 async function remoteHomeDir(environment: SessionEnvironment): Promise<string> {
@@ -1424,6 +1444,25 @@ const REMOTE_WRITE_FILE_SCRIPT = [
   "os.chmod(tmp, 0o600)",
   "os.replace(tmp, target)",
   "print(str(target))",
+].join("\n");
+
+const REMOTE_UPDATE_CODEX_INDEX_SCRIPT = [
+  "import json, os, sys, uuid",
+  "from pathlib import Path",
+  "payload = json.load(sys.stdin)",
+  "index = Path(payload['path'])",
+  "rows = []",
+  "if index.exists():",
+  "    for line in index.read_text(encoding='utf-8').splitlines():",
+  "        if line.strip(): rows.append(json.loads(line))",
+  "rows = [row for row in rows if not isinstance(row, dict) or row.get('id') != payload['id']]",
+  "rows.append({'id': payload['id'], 'thread_name': payload['threadName'], 'updated_at': payload['updatedAt']})",
+  "index.parent.mkdir(parents=True, exist_ok=True)",
+  "tmp = index.with_name(index.name + '.tmp-' + uuid.uuid4().hex)",
+  "tmp.write_text(''.join(json.dumps(row, ensure_ascii=False) + '\\n' for row in rows), encoding='utf-8')",
+  "os.chmod(tmp, 0o600)",
+  "os.replace(tmp, index)",
+  "print(str(index))",
 ].join("\n");
 
 async function maybeAutoBackfillSummaries(): Promise<void> {
