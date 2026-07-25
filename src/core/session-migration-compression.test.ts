@@ -19,22 +19,22 @@ const STARTED_AT = "2026-06-23T00:00:00.000Z";
 
 function summaryBody(extra = ""): string {
   return [
-    "## 用户原始目标与约束",
-    "实现跨 Agent 会话迁移压缩对齐 Claude Code /compact 两块式结构：采用 analysis+summary 两块式 prompt，保留开头用户原始目标 10k 字符逐字不压缩，尾部保留最近 10k 字符原始消息便于目标 Agent 衔接，summary 硬上限 60k 字符。",
+    "## 用户原始目标",
+    "实现按轮次迁移 Session，并在长历史中保留足够的原始上下文，让目标 Agent 可以继续当前工作。",
+    "## 约束与用户纠正",
+    "用户明确要求最近保留量按所选历史的 40% 计算；不采用滚动摘要；早期历史采用最多四个独立分片并行提取，最后只合并一次。",
+    "## 已确定的决定",
+    "完整迁移阈值默认 100K Token 且可以设置；目标分片大小为阈值的 35%；所有切分必须落在完整 Turn 边界。",
     "## 已完成工作",
-    "重写 buildMigrationHandoffMessages 为中文两块式 prompt，要求 analysis 按时间顺序梳理、summary 覆盖七项要点；新增 formatCompactSummary 剥掉 analysis 块只留 summary；重写 parseMigrationHandoff 校验两块结构、summary 最小长度、逐字引用标记；重写 buildAiCompressedSession 为 head+summary+marker+tail 四段消息。",
-    "## 关键决策及原因",
-    "采用两块式结构以对齐 Claude Code 实际实现而非自创分段；保留头部 10k 防止用户原始目标被摘要改写后漂移；analysis 块剥掉是因为它只是草稿区无保留价值；尾部保留 10k 是因为目标 Agent 需要最近原始上下文衔接。",
-    "## 文件、命令与验证",
-    "修改 src/core/session-migration-compression.ts；更新 session-migration-compression.test.ts 覆盖新结构；运行 vitest 验证全绿。",
-    "## 未解决事项",
-    "暂无遗留问题，首版不暴露 hint UI 入口。",
-    "## 建议下一步",
-    "继续跑测试覆盖新结构，确认 emoji 边界、超长 summary 裁剪、head 保留均符合预期。",
-    "## 最近对话逐字引用",
-    "> 改成两块式结构，头部调到 10k",
-    "> 或者直接不保留头部，压缩+尾部",
-    "> 你先说一下claude code是怎么压缩的，八段式压缩吗",
+    "已经完成设计规格与实现计划，并增加完整迁移阈值设置；核心压缩策略正在通过 TDD 调整。",
+    "## 相关产物",
+    "设计位于 turn-scoped-session-migration-design.md；实现涉及 session-migration-compression.ts、platform.ts 和对应测试。",
+    "## 当前状态",
+    "正在实现并行分片与最近 40% 完整 Turn 保留。用户最近确认：\n> 不是最近50k，是最近40%",
+    "## 遗留问题",
+    "还需要接入 throughTurnId IPC、Turn 右键菜单以及所有迁移入口的设置传递。",
+    "## 下一步",
+    "完成固定结构校验，然后实现按轮截止边界和 Renderer 交互，最后执行完整测试与构建。",
     extra,
   ].join("\n");
 }
@@ -75,6 +75,14 @@ function portableWithContent(content: string): PortableSession {
   ]);
 }
 
+function portableAboveDefaultLimit(): PortableSession {
+  return portable(
+    Array.from({ length: 4 }, (_, index) =>
+      message("x".repeat(index === 0 ? 100_004 : 100_000), index),
+    ),
+  );
+}
+
 function expectContinuousIndexes(session: PortableSession): void {
   expect(session.messages.map((entry) => entry.index)).toEqual(
     session.messages.map((_, index) => index),
@@ -87,8 +95,12 @@ function expectNoUnpairedSurrogates(text: string): void {
 }
 
 describe("migration compression policy", () => {
-  it("keeps the original session complete at exactly the 60k token limit", async () => {
-    const session = portableWithContent("x".repeat(239_988));
+  it("uses 100k estimated tokens as the default complete migration threshold", () => {
+    expect(MIGRATION_TOKEN_LIMIT).toBe(100_000);
+  });
+
+  it("keeps the original session complete at exactly the 100k token limit", async () => {
+    const session = portableWithContent("x".repeat(399_988));
 
     expect(estimatePortableSessionTokens(session)).toBe(MIGRATION_TOKEN_LIMIT);
     const result = await applyMigrationLengthPolicy(session, null);
@@ -97,33 +109,79 @@ describe("migration compression policy", () => {
     expect(result.session).toBe(session);
   });
 
+  it("uses the configured complete migration threshold", async () => {
+    const session = portable(
+      Array.from({ length: 4 }, (_, index) => message("x".repeat(60_000), index)),
+    );
+    const compress = vi.fn().mockResolvedValue(VALID_HANDOFF);
+
+    await expect(applyMigrationLengthPolicy(session, compress)).resolves.toMatchObject({
+      strategy: "complete",
+    });
+    await expect(
+      applyMigrationLengthPolicy(session, compress, undefined, 50_000),
+    ).resolves.toMatchObject({
+      strategy: "ai-compressed",
+    });
+    expect(compress).toHaveBeenCalledTimes(1);
+  });
+
   it("uses AI compression one estimated token above the limit", async () => {
-    const session = portableWithContent("x".repeat(239_989));
+    const session = portableAboveDefaultLimit();
     const compress = vi.fn().mockResolvedValue(VALID_HANDOFF);
 
     expect(estimatePortableSessionTokens(session)).toBe(MIGRATION_TOKEN_LIMIT + 1);
     const result = await applyMigrationLengthPolicy(session, compress);
 
     expect(result.strategy).toBe("ai-compressed");
-    expect(compress).toHaveBeenCalledWith(session);
-    // head: first 10k of the original user message
-    expect(result.session.messages[0]).toMatchObject({ role: "user" });
-    expect(result.session.messages[0].content).toBe("x".repeat(10_000));
+    expect(compress).toHaveBeenCalledWith(expect.objectContaining({
+      messages: session.messages.slice(0, 2),
+    }));
     // summary: handoff header + summary content (no <analysis>), with verbatim quote
-    const summaryMessage = result.session.messages[1];
+    const summaryMessage = result.session.messages[0];
     expect(summaryMessage).toMatchObject({ role: "user", timestamp: STARTED_AT });
     expect(summaryMessage.content).toContain("# 会话迁移交接");
-    expect(summaryMessage.content).toContain("> 改成两块式结构");
+    expect(summaryMessage.content).toContain("> 不是最近50k，是最近40%");
     expect(summaryMessage.content).not.toContain("<analysis>");
     expect(summaryMessage.content).not.toContain("</analysis>");
-    // tail: last message preserved
-    expect(result.session.messages.at(-1)?.content).toContain("final answer");
+    // recent 40%: the final complete turn is preserved
+    expect(result.session.messages.slice(-2).map((entry) => entry.content)).toEqual(
+      session.messages.slice(2).map((entry) => entry.content),
+    );
     expect(estimatePortableSessionTokens(result.session)).toBeLessThanOrEqual(MIGRATION_TOKEN_LIMIT);
     expectContinuousIndexes(result.session);
   });
 
+  it("compresses the early 60% and preserves the recent 40% as complete turns", async () => {
+    const messages = Array.from({ length: 20 }, (_, index) =>
+      message(`${String(index).padStart(2, "0")}${"x".repeat(35_998)}`, index),
+    );
+    const session = Object.assign(portable(messages), {
+      turnBoundaries: Array.from({ length: 10 }, (_, index) => index * 2),
+    });
+    const compress = vi.fn().mockResolvedValue(VALID_HANDOFF);
+
+    expect(estimatePortableSessionTokens(session)).toBe(180_000);
+    const result = await applyMigrationLengthPolicy(session, compress);
+
+    expect(compress).toHaveBeenCalledTimes(1);
+    const compressedPrefix = compress.mock.calls[0][0] as PortableSession;
+    expect(compressedPrefix.messages.map((entry) => entry.content)).toEqual(
+      messages.slice(0, 12).map((entry) => entry.content),
+    );
+    expect(result.session.messages.slice(-8).map((entry) => entry.content)).toEqual(
+      messages.slice(12).map((entry) => entry.content),
+    );
+  });
+
+  it("rejects long migration when no summary model is configured", async () => {
+    await expect(
+      applyMigrationLengthPolicy(portableWithContent("x".repeat(399_989)), null),
+    ).rejects.toThrow(/summary model/i);
+  });
+
   it("forwards the compression progress listener to compress", async () => {
-    const session = portableWithContent("x".repeat(239_989));
+    const session = portableAboveDefaultLimit();
     const compress = vi.fn(
       async (_session, onProgress?: (event: MigrationCompressionEvent) => void) => {
         onProgress?.({ completed: 1, totalChunks: 2, phase: "chunk" });
@@ -158,16 +216,10 @@ describe("migration compression policy", () => {
         `<analysis>x</analysis><summary>${"y".repeat(600)}</summary>`,
       ),
     ],
-  ] as const)("falls back locally when it %s", async (_case, compress) => {
-    const result = await applyMigrationLengthPolicy(
-      portableWithContent("x".repeat(239_989)),
-      compress,
-    );
-
-    expect(result.strategy).toBe("locally-truncated");
-    expect(result.session.messages.some((entry) => entry.content.includes("省略"))).toBe(true);
-    expect(estimatePortableSessionTokens(result.session)).toBeLessThanOrEqual(MIGRATION_TOKEN_LIMIT);
-    expectContinuousIndexes(result.session);
+  ] as const)("rejects instead of silently truncating when it %s", async (_case, compress) => {
+    await expect(
+      applyMigrationLengthPolicy(portableAboveDefaultLimit(), compress),
+    ).rejects.toThrow();
   });
 
   it("keeps deterministic opening and closing context with an explicit omitted count", () => {
@@ -235,26 +287,26 @@ describe("migration compression policy", () => {
       entry.content.includes("# 会话迁移交接"),
     );
     expect(summaryMessage).toBeDefined();
-    expect(summaryMessage!.content.length).toBeLessThanOrEqual(60_000 + "# 会话迁移交接\n\n".length);
+    expect(summaryMessage!.content.length).toBeLessThanOrEqual(80_000 + "# 会话迁移交接\n\n".length);
     expect(result.session.messages.at(-1)?.content).toContain("message-79");
     expect(estimatePortableSessionTokens(result.session)).toBeLessThanOrEqual(MIGRATION_TOKEN_LIMIT);
     expectContinuousIndexes(result.session);
   });
 
-  it("preserves the opening user goal verbatim in the head window", async () => {
+  it("passes the opening user goal to the early-history compressor", async () => {
     const session = portable([
       message("原始用户目标：实现压缩迁移对齐 Claude Code", 0, "user"),
       ...Array.from({ length: 60 }, (_, index) =>
         message(`middle-${index}-${"x".repeat(8_000)}`, index + 1),
       ),
     ]);
-    const result = await applyMigrationLengthPolicy(
-      session,
-      vi.fn().mockResolvedValue(VALID_HANDOFF),
-    );
+    const compress = vi.fn().mockResolvedValue(VALID_HANDOFF);
+    const result = await applyMigrationLengthPolicy(session, compress);
 
     expect(result.strategy).toBe("ai-compressed");
-    expect(result.session.messages[0].content).toContain("原始用户目标：实现压缩迁移对齐 Claude Code");
+    expect(compress.mock.calls[0][0].messages[0].content).toContain(
+      "原始用户目标：实现压缩迁移对齐 Claude Code",
+    );
     expect(estimatePortableSessionTokens(result.session)).toBeLessThanOrEqual(MIGRATION_TOKEN_LIMIT);
   });
 
@@ -300,12 +352,12 @@ describe("migration compression policy", () => {
         `${offset}${"😀".repeat(100_000)}`,
       )}</summary>`;
       const result = await applyMigrationLengthPolicy(
-        portableWithContent("x".repeat(239_989)),
+        portableAboveDefaultLimit(),
         vi.fn().mockResolvedValue(oversized),
       );
 
       expect(result.strategy).toBe("ai-compressed");
-      expect(result.session.messages[1].content).toContain("# 会话迁移交接");
+      expect(result.session.messages[0].content).toContain("# 会话迁移交接");
       for (const entry of result.session.messages) {
         expectNoUnpairedSurrogates(entry.content);
       }
@@ -352,6 +404,17 @@ describe("parseMigrationHandoff", () => {
   it("returns null when summary has no verbatim quote marker", () => {
     const noQuote = "y".repeat(600);
     expect(parseMigrationHandoff(`<analysis>x</analysis><summary>${noQuote}</summary>`)).toBeNull();
+  });
+
+  it("returns null when a required handoff section is missing", () => {
+    const missingNextSteps = summaryBody().replace(
+      /## 下一步[\s\S]*$/,
+      "仍然有足够长度，但没有下一步栏目。".repeat(30),
+    );
+
+    expect(
+      parseMigrationHandoff(`<analysis>x</analysis><summary>${missingNextSteps}</summary>`),
+    ).toBeNull();
   });
 });
 
@@ -466,6 +529,47 @@ describe("migration handoff provider request", () => {
     expect(payload.transcript).not.toContain("after");
   });
 
+  it("extracts a 108k early prefix in four independent chunks and merges once", async () => {
+    const endpoint = {
+      baseUrl: "https://provider.example/v1",
+      model: "model",
+      apiKey: "secret",
+      apiFormat: "openai_chat" as const,
+    };
+    const messages = Array.from({ length: 12 }, (_, index) => {
+      const label = `turn-${Math.floor(index / 2)}-message-${index}`;
+      return message(`${label}${"x".repeat(36_000 - label.length)}`, index);
+    });
+    const session = Object.assign(portable(messages), {
+      turnBoundaries: Array.from({ length: 6 }, (_, index) => index * 2),
+    });
+    const fragmentOutputs = ["fragment-a", "fragment-b", "fragment-c", "fragment-d"];
+    let fragmentIndex = 0;
+    const chat = vi.fn(async (_endpoint, requestMessages) => {
+      if (requestMessages[0].content.includes("分片摘要")) {
+        const output = fragmentOutputs[fragmentIndex];
+        fragmentIndex += 1;
+        return output;
+      }
+      return VALID_HANDOFF;
+    });
+
+    await expect(
+      createMigrationCompressor(endpoint, chat, 4, 100_000)(session),
+    ).resolves.toBe(VALID_HANDOFF);
+
+    const fragmentCalls = chat.mock.calls.filter(([, requestMessages]) =>
+      requestMessages[0].content.includes("分片摘要"),
+    );
+    expect(fragmentCalls).toHaveLength(4);
+    expect(chat).toHaveBeenCalledTimes(5);
+    fragmentCalls.forEach(([, requestMessages]) => {
+      expect(fragmentOutputs.some((output) => requestMessages[1].content.includes(output))).toBe(false);
+    });
+    expect(chat.mock.calls.at(-1)?.[1][1].content).toContain("fragment-a");
+    expect(chat.mock.calls.at(-1)?.[1][1].content).toContain("fragment-d");
+  });
+
   it("summarizes long migrations from chunks that cover middle messages", async () => {
     const endpoint = {
       baseUrl: "https://provider.example/v1",
@@ -491,7 +595,7 @@ describe("migration handoff provider request", () => {
     expect(chat.mock.calls.map(([, messages]) => messages[1].content).join("\n")).toContain("chunk-visible-40");
   });
 
-  it("reuses the supplied summary completion function", async () => {
+  it("reuses the supplied summary completion function for extraction and handoff", async () => {
     const endpoint = {
       baseUrl: "https://provider.example/v1",
       model: "model",
@@ -502,7 +606,11 @@ describe("migration handoff provider request", () => {
     const session = portableWithContent("transcript");
 
     await expect(createMigrationCompressor(endpoint, chat)(session)).resolves.toBe(VALID_HANDOFF);
-    expect(chat).toHaveBeenCalledWith(endpoint, buildMigrationHandoffMessages(session));
+    expect(chat).toHaveBeenCalledTimes(2);
+    expect(chat.mock.calls[0][0]).toBe(endpoint);
+    expect(chat.mock.calls[0][1][0].content).toContain("分片摘要");
+    expect(chat.mock.calls[1][0]).toBe(endpoint);
+    expect(chat.mock.calls[1][1][0]).toEqual(buildMigrationHandoffMessages(session)[0]);
   });
 
   it("reports chunk-then-handoff progress as it summarizes a multi-chunk session", async () => {
@@ -541,7 +649,7 @@ describe("migration handoff provider request", () => {
     expect(percents).toEqual([...percents].sort((a, b) => a - b));
   });
 
-  it("emits a single handoff progress event for a single-chunk session", async () => {
+  it("emits extraction and handoff progress for a single-chunk session", async () => {
     const endpoint = {
       baseUrl: "https://provider.example/v1",
       model: "model",
@@ -556,7 +664,10 @@ describe("migration handoff provider request", () => {
       events.push(event);
     });
 
-    expect(events).toEqual([{ completed: 1, totalChunks: 1, phase: "handoff" }]);
+    expect(events).toEqual([
+      { completed: 1, totalChunks: 1, phase: "chunk" },
+      { completed: 1, totalChunks: 1, phase: "handoff" },
+    ]);
   });
 
   it("summarizes chunks concurrently with bounded concurrency", async () => {

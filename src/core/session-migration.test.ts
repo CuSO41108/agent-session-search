@@ -295,7 +295,7 @@ describe("session migration model", () => {
 
     expect("你好🙂a".length).toBe(5);
     expect(estimatePortableSessionTokens(portable)).toBe(2);
-    expect(MIGRATION_TOKEN_LIMIT).toBe(60_000);
+    expect(MIGRATION_TOKEN_LIMIT).toBe(100_000);
   });
 });
 
@@ -507,6 +507,20 @@ describe("migrateSession", () => {
       "indexing",
       "launching",
     ]);
+  });
+
+  it("uses the configured complete token limit for compression progress", async () => {
+    const { deps, onProgress } = createDependencies();
+
+    await migrateSession({
+      source: session("claude-cli"),
+      messages,
+      target: "codex",
+      completeTokenLimit: 1,
+      deps,
+    });
+
+    expect(onProgress.mock.calls.map(([event]) => event.stage)).toContain("compressing");
   });
 
   it("emits compressing for a long session", async () => {

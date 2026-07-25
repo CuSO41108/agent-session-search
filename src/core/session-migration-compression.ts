@@ -36,26 +36,26 @@ const MIGRATION_CHARACTER_LIMIT = MIGRATION_TOKEN_LIMIT * 4;
 const FALLBACK_MARKER_RESERVE = 256;
 const FALLBACK_HEAD_CHARACTERS = 50_000;
 const FALLBACK_TAIL_CHARACTERS = 90_000;
-const AI_HEAD_CHARACTERS = 10_000;
-const AI_RECENT_CHARACTERS = 10_000;
-const AI_HANDOFF_CHARACTERS = 60_000;
 const HANDOFF_HEADER = "# 会话迁移交接\n\n";
 const PROMPT_MAX_CHARS_PER_MESSAGE = 3_500;
 const PROMPT_HEAD_MESSAGES = 6;
 const PROMPT_TAIL_MESSAGES = 10;
 const SUMMARY_MIN_CHARACTERS = 500;
-const TRANSCRIPT_FRAGMENT_CHARACTERS = 8_000;
-const COMPRESSION_CHUNK_CHARACTERS = 45_000;
 const CHUNK_SUMMARY_MAX_CHARACTERS = 4_000;
+const REQUIRED_HANDOFF_SECTIONS = [
+  "用户原始目标",
+  "约束与用户纠正",
+  "已确定的决定",
+  "已完成工作",
+  "相关产物",
+  "当前状态",
+  "遗留问题",
+  "下一步",
+] as const;
 // Max chunk summaries run in parallel. Chunk summaries are independent (the
 // handoff that depends on all of them stays sequential after), so bounding
 // concurrency turns N sequential LLM calls into ceil(N / CONCURRENCY) batches.
 export const COMPRESSION_CONCURRENCY = 8;
-
-interface TranscriptFragment {
-  text: string;
-  sourceIndex: number;
-}
 
 function safeSlice(text: string, start: number, end: number): string {
   let safeStart = Math.max(0, Math.min(text.length, start));
@@ -195,6 +195,11 @@ export function parseMigrationHandoff(raw: string): string | null {
   if (!summary) return null;
   if (summary.length < SUMMARY_MIN_CHARACTERS) return null;
   if (!hasVerbatimQuote(summary)) return null;
+  if (
+    REQUIRED_HANDOFF_SECTIONS.some(
+      (section) => !new RegExp(`^##\\s+${section}\\s*$`, "m").test(summary),
+    )
+  ) return null;
   return summary;
 }
 
@@ -249,24 +254,14 @@ export function buildLocalMigrationFallback(session: PortableSession): PortableS
 function buildAiCompressedSession(
   session: PortableSession,
   summary: string,
+  recentMessages: readonly SessionMessage[],
+  completeTokenLimit: number,
 ): PortableSession {
-  const head = takeHeadWithinCharacters(session.messages, AI_HEAD_CHARACTERS).map(
-    (entry) => entry.message,
-  );
-  const tail = takeTailWithinCharacters(
-    session.messages,
-    AI_RECENT_CHARACTERS,
-  ).map((entry) => entry.message);
-  const handoffContent = safePrefix(summary, AI_HANDOFF_CHARACTERS);
-  const omittedHeadCount = Math.max(
-    0,
-    session.messages.length - head.length - tail.length,
-  );
+  const summaryCharacterLimit = Math.floor(completeTokenLimit * 0.2 * 4);
+  const handoffContent = safePrefix(summary, summaryCharacterLimit);
   const marker: SessionMessage = {
     role: "user",
-    content:
-      `[迁移说明：以下保留最近 ${tail.length} 条原始消息，` +
-      `便于目标 Agent 衔接最近上下文；中间约 ${omittedHeadCount} 条消息已并入上方摘要。]`,
+    content: "[迁移说明：以下为最近 40% 的完整对话轮次，之前内容已并入上方摘要。]",
     timestamp: session.startedAt,
     index: 0,
   };
@@ -274,7 +269,6 @@ function buildAiCompressedSession(
   return {
     ...session,
     messages: withContinuousIndexes([
-      ...head,
       {
         role: "user",
         content: `${HANDOFF_HEADER}${handoffContent}`,
@@ -282,8 +276,56 @@ function buildAiCompressedSession(
         index: 0,
       },
       marker,
-      ...tail,
+      ...recentMessages,
     ]),
+    turnBoundaries: undefined,
+  };
+}
+
+function portableTurnBoundaries(session: PortableSession): number[] {
+  const explicit = session.turnBoundaries
+    ?.filter((boundary) => Number.isInteger(boundary) && boundary >= 0 && boundary < session.messages.length)
+    .sort((a, b) => a - b);
+  const boundaries = explicit && explicit.length > 0
+    ? [...new Set(explicit)]
+    : session.messages.reduce<number[]>((result, entry, index) => {
+        if (index === 0 || entry.role === "user") result.push(index);
+        return result;
+      }, []);
+  if (session.messages.length > 0 && boundaries[0] !== 0) boundaries.unshift(0);
+  return boundaries;
+}
+
+function splitEarlyAndRecentTurns(session: PortableSession): {
+  early: PortableSession;
+  recentMessages: SessionMessage[];
+} {
+  const boundaries = portableTurnBoundaries(session);
+  const recentTokenBudget = Math.floor(estimatePortableSessionTokens(session) * 0.4);
+  let recentStart = session.messages.length;
+  let recentTokens = 0;
+
+  for (let index = boundaries.length - 1; index >= 0; index -= 1) {
+    const start = boundaries[index];
+    const end = index + 1 < boundaries.length ? boundaries[index + 1] : session.messages.length;
+    const turnCharacters = session.messages
+      .slice(start, end)
+      .reduce((total, entry) => total + entry.content.length, 0);
+    const turnTokens = Math.ceil(turnCharacters / 4);
+    if (recentStart < session.messages.length && recentTokens + turnTokens > recentTokenBudget) break;
+    recentStart = start;
+    recentTokens += turnTokens;
+  }
+
+  const earlyMessages = session.messages.slice(0, recentStart);
+  const earlyBoundaries = boundaries.filter((boundary) => boundary < recentStart);
+  return {
+    early: {
+      ...session,
+      messages: withContinuousIndexes(earlyMessages),
+      turnBoundaries: earlyBoundaries,
+    },
+    recentMessages: session.messages.slice(recentStart),
   };
 }
 
@@ -291,31 +333,40 @@ export async function applyMigrationLengthPolicy(
   session: PortableSession,
   compress: MigrationCompressFn | null,
   onProgress?: MigrationCompressionListener,
+  completeTokenLimit: number = MIGRATION_TOKEN_LIMIT,
 ): Promise<PreparedMigrationSession> {
-  if (estimatePortableSessionTokens(session) <= MIGRATION_TOKEN_LIMIT) {
+  if (estimatePortableSessionTokens(session) <= completeTokenLimit) {
     return { session, strategy: "complete" };
   }
 
-  if (compress) {
-    try {
-      // Forward onProgress only when provided, so callers (and tests) that
-      // pass a plain (session) => Promise<string> fn see exactly that arity.
-      const raw = (await (onProgress ? compress(session, onProgress) : compress(session))).trim();
-      const summary = parseMigrationHandoff(raw);
-      if (summary) {
-        return {
-          session: buildAiCompressedSession(session, summary),
-          strategy: "ai-compressed",
-        };
-      }
-    } catch {
-      // Provider failures intentionally use the deterministic local fallback.
-    }
+  if (!compress) {
+    throw new Error("A summary model must be configured to migrate this long session.");
   }
 
+  const { early, recentMessages } = splitEarlyAndRecentTurns(session);
+  if (early.messages.length === 0) {
+    throw new Error("The most recent turn exceeds the complete migration threshold.");
+  }
+
+  let raw: string;
+  try {
+    // Forward onProgress only when provided, so callers (and tests) that
+    // pass a plain (session) => Promise<string> fn see exactly that arity.
+    raw = (await (onProgress ? compress(early, onProgress) : compress(early))).trim();
+  } catch (error) {
+    throw new Error(
+      `The summary model failed while compressing this migration: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  }
+  const summary = parseMigrationHandoff(raw);
+  if (!summary) {
+    throw new Error("The summary model returned an invalid migration handoff.");
+  }
   return {
-    session: buildLocalMigrationFallback(session),
-    strategy: "locally-truncated",
+    session: buildAiCompressedSession(session, summary, recentMessages, completeTokenLimit),
+    strategy: "ai-compressed",
   };
 }
 
@@ -341,51 +392,59 @@ function boundedTranscript(session: PortableSession): string {
   return lines.join("\n\n");
 }
 
-function transcriptFragments(session: PortableSession): TranscriptFragment[] {
-  const fragments: TranscriptFragment[] = [];
-  session.messages.forEach((message, sourceIndex) => {
-    if (!message.content) return;
-    const partCount = Math.max(
-      1,
-      Math.ceil(message.content.length / TRANSCRIPT_FRAGMENT_CHARACTERS),
+function transcriptChunks(
+  session: PortableSession,
+  completeTokenLimit: number,
+): string[] {
+  const boundaries = portableTurnBoundaries(session);
+  if (boundaries.length === 0) return [""];
+  const targetFragmentTokens = Math.max(1, Math.floor(completeTokenLimit * 0.35));
+  const requiredChunks = Math.max(
+    1,
+    Math.ceil(estimatePortableSessionTokens(session) / targetFragmentTokens),
+  );
+  if (requiredChunks > 4) {
+    throw new Error(
+      "The selected history is too long for the configured complete migration threshold.",
     );
-    for (let partIndex = 0; partIndex < partCount; partIndex += 1) {
-      const start = partIndex * TRANSCRIPT_FRAGMENT_CHARACTERS;
-      const end = Math.min(
-        message.content.length,
-        start + TRANSCRIPT_FRAGMENT_CHARACTERS,
-      );
-      const partLabel = partCount > 1 ? ` part ${partIndex + 1}/${partCount}` : "";
-      const content = safeSlice(message.content, start, end);
-      if (!content) continue;
-      fragments.push({
-        sourceIndex,
-        text:
-          `[message ${sourceIndex}${partLabel}] ` +
-          `${message.role.toUpperCase()} ${message.timestamp}\n${content}`,
-      });
-    }
-  });
-  return fragments;
-}
+  }
 
-function transcriptChunks(session: PortableSession): string[] {
+  const turns = boundaries.map((start, index) => {
+    const end = index + 1 < boundaries.length ? boundaries[index + 1] : session.messages.length;
+    const messages = session.messages.slice(start, end);
+    const characters = messages.reduce((total, entry) => total + entry.content.length, 0);
+    return {
+      text: messages
+        .map(
+          (entry, offset) =>
+            `[message ${start + offset}] ${entry.role.toUpperCase()} ${entry.timestamp}\n${entry.content}`,
+        )
+        .join("\n\n"),
+      tokens: Math.ceil(characters / 4),
+    };
+  });
+  const chunkCount = Math.min(requiredChunks, turns.length);
+  const totalTokens = turns.reduce((total, turn) => total + turn.tokens, 0);
   const chunks: string[] = [];
   let current: string[] = [];
-  let currentCharacters = 0;
-  for (const fragment of transcriptFragments(session)) {
-    const fragmentCharacters = fragment.text.length + 2;
+  let cumulativeTokens = 0;
+  let nextCut = totalTokens / chunkCount;
+
+  turns.forEach((turn, index) => {
+    current.push(turn.text);
+    cumulativeTokens += turn.tokens;
+    const turnsRemaining = turns.length - index - 1;
+    const chunksRemainingAfterCut = chunkCount - chunks.length - 1;
     if (
-      current.length > 0 &&
-      currentCharacters + fragmentCharacters > COMPRESSION_CHUNK_CHARACTERS
+      chunks.length < chunkCount - 1 &&
+      cumulativeTokens >= nextCut &&
+      turnsRemaining >= chunksRemainingAfterCut
     ) {
       chunks.push(current.join("\n\n"));
       current = [];
-      currentCharacters = 0;
+      nextCut = (totalTokens * (chunks.length + 1)) / chunkCount;
     }
-    current.push(fragment.text);
-    currentCharacters += fragmentCharacters;
-  }
+  });
   if (current.length > 0) chunks.push(current.join("\n\n"));
   return chunks;
 }
@@ -424,11 +483,6 @@ function buildMigrationHandoffMessagesFromChunkSummaries(
   session: PortableSession,
   chunkSummaries: readonly string[],
 ): ChatMessage[] {
-  const recentMessages = takeTailWithinCharacters(
-    session.messages,
-    AI_RECENT_CHARACTERS,
-  ).map((entry) => entry.message);
-  const recentTranscript = recentMessages.map(clippedTranscriptMessage).join("\n\n");
   return [
     migrationHandoffSystemMessage(),
     {
@@ -442,8 +496,7 @@ function buildMigrationHandoffMessagesFromChunkSummaries(
           "以下分片摘要按原始会话顺序覆盖完整会话，不要只依赖开头和结尾。\n\n" +
           chunkSummaries
             .map((summary, index) => `## 分片 ${index + 1}\n${summary}`)
-            .join("\n\n") +
-          `\n\n## 最近原始对话\n${recentTranscript}`,
+            .join("\n\n"),
       }),
     },
   ];
@@ -463,8 +516,9 @@ function migrationHandoffSystemMessage(): ChatMessage {
       "这是草稿区，用于整理思路。\n" +
       "</analysis>\n" +
       "<summary>\n" +
-      "面向目标 Agent 的中文 Markdown 摘要，必须覆盖：用户原始目标与约束、已完成工作、" +
-      "关键决策及原因、相关文件/命令/验证结果、未解决事项、建议下一步。" +
+      "面向目标 Agent 的中文 Markdown 摘要，必须依次使用以下二级标题：" +
+      REQUIRED_HANDOFF_SECTIONS.map((section) => `## ${section}`).join("、") +
+      "。用户后来的纠正覆盖早期理解，已完成事项不得继续留在待办中。" +
       "必须包含最近对话的逐字引用（用 > 引用块或「」引号），说明用户正在做什么、停在哪里，" +
       "确保任务不漂移。保留重要的文件名、代码片段和技术细节。\n" +
       "</summary>",
@@ -515,15 +569,11 @@ export function createMigrationCompressor(
   endpoint: SummaryEndpoint,
   chat: ChatCompletionFn = requestSummaryCompletion,
   concurrency: number = COMPRESSION_CONCURRENCY,
+  completeTokenLimit: number = MIGRATION_TOKEN_LIMIT,
 ): MigrationCompressFn {
   return async (session, onProgress) => {
-    const chunks = transcriptChunks(session);
+    const chunks = transcriptChunks(session, completeTokenLimit);
     const totalChunks = Math.max(1, chunks.length);
-
-    if (chunks.length <= 1) {
-      onProgress?.({ completed: 1, totalChunks, phase: "handoff" });
-      return chat(endpoint, buildMigrationHandoffMessages(session));
-    }
 
     // Chunk summaries are independent — run them concurrently (bounded) so an
     // N-chunk session takes ceil(N/CONCURRENCY) batches instead of N sequential calls.

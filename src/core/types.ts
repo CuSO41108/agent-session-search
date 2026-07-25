@@ -94,6 +94,7 @@ export interface PortableSession {
   projectPath: string;
   startedAt: string;
   messages: SessionMessage[];
+  turnBoundaries?: number[];
   isSubagent?: boolean;
   parentSessionId?: string | null;
 }
@@ -249,13 +250,13 @@ export interface SearchOptions {
   source?: SessionSourceFilter;
   liveStatus?: "open" | "closed";
   liveSessionKeys?: string[];
-  visibility?: "default" | "favorites" | "hidden" | "pinned";
+  visibility?: "default" | "favorites" | "hidden";
   sortBy?: SessionSortBy;
   dateFrom?: number;
   dateTo?: number;
   limit?: number;
   excludeSubagents?: boolean;
-  prioritizePinned?: boolean;
+  prioritizeFavorites?: boolean;
 }
 
 export interface ProjectQueryOptions {
@@ -298,7 +299,6 @@ export interface SessionSearchResult extends IndexedSession {
   customTitle: string | null;
   displayTitle: string;
   favorited: boolean;
-  pinned: boolean;
   hidden: boolean;
   tags: string[];
   matchSnippet: string | null;

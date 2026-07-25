@@ -16,7 +16,7 @@ import type {
   SessionSource,
 } from "./types";
 
-export const MIGRATION_TOKEN_LIMIT = 60_000;
+export const MIGRATION_TOKEN_LIMIT = 100_000;
 
 export interface SessionMigrationDependencies {
   inspectCli: (target: MigrationTarget) => Promise<void> | void;
@@ -56,6 +56,7 @@ export interface MigrateSessionOptions {
   source: SessionSearchResult;
   messages: SessionMessage[];
   target: MigrationTarget;
+  completeTokenLimit?: number;
   deps: SessionMigrationDependencies;
 }
 
@@ -135,6 +136,7 @@ export async function migrateSession({
   source,
   messages,
   target,
+  completeTokenLimit = MIGRATION_TOKEN_LIMIT,
   deps,
 }: MigrateSessionOptions): Promise<SessionMigrationResult> {
   await validateMigrationRequest(source, target, deps);
@@ -148,7 +150,7 @@ export async function migrateSession({
   await deps.inspectCli(target);
 
   const portable = portableSessionFrom(source, messages);
-  if (estimatePortableSessionTokens(portable) > MIGRATION_TOKEN_LIMIT) {
+  if (estimatePortableSessionTokens(portable) > completeTokenLimit) {
     notifyProgress(deps.onProgress, {
       sessionKey: source.sessionKey,
       target,
