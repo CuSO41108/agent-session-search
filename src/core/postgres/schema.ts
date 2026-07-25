@@ -372,6 +372,7 @@ export const POSTGRES_MIGRATIONS: readonly PostgresMigration[] = [{
         workflow_id text NOT NULL REFERENCES agent_recall.workflows(id) ON DELETE CASCADE,
         role text NOT NULL,
         content text NOT NULL,
+        events jsonb,
         sequence integer NOT NULL
       );
 
@@ -784,6 +785,15 @@ export const POSTGRES_MIGRATIONS: readonly PostgresMigration[] = [{
   ],
 }, {
   version: 4,
+  name: "persist Workflow draft message events",
+  statements: [
+    `
+      ALTER TABLE agent_recall.workflow_draft_messages
+        ADD COLUMN IF NOT EXISTS events jsonb;
+    `,
+  ],
+}, {
+  version: 5,
   name: "add directory-scoped OpenViking memory state",
   statements: [
     `
@@ -826,12 +836,52 @@ export const POSTGRES_MIGRATIONS: readonly PostgresMigration[] = [{
     `,
   ],
 }, {
-  version: 5,
-  name: "add studio employees and directed collaboration",
+  version: 6,
+  name: "reconcile memory, Workflow events, and studio collaboration",
   statements: [
     `
+      ALTER TABLE agent_recall.workflow_draft_messages
+        ADD COLUMN IF NOT EXISTS events jsonb;
+
+      CREATE TABLE IF NOT EXISTS agent_recall.openviking_workspaces (
+        id text PRIMARY KEY,
+        user_id text NOT NULL UNIQUE,
+        root_path text NOT NULL UNIQUE,
+        identity text NOT NULL UNIQUE,
+        display_name text NOT NULL,
+        managed boolean NOT NULL DEFAULT true,
+        created_at timestamptz NOT NULL,
+        updated_at timestamptz NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS agent_recall.openviking_import_jobs (
+        workspace_id text PRIMARY KEY
+          REFERENCES agent_recall.openviking_workspaces(id) ON DELETE CASCADE,
+        state text NOT NULL DEFAULT 'idle'
+          CHECK (state IN ('idle', 'queued', 'running', 'paused', 'failed', 'completed')),
+        imported_turns integer NOT NULL DEFAULT 0 CHECK (imported_turns >= 0),
+        total_turns integer NOT NULL DEFAULT 0 CHECK (total_turns >= 0),
+        cursor_session_key text,
+        last_error text,
+        updated_at timestamptz NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS agent_recall.openviking_imported_turns (
+        workspace_id text NOT NULL
+          REFERENCES agent_recall.openviking_workspaces(id) ON DELETE CASCADE,
+        source_turn_id text NOT NULL,
+        fingerprint text NOT NULL,
+        imported_at timestamptz NOT NULL,
+        PRIMARY KEY (workspace_id, source_turn_id, fingerprint)
+      );
+
+      CREATE INDEX IF NOT EXISTS openviking_workspaces_managed_idx
+        ON agent_recall.openviking_workspaces (managed, updated_at DESC);
+      CREATE INDEX IF NOT EXISTS openviking_imported_turns_workspace_idx
+        ON agent_recall.openviking_imported_turns (workspace_id, imported_at);
+
       ALTER TABLE agent_recall.chat_room_agents
-        ADD COLUMN configured_agent_id text;
+        ADD COLUMN IF NOT EXISTS configured_agent_id text;
 
       UPDATE agent_recall.chat_room_agents
       SET configured_agent_id = agent_id
@@ -841,10 +891,10 @@ export const POSTGRES_MIGRATIONS: readonly PostgresMigration[] = [{
         ALTER COLUMN configured_agent_id SET NOT NULL;
 
       ALTER TABLE agent_recall.chat_messages
-        ADD COLUMN recipient_member_id text,
-        ADD COLUMN delivery_type varchar(16) NOT NULL DEFAULT 'message'
+        ADD COLUMN IF NOT EXISTS recipient_member_id text,
+        ADD COLUMN IF NOT EXISTS delivery_type varchar(16) NOT NULL DEFAULT 'message'
           CHECK (delivery_type IN ('message', 'reply', 'post')),
-        ADD COLUMN sequence bigint;
+        ADD COLUMN IF NOT EXISTS sequence bigint;
 
       WITH ranked AS (
         SELECT
@@ -863,10 +913,10 @@ export const POSTGRES_MIGRATIONS: readonly PostgresMigration[] = [{
       ALTER TABLE agent_recall.chat_messages
         ALTER COLUMN sequence SET NOT NULL;
 
-      CREATE UNIQUE INDEX chat_messages_room_sequence_idx
+      CREATE UNIQUE INDEX IF NOT EXISTS chat_messages_room_sequence_idx
         ON agent_recall.chat_messages (room_id, sequence);
 
-      CREATE TABLE agent_recall.chat_workspace_reservations (
+      CREATE TABLE IF NOT EXISTS agent_recall.chat_workspace_reservations (
         room_id uuid NOT NULL REFERENCES agent_recall.chat_rooms(id) ON DELETE CASCADE,
         member_id text NOT NULL,
         relative_path text NOT NULL,
@@ -877,7 +927,7 @@ export const POSTGRES_MIGRATIONS: readonly PostgresMigration[] = [{
         PRIMARY KEY (room_id, relative_path)
       );
 
-      CREATE INDEX chat_workspace_reservations_expiry_idx
+      CREATE INDEX IF NOT EXISTS chat_workspace_reservations_expiry_idx
         ON agent_recall.chat_workspace_reservations (expires_at);
     `,
   ],

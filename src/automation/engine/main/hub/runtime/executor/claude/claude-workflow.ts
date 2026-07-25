@@ -8,11 +8,13 @@ import {
 } from "../agent-executor-conversation";
 import {
   developerInstructionsForWorkflowRequest,
+  emitWorkflowAgentApprovalEvent,
   modelFromRuntimeConfig,
   type RuntimeWorkflowExecutionOptions,
 } from "../workflow/agent-executor-workflow-shared";
 import { claudeWorkflowMcpServers } from "./claude-workflow-mcp";
 import { claudeMcpServers } from "../runtime-mcp";
+import { workflowMcpScopeForContext } from "../../../../../shared/workflow-mcp-policy";
 
 export async function runClaudeWorkflow(
   input: RuntimeWorkflowRequestContext,
@@ -29,13 +31,15 @@ export async function runClaudeWorkflow(
   let errorMessage: string | undefined;
   const mcpServers = {
     ...claudeMcpServers(input.configuredAgentId ? options.mcpServersForAgent?.(input.configuredAgentId) ?? [] : []),
-    ...claudeWorkflowMcpServers(
-      options.workflowMcpDiscoveryPath?.(),
-      input.planningWorkflowId,
-      input.workflowRunId,
-      input.workflowNodeId,
-      input.agentRecallMcp?.studioToken,
-    ),
+    ...claudeWorkflowMcpServers({
+      discoveryPath: options.workflowMcpDiscoveryPath?.(),
+      workflowId: input.planningWorkflowId,
+      runId: input.workflowRunId,
+      nodeId: input.workflowNodeId,
+      executionId: input.workflowNodeExecutionId,
+      ...(input.planningWorkflowId ? { managedToken: options.workflowMcpManagedToken?.() } : {}),
+      studioToken: input.agentRecallMcp?.studioToken,
+    }),
   };
   const abortController = new AbortController();
   const abort = () => abortController.abort(input.signal?.reason);
@@ -50,8 +54,12 @@ export async function runClaudeWorkflow(
       developerInstructions: developerInstructionsForWorkflowRequest(input),
       ...(Object.keys(mcpServers).length > 0 ? { mcpServers } : {}),
       abortController,
+      approvalOwnerId: `workflow-draft:${input.planningWorkflowId ?? input.requestId}`,
+      ...(options.requestApproval ? { requestApproval: options.requestApproval } : {}),
+      ...(workflowMcpScopeForContext(input) ? { workflowMcpScope: workflowMcpScopeForContext(input) } : {}),
       ...(resumeSessionId ? { resumeSessionId } : {}),
       onEvent: (event) => {
+        if (emitWorkflowAgentApprovalEvent(input, event)) return;
         if (event.type === "delta") {
           content += event.content;
           input.onEvent?.({ requestId: input.requestId, type: "delta", content: event.content });

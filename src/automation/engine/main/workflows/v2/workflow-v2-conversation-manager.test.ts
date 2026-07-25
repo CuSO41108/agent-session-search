@@ -1,6 +1,7 @@
 import { describe, expect, test, vi } from "vitest";
 import type { AgentEvent, RuntimeConversation } from "../../../shared/types";
 import { workflowNodeConversationId } from "../../../shared/workflow-v2/conversation";
+import type { WorkflowNodeConversation } from "../../../shared/workflow-v2/conversation";
 import { WorkflowV2ConversationManager } from "./workflow-v2-conversation-manager";
 
 function output() {
@@ -11,13 +12,14 @@ describe("WorkflowV2ConversationManager", () => {
   test("marks streaming deltas for coalesced publication while keeping terminal events immediate", async () => {
     let emit!: (event: AgentEvent) => void;
     const deliveries: Array<"stream" | "immediate" | undefined> = [];
+    const published: WorkflowNodeConversation[] = [];
     const manager = new WorkflowV2ConversationManager({
       now: () => 1,
       createSession: (input) => {
         emit = input.emit;
         return { sendPrompt: async () => undefined, interrupt: async () => undefined, close: async () => undefined, runtimeConversation: () => undefined };
       },
-      onChanged: (delivery) => deliveries.push(delivery),
+      onChanged: (delivery, conversation) => { deliveries.push(delivery); published.push(conversation); },
     });
     await manager.start({ workflowId: "w", runId: "r", nodeId: "n", configuredAgentId: "a", modelId: "m", workDir: "C:/workspace", initialPrompt: "Start" });
     deliveries.length = 0;
@@ -27,6 +29,7 @@ describe("WorkflowV2ConversationManager", () => {
     emit({ type: "tool_result", name: "read", content: "done" });
 
     expect(deliveries).toEqual(["stream", "stream", "immediate"]);
+    expect(published.at(-1)?.messages.at(-1)).toMatchObject({ eventType: "tool_result", content: "done" });
   });
 
   test("publishes the conversation before the initial agent turn finishes", async () => {
@@ -64,6 +67,24 @@ describe("WorkflowV2ConversationManager", () => {
       expect.objectContaining({ role: "tool", eventType: "tool_call", name: "shell_command" }),
       expect.objectContaining({ role: "tool", eventType: "tool_result", name: "shell_command" }),
     ]);
+  });
+
+  test("keeps completion tool history for audit but does not pass it as authoritative output", async () => {
+    let emit!: (event: AgentEvent) => void;
+    const onCompleted = vi.fn();
+    const manager = new WorkflowV2ConversationManager({
+      now: () => 9,
+      createSession: (input) => {
+        emit = input.emit;
+        return { sendPrompt: async () => undefined, interrupt: async () => undefined, close: async () => undefined, runtimeConversation: () => undefined };
+      },
+      onCompleted,
+    });
+    await manager.start({ workflowId: "w", runId: "r", nodeId: "n", configuredAgentId: "a", modelId: "m", workDir: "C:/workspace", initialPrompt: "Complete" });
+    emit({ type: "tool_call", name: "workflow_node_complete", content: "{truncated..." });
+    emit({ type: "completed", content: "assistant fallback" });
+
+    expect(onCompleted).toHaveBeenCalledWith(expect.objectContaining({ nodeId: "n" }), "assistant fallback");
   });
 
   test("aggregates interactive usage and preserves it when the conversation is restored", async () => {

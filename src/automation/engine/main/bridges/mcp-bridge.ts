@@ -13,11 +13,15 @@ import type { WorkflowV2Definition } from "../../shared/workflow-v2/definition";
 import { validateWorkflowV2Definition } from "../../shared/workflow-v2/validation";
 import { normalizeWorkflowV2TerminalNode } from "../../shared/workflow-v2/topology";
 import { DEFAULT_MODEL_ID, defaultChannelForAgent, defaultModelForAgent, isModelForChannel } from "../../shared/models";
+import { isWorkflowMcpLifecycleRoute, routeWorkflowMcpLifecycle } from "./workflow-mcp-lifecycle";
 
 export interface McpBridgeServer {
   host: string;
   port: number;
+  /** Managed write token. Never persisted to the discovery file. */
   token: string;
+  /** Read-only token persisted for standalone MCP clients. */
+  readToken: string;
   discoveryPath: string;
   stop: () => Promise<void>;
 }
@@ -55,8 +59,34 @@ async function readJsonBody(request: http.IncomingMessage): Promise<unknown> {
   return JSON.parse(text) as unknown;
 }
 
-function isAuthorized(request: http.IncomingMessage, token: string): boolean {
-  return request.headers.authorization === `Bearer ${token}`;
+type McpBridgeAccess = "managed" | "read_only";
+
+const READ_ONLY_ROUTES = new Set([
+  "/mcp/agent-templates/list",
+  "/mcp/skill-templates/list",
+  "/mcp/skills/search-online",
+  "/mcp/skills/imported/list",
+  "/mcp/agents/list",
+  "/mcp/channels/list",
+  "/mcp/models/list",
+  "/mcp/workflow/list",
+  "/mcp/workflow/get",
+  "/mcp/workflow/validate",
+  "/mcp/workflow/run/list",
+  "/mcp/workflow/run/get",
+  "/mcp/workflow/outputs/list",
+  "/mcp/artifacts/list",
+]);
+
+function requestAccess(
+  request: http.IncomingMessage,
+  managedToken: string,
+  readToken: string,
+): McpBridgeAccess | undefined {
+  const authorization = request.headers.authorization;
+  if (authorization === `Bearer ${managedToken}`) return "managed";
+  if (authorization === `Bearer ${readToken}`) return "read_only";
+  return undefined;
 }
 
 function asRecord(value: unknown): Record<string, unknown> {
@@ -247,6 +277,8 @@ async function routeWorkflowRequest(hub: AgentHub, route: string, body: unknown,
     return options.studio.handleMcpRequest(options.studioToken, route, body);
   }
   const record = asRecord(body);
+  const lifecycle = await routeWorkflowMcpLifecycle(hub, route, body);
+  if (lifecycle) return lifecycle;
   if (route === "/mcp/agent-templates/list" || route === "/mcp/skill-templates/list") return skillTemplateListPayload();
   if (route === "/mcp/skills/search-online") {
     const query = asString(record.query) ?? "";
@@ -364,21 +396,6 @@ async function routeWorkflowRequest(hub: AgentHub, route: string, body: unknown,
     if (typeof record.nodeId === "string") request.nodeId = record.nodeId;
     return hub.appendWorkflowRunContext(request);
   }
-  if (route === "/mcp/workflow/node/complete") {
-    const output = {
-      nodeId: typeof record.nodeId === "string" ? record.nodeId : "",
-      summary: typeof record.summary === "string" ? record.summary : "",
-      outputs: record.outputs,
-      ...(Array.isArray(record.evidence) ? { evidence: record.evidence } : {}),
-      ...(Array.isArray(record.risks) ? { risks: record.risks } : {}),
-      ...(Array.isArray(record.nextStepSuggestions) ? { nextStepSuggestions: record.nextStepSuggestions } : {}),
-      proposals: Array.isArray(record.proposals) ? record.proposals : [],
-    };
-    if (!output.nodeId || !output.summary || !output.outputs || typeof output.outputs !== "object" || Array.isArray(output.outputs)) {
-      return { ok: false, error: "workflow_node_complete requires nodeId, summary, outputs, and proposals." };
-    }
-    return { ok: true, output };
-  }
   if (route === "/mcp/artifacts/register") {
     const request: RegisterArtifactRequest = {
       target: typeof record.target === "string" ? record.target : "",
@@ -401,14 +418,37 @@ async function routeWorkflowRequest(hub: AgentHub, route: string, body: unknown,
 export async function startMcpBridge(hub: AgentHub, options: StartMcpBridgeOptions): Promise<McpBridgeServer> {
   const host = "127.0.0.1";
   const token = randomBytes(32).toString("hex");
+  const readToken = randomBytes(32).toString("hex");
   const server = http.createServer((request, response) => {
     void (async () => {
       if (request.method !== "POST") {
         jsonResponse(response, 405, { ok: false, error: "Method not allowed." });
         return;
       }
-      if (!isAuthorized(request, token)) {
-        jsonResponse(response, 401, { ok: false, error: "Unauthorized." });
+      const access = requestAccess(request, token, readToken);
+      if (!access) {
+        jsonResponse(response, 401, {
+          ok: false,
+          error: {
+            code: "UNAUTHORIZED",
+            message: "A valid MCP bridge token is required.",
+          },
+        });
+        return;
+      }
+      const route = request.url ?? "";
+      const studioToken = request.headers["x-agent-recall-studio-token"];
+      const scopedStudioRequest =
+        typeof studioToken === "string"
+        && (route.startsWith("/mcp/studio/") || route.startsWith("/mcp/workspace/"));
+      if (access === "read_only" && !READ_ONLY_ROUTES.has(route) && !scopedStudioRequest) {
+        jsonResponse(response, 403, {
+          ok: false,
+          error: {
+            code: "READ_ONLY_CLIENT",
+            message: "This MCP client has read-only access.",
+          },
+        });
         return;
       }
       try {
@@ -417,11 +457,20 @@ export async function startMcpBridge(hub: AgentHub, options: StartMcpBridgeOptio
         if (options.bundledSkillsRoot) runtimeOptions.bundledSkillsRoot = options.bundledSkillsRoot;
         if (options.fetcher) runtimeOptions.fetcher = options.fetcher;
         if (options.studio) runtimeOptions.studio = options.studio;
-        const studioToken = request.headers["x-agent-recall-studio-token"];
         if (typeof studioToken === "string") runtimeOptions.studioToken = studioToken;
-        const payload = await routeWorkflowRequest(hub, request.url ?? "", body, runtimeOptions);
+        const payload = await routeWorkflowRequest(hub, route, body, runtimeOptions);
         jsonResponse(response, 200, payload);
       } catch (error) {
+        if (error instanceof SyntaxError && isWorkflowMcpLifecycleRoute(request.url ?? "")) {
+          jsonResponse(response, 400, {
+            ok: false,
+            error: {
+              code: "INVALID_ARGUMENT",
+              message: "The Workflow MCP request body must be valid JSON.",
+            },
+          });
+          return;
+        }
         jsonResponse(response, 400, { ok: false, error: error instanceof Error ? error.message : String(error) });
       }
     })();
@@ -438,7 +487,7 @@ export async function startMcpBridge(hub: AgentHub, options: StartMcpBridgeOptio
   await mkdir(path.dirname(options.discoveryPath), { recursive: true });
   await writeFile(
     options.discoveryPath,
-    `${JSON.stringify({ host, port: address.port, token, pid: process.pid, startedAt: Date.now() }, null, 2)}\n`,
+    `${JSON.stringify({ host, port: address.port, token: readToken, pid: process.pid, startedAt: Date.now() }, null, 2)}\n`,
     { encoding: "utf8", mode: 0o600 },
   );
 
@@ -446,6 +495,7 @@ export async function startMcpBridge(hub: AgentHub, options: StartMcpBridgeOptio
     host,
     port: address.port,
     token,
+    readToken,
     discoveryPath: options.discoveryPath,
     stop: async () => {
       await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));

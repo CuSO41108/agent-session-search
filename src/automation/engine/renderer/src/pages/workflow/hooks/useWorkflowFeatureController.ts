@@ -181,12 +181,12 @@ export function useWorkflowFeatureController({
       if (!draft.workflowId) return;
       setSnapshot(await workflows.interruptWorkflowReview({ workflowId: draft.workflowId }));
     },
-      onBuildDefinition: () => {
-        void draft.buildWorkflowDefinition();
+      onBuildDefinition: (objective?: string) => {
+        void draft.buildWorkflowDefinition(objective);
       },
       onReplyChange: draft.setWorkflowReply,
-      onSendReply: () => {
-        void draft.sendWorkflowReply();
+      onSendReply: (value?: string) => {
+        void draft.sendWorkflowReply(value);
       },
       onUpdateNode: (nodeId: string, update) => {
         return draft.updateWorkflowNode(nodeId, update);

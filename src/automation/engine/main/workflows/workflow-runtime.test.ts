@@ -1,4 +1,4 @@
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import type {
   AppSnapshot,
   FinishWorkflowRunRequest,
@@ -2016,6 +2016,48 @@ describe("WorkflowRuntime Workflow V2 bridge", () => {
     expect(scriptRequests).toHaveLength(0);
   });
 
+  test("marks a one-shot node as awaiting input while a runtime approval is live", async () => {
+    const definition = workflowV2Definition();
+    definition.nodes = [definition.nodes[0]!];
+    definition.edges = [];
+    const approvalTask = {
+      id: "task-runtime-approval", title: "Workflow V2 LLM node", status: "running", running: true,
+      progress: "in_progress", prompt: "Review changes", configuredAgentId: "agent-a", modelId: "model-a",
+      workDir: "/tmp/workflow-v2-runtime", pendingAssistantMessageId: undefined, lastError: undefined,
+      messages: [{ id: "assistant-runtime-approval", role: "assistant", content: JSON.stringify({
+        nodeId: "draft", summary: "Draft ready", outputs: { draft: "const ready = true;" }, evidence: [], proposals: [],
+      }), timestamp: 1, events: [{
+        id: "event-runtime-approval", type: "approval_request", content: "Allow git diff?", timestamp: 1,
+        requestId: "runtime-approval:1", requestState: "live",
+      }] }],
+      createdAt: 1, updatedAt: 1,
+    } as TaskRun;
+    const fixture = await workflowV2RuntimeFixture({
+      definition,
+      taskFactory: (_request, index) => index === 1 ? approvalTask : ({
+        id: `task-${index}`, title: "Workflow summary", status: "completed", prompt: "Summarize",
+        configuredAgentId: "agent-a", messages: [{ role: "assistant", content: "Workflow complete" }],
+        createdAt: index, updatedAt: index,
+      } as TaskRun),
+      executeScript: async () => { throw new Error("script runner should not be called"); },
+    });
+
+    fixture.runtime.runWorkflow({ workflowId: fixture.workflow.workflowId });
+    await vi.waitFor(() => expect(fixture.updates.some((update) => update.progress?.some((item) =>
+      item.nodeId === "draft"
+      && item.status === "awaiting_input"
+      && item.inputRequest?.kind === "agent_message"
+      && item.inputRequest.prompt === "Allow git diff?",
+    ))).toBe(true), { timeout: 2_000 });
+
+    approvalTask.messages[0]!.events![0]!.requestState = "resolved";
+    approvalTask.status = "completed";
+    approvalTask.running = false;
+    const finished = await fixture.finished;
+
+    expect(finished.status).toBe("completed");
+  });
+
   test("branches before legacy execution and runs llm then script nodes with direct upstream outputs", async () => {
     const proposalReason = "runtime-control-only";
     const scriptRequests: ExecuteWorkflowV2ScriptRequest[] = [];
@@ -2117,6 +2159,61 @@ describe("WorkflowRuntime Workflow V2 bridge", () => {
       "node_output",
       "node_completed",
     ]);
+  });
+
+  test("consumes one-shot node output from the durable completion ledger instead of tool-call history", async () => {
+    const persistedStates: WorkflowV2PersistedRunState[] = [];
+    let executionIdentity: { workflowId: string; runId: string; nodeId: string; executionId: string } | undefined;
+    let resolvedStatus: string | undefined;
+    const submittedOutput: WorkflowV2WorkerOutput = {
+      nodeId: "draft",
+      summary: "Durable result",
+      outputs: { draft: "persisted completion" },
+      proposals: [],
+    };
+    const store: WorkflowV2StorePort = {
+      persistRunState: async (state) => { persistedStates.push(structuredClone(state)); },
+      appendEvents: async () => undefined,
+      beginNodeCompletionExecution: async (input) => {
+        executionIdentity = { workflowId: input.workflowId, runId: input.runId, nodeId: input.nodeId, executionId: input.executionId };
+        return { schemaVersion: 1, ...input, updatedAt: input.startedAt, submissions: [] };
+      },
+      readLatestNodeCompletionSubmission: async (input) => {
+        expect(input).toEqual(executionIdentity);
+        return { submissionId: "submission-1", digest: "digest-1", status: "submitted", output: submittedOutput, submittedAt: 2 };
+      },
+      resolveNodeCompletionSubmission: async (input) => {
+        resolvedStatus = input.status;
+        return { submissionId: input.submissionId, digest: "digest-1", status: input.status, output: submittedOutput, submittedAt: 2, resolvedAt: input.resolvedAt };
+      },
+    };
+    const fixture = await workflowV2RuntimeFixture({
+      store,
+      taskFactory: (request, index) => ({
+        id: `task-${index}`,
+        title: "Workflow V2 LLM node",
+        status: "completed",
+        prompt: request.prompt,
+        configuredAgentId: request.configuredAgentId,
+        messages: [{
+          id: "message-1",
+          role: "assistant",
+          content: "This text is not the structured result.",
+          events: [{ id: "tool-1", type: "tool_call", name: "workflow_node_complete", content: "{truncated...", timestamp: 1 }],
+        }],
+        createdAt: 1,
+        updatedAt: 1,
+      } as TaskRun),
+      executeScript: async ({ node }) => ({ nodeId: node.id, summary: "Verified", outputs: { verified: true }, proposals: [] }),
+    });
+
+    fixture.runtime.runWorkflow({ workflowId: fixture.workflow.workflowId });
+    const finished = await fixture.finished;
+
+    expect(finished.status).toBe("completed");
+    expect(executionIdentity).toMatchObject({ workflowId: fixture.workflow.workflowId, runId: "run-v2-runtime", nodeId: "draft" });
+    expect(resolvedStatus).toBe("consumed");
+    expect(persistedStates.at(-1)?.workerOutputs.find((output) => output.nodeId === "draft")).toEqual(submittedOutput);
   });
 
   test("keeps one-shot message history when structured output parsing fails", async () => {

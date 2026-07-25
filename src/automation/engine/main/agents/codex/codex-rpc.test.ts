@@ -1,4 +1,4 @@
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, readFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, test, vi } from "vitest";
@@ -6,6 +6,84 @@ import { writeNodeCliLauncher } from "../../platform/test-cli-fixtures";
 import { CodexRpcClient } from "./codex-rpc";
 
 describe("CodexRpcClient", () => {
+  test("starts app-server without bypassing native approval requests", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "agent-recall-codex-approval-args-"));
+    const argsPath = path.join(dir, "args.json");
+    const executable = await writeNodeCliLauncher(
+      dir,
+      "codex-approval-args",
+      `const fs = require("node:fs");
+const readline = require("node:readline");
+fs.writeFileSync(${JSON.stringify(argsPath)}, JSON.stringify(process.argv.slice(2)));
+const rl = readline.createInterface({ input: process.stdin });
+rl.on("line", (line) => {
+  const request = JSON.parse(line);
+  if (request.id === undefined) return;
+  process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: request.id, result: { capabilities: {} } }) + "\\n");
+});`,
+    );
+    const client = new CodexRpcClient({ executable, cwd: dir, onEvent: () => undefined });
+
+    await client.start();
+
+    expect(JSON.parse(await readFile(argsPath, "utf8"))).toEqual(["app-server", "--listen", "stdio://"]);
+    await client.shutdown();
+  });
+
+  test("waits for required MCP tools before completing startup", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "agent-recall-codex-mcp-ready-"));
+    const executable = await writeNodeCliLauncher(
+      dir,
+      "codex-mcp-ready",
+      `const readline = require("node:readline");
+const rl = readline.createInterface({ input: process.stdin });
+rl.on("line", (line) => {
+  const request = JSON.parse(line);
+  if (request.id === undefined) return;
+  const result = request.method === "initialize"
+    ? { capabilities: {} }
+    : { data: [{ name: "agent_recall", tools: { workflow_create: {} }, resources: [], resourceTemplates: [], authStatus: "unsupported" }] };
+  process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: request.id, result }) + "\\n");
+});`,
+    );
+    const client = new CodexRpcClient({
+      executable,
+      cwd: dir,
+      requiredMcpTools: { agent_recall: ["workflow_create"] },
+      onEvent: () => undefined,
+    });
+
+    await expect(client.start()).resolves.toBeUndefined();
+    await client.shutdown();
+  });
+
+  test("fails startup when the scoped MCP server omits a required tool", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "agent-recall-codex-mcp-missing-"));
+    const executable = await writeNodeCliLauncher(
+      dir,
+      "codex-mcp-missing",
+      `const readline = require("node:readline");
+const rl = readline.createInterface({ input: process.stdin });
+rl.on("line", (line) => {
+  const request = JSON.parse(line);
+  if (request.id === undefined) return;
+  const result = request.method === "initialize"
+    ? { capabilities: {} }
+    : { data: [{ name: "agent_recall", tools: {}, resources: [], resourceTemplates: [], authStatus: "unsupported" }] };
+  process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: request.id, result }) + "\\n");
+});`,
+    );
+    const client = new CodexRpcClient({
+      executable,
+      cwd: dir,
+      requiredMcpTools: { agent_recall: ["workflow_create"] },
+      onEvent: () => undefined,
+    });
+
+    await expect(client.start()).rejects.toThrow("missing required tools: workflow_create");
+    await client.shutdown();
+  });
+
   test("includes stderr when Codex exits while an RPC is pending", async () => {
     const dir = await mkdtemp(path.join(os.tmpdir(), "multi-agent-chat-codex-rpc-"));
     const executable = await writeNodeCliLauncher(

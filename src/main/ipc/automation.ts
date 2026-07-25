@@ -351,5 +351,10 @@ export function registerAutomationIpc({
     return service.resolveRuntimeApproval(request);
   });
 
-  return service.subscribe((snapshot) => send(AUTOMATION_CHANNELS.snapshotChanged, snapshot));
+  const unsubscribeSnapshot = service.subscribe((snapshot) => send(AUTOMATION_CHANNELS.snapshotChanged, snapshot));
+  const unsubscribeChanges = service.subscribeChanges((change) => send(AUTOMATION_CHANNELS.change, change));
+  return () => {
+    unsubscribeSnapshot();
+    unsubscribeChanges();
+  };
 }

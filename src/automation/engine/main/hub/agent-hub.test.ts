@@ -469,7 +469,7 @@ const readline = require("readline");
 const callsPath = ${JSON.stringify(callsPath)};
 const counterPath = ${JSON.stringify(counterPath)};
 let threadIndex = 0;
-fs.appendFileSync(callsPath, JSON.stringify({ method: "process/argv", params: { args: process.argv.slice(2) } }) + "\\n");
+fs.appendFileSync(callsPath, JSON.stringify({ method: "process/argv", params: { args: process.argv.slice(2), workflowId: process.env.AGENT_RECALL_WORKFLOW_ID, managedToken: process.env.AGENT_RECALL_WORKFLOW_MCP_TOKEN } }) + "\\n");
 
 function write(message) {
   process.stdout.write(JSON.stringify(message) + "\\n");
@@ -489,6 +489,23 @@ rl.on("line", (line) => {
 
   if (message.method === "initialize") {
     write({ jsonrpc: "2.0", id: message.id, result: {} });
+    return;
+  }
+  if (message.method === "mcpServerStatus/list") {
+    write({
+      jsonrpc: "2.0",
+      id: message.id,
+      result: {
+        data: [{
+          name: "agent_recall",
+          tools: { workflow_create: {}, workflow_node_complete: {} },
+          resources: [],
+          resourceTemplates: [],
+          authStatus: "unsupported"
+        }],
+        nextCursor: null
+      }
+    });
     return;
   }
   if (message.method === "thread/start") {
@@ -636,6 +653,67 @@ describe("AgentHub chat sessions", () => {
 
       (hub as any).handleAgentEvent(chat, { type: "completed", content: "done" });
       expect(listener).toHaveBeenCalledTimes(2);
+    } finally {
+      unsubscribe();
+      await hub.shutdown();
+      vi.useRealTimers();
+    }
+  });
+
+  test("publishes coalesced workflow projections without constructing full snapshots", async () => {
+    vi.useFakeTimers();
+    const hub = new AgentHub();
+      const listener = vi.fn();
+      const snapshotSpy = vi.spyOn(hub, "snapshot");
+      const projectionSpy = vi.spyOn(hub, "workflowProjection");
+    const unsubscribe = hub.onChange(listener);
+    listener.mockClear();
+    snapshotSpy.mockClear();
+    try {
+      for (let index = 0; index < 20; index += 1) {
+        (hub as any).emitWorkflowStreaming("store", { workflows: { upsert: [], remove: [] } });
+        (hub as any).emitWorkflowStreaming("conversations", { conversations: { upsert: [], remove: [] } });
+        (hub as any).emitWorkflowStreaming("tasks", { tasks: { upsert: [], remove: [] } });
+      }
+
+      await vi.advanceTimersByTimeAsync(40);
+
+      expect(listener).toHaveBeenCalledTimes(1);
+      expect(listener.mock.calls[0]?.[0]).toMatchObject({ kind: "workflow" });
+      expect(listener.mock.calls[0]?.[0].patch).toMatchObject({ workflows: { upsert: [], remove: [] }, conversations: { upsert: [], remove: [] }, tasks: { upsert: [], remove: [] } });
+      expect(listener.mock.calls[0]?.[0].payload).not.toHaveProperty("workflowStore");
+      expect(snapshotSpy).not.toHaveBeenCalled();
+      expect(projectionSpy).not.toHaveBeenCalled();
+
+      (hub as any).emitWorkflow();
+      expect(listener).toHaveBeenCalledTimes(2);
+      expect(snapshotSpy).not.toHaveBeenCalled();
+    } finally {
+      unsubscribe();
+      await hub.shutdown();
+      vi.useRealTimers();
+    }
+  });
+
+  test("publishes workflow-owned task deltas as a direct task patch", async () => {
+    vi.useFakeTimers();
+    const hub = new AgentHub();
+    const task = (hub as any).createTaskState({ prompt: "Stream workflow task", configuredAgentId: "default-agent", workDir: "/tmp/project" });
+    task.planningWorkflowId = "wf";
+    (hub as any).tasks.set(task.id, task);
+    const listener = vi.fn();
+    const projectionSpy = vi.spyOn(hub, "workflowProjection");
+    const unsubscribe = hub.onChange(listener);
+    listener.mockClear();
+    projectionSpy.mockClear();
+    try {
+      (hub as any).handleAgentEvent(task, { type: "delta", content: "Working" });
+      await vi.advanceTimersByTimeAsync(40);
+
+      expect(listener).toHaveBeenCalledTimes(1);
+      expect(listener.mock.calls[0]?.[0].patch?.tasks?.upsert).toEqual([expect.objectContaining({ id: task.id, messages: [expect.objectContaining({ content: "Working" })] })]);
+      expect(listener.mock.calls[0]?.[0].payload).not.toHaveProperty("tasks");
+      expect(projectionSpy).not.toHaveBeenCalled();
     } finally {
       unsubscribe();
       await hub.shutdown();
@@ -2887,6 +2965,7 @@ fs.writeFileSync(${JSON.stringify(argsPath)}, process.argv.slice(2).join("\\n") 
     });
 
     hub.setWorkflowMcpDiscoveryPath(path.join(dir, "mcp-bridge.json"));
+    hub.setWorkflowMcpManagedToken("managed-token");
     await (hub as any).askWorkflowAgent({
       requestId: "workflow-mcp-config-test",
       planningWorkflowId: "wf-codex-planning",
@@ -2903,7 +2982,10 @@ fs.writeFileSync(${JSON.stringify(argsPath)}, process.argv.slice(2).join("\\n") 
     const argv = calls.find((call) => call.method === "process/argv")?.params.args as string[];
     expect(argv.join("\n")).toContain("mcp_servers.agent_recall.command");
     expect(argv.join("\n")).toContain("AGENT_RECALL_WORKFLOW_MCP_BRIDGE");
-    expect(argv.join("\n")).toContain("wf-codex-planning");
+    const processConfig = calls.find((call) => call.method === "process/argv")?.params;
+    expect(processConfig.workflowId).toBe("wf-codex-planning");
+    expect(processConfig.managedToken).toBe("managed-token");
+    expect(argv.join("\n")).not.toContain("managed-token");
   });
 
   test("injects only the custom MCP servers bound to the selected Codex Agent", async () => {

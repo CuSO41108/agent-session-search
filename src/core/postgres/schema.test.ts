@@ -4,6 +4,12 @@ import { POSTGRES_MIGRATIONS } from "./schema";
 import { PGliteTestPool } from "./test-pglite";
 
 describe("AgentRecall PostgreSQL schema", () => {
+  it("uses one stable record per migration version", () => {
+    const versions = POSTGRES_MIGRATIONS.map((migration) => migration.version);
+    expect(new Set(versions).size).toBe(versions.length);
+    expect(versions).toEqual([...versions].sort((left, right) => left - right));
+  });
+
   it("creates the complete internal domain schema", async () => {
     const database = new PostgresDatabase(new PGliteTestPool(), {
       migrationLock: false,
@@ -75,6 +81,49 @@ describe("AgentRecall PostgreSQL schema", () => {
     ]));
 
     await database.close();
+  });
+
+  it("reconciles databases created by the previously diverged migration histories", async () => {
+    const pool = new PGliteTestPool();
+    const legacyDatabase = new PostgresDatabase(pool, {
+      migrationLock: false,
+      migrations: POSTGRES_MIGRATIONS.filter((migration) => migration.version <= 3),
+    });
+    await legacyDatabase.initialize();
+
+    const openVikingMigration = POSTGRES_MIGRATIONS.find((migration) => migration.version === 5)!;
+    for (const statement of openVikingMigration.statements) {
+      await legacyDatabase.query(statement);
+    }
+    await legacyDatabase.query(
+      "insert into agent_recall.schema_migrations (version, name) values (4, 'add directory-scoped OpenViking memory state'), (5, 'add studio employees and directed collaboration')",
+    );
+
+    const upgradedDatabase = new PostgresDatabase(pool, {
+      migrationLock: false,
+      migrations: POSTGRES_MIGRATIONS,
+    });
+    await upgradedDatabase.initialize();
+
+    const workflowColumns = await upgradedDatabase.query<{ column_name: string }>(`
+      select column_name
+      from information_schema.columns
+      where table_schema = 'agent_recall' and table_name = 'workflow_draft_messages'
+    `);
+    expect(workflowColumns.rows.map((row) => row.column_name)).toContain("events");
+
+    const memberColumns = await upgradedDatabase.query<{ column_name: string }>(`
+      select column_name
+      from information_schema.columns
+      where table_schema = 'agent_recall' and table_name = 'chat_room_agents'
+    `);
+    expect(memberColumns.rows.map((row) => row.column_name)).toContain("configured_agent_id");
+
+    const migrations = await upgradedDatabase.query<{ version: number }>(
+      "select version from agent_recall.schema_migrations order by version",
+    );
+    expect(migrations.rows.map((row) => Number(row.version))).toEqual([1, 2, 3, 4, 5, 6]);
+    await upgradedDatabase.close();
   });
 
   it("stores Turn search and trace hierarchy as first-class PostgreSQL structures", async () => {

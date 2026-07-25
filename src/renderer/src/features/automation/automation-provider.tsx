@@ -4,7 +4,9 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
+  useSyncExternalStore,
   type Dispatch,
   type ReactNode,
   type SetStateAction,
@@ -13,6 +15,7 @@ import { DEFAULT_SNAPSHOT } from "../../../../automation/engine/renderer/src/app
 import type { AppSnapshot } from "../../../../automation/contracts";
 import type { AutomationApi } from "../../../../preload/automation";
 import type { AutomationHealth } from "../../../../shared/ipc/automation";
+import { AutomationStore } from "./automation-store";
 
 interface AutomationContextValue {
   api: AutomationApi;
@@ -22,13 +25,25 @@ interface AutomationContextValue {
   loading: boolean;
   error: string | null;
   refresh: () => Promise<AppSnapshot>;
+  store: AutomationStore;
 }
 
 const AutomationContext = createContext<AutomationContextValue | null>(null);
 
 export function AutomationProvider({ children }: { children: ReactNode }) {
   const api = useMemo(() => window.sessionSearch.automation, []);
-  const [snapshot, setSnapshot] = useState<AppSnapshot>(DEFAULT_SNAPSHOT);
+  const storeRef = useRef<AutomationStore | undefined>(undefined);
+  if (!storeRef.current) storeRef.current = new AutomationStore(DEFAULT_SNAPSHOT);
+  const store = storeRef.current;
+  const [snapshot, setSnapshotState] = useState<AppSnapshot>(DEFAULT_SNAPSHOT);
+  const snapshotRef = useRef(snapshot);
+  const resyncInFlightRef = useRef<Promise<AppSnapshot> | undefined>(undefined);
+  const setSnapshot = useCallback<Dispatch<SetStateAction<AppSnapshot>>>((value) => {
+    const next = typeof value === "function" ? value(snapshotRef.current) : value;
+    snapshotRef.current = next;
+    store.replace(next);
+    setSnapshotState(next);
+  }, [store]);
   const [health, setHealth] = useState<AutomationHealth>({ state: "initializing" });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -48,7 +63,7 @@ export function AutomationProvider({ children }: { children: ReactNode }) {
     } finally {
       setLoading(false);
     }
-  }, [api]);
+  }, [api, setSnapshot]);
 
   useEffect(() => {
     let active = true;
@@ -59,6 +74,17 @@ export function AutomationProvider({ children }: { children: ReactNode }) {
       setError(null);
       setLoading(false);
     });
+    const unsubscribeChanges = api.onChange((change) => {
+      if (!active) return;
+      if (store.applyChange(change)) {
+        return;
+      }
+      resyncInFlightRef.current ??= refresh()
+        .catch(() => snapshotRef.current)
+        .finally(() => {
+          resyncInFlightRef.current = undefined;
+        });
+    });
     void api.getHealth().then((next) => {
       if (active) setHealth(next);
     }).catch(() => undefined);
@@ -66,8 +92,9 @@ export function AutomationProvider({ children }: { children: ReactNode }) {
     return () => {
       active = false;
       unsubscribe();
+      unsubscribeChanges();
     };
-  }, [api, refresh]);
+  }, [api, refresh, setSnapshot, store]);
 
   const value = useMemo<AutomationContextValue>(() => ({
     api,
@@ -77,9 +104,15 @@ export function AutomationProvider({ children }: { children: ReactNode }) {
     loading,
     error,
     refresh,
-  }), [api, error, health, loading, refresh, snapshot]);
+    store,
+  }), [api, error, health, loading, refresh, snapshot, store, setSnapshot]);
 
   return <AutomationContext.Provider value={value}>{children}</AutomationContext.Provider>;
+}
+
+export function useAutomationStoreSnapshot(): AppSnapshot {
+  const { store } = useAutomation();
+  return useSyncExternalStore(store.subscribe, store.getSnapshot, store.getSnapshot);
 }
 
 export function useAutomation(): AutomationContextValue {

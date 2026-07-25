@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
+import path from "node:path";
 import type { AppSnapshot } from "../../automation/contracts";
-import type { AgentHub } from "../../automation/engine/main/hub/agent-hub";
+import type { AgentHub, AgentHubChange } from "../../automation/engine/main/hub/agent-hub";
+import type { AutomationChange, WorkflowAutomationProjection } from "../../shared/ipc/automation";
 import type { McpRegistryStore } from "../../automation/engine/main/mcp-registry-store";
 import type { McpAgentManagementService } from "../../automation/engine/main/mcp/agent-management-service";
 import type { StartMcpBridgeOptions } from "../../automation/engine/main/bridges/mcp-bridge";
@@ -10,25 +12,45 @@ import type { PostgresDatabase } from "../../core/postgres/database";
 import { NativeAutomationService } from "./automation-service";
 
 function snapshot(workDir = "/repo"): AppSnapshot {
-  return { workDir } as AppSnapshot;
+  return {
+    detectedAt: 0,
+    activeChatId: undefined,
+    activeTaskId: undefined,
+    activeTeamId: undefined,
+    activeTeamRunId: undefined,
+    workDir,
+    runtimes: [],
+    channels: [],
+    configuredAgents: [],
+    chats: [],
+    tasks: [],
+    teams: [],
+    teamRuns: [],
+    workflowStore: { activeWorkflowId: undefined, workflows: [], runs: [] },
+    scheduledWorkflowStore: { activeScheduleId: undefined, runnerConfig: { baseUrl: "" }, runnerStatus: { connected: false, connecting: false }, schedules: [], runs: [] },
+    workflowNodeConversations: [],
+    workflowDraft: undefined,
+    artifacts: [],
+  };
 }
 
-function fixture() {
+function fixture(injectAgents = true) {
   const calls: string[] = [];
   let current = snapshot();
-  let listener: ((value: AppSnapshot) => void) | undefined;
+  let listener: ((value: AgentHubChange) => void) | undefined;
   const hub = {
     loadModelChannels: vi.fn(async () => { calls.push("channels"); }),
     loadPersistedState: vi.fn(async () => { calls.push("database"); }),
     ensureBundledWorkflows: vi.fn(() => { calls.push("bundled"); }),
     setMcpServers: vi.fn(() => { calls.push("mcp"); }),
     setWorkflowMcpDiscoveryPath: vi.fn(() => { calls.push("discovery"); }),
+    setWorkflowMcpManagedToken: vi.fn(() => { calls.push("managed-token"); }),
     initialize: vi.fn(async () => { calls.push("runtime"); }),
     refreshDiscoverableModelCatalogs: vi.fn(async () => undefined),
     snapshot: vi.fn(() => current),
-    onChange: vi.fn((next: (value: AppSnapshot) => void) => {
+    onChange: vi.fn((next: (value: AgentHubChange) => void) => {
       listener = next;
-      next(current);
+      next({ kind: "snapshot", snapshot: current });
       return () => { listener = undefined; };
     }),
     getWorkDir: vi.fn(() => current.workDir),
@@ -54,6 +76,7 @@ function fixture() {
       host: "127.0.0.1",
       port: 2,
       token: "test-token",
+      readToken: "read-token",
       discoveryPath: "/user-data/automation-mcp-bridge.json",
       stop: async () => { calls.push("bridge-stop"); },
     };
@@ -72,7 +95,7 @@ function fixture() {
       registry,
       evaluations,
       teamChats,
-      agents,
+      ...(injectAgents ? { agents } : {}),
       loadBundledWorkflows: vi.fn(async () => [{ workflowId: "wf", title: "One", objective: "One", definition: {} as never }]),
       startRouter: vi.fn(async () => {
         calls.push("router");
@@ -90,7 +113,13 @@ function fixture() {
     evaluations,
     teamChats,
     startBridge,
-    emit: (value: AppSnapshot) => { current = value; listener?.(value); },
+    emit: (value: AppSnapshot) => {
+      current = value;
+      listener?.({ kind: "snapshot", snapshot: value });
+    },
+    emitWorkflow: (payload: Partial<WorkflowAutomationProjection>, patch?: import("../../shared/ipc/automation").WorkflowAutomationPatch) => {
+      listener?.({ kind: "workflow", detectedAt: 42, payload, ...(patch ? { patch } : {}) });
+    },
   };
 }
 
@@ -105,14 +134,37 @@ describe("NativeAutomationService", () => {
     expect(service.health()).toEqual({ state: "idle" });
   });
 
+  it("reports planning write tools without reading child-only environment variables", async () => {
+    const previous = process.env.AGENT_RECALL_WORKFLOW_MCP_TOKEN;
+    delete process.env.AGENT_RECALL_WORKFLOW_MCP_TOKEN;
+    try {
+      const { service } = fixture(false);
+      await service.initialize();
+      expect(service.mcp.setupStatus()).toMatchObject({
+        bridgeRunning: true,
+        workflowCreateAvailable: true,
+      });
+    } finally {
+      if (previous === undefined) delete process.env.AGENT_RECALL_WORKFLOW_MCP_TOKEN;
+      else process.env.AGENT_RECALL_WORKFLOW_MCP_TOKEN = previous;
+    }
+  });
+  it("keeps the managed MCP write token inside the native runtime", async () => {
+    const { service, hub } = fixture();
+
+    await service.initialize();
+
+    expect(hub.setWorkflowMcpManagedToken).toHaveBeenCalledWith("test-token");
+  });
+
   it("initializes the native engine once in dependency order", async () => {
     const { service, calls, hub, teamChats, startBridge } = fixture();
 
     await Promise.all([service.initialize(), service.initialize()]);
 
-    expect(calls).toEqual(["channels", "database", "mcp", "bundled", "router", "bridge", "discovery", "runtime", "team-chat-start"]);
+    expect(calls).toEqual(["channels", "database", "mcp", "bundled", "router", "bridge", "discovery", "managed-token", "runtime", "team-chat-start"]);
     expect(teamChats.connect).toHaveBeenCalledTimes(1);
-    expect(hub.loadModelChannels).toHaveBeenCalledWith("/user-data/runtime-channels.json");
+    expect(hub.loadModelChannels).toHaveBeenCalledWith(path.join("/user-data", "runtime-channels.json"));
     expect(hub.loadPersistedState).toHaveBeenCalledWith(expect.any(Object));
     const bridgeOptions = startBridge.mock.calls[0]?.[1];
     await expect(bridgeOptions?.studio?.handleMcpRequest(
@@ -125,6 +177,7 @@ describe("NativeAutomationService", () => {
       "/mcp/studio/list-members",
       {},
     );
+    expect(hub.setWorkflowMcpManagedToken).toHaveBeenCalledWith("test-token");
     expect(service.health()).toEqual({ state: "ready" });
   });
 
@@ -138,6 +191,46 @@ describe("NativeAutomationService", () => {
     emit(snapshot("/ignored"));
 
     expect(received.map((value) => value.workDir)).toEqual(["/repo", "/next"]);
+  });
+
+  it("publishes ordered workflow changes without rebroadcasting a full snapshot", () => {
+    const { service, emitWorkflow } = fixture();
+    const snapshots: AppSnapshot[] = [];
+    const changes: AutomationChange[] = [];
+    service.subscribe((value) => snapshots.push(value));
+    service.subscribeChanges((value) => changes.push(value));
+    const payload: WorkflowAutomationProjection = {
+      workflowStore: { activeWorkflowId: "wf", workflows: [], runs: [] },
+      workflowNodeConversations: [],
+      workflowDraft: undefined,
+      tasks: [],
+      artifacts: [],
+    };
+
+    emitWorkflow(payload);
+    expect(service.snapshot().workflowStore.activeWorkflowId).toBe("wf");
+    emitWorkflow({ ...payload, workflowStore: { ...payload.workflowStore, activeWorkflowId: undefined } });
+
+    expect(changes.map((value) => value.sequence)).toEqual([1, 2]);
+    expect(changes[0]?.payload).toEqual({ activeWorkflowId: "wf" });
+    expect(changes[0]).not.toHaveProperty("payload.workflowStore");
+    expect(snapshots).toHaveLength(1);
+    expect(service.snapshot().workflowStore.activeWorkflowId).toBeUndefined();
+  });
+
+  it("accepts scoped workflow projections without replacing omitted collections", () => {
+    const { service, emitWorkflow } = fixture();
+    const originalStore = service.snapshot().workflowStore;
+
+    emitWorkflow({ tasks: [] });
+
+    expect(service.snapshot().workflowStore).toBe(originalStore);
+  });
+
+  it("applies a direct entity patch without rebuilding a workflow projection", () => {
+    const { service, emitWorkflow } = fixture();
+    emitWorkflow({}, { activeWorkflowId: "wf-direct", workflows: { upsert: [], remove: [] } });
+    expect(service.snapshot().workflowStore.activeWorkflowId).toBe("wf-direct");
   });
 
   it("flushes runtime state before bridge and registry shutdown", async () => {

@@ -44,6 +44,7 @@ export type { AgentMcpBinding, McpServerDefinition, McpToolDefinition, McpTransp
 export type { EvaluationCaseResult, EvaluationDataset, EvaluationDatasetItem, EvaluationEvaluator, EvaluationExperiment, EvaluationRun, EvaluationRunPage, EvaluationRunSummary, EvaluationScore, EvaluatorKind, ListEvaluationRunsRequest } from "./evaluation/types";
 export type { WorkflowDraftState, WorkflowGrillMessage, WorkflowStoreState } from "./workflow/draft";
 export type { WorkflowV2GenerationReviewFinding, WorkflowV2GenerationReviewResult, WorkflowV2GenerationReviewState, WorkflowV2GenerationReviewStatus, WorkflowV2GenerationReviewVerdict } from "./workflow-v2/generation-review";
+export type { WorkflowNodeConversation } from "./workflow-v2/conversation";
 export type {
   SendWorkflowNodeMessageRequest,
   CompleteWorkflowNodeConversationRequest,
@@ -326,6 +327,7 @@ export interface RuntimeRequest {
   workflowRunId?: string;
   workflowNodeId?: string;
   agentRecallMcp?: AgentRecallMcpContext;
+  workflowNodeExecutionId?: string;
 }
 
 export interface RuntimeResumeCapabilities {
@@ -460,6 +462,7 @@ export interface RunTaskRequest {
   planningWorkflowId?: string;
   workflowRunId?: string;
   workflowNodeId?: string;
+  workflowNodeExecutionId?: string;
 }
 
 export interface WorkflowAgentRequest extends RuntimeRequest {
@@ -478,6 +481,9 @@ export interface WorkflowAgentResponse {
 
 export type WorkflowAgentEvent =
   | { requestId: string; type: "delta"; content: string }
+  | { requestId: string; type: "tool_call" | "tool_result"; content: string; name?: string; metadata?: Record<string, unknown> }
+  | { requestId: string; type: "approval_request"; approvalRequestId: string; content: string; metadata?: Record<string, unknown> }
+  | { requestId: string; type: "approval_response"; approvalRequestId: string; decision: ApprovalDecision; content?: string; metadata?: Record<string, unknown> }
   | { requestId: string; type: "completed"; content: string; runtimeConversation?: RuntimeConversation }
   | { requestId: string; type: "error"; error: string };
 
