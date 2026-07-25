@@ -7,6 +7,7 @@ import {
   FolderOpen,
   LoaderCircle,
   MessageCircleMore,
+  Pencil,
   Plus,
   RotateCcw,
   Send,
@@ -27,6 +28,7 @@ import {
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type {
+  CreateTeamChatRoomRequest,
   TeamChatConnectionStatus,
   TeamChatEvent,
   TeamChatMessage,
@@ -45,7 +47,94 @@ interface StreamDraft {
   content: string;
 }
 
+interface DraftStudioEmployee {
+  localId: string;
+  configuredAgentId: string;
+  displayName: string;
+}
+
 const INITIAL_CONNECTION: TeamChatConnectionStatus = { state: "connecting" };
+
+export function TeamChatRoomTitle({
+  room,
+  language,
+  onRename,
+  onError,
+}: {
+  room: TeamChatRoom;
+  language: LanguageMode;
+  onRename(name: string): Promise<void>;
+  onError(error: unknown): void;
+}): ReactElement {
+  const l = (en: string, zh: string): string => localize(language, en, zh);
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(room.name);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    if (!editing) setDraft(room.name);
+  }, [editing, room.name]);
+
+  const save = async (): Promise<void> => {
+    if (saving) return;
+    const name = draft.trim();
+    if (!name || name === room.name) {
+      setDraft(room.name);
+      setEditing(false);
+      return;
+    }
+
+    setSaving(true);
+    try {
+      await onRename(name);
+      setEditing(false);
+    } catch (error) {
+      onError(error);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (editing) {
+    return (
+      <input
+        className="team-chat-room-title-input"
+        value={draft}
+        maxLength={120}
+        disabled={saving}
+        autoFocus
+        aria-label={l("Room title", "房间标题")}
+        onChange={(event) => setDraft(event.target.value)}
+        onBlur={() => void save()}
+        onKeyDown={(event) => {
+          if (event.nativeEvent.isComposing) return;
+          if (event.key === "Enter") {
+            event.preventDefault();
+            void save();
+          } else if (event.key === "Escape") {
+            event.preventDefault();
+            setDraft(room.name);
+            setEditing(false);
+          }
+        }}
+      />
+    );
+  }
+
+  return (
+    <div className="team-chat-room-title">
+      <strong title={room.name}>{room.name}</strong>
+      <button
+        type="button"
+        onClick={() => setEditing(true)}
+        title={l("Rename room", "修改房间标题")}
+        aria-label={l("Rename room", "修改房间标题")}
+      >
+        <Pencil size={12} />
+      </button>
+    </div>
+  );
+}
 
 export function TeamChatPage({ language }: { language: LanguageMode }): ReactElement {
   const l = useCallback((en: string, zh: string) => localize(language, en, zh), [language]);
@@ -69,6 +158,7 @@ export function TeamChatPage({ language }: { language: LanguageMode }): ReactEle
   const [mentionIndex, setMentionIndex] = useState(0);
   const [sending, setSending] = useState(false);
   const [activeRootMessageId, setActiveRootMessageId] = useState<string>();
+  const [targetMemberIds, setTargetMemberIds] = useState<string[]>([]);
   const [streams, setStreams] = useState<Record<string, StreamDraft>>({});
   const [resettingAgentIds, setResettingAgentIds] = useState<Set<string>>(() => new Set());
   const [createOpen, setCreateOpen] = useState(false);
@@ -90,7 +180,7 @@ export function TeamChatPage({ language }: { language: LanguageMode }): ReactEle
       (member) => member.displayName.toLocaleLowerCase() === query,
     )) return [];
     return activeRoom.agents
-      .filter((member) => member.enabled && available.has(member.agentId))
+      .filter((member) => member.enabled && available.has(member.configuredAgentId))
       .filter((member) => !query || member.displayName.toLocaleLowerCase().includes(query))
       .sort((left, right) => {
         const leftStarts = left.displayName.toLocaleLowerCase().startsWith(query) ? 0 : 1;
@@ -103,6 +193,22 @@ export function TeamChatPage({ language }: { language: LanguageMode }): ReactEle
   useEffect(() => {
     setMentionIndex(0);
   }, [activeRoom?.id, mentionContext?.query]);
+
+  useEffect(() => {
+    if (!activeRoom) {
+      setTargetMemberIds([]);
+      return;
+    }
+    const availableConfiguredAgents = new Set(snapshot.configuredAgents.map((agent) => agent.id));
+    const availableMembers = activeRoom.agents.filter((member) =>
+      member.enabled && availableConfiguredAgents.has(member.configuredAgentId));
+    setTargetMemberIds((current) => {
+      const retained = current.filter((memberId) =>
+        availableMembers.some((member) => member.agentId === memberId));
+      if (retained.length > 0) return retained;
+      return availableMembers[0] ? [availableMembers[0].agentId] : [];
+    });
+  }, [activeRoom, snapshot.configuredAgents]);
 
   const loadRooms = useCallback(async (preferredRoomId?: string): Promise<void> => {
     setLoadingRooms(true);
@@ -235,11 +341,19 @@ export function TeamChatPage({ language }: { language: LanguageMode }): ReactEle
 
   const sendMessage = useCallback(async (): Promise<void> => {
     const content = composer.trim();
-    if (!selectedRoomId || !content || sending || activeRootMessageId) return;
+    if (!selectedRoomId || !content || sending) return;
+    if (targetMemberIds.length === 0) {
+      setFeedback(l("Select at least one employee.", "请至少选择一名员工。"));
+      return;
+    }
     setSending(true);
     setFeedback(undefined);
     try {
-      const result = await api.sendMessage({ roomId: selectedRoomId, content });
+      const result = await api.sendMessage({
+        roomId: selectedRoomId,
+        content,
+        targetMemberIds,
+      });
       setMessages((current) => mergeMessages(current, [result.message]));
       setComposer("");
       setComposerCursor(0);
@@ -250,9 +364,18 @@ export function TeamChatPage({ language }: { language: LanguageMode }): ReactEle
       setSending(false);
       composerRef.current?.focus();
     }
-  }, [activeRootMessageId, api, composer, selectedRoomId, sending]);
+  }, [api, composer, l, selectedRoomId, sending, targetMemberIds]);
+
+  const toggleTargetMember = (memberId: string): void => {
+    setTargetMemberIds((current) =>
+      current.includes(memberId)
+        ? current.filter((id) => id !== memberId)
+        : [...current, memberId]);
+  };
 
   const insertMention = (member: TeamChatRoomAgent, replaceActiveQuery = false): void => {
+    setTargetMemberIds((current) =>
+      current.includes(member.agentId) ? current : [...current, member.agentId]);
     const cursor = Math.min(composerCursor, composer.length);
     const context = replaceActiveQuery ? activeMentionContext(composer, cursor) : undefined;
     const mention = `@${member.displayName}`;
@@ -316,8 +439,23 @@ export function TeamChatPage({ language }: { language: LanguageMode }): ReactEle
     }
   };
 
+  const renameRoom = async (name: string): Promise<void> => {
+    if (!activeRoom) return;
+    const updated = await api.updateRoom({ roomId: activeRoom.id, name });
+    setActiveRoom((current) => current?.id === updated.id ? updated : current);
+    setRooms((current) => current.map((room) =>
+      room.id === updated.id
+        ? { ...room, name: updated.name, updatedAt: updated.updatedAt }
+        : room));
+    setFeedback(undefined);
+  };
+
   const resetAgentConversation = async (member: TeamChatRoomAgent): Promise<void> => {
-    if (!activeRoom || activeRootMessageId || resettingAgentIds.has(member.agentId)) return;
+    if (
+      !activeRoom ||
+      Object.values(streams).some((stream) => stream.agentId === member.agentId) ||
+      resettingAgentIds.has(member.agentId)
+    ) return;
     setResettingAgentIds((current) => new Set(current).add(member.agentId));
     setFeedback(undefined);
     try {
@@ -342,7 +480,7 @@ export function TeamChatPage({ language }: { language: LanguageMode }): ReactEle
       <header className="app-page-head team-chat-page-head">
         <div>
           <h2>Chat</h2>
-          <p>{l("Persistent rooms for your configured Agents", "让已配置的 Agent 在持久房间中协作")}</p>
+          <p>{l("Independent Runtime employees sharing one project workspace", "多个独立 Runtime 员工共享同一个项目工作区")}</p>
         </div>
         {connection.state === "ready" ? (
           <div className="team-chat-database-controls">
@@ -381,7 +519,7 @@ export function TeamChatPage({ language }: { language: LanguageMode }): ReactEle
                   onClick={() => setSelectedRoomId(room.id)}
                 >
                   <strong>{room.name}</strong>
-                  <span>{room.lastMessage || l(`${room.agentCount} Agents`, `${room.agentCount} 个 Agent`)}</span>
+                  <span>{room.lastMessage || l(`${room.agentCount} employees`, `${room.agentCount} 名员工`)}</span>
                 </button>
               ))}
               {!loadingRooms && rooms.length === 0 ? (
@@ -399,7 +537,12 @@ export function TeamChatPage({ language }: { language: LanguageMode }): ReactEle
               <>
                 <header className="team-chat-room-head">
                   <div>
-                    <strong>{activeRoom.name}</strong>
+                    <TeamChatRoomTitle
+                      room={activeRoom}
+                      language={language}
+                      onRename={renameRoom}
+                      onError={(error) => setFeedback(errorMessage(error))}
+                    />
                     <span title={activeRoom.workDir}>{activeRoom.workDir || l("No working directory", "未设置工作目录")}</span>
                   </div>
                   <button type="button" onClick={() => void archiveRoom()} title={l("Archive room", "归档房间")}>
@@ -418,7 +561,7 @@ export function TeamChatPage({ language }: { language: LanguageMode }): ReactEle
                     <div className="team-chat-transcript-empty">
                       <UsersRound size={26} />
                       <strong>{l("Start the room", "开始房间对话")}</strong>
-                      <span>{l("Message everyone, or mention one Agent by name.", "直接发消息给所有成员，或用 @ 指定一个 Agent。")}</span>
+                      <span>{l("Choose an employee below, then send the first task.", "先在下方选择员工，再发送第一项任务。")}</span>
                     </div>
                   ) : null}
                   {messages.map((message) => (
@@ -426,6 +569,7 @@ export function TeamChatPage({ language }: { language: LanguageMode }): ReactEle
                       key={message.id}
                       message={message}
                       member={activeRoom.agents.find((member) => member.agentId === message.senderAgentId)}
+                      recipient={activeRoom.agents.find((member) => member.agentId === message.recipientMemberId)}
                       language={language}
                     />
                   ))}
@@ -441,6 +585,26 @@ export function TeamChatPage({ language }: { language: LanguageMode }): ReactEle
                 </div>
                 <footer className="team-chat-composer">
                   {feedback ? <div className="team-chat-feedback" role="alert">{feedback}</div> : null}
+                  <div className="team-chat-recipient-picker" aria-label={l("Message recipients", "消息收件员工")}>
+                    <span>{l("To", "发送给")}</span>
+                    {activeRoom.agents.map((member) => {
+                      const available = snapshot.configuredAgents
+                        .some((agent) => agent.id === member.configuredAgentId);
+                      const selected = targetMemberIds.includes(member.agentId);
+                      return (
+                        <button
+                          type="button"
+                          key={member.agentId}
+                          className={selected ? "selected" : ""}
+                          disabled={!available || !member.enabled}
+                          aria-pressed={selected}
+                          onClick={() => toggleTargetMember(member.agentId)}
+                        >
+                          {member.displayName}
+                        </button>
+                      );
+                    })}
+                  </div>
                   {mentionCandidates.length > 0 ? (
                     <div className="team-chat-mention-menu" id="team-chat-mentions" role="listbox" aria-label={l("Mention an Agent", "提及 Agent")}>
                       {mentionCandidates.map((member, index) => (
@@ -479,18 +643,17 @@ export function TeamChatPage({ language }: { language: LanguageMode }): ReactEle
                         setMentionMenuOpen(Boolean(activeMentionContext(event.currentTarget.value, cursor)));
                       }}
                       onKeyDown={onComposerKeyDown}
-                      placeholder={l("Message the room · @Agent to route", "发送到房间 · 输入 @Agent 指定成员")}
+                      placeholder={l("Message selected employees · @name also selects", "发送给已选员工 · 输入 @名称也会选中")}
                       rows={2}
                     />
                     {activeRootMessageId ? (
                       <button className="team-chat-stop" type="button" onClick={() => void api.stopTurn(activeRootMessageId)} title={l("Stop this turn", "停止本轮")}>
                         <CircleStop size={17} />
                       </button>
-                    ) : (
-                      <button className="team-chat-send" type="button" onClick={() => void sendMessage()} disabled={!composer.trim() || sending} title={l("Send", "发送")}>
-                        {sending ? <LoaderCircle className="spin" size={17} /> : <Send size={17} />}
-                      </button>
-                    )}
+                    ) : null}
+                    <button className="team-chat-send" type="button" onClick={() => void sendMessage()} disabled={!composer.trim() || sending || targetMemberIds.length === 0} title={l("Send", "发送")}>
+                      {sending ? <LoaderCircle className="spin" size={17} /> : <Send size={17} />}
+                    </button>
                   </div>
                   <span className="team-chat-compose-hint">{l("Enter to send · Shift+Enter for a new line", "Enter 发送 · Shift+Enter 换行")}</span>
                 </footer>
@@ -504,30 +667,35 @@ export function TeamChatPage({ language }: { language: LanguageMode }): ReactEle
           </section>
 
           <aside className="team-chat-members">
-            <div className="team-chat-rail-head"><span>{l("Members", "成员")}</span></div>
+            <div className="team-chat-rail-head"><span>{l("Employees", "员工")}</span></div>
             <div className="team-chat-member-list">
               {activeRoom?.agents.map((member) => {
-                const available = snapshot.configuredAgents.some((agent) => agent.id === member.agentId);
+                const available = snapshot.configuredAgents.some(
+                  (agent) => agent.id === member.configuredAgentId,
+                );
                 const continuity = member.hasActiveConversation
                   ? l("Persistent context", "持续会话")
                   : member.continuationAvailable
                     ? l("Continues after first reply", "首次回复后持续")
                     : l("New context each time", "每次新会话");
                 const resetting = resettingAgentIds.has(member.agentId);
+                const running = Object.values(streams)
+                  .some((stream) => stream.agentId === member.agentId);
+                const selected = targetMemberIds.includes(member.agentId);
                 return (
-                  <div className="team-chat-member-row" key={member.agentId}>
-                    <button className="team-chat-member-main" type="button" disabled={!available || !member.enabled} onClick={() => insertMention(member)} title={available ? l(`Mention ${member.displayName}`, `提及 ${member.displayName}`) : l("Agent configuration is unavailable", "Agent 配置不可用")}>
-                      <span className={`team-chat-member-avatar ${available ? "available" : "missing"}`}><Bot size={14} /></span>
+                  <div className={`team-chat-member-row ${selected ? "selected" : ""}`} key={member.agentId}>
+                    <button className="team-chat-member-main" type="button" disabled={!available || !member.enabled} onClick={() => toggleTargetMember(member.agentId)} title={available ? l(`Select ${member.displayName}`, `选择 ${member.displayName}`) : l("Agent configuration is unavailable", "Agent 配置不可用")}>
+                      <span className={`team-chat-member-avatar ${available ? "available" : "missing"} ${running ? "running" : ""}`}><Bot size={14} /></span>
                       <span>
                         <strong>{member.displayName}</strong>
-                        <small>{available ? `${member.runtimeId} · ${continuity}` : l("Unavailable", "配置不可用")}</small>
+                        <small>{available ? `${member.runtimeId} · ${running ? l("Running", "运行中") : continuity}` : l("Unavailable", "配置不可用")}</small>
                       </span>
                     </button>
                     {available && member.hasActiveConversation ? (
                       <button
                         className="team-chat-member-reset"
                         type="button"
-                        disabled={Boolean(activeRootMessageId) || resetting}
+                        disabled={running || resetting}
                         onClick={() => void resetAgentConversation(member)}
                         title={l("Start new conversation", "开始新会话")}
                         aria-label={l(`Start a new conversation for ${member.displayName}`, `为 ${member.displayName} 开始新会话`)}
@@ -609,27 +777,52 @@ function CreateRoomDialog({
   agents: Array<{ id: string; name: string; runtimeAgentId: string; description: string }>;
   defaultWorkDir: string;
   onPickDirectory: (defaultPath?: string) => Promise<string | undefined>;
-  onCreate: (request: { name: string; workDir: string; agentIds: string[] }) => Promise<void>;
+  onCreate: (request: CreateTeamChatRoomRequest) => Promise<void>;
   onClose: () => void;
 }): ReactElement {
   const l = (en: string, zh: string) => localize(language, en, zh);
   const [name, setName] = useState("");
   const [workDir, setWorkDir] = useState(defaultWorkDir);
-  const [agentIds, setAgentIds] = useState<string[]>(agents[0] ? [agents[0].id] : []);
+  const employeeSequence = useRef(1);
+  const [employees, setEmployees] = useState<DraftStudioEmployee[]>(() => agents[0]
+    ? [{
+        localId: "employee-1",
+        configuredAgentId: agents[0].id,
+        displayName: agents[0].name,
+      }]
+    : []);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
 
   const submit = async (event: FormEvent): Promise<void> => {
     event.preventDefault();
-    if (!name.trim() || agentIds.length === 0 || busy) return;
+    if (!name.trim() || employees.length === 0 || employees.some((employee) => !employee.displayName.trim()) || busy) return;
     setBusy(true);
     setError(undefined);
     try {
-      await onCreate({ name: name.trim(), workDir: workDir.trim(), agentIds });
+      await onCreate({
+        name: name.trim(),
+        workDir: workDir.trim(),
+        members: employees.map((employee) => ({
+          configuredAgentId: employee.configuredAgentId,
+          displayName: employee.displayName.trim(),
+        })),
+      });
     } catch (cause) {
       setError(errorMessage(cause));
       setBusy(false);
     }
+  };
+
+  const addEmployee = (): void => {
+    const agent = agents[0];
+    if (!agent) return;
+    employeeSequence.current += 1;
+    setEmployees((current) => [...current, {
+      localId: `employee-${employeeSequence.current}`,
+      configuredAgentId: agent.id,
+      displayName: nextStudioEmployeeName(agent.name, current.map((employee) => employee.displayName)),
+    }]);
   };
 
   return (
@@ -653,30 +846,80 @@ function CreateRoomDialog({
           </div>
         </label>
         <fieldset>
-          <legend>{l("Agents", "Agent 成员")}</legend>
+          <div className="team-chat-employee-legend">
+            <legend>{l("Employees", "员工")}</legend>
+            <button type="button" onClick={addEmployee} disabled={busy || agents.length === 0 || employees.length >= 24}>
+              <Plus size={13} />
+              {l("Add employee", "添加员工")}
+            </button>
+          </div>
           {agents.length === 0 ? <p className="team-chat-no-agents">{l("Configure an Agent in Runtime first.", "请先在 Runtime 中配置 Agent。")}</p> : null}
-          <div className="team-chat-agent-options">
-            {agents.map((agent) => (
-              <label key={agent.id}>
-                <input
-                  type="checkbox"
-                  checked={agentIds.includes(agent.id)}
-                  onChange={(event) => {
-                    const checked = event.currentTarget.checked;
-                    setAgentIds((current) => checked
-                      ? [...current, agent.id]
-                      : current.filter((id) => id !== agent.id));
-                  }}
-                />
-                <span><strong>{agent.name}</strong><small>{agent.runtimeAgentId}{agent.description ? ` · ${agent.description}` : ""}</small></span>
-              </label>
-            ))}
+          <div className="team-chat-employee-options">
+            {employees.map((employee) => {
+              const selectedAgent = agents.find((agent) => agent.id === employee.configuredAgentId);
+              return (
+                <div className="team-chat-employee-option" key={employee.localId}>
+                  <select
+                    value={employee.configuredAgentId}
+                    disabled={busy}
+                    aria-label={l("Runtime configuration", "Runtime 配置")}
+                    onChange={(event) => {
+                      const configuredAgentId = event.currentTarget.value;
+                      setEmployees((current) => current.map((item) => {
+                        if (item.localId !== employee.localId) return item;
+                        const agent = agents.find((candidate) => candidate.id === configuredAgentId);
+                        return {
+                          ...item,
+                          configuredAgentId,
+                          displayName: agent
+                            ? nextStudioEmployeeName(
+                                agent.name,
+                                current
+                                  .filter((candidate) => candidate.localId !== item.localId)
+                                  .map((candidate) => candidate.displayName),
+                              )
+                            : item.displayName,
+                        };
+                      }));
+                    }}
+                  >
+                    {agents.map((agent) => (
+                      <option key={agent.id} value={agent.id}>
+                        {agent.name} · {agent.runtimeAgentId}
+                      </option>
+                    ))}
+                  </select>
+                  <input
+                    value={employee.displayName}
+                    disabled={busy}
+                    maxLength={120}
+                    aria-label={l("Employee name", "员工名称")}
+                    onChange={(event) => {
+                      const displayName = event.currentTarget.value;
+                      setEmployees((current) => current.map((item) =>
+                        item.localId === employee.localId ? { ...item, displayName } : item));
+                    }}
+                  />
+                  <button
+                    type="button"
+                    disabled={busy || employees.length === 1}
+                    onClick={() => setEmployees((current) =>
+                      current.filter((item) => item.localId !== employee.localId))}
+                    title={l("Remove employee", "移除员工")}
+                    aria-label={l("Remove employee", "移除员工")}
+                  >
+                    <X size={13} />
+                  </button>
+                  {selectedAgent?.description ? <small>{selectedAgent.description}</small> : null}
+                </div>
+              );
+            })}
           </div>
         </fieldset>
         {error ? <div className="team-chat-dialog-error" role="alert">{error}</div> : null}
         <footer>
           <button type="button" onClick={onClose} disabled={busy}>{l("Cancel", "取消")}</button>
-          <button className="primary" type="submit" disabled={busy || !name.trim() || agentIds.length === 0}>
+          <button className="primary" type="submit" disabled={busy || !name.trim() || employees.length === 0 || employees.some((employee) => !employee.displayName.trim())}>
             {busy ? <LoaderCircle className="spin" size={14} /> : null}{l("Create room", "创建房间")}
           </button>
         </footer>
@@ -685,10 +928,26 @@ function CreateRoomDialog({
   );
 }
 
-function TeamChatMessageCard({ message, member, language }: { message: TeamChatMessage; member?: TeamChatRoomAgent; language: LanguageMode }): ReactElement {
+function TeamChatMessageCard({
+  message,
+  member,
+  recipient,
+  language,
+}: {
+  message: TeamChatMessage;
+  member?: TeamChatRoomAgent;
+  recipient?: TeamChatRoomAgent;
+  language: LanguageMode;
+}): ReactElement {
   return (
     <article className={`team-chat-message is-${message.senderType} ${message.status === "error" ? "is-error" : ""}`}>
-      <header><strong>{message.senderName}</strong>{member ? <span className="team-chat-runtime-badge">{member.runtimeId}</span> : null}<time>{formatMessageTime(message.createdAt, language)}</time></header>
+      <header>
+        <strong>{message.senderName}</strong>
+        {recipient ? <span className="team-chat-message-recipient">→ {recipient.displayName}</span> : null}
+        {message.deliveryType === "post" ? <span>{localize(language, "post", "公告")}</span> : null}
+        {member ? <span className="team-chat-runtime-badge">{member.runtimeId}</span> : null}
+        <time>{formatMessageTime(message.createdAt, language)}</time>
+      </header>
       <div className="team-chat-message-content">
         <ReactMarkdown remarkPlugins={[remarkGfm]} components={{ a: TeamChatExternalLink }}>{message.content}</ReactMarkdown>
       </div>
@@ -792,9 +1051,17 @@ function mergeMessages(...groups: TeamChatMessage[][]): TeamChatMessage[] {
   const byId = new Map<string, TeamChatMessage>();
   for (const message of groups.flat()) byId.set(message.id, message);
   return [...byId.values()].sort((left, right) => {
-    const time = Date.parse(left.createdAt) - Date.parse(right.createdAt);
-    return time || left.id.localeCompare(right.id);
+    return left.sequence - right.sequence || left.id.localeCompare(right.id);
   });
+}
+
+export function nextStudioEmployeeName(baseName: string, existingNames: string[]): string {
+  const base = baseName.trim() || "Employee";
+  const used = new Set(existingNames.map((name) => name.trim().toLocaleLowerCase()));
+  if (!used.has(base.toLocaleLowerCase())) return base;
+  let suffix = 2;
+  while (used.has(`${base}${suffix}`.toLocaleLowerCase())) suffix += 1;
+  return `${base}${suffix}`;
 }
 
 function formatMessageTime(value: string, language: LanguageMode): string {
