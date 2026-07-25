@@ -267,26 +267,23 @@ describe("migrateSessionForMcp — long-session compression", () => {
 按时间顺序梳理：用户要求修复刷新令牌过期的 bug。
 </analysis>
 <summary>
-## 用户原始目标与约束
+## 用户原始目标
 用户在排查一个偶发的刷新令牌过期问题，怀疑是令牌缓存的过期时间设置不合理，需要定位相关代码并验证修复方案是否覆盖所有边界条件。这个问题在高峰时段会触发，导致用户被意外登出。
-
+## 约束与用户纠正
+迁移必须保留完整 Turn，不允许通过本地字符裁剪静默丢失中间历史；用户要求使用设置中明确选择的摘要模型。
+## 已确定的决定
+选择将本地缓存 TTL 调整为 25 分钟并增加 60 秒的提前刷新缓冲，而非彻底重写缓存层，以最小化改动范围并保持与现有调用方接口完全兼容，降低回归风险。
 ## 已完成工作
 分析了 src/auth/refresh.ts 中的令牌刷新逻辑，确认缓存 TTL 默认值为 30 分钟，与上游身份服务的令牌有效窗口不匹配，导致令牌在临界点被复用而上游已经将其标记为失效。同时复现了过期场景并编写了单元测试覆盖刷新失败后的重试路径与降级策略。
-
-## 关键决策及原因
-选择将本地缓存 TTL 调整为 25 分钟并增加 60 秒的提前刷新缓冲，而非彻底重写缓存层，以最小化改动范围并保持与现有调用方接口完全兼容，降低回归风险。
-
-## 文件、命令与验证
+## 相关产物
 修改 src/auth/refresh.ts 调整 TTL 与缓冲；新增测试 src/auth/refresh.test.ts；运行 npm test 验证全绿。
-
-## 未解决事项
-需要确认多实例部署下缓存一致性的影响，可能需要引入分布式锁避免并发刷新。
-
-## 建议下一步
-在预发环境验证令牌刷新窗口，并补充集成测试覆盖并发刷新与上游短暂不可用的场景。
-
-## 最近对话逐字引用
+## 当前状态
+核心修复与单元测试已经完成，最近一次对话确认：
 > how do I fix the bug
+## 遗留问题
+需要确认多实例部署下缓存一致性的影响，可能需要引入分布式锁避免并发刷新。
+## 下一步
+在预发环境验证令牌刷新窗口，并补充集成测试覆盖并发刷新与上游短暂不可用的场景。
 </summary>`;
 
   it("uses ai-compressed strategy when the compressor succeeds", async () => {
@@ -307,34 +304,61 @@ describe("migrateSessionForMcp — long-session compression", () => {
     }
   });
 
-  it("falls back to locally-truncated when compression fails", async () => {
+  it("rejects instead of locally truncating when compression fails", async () => {
     const store = createInMemoryStore();
     const { sessionKey } = await seedLocalSession(store, { messages: longMessages() });
     const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "mcp-mig-home-"));
     const compress = vi.fn().mockRejectedValue(new Error("provider down"));
     try {
-      const result = await migrateSessionForMcp(
+      await expect(migrateSessionForMcp(
         { sessionKey, target: "codex" },
         { store, settings: defaultSettings, inspectCli: noOpInspect, homeDir, compressor: compress },
-      );
-      expect(result.strategy).toBe("locally-truncated");
+      )).rejects.toThrow(/summary model failed/i);
       expect(compress).toHaveBeenCalledOnce();
     } finally {
       fs.rmSync(homeDir, { recursive: true, force: true });
     }
   });
 
-  it("falls back to locally-truncated when no compressor is available", async () => {
+  it("rejects instead of locally truncating when no compressor is available", async () => {
     const store = createInMemoryStore();
     const { sessionKey } = await seedLocalSession(store, { messages: longMessages() });
     const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "mcp-mig-home-"));
     try {
-      // No custom provider configured and no compressor injected => null compressor.
-      const result = await migrateSessionForMcp(
+      await expect(migrateSessionForMcp(
         { sessionKey, target: "codex" },
         { store, settings: defaultSettings, inspectCli: noOpInspect, homeDir, compressor: null },
+      )).rejects.toThrow(/summary model/i);
+    } finally {
+      fs.rmSync(homeDir, { recursive: true, force: true });
+    }
+  });
+
+  it("uses the configured complete migration threshold", async () => {
+    const store = createInMemoryStore();
+    const belowDefaultMessages = Array.from({ length: 40 }, (_, index): SessionMessage => ({
+      role: index % 2 === 0 ? "user" : "assistant",
+      content: "x".repeat(6_000),
+      timestamp: `2026-06-01T10:00:${String(index % 60).padStart(2, "0")}Z`,
+      index,
+    }));
+    const { sessionKey } = await seedLocalSession(store, { messages: belowDefaultMessages });
+    const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "mcp-mig-home-"));
+    const compress = vi.fn().mockResolvedValue(VALID_HANDOFF);
+    try {
+      const result = await migrateSessionForMcp(
+        { sessionKey, target: "codex" },
+        {
+          store,
+          settings: { ...defaultSettings, migrationCompleteTokenLimit: 50_000 },
+          inspectCli: noOpInspect,
+          homeDir,
+          compressor: compress,
+        },
       );
-      expect(result.strategy).toBe("locally-truncated");
+
+      expect(result.strategy).toBe("ai-compressed");
+      expect(compress).toHaveBeenCalledOnce();
     } finally {
       fs.rmSync(homeDir, { recursive: true, force: true });
     }

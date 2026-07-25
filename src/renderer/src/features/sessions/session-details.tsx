@@ -28,7 +28,7 @@ export interface SessionDetailsActions {
   summarize(session: SessionSearchResult): void;
   resume(session: SessionSearchResult): void;
   resumeInIterm(session: SessionSearchResult): void;
-  migrate(session: SessionSearchResult): void;
+  migrate(session: SessionSearchResult, turn?: SessionTurnSummary): void;
   uploadRemote(session: SessionSearchResult): void;
   copyResume(session: SessionSearchResult): void;
   copyMarkdown(session: SessionSearchResult): void;
@@ -83,6 +83,7 @@ export function SessionDetails({
         turnsLoading={turnsLoading}
         matchedTurnId={matchedTurnId}
         onLoadTurn={(turnId) => actions.loadTurn(detail, turnId)}
+        onMigrateTurn={canMigrate ? (turn) => actions.migrate(detail, turn) : undefined}
         messages={[]}
         matchedContextMessages={[]}
         matchedMessageIndex={null}
@@ -130,7 +131,8 @@ export function SessionDetails({
       turns={null}
       turnsLoading={false}
       matchedTurnId={null}
-      onLoadTurn={async () => null}
+        onLoadTurn={async () => null}
+        onMigrateTurn={undefined}
       messages={remoteDetail.snapshot.messages}
       matchedContextMessages={[]}
       matchedMessageIndex={null}

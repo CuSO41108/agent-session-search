@@ -33,6 +33,7 @@ export interface RestoreRemoteSessionOptions {
   portable: PortableSession;
   target: MigrationAgent;
   localProjectPath: string;
+  completeTokenLimit?: number;
   deps: RemoteSessionRestoreDependencies;
 }
 
@@ -43,6 +44,7 @@ export async function restoreRemotePortableSession({
   portable,
   target,
   localProjectPath,
+  completeTokenLimit = MIGRATION_TOKEN_LIMIT,
   deps,
 }: RestoreRemoteSessionOptions): Promise<SessionMigrationResult> {
   await validateRestoreRequest(portable, target, localProjectPath, deps);
@@ -58,9 +60,16 @@ export async function restoreRemotePortableSession({
   const localPortable: PortableSession = {
     ...portable,
     projectPath: localProjectPath,
+    turnBoundaries: portable.turnBoundaries ?? portable.messages.reduce<number[]>(
+      (boundaries, message, index) => {
+        if (index === 0 || message.role === "user") boundaries.push(index);
+        return boundaries;
+      },
+      [],
+    ),
   };
 
-  if (estimatePortableSessionTokens(localPortable) > MIGRATION_TOKEN_LIMIT) {
+  if (estimatePortableSessionTokens(localPortable) > completeTokenLimit) {
     notifyProgress(deps.onProgress, {
       sessionKey: remoteId,
       target,

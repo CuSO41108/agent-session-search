@@ -15,6 +15,7 @@ export function SessionMigrationDialog({
   busy,
   progress,
   targets,
+  throughTurnIndex,
   onSelect,
   onClose,
 }: {
@@ -23,6 +24,7 @@ export function SessionMigrationDialog({
   busy: boolean;
   progress?: SessionMigrationProgress | null;
   targets: readonly MigrationTarget[];
+  throughTurnIndex?: number;
   onSelect: (target: MigrationTarget) => void;
   onClose: () => void;
 }): ReactElement {
@@ -42,6 +44,14 @@ export function SessionMigrationDialog({
         <p className="dialog-copy">
           {l("Create a new local target-agent session from", "从当前会话创建新的本地目标 Agent 会话：")} <strong>{session.displayTitle}</strong>
         </p>
+        {throughTurnIndex !== undefined ? (
+          <p className="dialog-copy">
+            {l(
+              `Only history through Turn ${throughTurnIndex + 1} will be migrated.`,
+              `仅迁移截至第 ${throughTurnIndex + 1} 轮的历史。`,
+            )}
+          </p>
+        ) : null}
         {remote ? <p className="dialog-copy danger-copy">{l("Remote session migration is not supported yet.", "首版仅支持本地会话迁移。")}</p> : null}
         {busy ? <MigrationProgressPanel progress={progress ?? null} language={language} /> : null}
         <div className="migration-targets">

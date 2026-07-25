@@ -26,7 +26,12 @@ export type DialogState =
   | null;
 
 export type SessionMigrationDialogState =
-  | { kind: "select"; session: SessionSearchResult }
+  | {
+      kind: "select";
+      session: SessionSearchResult;
+      throughTurnId?: string;
+      throughTurnIndex?: number;
+    }
   | {
       kind: "launch-failed";
       session: SessionSearchResult;

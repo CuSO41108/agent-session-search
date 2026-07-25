@@ -339,6 +339,18 @@ export async function applyMigrationLengthPolicy(
     return { session, strategy: "complete" };
   }
 
+  if (session.turnBoundaries && session.turnBoundaries.length > 0) {
+    const boundaries = portableTurnBoundaries(session);
+    const finalTurnStart = boundaries.at(-1) ?? 0;
+    const finalTurnTokens = estimatePortableSessionTokens({
+      ...session,
+      messages: session.messages.slice(finalTurnStart),
+    });
+    if (finalTurnTokens > completeTokenLimit) {
+      throw new Error("The most recent turn exceeds the complete migration threshold.");
+    }
+  }
+
   if (!compress) {
     throw new Error("A summary model must be configured to migrate this long session.");
   }

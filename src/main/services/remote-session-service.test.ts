@@ -419,7 +419,10 @@ describe("RemoteSessionService cloud orchestration", () => {
   it("records a restore binding after the restored session appears in the local index", async () => {
     const restored = localSession({ sessionKey: "local:restored", rawId: "restored-session" });
     const harness = createHarness({
-      settings: configuredSettings(),
+      settings: {
+        ...configuredSettings(),
+        migrationCompleteTokenLimit: 120_000,
+      },
       sessions: [restored],
       localRevision: "restored-revision",
     });
@@ -434,6 +437,7 @@ describe("RemoteSessionService cloud orchestration", () => {
       remoteId: "remote-1",
       target: "codex",
       localProjectPath: "/tmp/project",
+      completeTokenLimit: 120_000,
       deps: harness.localRestoreDependencies,
     }));
     expect(harness.store.upsertSessionSyncBinding).toHaveBeenCalledWith({

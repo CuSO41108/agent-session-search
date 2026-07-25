@@ -282,7 +282,14 @@ export class RemoteSessionService {
     const client = this.createClient();
     const portable = await client.getPortableSession(remoteId);
     const deps = await this.dependencies.createLocalRestoreDependencies(onProgress);
-    const result = await this.operations.restorePortable({ remoteId, portable, target, localProjectPath, deps });
+    const result = await this.operations.restorePortable({
+      remoteId,
+      portable,
+      target,
+      localProjectPath,
+      completeTokenLimit: this.dependencies.getSettings().migrationCompleteTokenLimit,
+      deps,
+    });
     await this.bindRestoredSession(client, remoteId, result.targetSessionId);
     return result;
   }
@@ -308,6 +315,7 @@ export class RemoteSessionService {
       portable,
       target,
       localProjectPath: portable.projectPath,
+      completeTokenLimit: this.dependencies.getSettings().migrationCompleteTokenLimit,
       deps,
     });
     await this.bindRestoredSession(client, remoteId, result.targetSessionId);

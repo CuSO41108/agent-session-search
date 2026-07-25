@@ -144,4 +144,21 @@ describe("TurnAccordion", () => {
     expect(html).toContain("Inspect the failing test");
     expect(html).not.toContain("file contents");
   });
+
+  it("renders a turn context menu with only the migration command", async () => {
+    const feature = await loadTurnAccordion();
+    expect(feature).not.toBeNull();
+    if (!feature) return;
+
+    const html = renderToStaticMarkup(createElement(feature.TurnMigrationContextMenu, {
+      point: { x: 120, y: 80 },
+      language: "zh",
+      onMigrate: () => undefined,
+    }));
+
+    expect(html).toContain("迁移</button>");
+    expect((html.match(/<button/g) ?? [])).toHaveLength(1);
+    expect(html).not.toContain("重命名");
+    expect(html).not.toContain("删除");
+  });
 });

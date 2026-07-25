@@ -28,6 +28,7 @@ import type {
   SessionMigrationResult,
   SessionMatchHit,
   SessionSearchResult,
+  SessionTurnSummary,
 } from "../../core/types";
 import {
   getLiveSessionState,
@@ -821,9 +822,18 @@ export function App(): ReactElement {
     }
   }
 
-  function beginMigrate(session: SessionSearchResult): void {
+  function beginMigrate(session: SessionSearchResult, turn?: SessionTurnSummary): void {
     setContextMenu(null);
-    setMigrationDialog({ kind: "select", session });
+    setMigrationDialog({
+      kind: "select",
+      session,
+      ...(turn
+        ? {
+            throughTurnId: turn.id,
+            throughTurnIndex: turn.turnIndex,
+          }
+        : {}),
+    });
   }
 
   async function runMigration(target: SessionMigrationProgress["target"]): Promise<void> {
@@ -836,6 +846,9 @@ export function App(): ReactElement {
       const result: SessionMigrationResult = await window.sessionSearch.migrateSession({
         sessionKey: session.sessionKey,
         target,
+        ...(migrationDialog.throughTurnId
+          ? { throughTurnId: migrationDialog.throughTurnId }
+          : {}),
       });
       await Promise.all([load(), loadSidebarMetadata(), loadStats()]);
       await refreshLiveSessions();
@@ -1478,6 +1491,7 @@ export function App(): ReactElement {
           language={language}
           busy={actionStatus?.kind === "running"}
           progress={migrationProgress}
+          throughTurnIndex={migrationDialog.throughTurnIndex}
           onSelect={(target) => void runMigration(target)}
           onClose={() => setMigrationDialog(null)}
         />

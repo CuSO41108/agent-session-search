@@ -44,4 +44,24 @@ describe("SessionMigrationDialog", () => {
     expect(html).toContain(">TCodex</button>");
     expect(html).not.toContain("当前会话没有可用的迁移目标。");
   });
+
+  it("explains that a turn-scoped migration includes history only through that turn", () => {
+    const session = {
+      source: "claude-cli",
+      environmentId: "local",
+      environmentKind: "local",
+      displayTitle: "Local session",
+    } as SessionSearchResult;
+    const html = renderToStaticMarkup(SessionMigrationDialog({
+      session,
+      language: "zh",
+      busy: false,
+      targets: ["codex"],
+      throughTurnIndex: 4,
+      onSelect: () => undefined,
+      onClose: () => undefined,
+    }));
+
+    expect(html).toContain("截至第 5 轮");
+  });
 });

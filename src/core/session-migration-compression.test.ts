@@ -174,6 +174,23 @@ describe("migration compression policy", () => {
     );
   });
 
+  it("rejects before AI work when the selected final turn alone exceeds the threshold", async () => {
+    const session = Object.assign(portable([
+      message("earlier question", 0, "user"),
+      message("earlier answer", 1, "assistant"),
+      message("selected question", 2, "user"),
+      message("x".repeat(MIGRATION_TOKEN_LIMIT * 4 + 1), 3, "assistant"),
+    ]), {
+      turnBoundaries: [0, 2],
+    });
+    const compress = vi.fn().mockResolvedValue(VALID_HANDOFF);
+
+    await expect(applyMigrationLengthPolicy(session, compress)).rejects.toThrow(
+      /most recent turn exceeds/i,
+    );
+    expect(compress).not.toHaveBeenCalled();
+  });
+
   it("rejects long migration when no summary model is configured", async () => {
     await expect(
       applyMigrationLengthPolicy(portableWithContent("x".repeat(399_989)), null),

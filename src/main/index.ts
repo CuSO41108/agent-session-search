@@ -1335,14 +1335,28 @@ async function createLocalRemoteRestoreDependencies(
   onProgress: (progress: SessionMigrationProgress) => void,
 ): Promise<RemoteSessionRestoreDependencies> {
   const settings = await providerService.hydrateSettings();
-  const endpoint = (await resolveSummaryEndpointFromSettings()) ?? buildCodexExecEndpoint(settings);
+  const endpoint = resolveSummaryEndpointFromSettingsShared(settings, {
+    onTemporarySession: (temporarySessionKey) => {
+      void store.deleteSession(temporarySessionKey).catch(() => undefined);
+    },
+  });
   const compressor = endpoint
-    ? createMigrationCompressor(endpoint, undefined, settings.compressionConcurrency)
+    ? createMigrationCompressor(
+        endpoint,
+        undefined,
+        settings.compressionConcurrency,
+        settings.migrationCompleteTokenLimit,
+      )
     : null;
 
   return {
     inspectCli: (target) => inspectMigrationCli(target, getSettings()),
-    prepare: (session, listener) => applyMigrationLengthPolicy(session, compressor, listener),
+    prepare: (session, listener) => applyMigrationLengthPolicy(
+      session,
+      compressor,
+      listener,
+      settings.migrationCompleteTokenLimit,
+    ),
     write: (target, session) => writeMigratedSession({ target, session }),
     record: (record) => store.recordSessionMigration(record),
     refreshIndex: async (target, writtenFilePath, targetSessionId) => {
@@ -1366,14 +1380,28 @@ async function createSourceRemoteRestoreDependencies(
   onProgress: (progress: SessionMigrationProgress) => void,
 ): Promise<RemoteSessionRestoreDependencies> {
   const settings = await providerService.hydrateSettings();
-  const endpoint = (await resolveSummaryEndpointFromSettings()) ?? buildCodexExecEndpoint(settings);
+  const endpoint = resolveSummaryEndpointFromSettingsShared(settings, {
+    onTemporarySession: (temporarySessionKey) => {
+      void store.deleteSession(temporarySessionKey).catch(() => undefined);
+    },
+  });
   const compressor = endpoint
-    ? createMigrationCompressor(endpoint, undefined, settings.compressionConcurrency)
+    ? createMigrationCompressor(
+        endpoint,
+        undefined,
+        settings.compressionConcurrency,
+        settings.migrationCompleteTokenLimit,
+      )
     : null;
 
   return {
     inspectCli: async () => undefined,
-    prepare: (session, listener) => applyMigrationLengthPolicy(session, compressor, listener),
+    prepare: (session, listener) => applyMigrationLengthPolicy(
+      session,
+      compressor,
+      listener,
+      settings.migrationCompleteTokenLimit,
+    ),
     write: (target, session) => writeMigratedSessionToSshEnvironment(environment, target, session),
     record: (record) => store.recordSessionMigration(record),
     refreshIndex: async () => {

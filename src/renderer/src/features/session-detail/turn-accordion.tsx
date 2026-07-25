@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useReducer, useRef, useState } from "react";
 import type { ReactElement } from "react";
-import { AlertCircle, ChevronDown, ChevronRight, Clock3, LoaderCircle, RotateCw, Wrench } from "lucide-react";
+import { AlertCircle, ArrowRightLeft, ChevronDown, ChevronRight, Clock3, LoaderCircle, RotateCw, Wrench } from "lucide-react";
 
 import { formatMessageTime } from "../../../../core/format-session";
 import type {
@@ -10,6 +10,10 @@ import type {
   SessionTurnSummary,
 } from "../../../../core/types";
 import { formatTokenCount } from "../../format-count";
+import {
+  useClampedContextMenuStyle,
+  type ContextMenuPoint,
+} from "../../context-menu-position";
 import { HighlightedSearchText, searchHighlightTerms } from "../../search-highlight";
 import { localize, type LanguageMode } from "../../language";
 import { Markdown } from "../../markdown";
@@ -163,6 +167,31 @@ function turnTitle(turn: SessionTurnSummary, language: LanguageMode): string {
   return localize(language, `Turn ${turn.turnIndex + 1}`, `第 ${turn.turnIndex + 1} 轮`);
 }
 
+export function TurnMigrationContextMenu({
+  point,
+  language,
+  onMigrate,
+}: {
+  point: ContextMenuPoint;
+  language: LanguageMode;
+  onMigrate: () => void;
+}): ReactElement {
+  const menu = useClampedContextMenuStyle(point);
+  return (
+    <div
+      ref={menu.ref}
+      className="context-menu turn-migration-context-menu"
+      style={menu.style}
+      onPointerDown={(event) => event.stopPropagation()}
+      onClick={(event) => event.stopPropagation()}
+    >
+      <button type="button" onClick={onMigrate}>
+        <ArrowRightLeft size={14} /> {localize(language, "Migrate", "迁移")}
+      </button>
+    </div>
+  );
+}
+
 function spanStatusSymbol(status: SessionTraceSpan["status"]): string {
   if (status === "completed") return "✓";
   if (status === "failed") return "✕";
@@ -306,6 +335,7 @@ export function TurnAccordion({
   query,
   language,
   onLoadTurn,
+  onMigrateTurn,
 }: {
   sessionKey: string;
   turns: SessionTurnSummary[];
@@ -315,12 +345,17 @@ export function TurnAccordion({
   query: string;
   language: LanguageMode;
   onLoadTurn: (turnId: string) => Promise<SessionTurnDetail | null>;
+  onMigrateTurn?: (turn: SessionTurnSummary) => void;
 }): ReactElement {
   const [state, dispatch] = useReducer(turnAccordionReducer, sessionKey, createTurnAccordionState);
   const activeSessionRef = useRef(sessionKey);
   const inFlightRef = useRef(new Set<string>());
   const rootRef = useRef<HTMLDivElement>(null);
   const highlightTerms = useMemo(() => searchHighlightTerms(query), [query]);
+  const [migrationMenu, setMigrationMenu] = useState<{
+    point: ContextMenuPoint;
+    turn: SessionTurnSummary;
+  } | null>(null);
 
   async function loadTurn(turnId: string): Promise<void> {
     const requestKey = `${sessionKey}:${turnId}`;
@@ -349,7 +384,22 @@ export function TurnAccordion({
     activeSessionRef.current = sessionKey;
     inFlightRef.current.clear();
     dispatch({ type: "reset", sessionKey });
+    setMigrationMenu(null);
   }, [sessionKey]);
+
+  useEffect(() => {
+    if (!migrationMenu) return;
+    const close = (): void => setMigrationMenu(null);
+    const closeOnEscape = (event: KeyboardEvent): void => {
+      if (event.key === "Escape") close();
+    };
+    window.addEventListener("pointerdown", close);
+    window.addEventListener("keydown", closeOnEscape);
+    return () => {
+      window.removeEventListener("pointerdown", close);
+      window.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [migrationMenu]);
 
   useEffect(() => {
     if (!matchedTurnId || !turns.some((turn) => turn.id === matchedTurnId)) return;
@@ -399,6 +449,16 @@ export function TurnAccordion({
             key={turn.id}
             className={`turn-card ${turn.status} ${turn.id === matchedTurnId ? "match-target" : ""}`}
             data-turn-id={turn.id}
+            onContextMenu={onMigrateTurn && !turn.synthetic && turn.sourceMessageIndex !== null
+              ? (event) => {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  setMigrationMenu({
+                    point: { x: event.clientX, y: event.clientY },
+                    turn,
+                  });
+                }
+              : undefined}
           >
             <button
               className="turn-card-summary"
@@ -467,6 +527,17 @@ export function TurnAccordion({
           </article>
         );
       })}
+      {migrationMenu ? (
+        <TurnMigrationContextMenu
+          point={migrationMenu.point}
+          language={language}
+          onMigrate={() => {
+            const selectedTurn = migrationMenu.turn;
+            setMigrationMenu(null);
+            onMigrateTurn?.(selectedTurn);
+          }}
+        />
+      ) : null}
     </div>
   );
 }

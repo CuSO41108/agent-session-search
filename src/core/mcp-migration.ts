@@ -146,7 +146,11 @@ export async function migrateSessionForMcp(
 
   // Load + validate before touching the CLI or any AI provider.
   const { source, messages } = await loadMcpSourceSession(store, input.sessionKey);
-  const portable = portableSessionFrom(source, messages);
+  const portable = portableSessionFrom(source, messages, {
+    turnSourceMessageIndexes: messages
+      .filter((message) => message.role === "user")
+      .map((message) => message.index),
+  });
 
   if (!pathExists(portable.projectPath)) {
     throw new Error(`Session project path does not exist: ${portable.projectPath}`);
@@ -160,19 +164,29 @@ export async function migrateSessionForMcp(
   }));
   await inspect(target, settings);
 
-  // Build the compressor: prefer the configured custom endpoint, otherwise fall
-  // back to codex_exec / claude_exec. All ephemeral CLI sessions produced during
-  // compression are deleted from the DB so no dirty rows survive.
+  // Build a compressor only from the summary provider explicitly selected in
+  // Settings. All ephemeral CLI sessions produced during compression are
+  // deleted from the DB so no dirty rows survive.
   const endpoint = resolveSummaryEndpointFromSettings(settings, {
     onTemporarySession: createMcpTemporarySessionCleaner(store),
   });
   const compressor = deps.compressor !== undefined
     ? deps.compressor
     : endpoint
-      ? createMigrationCompressor(endpoint, undefined, settings.compressionConcurrency)
+      ? createMigrationCompressor(
+          endpoint,
+          undefined,
+          settings.compressionConcurrency,
+          settings.migrationCompleteTokenLimit,
+        )
       : null;
 
-  const prepared = await applyMigrationLengthPolicy(portable, compressor);
+  const prepared = await applyMigrationLengthPolicy(
+    portable,
+    compressor,
+    undefined,
+    settings.migrationCompleteTokenLimit,
+  );
 
   const written = await writeMigratedSession({
     target,

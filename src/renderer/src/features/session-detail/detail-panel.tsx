@@ -118,6 +118,7 @@ export function DetailPanel({
   turnsLoading,
   matchedTurnId,
   onLoadTurn,
+  onMigrateTurn,
   messages,
   matchedContextMessages,
   matchedMessageIndex,
@@ -164,6 +165,7 @@ export function DetailPanel({
   turnsLoading: boolean;
   matchedTurnId: string | null;
   onLoadTurn: (turnId: string) => Promise<SessionTurnDetail | null>;
+  onMigrateTurn?: (turn: SessionTurnSummary) => void;
   messages: SessionMessage[];
   matchedContextMessages: SessionMessage[];
   matchedMessageIndex: number | null;
@@ -563,6 +565,7 @@ export function DetailPanel({
                 query={query}
                 language={language}
                 onLoadTurn={onLoadTurn}
+                onMigrateTurn={onMigrateTurn}
               />
             </section>
           ) : (
