@@ -1,20 +1,36 @@
 import type { ConfiguredAgent } from "../../../../shared/types";
+import { useEffect, useRef, useState } from "react";
 
 export function WorkflowNodeAgentSelect(props: {
   nodeTitle: string;
   configuredAgentId?: string;
   workflowDefaultAgentId: string;
   configuredAgents: ConfiguredAgent[];
-  onSelect: (configuredAgentId: string | undefined) => void;
+  onSelect: (configuredAgentId: string | undefined) => void | Promise<void>;
 }) {
+  const [pendingValue, setPendingValue] = useState<string | undefined>(undefined);
+  const requestRef = useRef(0);
+  const selectedValue = pendingValue ?? props.configuredAgentId ?? "";
+  useEffect(() => {
+    if (pendingValue !== undefined && pendingValue !== "" && pendingValue === (props.configuredAgentId ?? "")) setPendingValue(undefined);
+  }, [pendingValue, props.configuredAgentId]);
   const workflowDefault = props.configuredAgents.find((agent) => agent.id === props.workflowDefaultAgentId);
   return <select
-    className="workflow-node-agent-select"
+    className="workflow-node-agent-select nodrag nopan"
     aria-label={`Agent for ${props.nodeTitle}`}
-    value={props.configuredAgentId ?? ""}
+    value={selectedValue}
     onClick={(event) => event.stopPropagation()}
+    onPointerDown={(event) => event.stopPropagation()}
     onContextMenu={(event) => event.stopPropagation()}
-    onChange={(event) => { event.stopPropagation(); props.onSelect(event.currentTarget.value || undefined); }}
+    onChange={(event) => {
+      event.stopPropagation();
+      const next = event.currentTarget.value || undefined;
+      const request = ++requestRef.current;
+      setPendingValue(event.currentTarget.value);
+      Promise.resolve(props.onSelect(next)).catch(() => {
+        if (request === requestRef.current) setPendingValue(undefined);
+      });
+    }}
   >
     <option value="">Workflow default · {workflowDefault?.name ?? props.workflowDefaultAgentId}</option>
     {props.configuredAgents.map((agent) => <option key={agent.id} value={agent.id}>{agent.name} · {agent.modelId}</option>)}

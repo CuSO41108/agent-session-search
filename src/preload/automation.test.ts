@@ -31,6 +31,17 @@ describe("createAutomationApi", () => {
     expect(ipc.removeListener).toHaveBeenCalledWith(AUTOMATION_CHANNELS.snapshotChanged, listener);
   });
 
+  it("unsubscribes incremental change listeners with the same callback", () => {
+    const ipc = { invoke: vi.fn(), on: vi.fn(), removeListener: vi.fn() };
+    const api = createAutomationApi(ipc as never);
+    const unsubscribe = api.onChange(() => undefined);
+    const listener = ipc.on.mock.calls[0]?.[1];
+
+    unsubscribe();
+
+    expect(ipc.removeListener).toHaveBeenCalledWith(AUTOMATION_CHANNELS.change, listener);
+  });
+
   it("maps the complete Evaluation API to prefixed channels", async () => {
     const ipc = { invoke: vi.fn(async () => ({ ok: true })), on: vi.fn(), removeListener: vi.fn() };
     const api = createAutomationApi(ipc as never);

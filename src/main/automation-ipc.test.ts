@@ -60,6 +60,7 @@ function setup(pickDirectory?: (defaultPath?: string) => Promise<string | undefi
     health: vi.fn(() => ({ state: "ready" })),
     snapshot: vi.fn(() => ({ workDir: "/repo" })),
     subscribe: vi.fn(() => () => undefined),
+    subscribeChanges: vi.fn(() => () => undefined),
     runtime: hub,
     workflows: hub,
     mcp,

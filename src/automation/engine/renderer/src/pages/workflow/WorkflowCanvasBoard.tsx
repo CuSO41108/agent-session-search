@@ -39,8 +39,10 @@ function WorkflowFlowNodeCard({ data }: ReactFlowNodeProps<WorkflowFlowNode>) {
   );
 }
 
-function workflowLayoutFlowNodes(definition: WorkflowV2Definition, variant: WorkflowCanvasLayoutVariant): WorkflowFlowNode[] {
-  return workflowCanvasLayout(definition, variant).nodes.map((layoutNode) => ({
+type WorkflowCanvasLayout = ReturnType<typeof workflowCanvasLayout>;
+
+function workflowLayoutFlowNodes(layout: WorkflowCanvasLayout): WorkflowFlowNode[] {
+  return layout.nodes.map((layoutNode) => ({
     id: layoutNode.node.id,
     type: "workflowNode",
     position: { x: layoutNode.x, y: layoutNode.y },
@@ -51,8 +53,8 @@ function workflowLayoutFlowNodes(definition: WorkflowV2Definition, variant: Work
   }));
 }
 
-function workflowFlowEdges(definition: WorkflowV2Definition, variant: WorkflowCanvasLayoutVariant, runProgressByNodeId: Map<string, WorkflowRunProgressItem>): WorkflowFlowEdge[] {
-  return workflowCanvasLayout(definition, variant).edges.map(({ edge }) => ({
+function workflowFlowEdges(layout: WorkflowCanvasLayout, runProgressByNodeId: Map<string, WorkflowRunProgressItem>): WorkflowFlowEdge[] {
+  return layout.edges.map(({ edge }) => ({
     id: `${edge.fromNodeId}->${edge.toNodeId}`,
     type: "smoothstep",
     source: edge.fromNodeId,
@@ -90,8 +92,9 @@ export function WorkflowCanvasBoard({
   className?: string;
 }) {
   const variant: WorkflowCanvasLayoutVariant = expanded ? "expanded" : "preview";
-  const layoutNodes = useMemo(() => workflowLayoutFlowNodes(definition, variant), [definition, variant]);
-  const edges = useMemo(() => workflowFlowEdges(definition, variant, runProgressByNodeId), [definition, variant, runProgressByNodeId]);
+  const layout = useMemo(() => workflowCanvasLayout(definition, variant), [definition, variant]);
+  const layoutNodes = useMemo(() => workflowLayoutFlowNodes(layout), [layout]);
+  const edges = useMemo(() => workflowFlowEdges(layout, runProgressByNodeId), [layout, runProgressByNodeId]);
   const [nodes, setNodes, onNodesChange] = useNodesState<WorkflowFlowNode>(layoutNodes);
   useEffect(() => setNodes(layoutNodes), [layoutNodes, setNodes]);
   const nodeContextValue = useMemo(() => ({ renderNodeCard, runProgressByNodeId }), [renderNodeCard, runProgressByNodeId]);

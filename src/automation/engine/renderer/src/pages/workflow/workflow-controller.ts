@@ -102,9 +102,9 @@ export interface WorkflowController {
   onSelectReviewerModel?: (modelId: string) => void;
   onReviewWorkflow?: () => MaybePromise;
   onInterruptWorkflowReview?: () => MaybePromise;
-  onBuildDefinition: () => void;
-  onReplyChange: (value: string) => void;
-  onSendReply: () => void;
+  onBuildDefinition: (objective?: string) => void;
+  onReplyChange?: (value: string) => void;
+  onSendReply: (value?: string) => void;
   onUpdateNode: (nodeId: string, update: Partial<WorkflowV2Node>) => MaybePromise;
   onUpdateDefinition?: (definition: WorkflowV2Definition) => MaybePromise;
   onRunWorkflow: () => MaybePromise;

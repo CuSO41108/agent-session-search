@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type MouseEvent, type ReactElement } from "react";
+import { memo, useEffect, useRef, useState, type MouseEvent, type ReactElement } from "react";
 import { Bot, CheckCircle2, CircleStop, FileInput, GitBranch, History, Maximize2, Pencil, Play, RefreshCw, Send, ShieldAlert, Wand2, X } from "lucide-react";
 import { DEFAULT_MODEL_ID } from "../../../../shared/models";
 import { WORKFLOW_TOTAL_QUESTION_COUNT } from "../../../../shared/workflow-agent";
@@ -25,7 +25,6 @@ import {
   resolveConfiguredAgentChannel,
   runtimeStatus,
 } from "../../app/agents";
-import { shouldSendComposerKey } from "../../app/composer";
 import type { Language } from "../../app/language";
 import { Markdown } from "../../Markdown";
 import { ChatControls } from "../chat/ChatControls";
@@ -40,6 +39,7 @@ import { WorkflowRevisionDialog } from "./WorkflowRevisionDialog";
 import { WorkflowOutputsPanel } from "./WorkflowOutputsPanel";
 import { WorkflowReviewDrawer } from "./WorkflowReviewDrawer";
 import { WorkflowRunCenter } from "./WorkflowRunCenter";
+import { WorkflowComposerInput, type WorkflowComposerInputHandle } from "./WorkflowComposerInput";
 import { WORKFLOW_TEXT } from "./workflow-text";
 import type { WorkflowController } from "./workflow-controller";
 import { workflowNodeOpenTarget } from "./workflow-node-open-policy";
@@ -50,6 +50,34 @@ import {
   workflowRunProgressSummary,
   workflowRunStatusLabel,
 } from "./workflow-utils";
+
+const WorkflowTranscriptMessage = memo(function WorkflowTranscriptMessage({ message, workflowRuntimeId, running, workflowId, onResolveApproval }: {
+  message: WorkflowGrillMessage;
+  workflowRuntimeId: Parameters<typeof agentAccent>[0];
+  running: boolean;
+  workflowId?: string;
+  onResolveApproval?: WorkflowController["onResolveRuntimeApproval"];
+}) {
+  return <div className={`cli-message ${message.role}`}>
+    <div className="cli-agent-line">
+      {message.role === "assistant" ? <span className={`runtime-dot ${agentAccent(workflowRuntimeId)}`} /> : null}
+      <span>{message.role === "assistant" ? "Workflow agent" : "You"}</span>
+    </div>
+    {message.role === "user" ? <div className="cli-markdown"><Markdown text={message.content} /></div> : (
+      <div className={`cli-markdown ${running && message.content === WORKFLOW_THINKING_MESSAGE ? "is-streaming" : ""}`}>
+        <Markdown text={workflowAssistantDisplayContent(message.content)} />
+        {running && message.content === WORKFLOW_THINKING_MESSAGE ? <span className="stream-cursor" aria-hidden="true" /> : null}
+        {message.events?.map((event) => {
+          if (event.type === "approval_request" || event.type === "approval_response") {
+            return workflowId ? <ChatEventMessage key={event.id} event={event} ownerId={`workflow-draft:${workflowId}`} onResolveApproval={onResolveApproval} /> : null;
+          }
+          const status = typeof event.metadata?.status === "string" ? event.metadata.status : event.type === "tool_call" ? "in_progress" : "completed";
+          return <details key={event.id} className={`workflow-tool-event ${status}`} open={status === "failed"}><summary><code>{event.name || "MCP tool"}</code><span>{status}</span></summary><pre>{event.content}</pre></details>;
+        })}
+      </div>
+    )}
+  </div>;
+});
 
 export function WorkflowPage({ controller: source }: { controller: WorkflowController }) {
   const workflowId = source.workflowId;
@@ -86,7 +114,6 @@ export function WorkflowPage({ controller: source }: { controller: WorkflowContr
   const workflowV2Plan = source.workflowV2Plan;
   const runs = source.runs ?? [];
   const runHistoryConversations = source.runHistoryConversations ?? [];
-  const onObjectiveChange = source.onObjectiveChange;
   const onPauseNode = source.onPauseNode;
   const onStopRun = source.onStopRun;
   const onStartNode = source.onStartNode;
@@ -102,7 +129,6 @@ export function WorkflowPage({ controller: source }: { controller: WorkflowContr
   const onSelectReviewerModel = source.onSelectReviewerModel ?? (() => undefined);
   const onReviewWorkflow = source.onReviewWorkflow;
   const onBuildDefinition = source.onBuildDefinition;
-  const onReplyChange = source.onReplyChange;
   const onSendReply = source.onSendReply;
   const onUpdateDefinition = source.onUpdateDefinition;
   const onReviseRun = source.onReviseRun;
@@ -162,8 +188,8 @@ export function WorkflowPage({ controller: source }: { controller: WorkflowContr
       ? workflowText.modifyPlaceholder
       : workflowText.answerPlaceholder
     : workflowText.taskPlaceholder;
-  const composerCanSend = Boolean(composerValue.trim()) && !running;
   const composerLocked = workflowStarted || running;
+  const composerRef = useRef<WorkflowComposerInputHandle>(null);
   const [graphExpanded, setGraphExpanded] = useState(defaultGraphExpanded);
   const [outputFiles, setOutputFiles] = useState<Array<{ name: string; path: string }>>([]);
   const [openNodeId, setOpenNodeId] = useState<string | undefined>(undefined);
@@ -282,7 +308,7 @@ export function WorkflowPage({ controller: source }: { controller: WorkflowContr
     const nodeAgentRow =
       node.execModel === "llm" ? (
         <div className="workflow-node-agent-row" title={`Agent: ${nodeAgentName} · Model: ${nodeModelId}`}>
-          {canConfigureNodeAgent ? <WorkflowNodeAgentSelect nodeTitle={node.title} {...(node.configuredAgentId ? { configuredAgentId: node.configuredAgentId } : {})} workflowDefaultAgentId={configuredAgentId} configuredAgents={configuredAgents} onSelect={(selectedAgentId) => { void source.onUpdateNode(node.id, { configuredAgentId: selectedAgentId, modelId: undefined } as Partial<WorkflowV2Node>); }} /> : <><span className="workflow-node-agent-name">{nodeAgentName}</span><span className="workflow-node-agent-model">{nodeModelId}</span></>}
+          {canConfigureNodeAgent ? <WorkflowNodeAgentSelect nodeTitle={node.title} {...(node.configuredAgentId ? { configuredAgentId: node.configuredAgentId } : {})} workflowDefaultAgentId={configuredAgentId} configuredAgents={configuredAgents} onSelect={(selectedAgentId) => source.onUpdateNode(node.id, { configuredAgentId: selectedAgentId, modelId: undefined } as Partial<WorkflowV2Node>)} /> : <><span className="workflow-node-agent-name">{nodeAgentName}</span><span className="workflow-node-agent-model">{nodeModelId}</span></>}
         </div>
       ) : null;
 
@@ -417,46 +443,7 @@ export function WorkflowPage({ controller: source }: { controller: WorkflowContr
             <span>{workflowText.empty}</span>
           </div>
         ) : workflowStarted ? (
-          messages.map((message) => (
-            <div key={message.id} className={`cli-message ${message.role}`}>
-              <div className="cli-agent-line">
-                {message.role === "assistant" ? <span className={`runtime-dot ${agentAccent(workflowRuntimeId)}`} /> : null}
-                <span>{message.role === "assistant" ? "Workflow agent" : "You"}</span>
-              </div>
-              {message.role === "user" ? (
-                <div className="cli-markdown">
-                  <Markdown text={message.content} />
-                </div>
-              ) : (
-                <div className={`cli-markdown ${running && message.content === WORKFLOW_THINKING_MESSAGE ? "is-streaming" : ""}`}>
-                  <Markdown text={workflowAssistantDisplayContent(message.content)} />
-                  {running && message.content === WORKFLOW_THINKING_MESSAGE ? <span className="stream-cursor" aria-hidden="true" /> : null}
-                  {message.events?.map((event) => {
-                    if (event.type === "approval_request" || event.type === "approval_response") {
-                      return workflowId ? (
-                        <ChatEventMessage
-                          key={event.id}
-                          event={event}
-                          ownerId={`workflow-draft:${workflowId}`}
-                          onResolveApproval={source.onResolveRuntimeApproval}
-                        />
-                      ) : null;
-                    }
-                    const status = typeof event.metadata?.status === "string" ? event.metadata.status : event.type === "tool_call" ? "in_progress" : "completed";
-                    return (
-                      <details key={event.id} className={`workflow-tool-event ${status}`} open={status === "failed"}>
-                        <summary>
-                          <code>{event.name || "MCP tool"}</code>
-                          <span>{status}</span>
-                        </summary>
-                        <pre>{event.content}</pre>
-                      </details>
-                    );
-                  })}
-                </div>
-              )}
-            </div>
-          ))
+          messages.map((message) => <WorkflowTranscriptMessage key={message.id} message={message} workflowRuntimeId={workflowRuntimeId} running={running} {...(workflowId ? { workflowId } : {})} {...(source.onResolveRuntimeApproval ? { onResolveApproval: source.onResolveRuntimeApproval } : {})} />)
         ) : null}
         {running && !graphVisible ? (
           <div className="cli-status-line">
@@ -607,27 +594,14 @@ export function WorkflowPage({ controller: source }: { controller: WorkflowContr
 
       {!runOwnsInput && !topologyLocked ? <section className="composer workflow-composer">
         <div className="composer-box">
-          <textarea
-            aria-label={workflowStarted ? (graphVisible ? workflowText.replyToAgent : workflowText.replyToQuestion) : workflowText.task}
-            value={composerValue}
-            onChange={(event) => {
-              if (workflowStarted) onReplyChange(event.currentTarget.value);
-              else onObjectiveChange(event.currentTarget.value);
-            }}
-            onKeyDown={(event) => {
-              if (shouldSendComposerKey({
-                key: event.key,
-                shiftKey: event.shiftKey,
-                metaKey: event.metaKey,
-                ctrlKey: event.ctrlKey,
-                isComposing: event.nativeEvent.isComposing,
-              })) {
-                event.preventDefault();
-                if (composerCanSend) void onSendReply();
-              }
-            }}
+          <WorkflowComposerInput
+            ref={composerRef}
+            workflowKey={`${workflowId ?? "new"}:${workflowStarted ? "reply" : "objective"}`}
+            initialValue={composerValue}
+            ariaLabel={workflowStarted ? (graphVisible ? workflowText.replyToAgent : workflowText.replyToQuestion) : workflowText.task}
             placeholder={composerPlaceholder}
-            rows={2}
+            running={running}
+            onSubmit={(value) => onSendReply(value)}
           />
           <div className="composer-footer">
             <ChatControls
@@ -645,12 +619,12 @@ export function WorkflowPage({ controller: source }: { controller: WorkflowContr
             />
             <div className="workflow-composer-actions">
               {!graphVisible && grillComplete ? (
-                <button className="control-btn compact secondary" onClick={onBuildDefinition} disabled={running}>
+                <button className="control-btn compact secondary" onClick={() => onBuildDefinition(composerRef.current?.getValue())} disabled={running}>
                   <Wand2 size={14} />
                   <span>Generate Graph</span>
                 </button>
               ) : null}
-              <button className="send-btn" onClick={onSendReply} disabled={!composerCanSend}>
+              <button className="send-btn" onClick={() => composerRef.current?.submit()} disabled={running}>
                 <Send size={14} />
                 <span>{running ? "Running" : workflowStarted ? "Send" : "Start"}</span>
               </button>

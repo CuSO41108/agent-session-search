@@ -1,5 +1,5 @@
 import type { AppSnapshot } from "../../automation/contracts";
-import { AgentHub } from "../../automation/engine/main/hub/agent-hub";
+import { AgentHub, type AgentHubChange } from "../../automation/engine/main/hub/agent-hub";
 import { PostgresAppStore } from "../../automation/engine/main/hub/persisted/postgres-store";
 import {
   startCodexChatRouter,
@@ -19,7 +19,14 @@ import {
   type BundledWorkflowDefinition,
 } from "../../automation/engine/main/workflows/bundled-workflows";
 import { workflowMcpToolDecision } from "../../automation/engine/shared/workflow-mcp-policy";
-import type { AutomationHealth } from "../../shared/ipc/automation";
+import {
+  AUTOMATION_CHANGE_PROTOCOL_VERSION,
+  type AutomationChange,
+  type AutomationHealth,
+  type AutomationEntityPatch,
+  type WorkflowAutomationPatch,
+  type WorkflowAutomationProjection,
+} from "../../shared/ipc/automation";
 import { resolveAutomationPaths, type AutomationPaths } from "./automation-paths";
 import { EvaluationService } from "./evaluation-service";
 import type { PostgresDatabase } from "../../core/postgres/database";
@@ -49,6 +56,85 @@ interface AutomationServiceDependencies {
 }
 
 type SnapshotListener = (snapshot: AppSnapshot) => void;
+type ChangeListener = (change: AutomationChange) => void;
+
+function diffEntities<T>(
+  previous: T[],
+  next: T[],
+  idOf: (value: T) => string,
+  versionOf: (value: T) => string,
+): AutomationEntityPatch<T> | undefined {
+  const previousById = new Map(previous.map((value) => [idOf(value), value]));
+  const nextIds = new Set(next.map(idOf));
+  const upsert = next.filter((value) => {
+    const prior = previousById.get(idOf(value));
+    return !prior || versionOf(prior) !== versionOf(value);
+  });
+  const remove = previous.filter((value) => !nextIds.has(idOf(value))).map(idOf);
+  return upsert.length || remove.length ? { upsert, remove } : undefined;
+}
+
+function workflowRunVersion(run: AppSnapshot["workflowStore"]["runs"][number]): string {
+  const lastEvent = run.events.at(-1);
+  return JSON.stringify([
+    run.status,
+    run.finishedAt ?? "",
+    run.lastError ?? "",
+    run.contextDocument,
+    run.events.length,
+    lastEvent,
+    run.progress,
+  ]);
+}
+
+function buildWorkflowPatch(current: AppSnapshot, next: Partial<WorkflowAutomationProjection>): WorkflowAutomationPatch {
+  const workflows = next.workflowStore ? diffEntities(current.workflowStore.workflows, next.workflowStore.workflows, (value) => value.workflowId, (value) => `${value.updatedAt}:${value.revision}:${value.status}:${value.messages.length}:${value.messages.at(-1)?.id ?? ""}:${value.messages.at(-1)?.content ?? ""}`) : undefined;
+  const runs = next.workflowStore ? diffEntities(current.workflowStore.runs, next.workflowStore.runs, (value) => value.runId, workflowRunVersion) : undefined;
+  const conversations = next.workflowNodeConversations ? diffEntities(current.workflowNodeConversations, next.workflowNodeConversations, (value) => value.conversationId, (value) => `${value.updatedAt}:${value.status}:${value.messages.length}:${value.messages.at(-1)?.id ?? ""}:${value.messages.at(-1)?.content ?? ""}`) : undefined;
+  const tasks = next.tasks ? diffEntities(current.tasks, next.tasks, (value) => value.id, (value) => `${value.updatedAt}:${value.status}:${value.messages.length}:${value.messages.at(-1)?.id ?? ""}:${value.messages.at(-1)?.content ?? ""}`) : undefined;
+  const artifacts = next.artifacts ? diffEntities(current.artifacts, next.artifacts, (value) => value.id, (value) => `${value.registeredAt}:${value.kind}:${value.path ?? value.url ?? value.content ?? ""}`) : undefined;
+  return {
+    ...(next.workflowStore && current.workflowStore.activeWorkflowId !== next.workflowStore.activeWorkflowId
+      ? { activeWorkflowId: next.workflowStore.activeWorkflowId ?? null }
+      : {}),
+    ...(workflows ? { workflows } : {}),
+    ...(runs ? { runs } : {}),
+    ...(conversations ? { conversations } : {}),
+    ...(tasks ? { tasks } : {}),
+    ...(artifacts ? { artifacts } : {}),
+  };
+}
+
+function applyEntityPatch<T>(current: T[], patch: AutomationEntityPatch<T> | undefined, idOf: (value: T) => string): T[] {
+  if (!patch) return current;
+  const removed = new Set(patch.remove);
+  const upsert = new Map(patch.upsert.map((value) => [idOf(value), value]));
+  const next = current.filter((value) => !removed.has(idOf(value))).map((value) => upsert.get(idOf(value)) ?? value);
+  const known = new Set(next.map(idOf));
+  for (const value of patch.upsert) if (!known.has(idOf(value))) next.push(value);
+  return next;
+}
+
+function applyWorkflowPatch(current: AppSnapshot, patch: WorkflowAutomationPatch, projection: Partial<WorkflowAutomationProjection>): AppSnapshot {
+  const workflows = applyEntityPatch(current.workflowStore.workflows, patch.workflows, (value) => value.workflowId).sort((left, right) => right.createdAt - left.createdAt);
+  const runs = applyEntityPatch(current.workflowStore.runs, patch.runs, (value) => value.runId).sort((left, right) => right.startedAt - left.startedAt);
+  const activeWorkflowId = patch.activeWorkflowId === null ? undefined : patch.activeWorkflowId ?? current.workflowStore.activeWorkflowId;
+  return {
+    ...current,
+    ...projection,
+    workflowStore: {
+      ...current.workflowStore,
+      ...(projection.workflowStore ?? {}),
+      activeWorkflowId,
+      workflows,
+      runs,
+    },
+    workflowDraft: projection.workflowDraft ?? workflows.find((workflow) => workflow.workflowId === activeWorkflowId),
+    workflowNodeConversations: applyEntityPatch(current.workflowNodeConversations, patch.conversations, (value) => value.conversationId),
+    tasks: applyEntityPatch(current.tasks, patch.tasks, (value) => value.id).sort((left, right) => right.updatedAt - left.updatedAt),
+    artifacts: applyEntityPatch(current.artifacts, patch.artifacts, (value) => value.id),
+  };
+}
 
 export type RuntimeAutomationModule = Pick<
   AgentHub,
@@ -110,8 +196,10 @@ export class NativeAutomationService {
   private readonly startRouterService: typeof startCodexChatRouter;
   private readonly setRouterBaseUrl: typeof setCodexChatRouterBaseUrl;
   private readonly listeners = new Set<SnapshotListener>();
+  private readonly changeListeners = new Set<ChangeListener>();
   private readonly unsubscribeHub: () => void;
   private currentSnapshot: AppSnapshot;
+  private changeSequence = 0;
   private bridge: McpBridgeServer | undefined;
   private router: CodexChatRouterServer | undefined;
   private preparePromise: Promise<void> | undefined;
@@ -167,10 +255,7 @@ export class NativeAutomationService {
       runtime: this.hubInstance,
     });
     this.currentSnapshot = this.hubInstance.snapshot();
-    this.unsubscribeHub = this.hubInstance.onChange((snapshot) => {
-      this.currentSnapshot = snapshot;
-      for (const listener of this.listeners) listener(snapshot);
-    });
+    this.unsubscribeHub = this.hubInstance.onChange((change) => this.handleHubChange(change));
   }
 
   initialize(): Promise<void> {
@@ -263,6 +348,36 @@ export class NativeAutomationService {
     this.listeners.add(listener);
     listener(this.currentSnapshot);
     return () => this.listeners.delete(listener);
+  }
+
+  subscribeChanges(listener: ChangeListener): () => void {
+    this.changeListeners.add(listener);
+    return () => this.changeListeners.delete(listener);
+  }
+
+  private handleHubChange(change: AgentHubChange): void {
+    if (change.kind === "snapshot") {
+      this.currentSnapshot = change.snapshot;
+      for (const listener of this.listeners) listener(change.snapshot);
+      return;
+    }
+
+    const payload = change.patch ?? buildWorkflowPatch(this.currentSnapshot, change.payload);
+    this.currentSnapshot = change.patch
+      ? applyWorkflowPatch(this.currentSnapshot, change.patch, change.payload)
+      : { ...this.currentSnapshot, ...change.payload };
+    this.currentSnapshot = { ...this.currentSnapshot, detectedAt: change.detectedAt };
+    if (Object.keys(payload).length === 0) return;
+    const event: AutomationChange = {
+      protocolVersion: AUTOMATION_CHANGE_PROTOCOL_VERSION,
+      sequence: ++this.changeSequence,
+      detectedAt: change.detectedAt,
+      domain: "workflow",
+      entityId: "workflow-state",
+      operation: "patch",
+      payload,
+    };
+    for (const listener of this.changeListeners) listener(event);
   }
 
   health(): AutomationHealth {
