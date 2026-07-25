@@ -1348,6 +1348,7 @@ async function writeMigratedSessionToSshEnvironment(
     });
     if (target === "codex") {
       await updateRemoteCodexSessionIndex(environment, remoteHome, session, written.sessionId, now);
+      await updateRemoteCodexAppState(environment, remoteHome, remotePath, session, written.sessionId, now);
     }
     return { sessionId: written.sessionId, filePath: remotePath };
   } finally {
@@ -1370,6 +1371,34 @@ async function updateRemoteCodexSessionIndex(
     threadName: title,
     updatedAt: now.toISOString(),
   });
+}
+
+async function updateRemoteCodexAppState(
+  environment: SessionEnvironment,
+  remoteHome: string,
+  rolloutPath: string,
+  session: PortableSession,
+  sessionId: string,
+  now: Date,
+): Promise<void> {
+  try {
+    const title = session.title || session.messages.find((message) => message.role === "user")?.content || sessionId;
+    const firstUserMessage = session.messages.find((message) => message.role === "user")?.content || "";
+    await runRemotePython(environment, REMOTE_UPDATE_CODEX_STATE_SCRIPT, {
+      home: remoteHome,
+      id: sessionId,
+      rolloutPath,
+      cwd: session.projectPath,
+      title,
+      firstUserMessage,
+      createdAtMs: new Date(session.startedAt).getTime(),
+      updatedAtMs: now.getTime(),
+      modelProvider: "openai",
+    });
+  } catch {
+    // The Codex app-server may hold its state database open. The rollout file
+    // and session index remain authoritative when this display update fails.
+  }
 }
 
 async function remoteHomeDir(environment: SessionEnvironment): Promise<string> {
@@ -1463,6 +1492,51 @@ const REMOTE_UPDATE_CODEX_INDEX_SCRIPT = [
   "os.chmod(tmp, 0o600)",
   "os.replace(tmp, index)",
   "print(str(index))",
+].join("\n");
+
+const REMOTE_UPDATE_CODEX_STATE_SCRIPT = [
+  "import json, sqlite3, sys",
+  "from pathlib import Path",
+  "payload = json.load(sys.stdin)",
+  "home = Path(payload['home'])",
+  "candidates = sorted(home.glob('state_*.sqlite'), key=lambda item: item.stat().st_mtime, reverse=True)",
+  "if not candidates: print('Codex state database not found'); sys.exit(0)",
+  "db = sqlite3.connect(str(candidates[0]), timeout=5)",
+  "db.row_factory = sqlite3.Row",
+  "columns = {row[1] for row in db.execute('PRAGMA table_info(threads)')}",
+  "required = {'id', 'rollout_path', 'created_at', 'updated_at', 'source', 'model_provider', 'cwd', 'title', 'sandbox_policy', 'approval_mode'}",
+  "if not required.issubset(columns): db.close(); print('Codex state database schema not supported'); sys.exit(0)",
+  "existing = db.execute('SELECT * FROM threads WHERE id = ?', (payload['id'],)).fetchone()",
+  "order_column = 'updated_at_ms' if 'updated_at_ms' in columns else 'updated_at'",
+  "template = existing or db.execute(f'SELECT * FROM threads ORDER BY {order_column} DESC LIMIT 1').fetchone()",
+  "def value(name, fallback=None): return existing[name] if existing and name in existing.keys() and existing[name] is not None else (template[name] if template and name in template.keys() and template[name] is not None else fallback)",
+  "created_ms = int(payload['createdAtMs'])",
+  "updated_ms = int(payload['updatedAtMs'])",
+  "values = {",
+  "  'id': payload['id'], 'rollout_path': payload['rolloutPath'],",
+  "  'created_at': value('created_at', created_ms // 1000), 'updated_at': updated_ms // 1000,",
+  "  'source': 'vscode', 'model_provider': value('model_provider', payload['modelProvider']),",
+  "  'cwd': payload['cwd'], 'title': payload['title'],",
+  "  'sandbox_policy': value('sandbox_policy', '{}'), 'approval_mode': value('approval_mode', 'on-request'),",
+  "  'tokens_used': value('tokens_used', 0), 'has_user_event': 1, 'archived': value('archived', 0),",
+  "  'cli_version': 'migration', 'first_user_message': payload['firstUserMessage'],",
+  "  'memory_mode': value('memory_mode', 'enabled'), 'model': value('model'), 'reasoning_effort': value('reasoning_effort'),",
+  "  'agent_path': value('agent_path'), 'created_at_ms': value('created_at_ms', created_ms), 'updated_at_ms': updated_ms,",
+  "  'thread_source': 'user', 'preview': payload['title'], 'recency_at': updated_ms // 1000, 'recency_at_ms': updated_ms,",
+  "  'history_mode': 'legacy'",
+  "}",
+  "values = {key: value for key, value in values.items() if key in columns}",
+  "if existing:",
+  "    assignments = ', '.join(f'{key} = ?' for key in values if key != 'id')",
+  "    params = [values[key] for key in values if key != 'id'] + [payload['id']]",
+  "    db.execute(f'UPDATE threads SET {assignments} WHERE id = ?', params)",
+  "else:",
+  "    names = ', '.join(values)",
+  "    placeholders = ', '.join('?' for _ in values)",
+  "    db.execute(f'INSERT INTO threads ({names}) VALUES ({placeholders})', list(values.values()))",
+  "db.commit()",
+  "db.close()",
+  "print(str(candidates[0]))",
 ].join("\n");
 
 async function maybeAutoBackfillSummaries(): Promise<void> {
