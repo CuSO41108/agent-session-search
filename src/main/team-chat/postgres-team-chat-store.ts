@@ -15,6 +15,10 @@ import type {
   TeamChatStore,
 } from "./team-chat-store";
 
+const MESSAGE_COLUMNS = `id, room_id, sequence, sender_type, sender_agent_id,
+  recipient_member_id, sender_name, content, delivery_type, root_message_id,
+  source_message_id, hop, status, created_at, updated_at`;
+
 export class PostgresTeamChatStore implements TeamChatStore {
   constructor(private readonly database: PostgresDatabase) {}
 
@@ -79,8 +83,8 @@ export class PostgresTeamChatStore implements TeamChatStore {
     const row = roomResult.rows[0];
     if (!row) return undefined;
     const agentResult = await this.database.query<RoomAgentRow>(
-      `SELECT room_id, agent_id, display_name, runtime_id, channel_id, model_id,
-              enabled, position, joined_at
+      `SELECT room_id, agent_id, configured_agent_id, display_name, runtime_id,
+              channel_id, model_id, enabled, position, joined_at
        FROM agent_recall.chat_room_agents
        WHERE room_id = $1
        ORDER BY position, agent_id`,
@@ -126,14 +130,13 @@ export class PostgresTeamChatStore implements TeamChatStore {
   async listMessages(request: ListTeamChatMessagesRequest): Promise<TeamChatMessagePage> {
     const limit = request.limit ?? 100;
     const result = await this.database.query<MessageRow>(
-      `SELECT id, room_id, sender_type, sender_agent_id, sender_name, content,
-              root_message_id, source_message_id, hop, status, created_at, updated_at
+      `SELECT ${MESSAGE_COLUMNS}
        FROM agent_recall.chat_messages
        WHERE room_id = $1
-         AND ($2::uuid IS NULL OR (created_at, id) < (
-           SELECT created_at, id FROM agent_recall.chat_messages WHERE room_id = $1 AND id = $2::uuid
+         AND ($2::uuid IS NULL OR sequence < (
+           SELECT sequence FROM agent_recall.chat_messages WHERE room_id = $1 AND id = $2::uuid
          ))
-       ORDER BY created_at DESC, id DESC
+       ORDER BY sequence DESC
        LIMIT $3`,
       [request.roomId, request.before ?? null, limit + 1],
     );
@@ -151,16 +154,15 @@ export class PostgresTeamChatStore implements TeamChatStore {
     limit: number,
   ): Promise<TeamChatContextPage> {
     const result = await this.database.query<MessageRow>(
-      `SELECT id, room_id, sender_type, sender_agent_id, sender_name, content,
-              root_message_id, source_message_id, hop, status, created_at, updated_at
+      `SELECT ${MESSAGE_COLUMNS}
        FROM agent_recall.chat_messages
        WHERE room_id = $1
-         AND (created_at, id) > (
-           SELECT created_at, id
+         AND sequence > (
+           SELECT sequence
            FROM agent_recall.chat_messages
            WHERE room_id = $1 AND id = $2::uuid
          )
-       ORDER BY created_at DESC, id DESC
+       ORDER BY sequence DESC
        LIMIT $3`,
       [roomId, afterMessageId, limit + 1],
     );
@@ -172,19 +174,35 @@ export class PostgresTeamChatStore implements TeamChatStore {
   }
 
   async insertMessage(message: TeamChatMessage): Promise<TeamChatMessage> {
+    let sequence = 0;
     await this.database.transaction(async (transaction) => {
       await transaction.query(
+        "SELECT id FROM agent_recall.chat_rooms WHERE id = $1 FOR UPDATE",
+        [message.roomId],
+      );
+      const sequenceResult = await transaction.query<{ next_sequence: unknown }>(
+        `SELECT COALESCE(MAX(sequence), 0) + 1 AS next_sequence
+         FROM agent_recall.chat_messages
+         WHERE room_id = $1`,
+        [message.roomId],
+      );
+      sequence = Number(sequenceResult.rows[0]?.next_sequence ?? 1);
+      await transaction.query(
         `INSERT INTO agent_recall.chat_messages
-          (id, room_id, sender_type, sender_agent_id, sender_name, content,
-           root_message_id, source_message_id, hop, status, created_at, updated_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+          (id, room_id, sequence, sender_type, sender_agent_id, recipient_member_id,
+           sender_name, content, delivery_type, root_message_id, source_message_id,
+           hop, status, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
         [
           message.id,
           message.roomId,
+          sequence,
           message.senderType,
           message.senderAgentId ?? null,
+          message.recipientMemberId ?? null,
           message.senderName,
           message.content,
+          message.deliveryType,
           message.rootMessageId,
           message.sourceMessageId ?? null,
           message.hop,
@@ -198,7 +216,7 @@ export class PostgresTeamChatStore implements TeamChatStore {
         [message.roomId, message.updatedAt],
       );
     });
-    return message;
+    return { ...message, sequence };
   }
 
   async insertDispatch(dispatch: TeamChatDispatch): Promise<TeamChatDispatch> {
@@ -298,11 +316,13 @@ export class PostgresTeamChatStore implements TeamChatStore {
   private async insertRoomAgent(database: PostgresQueryable, agent: TeamChatRoomAgent): Promise<void> {
     await database.query(
       `INSERT INTO agent_recall.chat_room_agents
-        (room_id, agent_id, display_name, runtime_id, channel_id, model_id, enabled, position, joined_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+        (room_id, agent_id, configured_agent_id, display_name, runtime_id, channel_id,
+         model_id, enabled, position, joined_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
       [
         agent.roomId,
         agent.agentId,
+        agent.configuredAgentId,
         agent.displayName,
         agent.runtimeId,
         agent.channelId,
@@ -333,6 +353,7 @@ type RoomSummaryRow = RoomRow & {
 type RoomAgentRow = Record<string, unknown> & {
   room_id: unknown;
   agent_id: unknown;
+  configured_agent_id: unknown;
   display_name: unknown;
   runtime_id: unknown;
   channel_id: unknown;
@@ -345,10 +366,13 @@ type RoomAgentRow = Record<string, unknown> & {
 type MessageRow = Record<string, unknown> & {
   id: unknown;
   room_id: unknown;
+  sequence: unknown;
   sender_type: unknown;
   sender_agent_id: unknown;
+  recipient_member_id: unknown;
   sender_name: unknown;
   content: unknown;
+  delivery_type: unknown;
   root_message_id: unknown;
   source_message_id: unknown;
   hop: unknown;
@@ -390,6 +414,7 @@ function mapRoomAgentRow(row: RoomAgentRow): TeamChatRoomAgent {
   return {
     roomId: String(row.room_id),
     agentId: String(row.agent_id),
+    configuredAgentId: String(row.configured_agent_id),
     displayName: String(row.display_name),
     runtimeId: String(row.runtime_id),
     channelId: String(row.channel_id),
@@ -404,14 +429,18 @@ function mapRoomAgentRow(row: RoomAgentRow): TeamChatRoomAgent {
 
 function mapMessageRow(row: MessageRow): TeamChatMessage {
   const senderAgentId = nullableString(row.sender_agent_id);
+  const recipientMemberId = nullableString(row.recipient_member_id);
   const sourceMessageId = nullableString(row.source_message_id);
   return {
     id: String(row.id),
     roomId: String(row.room_id),
+    sequence: Number(row.sequence),
     senderType: row.sender_type as TeamChatMessage["senderType"],
     ...(senderAgentId ? { senderAgentId } : {}),
+    ...(recipientMemberId ? { recipientMemberId } : {}),
     senderName: String(row.sender_name),
     content: String(row.content),
+    deliveryType: row.delivery_type as TeamChatMessage["deliveryType"],
     rootMessageId: String(row.root_message_id),
     ...(sourceMessageId ? { sourceMessageId } : {}),
     hop: Number(row.hop),

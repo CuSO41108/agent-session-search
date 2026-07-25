@@ -39,6 +39,7 @@ function roomFixture(): TeamChatRoom {
       {
         roomId: ROOM_ID,
         agentId: "builder",
+        configuredAgentId: "builder",
         displayName: "Builder",
         runtimeId: "codex",
         channelId: "codex-main",
@@ -52,6 +53,7 @@ function roomFixture(): TeamChatRoom {
       {
         roomId: ROOM_ID,
         agentId: "reviewer",
+        configuredAgentId: "reviewer",
         displayName: "Reviewer",
         runtimeId: "claude",
         channelId: "claude-main",
@@ -70,9 +72,11 @@ function messageFixture(id: string, content: string, createdAt: string): TeamCha
   return {
     id,
     roomId: ROOM_ID,
+    sequence: 0,
     senderType: "human",
     senderName: "You",
     content,
+    deliveryType: "message",
     rootMessageId: id,
     hop: 0,
     status: "final",
@@ -82,6 +86,35 @@ function messageFixture(id: string, content: string, createdAt: string): TeamCha
 }
 
 describe("PostgresTeamChatStore", () => {
+  it("persists two employees backed by the same configured Agent", async () => {
+    const room = roomFixture();
+    room.agents = [
+      { ...room.agents[0]!, agentId: "member-1", configuredAgentId: "builder", displayName: "Codex" },
+      { ...room.agents[0]!, agentId: "member-2", configuredAgentId: "builder", displayName: "Codex2", position: 1 },
+    ];
+    await store.createRoom(room);
+    await store.insertMessage({
+      ...messageFixture(MESSAGE_ONE_ID, "Please review", "2026-07-23T08:01:00.000Z"),
+      recipientMemberId: "member-2",
+      deliveryType: "reply",
+    });
+
+    await expect(store.getRoom(ROOM_ID)).resolves.toMatchObject({
+      agents: [
+        { agentId: "member-1", configuredAgentId: "builder", displayName: "Codex" },
+        { agentId: "member-2", configuredAgentId: "builder", displayName: "Codex2" },
+      ],
+    });
+    await expect(store.listMessages({ roomId: ROOM_ID, limit: 10 })).resolves.toMatchObject({
+      messages: [{
+        id: MESSAGE_ONE_ID,
+        recipientMemberId: "member-2",
+        deliveryType: "reply",
+        sequence: 1,
+      }],
+    });
+  });
+
   it("persists rooms, ordered members, and message pagination", async () => {
     const room = roomFixture();
     await store.createRoom(room);
