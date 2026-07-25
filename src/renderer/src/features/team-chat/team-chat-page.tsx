@@ -774,7 +774,13 @@ function CreateRoomDialog({
   onClose,
 }: {
   language: LanguageMode;
-  agents: Array<{ id: string; name: string; runtimeAgentId: string; description: string }>;
+  agents: Array<{
+    id: string;
+    name: string;
+    runtimeAgentId: string;
+    modelId: string;
+    description: string;
+  }>;
   defaultWorkDir: string;
   onPickDirectory: (defaultPath?: string) => Promise<string | undefined>;
   onCreate: (request: CreateTeamChatRoomRequest) => Promise<void>;
@@ -829,7 +835,7 @@ function CreateRoomDialog({
     <div className="team-chat-dialog-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !busy) onClose(); }}>
       <form className="team-chat-dialog" onSubmit={(event) => void submit(event)}>
         <header>
-          <div><h3>{l("New Chat room", "新建 Chat 房间")}</h3><p>{l("Choose which configured Agents can participate.", "选择可以参与对话的已配置 Agent。")}</p></div>
+          <div><h3>{l("Create a studio", "创建工作室")}</h3><p>{l("Give independent employees one shared project workspace.", "让多个独立员工在同一个项目目录中协作。")}</p></div>
           <button type="button" onClick={onClose} disabled={busy} aria-label={l("Close", "关闭")}><X size={16} /></button>
         </header>
         <label className="team-chat-field">
@@ -845,77 +851,107 @@ function CreateRoomDialog({
             </button>
           </div>
         </label>
-        <fieldset>
-          <div className="team-chat-employee-legend">
-            <legend>{l("Employees", "员工")}</legend>
-            <button type="button" onClick={addEmployee} disabled={busy || agents.length === 0 || employees.length >= 24}>
-              <Plus size={13} />
-              {l("Add employee", "添加员工")}
-            </button>
+        <section className="team-chat-employees">
+          <div className="team-chat-employee-heading">
+            <div>
+              <h4>{l("Employees", "员工")}</h4>
+              <p>{l("Each employee keeps a separate conversation.", "每名员工都会保留自己的独立会话。")}</p>
+            </div>
+            <span>{employees.length}/24</span>
           </div>
           {agents.length === 0 ? <p className="team-chat-no-agents">{l("Configure an Agent in Runtime first.", "请先在 Runtime 中配置 Agent。")}</p> : null}
-          <div className="team-chat-employee-options">
+          <div className="team-chat-employee-roster">
             {employees.map((employee) => {
               const selectedAgent = agents.find((agent) => agent.id === employee.configuredAgentId);
               return (
-                <div className="team-chat-employee-option" key={employee.localId}>
-                  <select
-                    value={employee.configuredAgentId}
-                    disabled={busy}
-                    aria-label={l("Runtime configuration", "Runtime 配置")}
-                    onChange={(event) => {
-                      const configuredAgentId = event.currentTarget.value;
-                      setEmployees((current) => current.map((item) => {
-                        if (item.localId !== employee.localId) return item;
-                        const agent = agents.find((candidate) => candidate.id === configuredAgentId);
-                        return {
-                          ...item,
-                          configuredAgentId,
-                          displayName: agent
-                            ? nextStudioEmployeeName(
-                                agent.name,
-                                current
-                                  .filter((candidate) => candidate.localId !== item.localId)
-                                  .map((candidate) => candidate.displayName),
-                              )
-                            : item.displayName,
-                        };
-                      }));
-                    }}
-                  >
-                    {agents.map((agent) => (
-                      <option key={agent.id} value={agent.id}>
-                        {agent.name} · {agent.runtimeAgentId}
-                      </option>
-                    ))}
-                  </select>
-                  <input
-                    value={employee.displayName}
-                    disabled={busy}
-                    maxLength={120}
-                    aria-label={l("Employee name", "员工名称")}
-                    onChange={(event) => {
-                      const displayName = event.currentTarget.value;
-                      setEmployees((current) => current.map((item) =>
-                        item.localId === employee.localId ? { ...item, displayName } : item));
-                    }}
-                  />
-                  <button
-                    type="button"
-                    disabled={busy || employees.length === 1}
-                    onClick={() => setEmployees((current) =>
-                      current.filter((item) => item.localId !== employee.localId))}
-                    title={l("Remove employee", "移除员工")}
-                    aria-label={l("Remove employee", "移除员工")}
-                  >
-                    <X size={13} />
-                  </button>
-                  {selectedAgent?.description ? <small>{selectedAgent.description}</small> : null}
-                </div>
+                <article className="team-chat-employee-card" key={employee.localId}>
+                  <span className="team-chat-employee-portrait" aria-hidden="true">
+                    <Bot size={16} />
+                    <i />
+                  </span>
+                  <div className="team-chat-employee-identity">
+                    <input
+                      className="team-chat-employee-name"
+                      value={employee.displayName}
+                      disabled={busy}
+                      maxLength={120}
+                      aria-label={l("Employee name", "员工名称")}
+                      placeholder={l("Employee name", "员工名称")}
+                      onChange={(event) => {
+                        const displayName = event.currentTarget.value;
+                        setEmployees((current) => current.map((item) =>
+                          item.localId === employee.localId ? { ...item, displayName } : item));
+                      }}
+                    />
+                    <label className="team-chat-employee-runtime">
+                      <span>Runtime</span>
+                      <select
+                        value={employee.configuredAgentId}
+                        disabled={busy}
+                        aria-label={l("Runtime configuration", "Runtime 配置")}
+                        onChange={(event) => {
+                          const configuredAgentId = event.currentTarget.value;
+                          setEmployees((current) => current.map((item) => {
+                            if (item.localId !== employee.localId) return item;
+                            const agent = agents.find((candidate) => candidate.id === configuredAgentId);
+                            return {
+                              ...item,
+                              configuredAgentId,
+                              displayName: agent
+                                ? nextStudioEmployeeName(
+                                    agent.name,
+                                    current
+                                      .filter((candidate) => candidate.localId !== item.localId)
+                                      .map((candidate) => candidate.displayName),
+                                  )
+                                : item.displayName,
+                            };
+                          }));
+                        }}
+                      >
+                        {agents.map((agent) => (
+                          <option key={agent.id} value={agent.id}>
+                            {agent.name}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <div className="team-chat-employee-meta">
+                      <span>{selectedAgent?.runtimeAgentId}</span>
+                      <span>{selectedAgent?.modelId}</span>
+                      {selectedAgent?.description ? <small>{selectedAgent.description}</small> : null}
+                    </div>
+                  </div>
+                  {employees.length > 1 ? (
+                    <button
+                      className="team-chat-employee-remove"
+                      type="button"
+                      disabled={busy}
+                      onClick={() => setEmployees((current) =>
+                        current.filter((item) => item.localId !== employee.localId))}
+                      title={l("Remove employee", "移除员工")}
+                      aria-label={l("Remove employee", "移除员工")}
+                    >
+                      <X size={13} />
+                    </button>
+                  ) : null}
+                </article>
               );
             })}
+            {agents.length > 0 ? (
+              <button
+                className="team-chat-add-employee"
+                type="button"
+                onClick={addEmployee}
+                disabled={busy || employees.length >= 24}
+              >
+                <span><Plus size={14} /></span>
+                <strong>{l("Add another employee", "再添加一名员工")}</strong>
+                <small>{l("The same Runtime can be used more than once.", "可以重复使用同一个 Runtime。")}</small>
+              </button>
+            ) : null}
           </div>
-        </fieldset>
+        </section>
         {error ? <div className="team-chat-dialog-error" role="alert">{error}</div> : null}
         <footer>
           <button type="button" onClick={onClose} disabled={busy}>{l("Cancel", "取消")}</button>
