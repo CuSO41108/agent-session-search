@@ -13,7 +13,7 @@ import {
   parseCursorTranscriptPath,
   parseJsonlText,
 } from "./session-loader";
-import { targetFilePath, writeMigratedSession } from "./session-migration-writers";
+import { targetFilePath, targetFilePathForRemoteEnvironment, writeMigratedSession } from "./session-migration-writers";
 import type { LoadedSession, MigrationTarget, PortableSession, SessionSource } from "./types";
 
 const require = createRequire(import.meta.url);
@@ -420,6 +420,16 @@ describe("writeMigratedSession", () => {
     } finally {
       fs.rmSync(homeDir, { recursive: true, force: true });
     }
+  });
+
+  it("uses POSIX separators for paths written into WSL or SSH environments", () => {
+    expect(targetFilePathForRemoteEnvironment(
+      "claude",
+      "/home/alice/project",
+      SESSION_ID,
+      "/home/alice",
+      NOW,
+    )).toBe(`/home/alice/.claude/projects/-home-alice-project/${SESSION_ID}.jsonl`);
   });
 
   it.each([

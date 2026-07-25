@@ -70,16 +70,17 @@ import {
   type ToolExecutionResult,
 } from "../core/ai-assistant";
 import { applyMigrationLengthPolicy, createMigrationCompressor } from "../core/session-migration-compression";
-import { migrateSession } from "../core/session-migration";
+import { migrateSession, portableSessionFrom } from "../core/session-migration";
 import { runLocalSessionMigration } from "./local-session-migration";
-import { targetFilePath, writeMigratedSession } from "../core/session-migration-writers";
+import { targetFilePathForRemoteEnvironment, writeMigratedSession } from "../core/session-migration-writers";
+import { assertMigrationTargetEnabled, isMigrationTarget, migrationTargetDescriptor } from "../core/migration-targets";
 import { writeDbPointer } from "../core/app-paths";
 import { routeResumeSession } from "../core/resume-router";
 import { diagnoseRemoteEnvironment, preflightRemoteSessionResume } from "../core/remote-health";
 import { buildRemoteSyncSshArgs, fetchRemoteSessionFilePayload, fetchRemoteSessionMessagePage, syncRemoteEnvironment } from "../core/remote-sync";
-import { REMOTE_PROCESS_EXEC_OPTIONS, runRemoteCommandWithInput } from "../core/remote-process";
+import { REMOTE_PROCESS_EXEC_OPTIONS, runRemoteCommand, runRemoteCommandWithInput } from "../core/remote-process";
 import { loadRemoteSessionDetailPayload, loadWslSessionDetailPayload } from "../core/remote-session-loader";
-import type { RemoteSessionRestoreDependencies } from "../core/remote-session-restore";
+import { restoreRemotePortableSession, type RemoteSessionRestoreDependencies } from "../core/remote-session-restore";
 import { RemoteEnvironmentLifecycle } from "../core/remote-environment-lifecycle";
 import { RemoteWatchManager } from "../core/remote-watch";
 import { SessionStore, type TraceEventQueryOptions } from "../core/session-store";
@@ -89,7 +90,7 @@ import { listWslDistributions } from "../core/wsl";
 import { deleteWslSessionFile } from "../core/wsl-session-actions";
 import { AUTO_INDEX_REFRESH_INTERVAL_MS, INITIAL_INDEX_DELAY_MS } from "../core/refresh-policy";
 import { globalShortcutLabel, normalizeGlobalShortcut } from "../core/shortcuts";
-import { isLocalSessionEnvironment, isLocalSessionStorage } from "../core/session-environment";
+import { isLocalSessionEnvironment, isLocalSessionStorage, remoteSessionKey } from "../core/session-environment";
 import { OPTIONAL_SESSION_SOURCE_DESCRIPTORS } from "../core/session-sources";
 import type { AppSettings, AppSettingsUpdate } from "../core/platform";
 import { APP_UPDATE_EVENTS } from "../shared/ipc/app-update";
@@ -1193,7 +1194,7 @@ async function createSourceRemoteRestoreDependencies(
     : null;
 
   return {
-    inspectCli: async () => undefined,
+    inspectCli: (target) => environment.kind === "wsl" ? inspectWslMigrationCli(environment, target) : undefined,
     prepare: (session, listener) => applyMigrationLengthPolicy(session, compressor, listener),
     write: (target, session) => writeMigratedSessionToSshEnvironment(environment, target, session),
     record: (record) => store.recordSessionMigration(record),
@@ -1203,7 +1204,11 @@ async function createSourceRemoteRestoreDependencies(
       });
       mainWindow?.webContents.send("environments-updated", store.listEnvironments());
     },
-    launch: async () => undefined,
+    launch: async (target, targetSessionId, projectPath) => {
+      if (environment.kind !== "wsl") return;
+      const session = migrationLaunchSession(environment, target, targetSessionId, projectPath);
+      await openResumeInTerminal(session, getSettings(), requireWslResumeOptions(session));
+    },
     resumeCommand: (target, targetSessionId, projectPath) =>
       remoteMigrationResumeDisplayCommand(environment, target, targetSessionId, projectPath),
     fallbackResumeCommand: (target, targetSessionId, projectPath) =>
@@ -1216,12 +1221,71 @@ async function createSourceRemoteRestoreDependencies(
   };
 }
 
+async function inspectWslMigrationCli(environment: SessionEnvironment, target: MigrationAgent): Promise<void> {
+  const settings = getSettings();
+  await inspectMigrationCli(
+    target,
+    { ...settings, claudeBinary: "claude", codexBinary: "codex" },
+    async (command, args) => runRemoteCommand(environment, [command, ...args].join(" ")),
+    { platform: "linux" },
+  );
+}
+
+function migrationLaunchSession(
+  environment: SessionEnvironment,
+  target: MigrationAgent,
+  sessionId: string,
+  projectPath: string,
+): SessionSearchResult {
+  const source = migrationTargetDescriptor(target).source;
+  return {
+    sessionKey: remoteSessionKey(environment, migrationTargetDescriptor(target).source, sessionId),
+    rawId: sessionId,
+    source,
+    projectPath,
+    filePath: "",
+    originalTitle: sessionId,
+    firstQuestion: "",
+    displayTitle: sessionId,
+    timestamp: Date.now(),
+    fileMtimeMs: 0,
+    fileSize: 0,
+    prUrl: null,
+    prNumber: null,
+    gitBranch: null,
+    isSubagent: false,
+    parentSessionId: null,
+    tokenUsage: { inputTokens: 0, outputTokens: 0, cachedInputTokens: 0, reasoningOutputTokens: 0, totalTokens: 0 },
+    environmentId: environment.id,
+    environmentKind: "wsl",
+    environmentLabel: environment.label,
+    customTitle: null,
+    favorited: false,
+    hidden: false,
+    tags: [],
+    matchSnippet: null,
+    lastOpenedAt: null,
+    lastResumedAt: null,
+    lastActivityAt: 0,
+    messageCount: 0,
+    aiSummary: null,
+    aiSummaryStale: false,
+  };
+}
+
 function remoteMigrationResumeDisplayCommand(
   environment: SessionEnvironment,
   target: MigrationAgent,
   sessionId: string,
   projectPath: string,
 ): string {
+  if (environment.kind === "wsl") {
+    return getResumeCommand(
+      migrationLaunchSession(environment, target, sessionId, projectPath),
+      getSettings(),
+      requireWslResumeOptions(migrationLaunchSession(environment, target, sessionId, projectPath)),
+    );
+  }
   const remoteCommand = getMigrationResumeProcessSpec(target, sessionId, projectPath, getSettings(), { platform: "linux" }).displayCommand;
   return ["ssh", ...buildRemoteSyncSshArgs(environment, remoteCommand).map(quotePosixToken)].join(" ");
 }
@@ -1276,15 +1340,64 @@ async function writeMigratedSessionToSshEnvironment(
   try {
     const written = await writeMigratedSession({ target, session, homeDir: tempHome, now });
     const remoteHome = await remoteHomeDir(environment);
-    const remotePath = targetFilePath(target, session.projectPath, written.sessionId, remoteHome, now);
+    const remotePath = targetFilePathForRemoteEnvironment(target, session.projectPath, written.sessionId, remoteHome, now);
     const content = await fs.readFile(written.filePath);
     await runRemotePython(environment, REMOTE_WRITE_FILE_SCRIPT, {
       path: remotePath,
       contentBase64: content.toString("base64"),
     });
+    if (target === "codex") {
+      await updateRemoteCodexSessionIndex(environment, remoteHome, session, written.sessionId, now);
+      await updateRemoteCodexAppState(environment, remoteHome, remotePath, session, written.sessionId, now);
+    }
     return { sessionId: written.sessionId, filePath: remotePath };
   } finally {
     await fs.rm(tempHome, { recursive: true, force: true });
+  }
+}
+
+async function updateRemoteCodexSessionIndex(
+  environment: SessionEnvironment,
+  remoteHome: string,
+  session: PortableSession,
+  sessionId: string,
+  now: Date,
+): Promise<void> {
+  const indexPath = `${remoteHome.replace(/[\\/]+$/, "")}/.codex/session_index.jsonl`;
+  const title = session.title || session.messages.find((message) => message.role === "user")?.content || sessionId;
+  await runRemotePython(environment, REMOTE_UPDATE_CODEX_INDEX_SCRIPT, {
+    path: indexPath,
+    id: sessionId,
+    threadName: title,
+    updatedAt: now.toISOString(),
+  });
+}
+
+async function updateRemoteCodexAppState(
+  environment: SessionEnvironment,
+  remoteHome: string,
+  rolloutPath: string,
+  session: PortableSession,
+  sessionId: string,
+  now: Date,
+): Promise<void> {
+  try {
+    const title = session.title || session.messages.find((message) => message.role === "user")?.content || sessionId;
+    const firstUserMessage = session.messages.find((message) => message.role === "user")?.content || "";
+    await runRemotePython(environment, REMOTE_UPDATE_CODEX_STATE_SCRIPT, {
+      home: remoteHome,
+      id: sessionId,
+      rolloutPath,
+      cwd: session.projectPath,
+      title,
+      firstUserMessage,
+      createdAtMs: new Date(session.startedAt).getTime(),
+      updatedAtMs: now.getTime(),
+      modelProvider: "openai",
+    });
+  } catch {
+    // The Codex app-server may hold its state database open. The rollout file
+    // and session index remain authoritative when this display update fails.
   }
 }
 
@@ -1360,6 +1473,70 @@ const REMOTE_WRITE_FILE_SCRIPT = [
   "os.chmod(tmp, 0o600)",
   "os.replace(tmp, target)",
   "print(str(target))",
+].join("\n");
+
+const REMOTE_UPDATE_CODEX_INDEX_SCRIPT = [
+  "import json, os, sys, uuid",
+  "from pathlib import Path",
+  "payload = json.load(sys.stdin)",
+  "index = Path(payload['path'])",
+  "rows = []",
+  "if index.exists():",
+  "    for line in index.read_text(encoding='utf-8').splitlines():",
+  "        if line.strip(): rows.append(json.loads(line))",
+  "rows = [row for row in rows if not isinstance(row, dict) or row.get('id') != payload['id']]",
+  "rows.append({'id': payload['id'], 'thread_name': payload['threadName'], 'updated_at': payload['updatedAt']})",
+  "index.parent.mkdir(parents=True, exist_ok=True)",
+  "tmp = index.with_name(index.name + '.tmp-' + uuid.uuid4().hex)",
+  "tmp.write_text(''.join(json.dumps(row, ensure_ascii=False) + '\\n' for row in rows), encoding='utf-8')",
+  "os.chmod(tmp, 0o600)",
+  "os.replace(tmp, index)",
+  "print(str(index))",
+].join("\n");
+
+const REMOTE_UPDATE_CODEX_STATE_SCRIPT = [
+  "import json, sqlite3, sys",
+  "from pathlib import Path",
+  "payload = json.load(sys.stdin)",
+  "home = Path(payload['home'])",
+  "candidates = sorted((home / '.codex').glob('state_*.sqlite'), key=lambda item: item.stat().st_mtime, reverse=True)",
+  "if not candidates: print('Codex state database not found'); sys.exit(0)",
+  "db = sqlite3.connect(str(candidates[0]), timeout=5)",
+  "db.row_factory = sqlite3.Row",
+  "columns = {row[1] for row in db.execute('PRAGMA table_info(threads)')}",
+  "required = {'id', 'rollout_path', 'created_at', 'updated_at', 'source', 'model_provider', 'cwd', 'title', 'sandbox_policy', 'approval_mode'}",
+  "if not required.issubset(columns): db.close(); print('Codex state database schema not supported'); sys.exit(0)",
+  "existing = db.execute('SELECT * FROM threads WHERE id = ?', (payload['id'],)).fetchone()",
+  "order_column = 'updated_at_ms' if 'updated_at_ms' in columns else 'updated_at'",
+  "template = existing or db.execute(f'SELECT * FROM threads ORDER BY {order_column} DESC LIMIT 1').fetchone()",
+  "def value(name, fallback=None): return existing[name] if existing and name in existing.keys() and existing[name] is not None else (template[name] if template and name in template.keys() and template[name] is not None else fallback)",
+  "created_ms = int(payload['createdAtMs'])",
+  "updated_ms = int(payload['updatedAtMs'])",
+  "values = {",
+  "  'id': payload['id'], 'rollout_path': payload['rolloutPath'],",
+  "  'created_at': value('created_at', created_ms // 1000), 'updated_at': updated_ms // 1000,",
+  "  'source': 'vscode', 'model_provider': value('model_provider', payload['modelProvider']),",
+  "  'cwd': payload['cwd'], 'title': payload['title'],",
+  "  'sandbox_policy': value('sandbox_policy', '{}'), 'approval_mode': value('approval_mode', 'on-request'),",
+  "  'tokens_used': value('tokens_used', 0), 'has_user_event': 1, 'archived': value('archived', 0),",
+  "  'cli_version': 'migration', 'first_user_message': payload['firstUserMessage'],",
+  "  'memory_mode': value('memory_mode', 'enabled'), 'model': value('model'), 'reasoning_effort': value('reasoning_effort'),",
+  "  'agent_path': value('agent_path'), 'created_at_ms': value('created_at_ms', created_ms), 'updated_at_ms': updated_ms,",
+  "  'thread_source': 'user', 'preview': payload['title'], 'recency_at': updated_ms // 1000, 'recency_at_ms': updated_ms,",
+  "  'history_mode': 'legacy'",
+  "}",
+  "values = {key: value for key, value in values.items() if key in columns}",
+  "if existing:",
+  "    assignments = ', '.join(f'{key} = ?' for key in values if key != 'id')",
+  "    params = [values[key] for key in values if key != 'id'] + [payload['id']]",
+  "    db.execute(f'UPDATE threads SET {assignments} WHERE id = ?', params)",
+  "else:",
+  "    names = ', '.join(values)",
+  "    placeholders = ', '.join('?' for _ in values)",
+  "    db.execute(f'INSERT INTO threads ({names}) VALUES ({placeholders})', list(values.values()))",
+  "db.commit()",
+  "db.close()",
+  "print(str(candidates[0]))",
 ].join("\n");
 
 async function maybeAutoBackfillSummaries(): Promise<void> {
@@ -1779,6 +1956,23 @@ function registerIpc(): void {
   ipcMain.handle("session:migrate", async (event, sessionKey: string, target: unknown) => {
     const session = store.getSession(sessionKey);
     if (!session) throw new Error("Session not found.");
+    if (session.environmentKind === "wsl") {
+      if (!isMigrationTarget(target)) throw new Error(`Migration target ${String(target)} is not supported.`);
+      const settings = await providerService.hydrateSettings();
+      assertMigrationTargetEnabled(target, settings);
+      await ensureRemoteSessionDetailsLoaded(sessionKey);
+      const environment = requireWslEnvironment(session);
+      const portable = portableSessionFrom(session, store.getAllMessages(sessionKey));
+      const progress = (item: SessionMigrationProgress): void => event.sender.send("session:migration-progress", item);
+      const deps = await createSourceRemoteRestoreDependencies(environment, progress);
+      return restoreRemotePortableSession({
+        remoteId: sessionKey,
+        portable,
+        target: target as MigrationAgent,
+        localProjectPath: portable.projectPath,
+        deps,
+      });
+    }
     const messages = store.getAllMessages(sessionKey);
     const settings = Object.freeze(await providerService.hydrateSettings());
 
