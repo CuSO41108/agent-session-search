@@ -55,7 +55,10 @@ import {
 } from "../core/ai-assistant";
 import { applyMigrationLengthPolicy, createMigrationCompressor } from "../core/session-migration-compression";
 import { migrateSession } from "../core/session-migration";
-import { runLocalSessionMigration } from "./local-session-migration";
+import {
+  loadLocalSessionMigrationSource,
+  runLocalSessionMigration,
+} from "./local-session-migration";
 import { targetFilePath, writeMigratedSession } from "../core/session-migration-writers";
 import { writeDatabaseUrlPointer } from "../core/app-paths";
 import { PostgresDatabase } from "../core/postgres/database";
@@ -138,6 +141,7 @@ import type {
   SearchOptions,
   SessionEnvironment,
   SessionMigrationProgress,
+  SessionMigrationRequest,
   SessionSearchResult,
   SessionSource,
   SessionStatsOptions,
@@ -1407,13 +1411,20 @@ function localSessionMigrationRuntime(event: IpcMainInvokeEvent) {
       onTemporarySession: (temporarySessionKey) => {
         void store.deleteSession(temporarySessionKey).catch(() => undefined);
       },
-    }) ?? buildCodexExecEndpoint(snapshot),
-    createCompressor: (endpoint: SummaryEndpoint, concurrency: number) =>
-      createMigrationCompressor(endpoint, undefined, concurrency),
+    }),
+    createCompressor: (
+      endpoint: SummaryEndpoint,
+      concurrency: number,
+      completeTokenLimit: number,
+    ) => createMigrationCompressor(endpoint, undefined, concurrency, completeTokenLimit),
     migrate: migrateSession,
     inspectCli: (migrationTarget: MigrationTarget, snapshot: AppSettings) => inspectMigrationCli(migrationTarget, snapshot),
-    prepare: (portable: PortableSession, onProgress: Parameters<typeof applyMigrationLengthPolicy>[2], compressor: ReturnType<typeof createMigrationCompressor> | null) =>
-      applyMigrationLengthPolicy(portable, compressor, onProgress),
+    prepare: (
+      portable: PortableSession,
+      onProgress: Parameters<typeof applyMigrationLengthPolicy>[2],
+      compressor: ReturnType<typeof createMigrationCompressor> | null,
+      completeTokenLimit: number,
+    ) => applyMigrationLengthPolicy(portable, compressor, onProgress, completeTokenLimit),
     write: (migrationTarget: MigrationTarget, portable: PortableSession) =>
       writeMigratedSession({ target: migrationTarget, session: portable }),
     record: (record: Parameters<SessionStore["recordSessionMigration"]>[0]) => store.recordSessionMigration(record),
@@ -1878,16 +1889,13 @@ function registerIpc(): void {
     writeTextFile: (filePath, content) => fs.writeFile(filePath, content, "utf-8"),
     showJsonExportNotice,
   }));
-  ipcMain.handle("session:migrate", async (event, sessionKey: string, target: unknown) => {
-    const session = await store.getSession(sessionKey);
-    if (!session) throw new Error("Session not found.");
-    const messages = await store.getAllMessages(sessionKey);
+  ipcMain.handle("session:migrate", async (event, request: SessionMigrationRequest) => {
+    const migrationSource = await loadLocalSessionMigrationSource(store, request);
     const settings = Object.freeze(await providerService.hydrateSettings());
 
     return runLocalSessionMigration({
-      source: session,
-      messages,
-      target,
+      ...migrationSource,
+      target: request.target,
       settings,
     }, localSessionMigrationRuntime(event));
   });

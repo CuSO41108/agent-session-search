@@ -1,7 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 import { defaultSettings, getSafeMigrationResumeCommand } from "../core/platform";
 import { migrateSession, type SessionMigrationDependencies } from "../core/session-migration";
-import type { SessionMessage, SessionSearchResult } from "../core/types";
+import type {
+  SessionMessage,
+  SessionSearchResult,
+  SessionTurnDetail,
+  SessionTurnSummary,
+} from "../core/types";
 import { runLocalSessionMigration, type LocalSessionMigrationRuntime } from "./local-session-migration";
 
 const source = {
@@ -108,9 +113,35 @@ describe("runLocalSessionMigration", () => {
 
     await runLocalSessionMigration({ source, messages, target: "tcodex", settings: snapshot }, deps);
 
-    expect(deps.createCompressor).toHaveBeenCalledWith({ provider: "snapshot" }, 3);
+    expect(deps.createCompressor).toHaveBeenCalledWith(
+      { provider: "snapshot" },
+      3,
+      snapshot.migrationCompleteTokenLimit,
+    );
     expect(seenSettings).toHaveLength(5);
     expect(seenSettings.every((settings) => settings === snapshot)).toBe(true);
+  });
+
+  it("forwards the configured complete limit and retained turn starts to migration", async () => {
+    const settings = {
+      ...defaultSettings,
+      migrationCompleteTokenLimit: 120_000,
+    };
+    const deps = runtime();
+    const turnSourceMessageIndexes = [0, 4, 9];
+
+    await runLocalSessionMigration({
+      source,
+      messages,
+      target: "codex",
+      settings,
+      turnSourceMessageIndexes,
+    }, deps);
+
+    expect(deps.migrate).toHaveBeenCalledWith(expect.objectContaining({
+      completeTokenLimit: 120_000,
+      turnSourceMessageIndexes,
+    }));
   });
 
   it("returns the independent safe command when the primary formatter throws", async () => {
@@ -127,5 +158,121 @@ describe("runLocalSessionMigration", () => {
 
     expect(result.resumeCommand).toBe("cd /repo && '/safe/tcodex cli' resume id");
     expect(result.warning).toContain("Failed to build resume command: primary formatter failed");
+  });
+});
+
+describe("loadLocalSessionMigrationSource", () => {
+  it("exposes the turn-scoped migration source loader", async () => {
+    const feature = await import("./local-session-migration");
+
+    expect(feature.loadLocalSessionMigrationSource).toBeTypeOf("function");
+  });
+
+  it("keeps messages through the selected turn and returns retained turn starts", async () => {
+    const feature = await import("./local-session-migration");
+    const allMessages = Array.from({ length: 6 }, (_, index): SessionMessage => ({
+      role: index % 2 === 0 ? "user" : "assistant",
+      content: `message-${index}`,
+      timestamp: `2026-07-10T00:00:0${index}Z`,
+      index,
+    }));
+    const turns = [
+      { id: "turn-1", sourceMessageIndex: 0 },
+      { id: "turn-2", sourceMessageIndex: 2 },
+      { id: "turn-3", sourceMessageIndex: 4 },
+    ] as SessionTurnSummary[];
+    const selectedTurn = {
+      id: "turn-2",
+      synthetic: false,
+      messages: [
+        { sourceMessageIndex: 2 },
+        { sourceMessageIndex: 3 },
+      ],
+    } as SessionTurnDetail;
+    const store = {
+      getSession: vi.fn(async () => source),
+      getAllMessages: vi.fn(async () => allMessages),
+      listSessionTurns: vi.fn(async () => turns),
+      getSessionTurn: vi.fn(async () => selectedTurn),
+    };
+
+    const result = await feature.loadLocalSessionMigrationSource(store, {
+      sessionKey: source.sessionKey,
+      target: "codex",
+      throughTurnId: "turn-2",
+    });
+
+    expect(result.messages.map((entry) => entry.index)).toEqual([0, 1, 2, 3]);
+    expect(result.turnSourceMessageIndexes).toEqual([0, 2]);
+  });
+
+  it("rejects a synthetic turn before returning migration content", async () => {
+    const syntheticTurn = {
+      id: "turn-synthetic",
+      synthetic: true,
+      messages: [{ sourceMessageIndex: 0 }],
+    } as SessionTurnDetail;
+    const store = {
+      getSession: vi.fn(async () => source),
+      getAllMessages: vi.fn(async () => messages),
+      listSessionTurns: vi.fn(async () => [
+        { id: "turn-synthetic", sourceMessageIndex: 0, synthetic: true },
+      ] as SessionTurnSummary[]),
+      getSessionTurn: vi.fn(async () => syntheticTurn),
+    };
+
+    await expect(
+      (await import("./local-session-migration")).loadLocalSessionMigrationSource(store, {
+        sessionKey: source.sessionKey,
+        target: "codex",
+        throughTurnId: syntheticTurn.id,
+      }),
+    ).rejects.toThrow(/synthetic/i);
+  });
+
+  it("rejects a turn detail that does not belong to the requested Session turn", async () => {
+    const store = {
+      getSession: vi.fn(async () => source),
+      getAllMessages: vi.fn(async () => messages),
+      listSessionTurns: vi.fn(async () => [
+        { id: "turn-requested", sourceMessageIndex: 0, synthetic: false },
+      ] as SessionTurnSummary[]),
+      getSessionTurn: vi.fn(async () => ({
+        id: "turn-from-another-session",
+        synthetic: false,
+        messages: [{ sourceMessageIndex: 0 }],
+      } as SessionTurnDetail)),
+    };
+
+    await expect(
+      (await import("./local-session-migration")).loadLocalSessionMigrationSource(store, {
+        sessionKey: source.sessionKey,
+        target: "codex",
+        throughTurnId: "turn-requested",
+      }),
+    ).rejects.toThrow(/does not belong/i);
+  });
+
+  it("rejects a selected turn without a source message boundary", async () => {
+    const store = {
+      getSession: vi.fn(async () => source),
+      getAllMessages: vi.fn(async () => messages),
+      listSessionTurns: vi.fn(async () => [
+        { id: "turn-1", sourceMessageIndex: null, synthetic: false },
+      ] as SessionTurnSummary[]),
+      getSessionTurn: vi.fn(async () => ({
+        id: "turn-1",
+        synthetic: false,
+        messages: [{ sourceMessageIndex: null }],
+      } as SessionTurnDetail)),
+    };
+
+    await expect(
+      (await import("./local-session-migration")).loadLocalSessionMigrationSource(store, {
+        sessionKey: source.sessionKey,
+        target: "codex",
+        throughTurnId: "turn-1",
+      }),
+    ).rejects.toThrow(/boundary/i);
   });
 });

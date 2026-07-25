@@ -57,6 +57,7 @@ export interface MigrateSessionOptions {
   messages: SessionMessage[];
   target: MigrationTarget;
   completeTokenLimit?: number;
+  turnSourceMessageIndexes?: readonly number[];
   deps: SessionMigrationDependencies;
 }
 
@@ -79,6 +80,9 @@ export function supportedMigrationTargets(
 export function portableSessionFrom(
   session: SessionSearchResult,
   messages: SessionMessage[],
+  options: {
+    turnSourceMessageIndexes?: readonly number[];
+  } = {},
 ): PortableSession {
   const sourceAgent = migrationAgentForSource(session.source);
   if (!sourceAgent) {
@@ -91,14 +95,29 @@ export function portableSessionFrom(
     throw new Error("Session has no project path.");
   }
 
-  const portableMessages = messages
+  const portableEntries = messages
     .filter((message) => message.role === "user" || message.role === "assistant")
     .map((message, index) => ({
-      role: message.role,
-      content: message.content,
-      timestamp: message.timestamp,
-      index,
+      sourceIndex: message.index,
+      message: {
+        role: message.role,
+        content: message.content,
+        timestamp: message.timestamp,
+        index,
+      },
     }));
+  const portableMessages = portableEntries.map((entry) => entry.message);
+  const sourceTurnStarts = options.turnSourceMessageIndexes
+    ? [...new Set(options.turnSourceMessageIndexes)].sort((left, right) => left - right)
+    : null;
+  const turnBoundaries = sourceTurnStarts
+    ?.map((sourceStart, turnIndex) => {
+      const nextSourceStart = sourceTurnStarts[turnIndex + 1] ?? Number.POSITIVE_INFINITY;
+      return portableEntries.findIndex(
+        (entry) => entry.sourceIndex >= sourceStart && entry.sourceIndex < nextSourceStart,
+      );
+    })
+    .filter((index, position, indexes) => index >= 0 && indexes.indexOf(index) === position);
 
   return {
     sourceSessionKey: session.sessionKey,
@@ -107,6 +126,7 @@ export function portableSessionFrom(
     projectPath: session.projectPath,
     startedAt: new Date(session.timestamp).toISOString(),
     messages: portableMessages,
+    ...(turnBoundaries && turnBoundaries.length > 0 ? { turnBoundaries } : {}),
   };
 }
 
@@ -137,6 +157,7 @@ export async function migrateSession({
   messages,
   target,
   completeTokenLimit = MIGRATION_TOKEN_LIMIT,
+  turnSourceMessageIndexes,
   deps,
 }: MigrateSessionOptions): Promise<SessionMigrationResult> {
   await validateMigrationRequest(source, target, deps);
@@ -149,7 +170,7 @@ export async function migrateSession({
 
   await deps.inspectCli(target);
 
-  const portable = portableSessionFrom(source, messages);
+  const portable = portableSessionFrom(source, messages, { turnSourceMessageIndexes });
   if (estimatePortableSessionTokens(portable) > completeTokenLimit) {
     notifyProgress(deps.onProgress, {
       sessionKey: source.sessionKey,

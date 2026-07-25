@@ -267,6 +267,22 @@ describe("session migration model", () => {
     });
   });
 
+  it("maps retained source turn starts onto filtered portable message indexes", () => {
+    const input = [
+      { role: "user", content: "first", timestamp: "2026-06-23T00:00:00Z", index: 0 },
+      { role: "assistant", content: "answer", timestamp: "2026-06-23T00:00:01Z", index: 1 },
+      { role: "system", content: "filtered", timestamp: "2026-06-23T00:00:02Z", index: 2 },
+      { role: "user", content: "second", timestamp: "2026-06-23T00:00:03Z", index: 3 },
+      { role: "assistant", content: "answer 2", timestamp: "2026-06-23T00:00:04Z", index: 4 },
+    ] as SessionMessage[];
+
+    const portable = portableSessionFrom(session("claude-cli"), input, {
+      turnSourceMessageIndexes: [0, 3],
+    });
+
+    expect(portable.turnBoundaries).toEqual([0, 2]);
+  });
+
   it.each([
     { environmentKind: "ssh", environmentId: "remote" },
     { environmentKind: "local", environmentId: "imported-local" },

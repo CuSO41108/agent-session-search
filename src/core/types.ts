@@ -121,6 +121,12 @@ export interface SessionMigrationResult {
   warning?: string;
 }
 
+export interface SessionMigrationRequest {
+  sessionKey: string;
+  target: MigrationTarget;
+  throughTurnId?: string;
+}
+
 export interface SessionMigrationRecord {
   id: string;
   sourceSessionKey: string;

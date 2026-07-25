@@ -833,7 +833,10 @@ export function App(): ReactElement {
     setMigrationProgress(null);
     setActionStatus({ kind: "running", message: t("Preparing migration...", "正在准备迁移...") });
     try {
-      const result: SessionMigrationResult = await window.sessionSearch.migrateSession(session.sessionKey, target);
+      const result: SessionMigrationResult = await window.sessionSearch.migrateSession({
+        sessionKey: session.sessionKey,
+        target,
+      });
       await Promise.all([load(), loadSidebarMetadata(), loadStats()]);
       await refreshLiveSessions();
       const strategyLabel = migrationStrategyLabel(result.strategy, language);
