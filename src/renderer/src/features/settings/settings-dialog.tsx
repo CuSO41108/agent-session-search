@@ -791,6 +791,24 @@ export function SettingsDialog({
                     onChange={(event) => onSettingsChange({ compressionConcurrency: Number(event.currentTarget.value) })}
                   />
                 </label>
+                <label className="settings-field">
+                  <div className="settings-field-text">
+                    <span className="settings-field-title">{l("Complete migration threshold", "完整迁移阈值")}</span>
+                    <span className="settings-field-sub">{l("Sessions within this estimated size migrate without compression. Unit: K Token.", "估算大小不超过该值时完整迁移。单位：K Token。")}</span>
+                  </div>
+                  <input
+                    type="number"
+                    min={10}
+                    max={1000}
+                    step={10}
+                    className="settings-number"
+                    value={(settings?.migrationCompleteTokenLimit ?? 100_000) / 1_000}
+                    disabled={!settings || saving}
+                    onChange={(event) => onSettingsChange({
+                      migrationCompleteTokenLimit: Number(event.currentTarget.value) * 1_000,
+                    })}
+                  />
+                </label>
                 <div className="settings-field">
                   <div className="settings-field-text">
                     <span className="settings-field-title">{l("Backfill missing summaries now", "立即补全缺失摘要")}</span>

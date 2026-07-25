@@ -115,6 +115,22 @@ describe("platform application resolution", () => {
     });
   });
 
+  it("defaults and normalizes the complete migration token limit", () => {
+    expect(defaultSettings.migrationCompleteTokenLimit).toBe(100_000);
+    expect(mergeAppSettings(defaultSettings, {
+      migrationCompleteTokenLimit: 240_000,
+    }).migrationCompleteTokenLimit).toBe(240_000);
+    expect(mergeAppSettings(defaultSettings, {
+      migrationCompleteTokenLimit: Number.NaN,
+    }).migrationCompleteTokenLimit).toBe(100_000);
+    expect(mergeAppSettings(defaultSettings, {
+      migrationCompleteTokenLimit: 1,
+    }).migrationCompleteTokenLimit).toBe(10_000);
+    expect(mergeAppSettings(defaultSettings, {
+      migrationCompleteTokenLimit: 2_000_000,
+    }).migrationCompleteTokenLimit).toBe(1_000_000);
+  });
+
   it("hides subagent sessions by default and preserves the default for older saved settings", () => {
     expect(defaultSettings.hideSubagentSessions).toBe(true);
     expect(defaultSettings.autoCheckUpdates).toBe(true);

@@ -103,6 +103,7 @@ export interface AppSettings {
   summaryAutoBackfill: boolean;
   summaryMaxAgeDays: number;
   compressionConcurrency: number;
+  migrationCompleteTokenLimit: number;
   summarySource: "codex" | "claude" | "custom";
   sessionSearchMcpEnabled: boolean;
   skillSyncEnabled: boolean;
@@ -169,6 +170,7 @@ export const defaultSettings: AppSettings = {
   summaryAutoBackfill: false,
   summaryMaxAgeDays: 30,
   compressionConcurrency: 8,
+  migrationCompleteTokenLimit: 100_000,
   summarySource: "custom",
   sessionSearchMcpEnabled: true,
   skillSyncEnabled: false,
@@ -190,6 +192,7 @@ export function mergeAppSettings(previous: AppSettings, updates: AppSettingsUpda
     globalShortcut: normalizeGlobalShortcut(merged.globalShortcut),
     summaryMaxAgeDays: normalizeSummaryMaxAgeDays(merged.summaryMaxAgeDays),
     compressionConcurrency: normalizeCompressionConcurrency(merged.compressionConcurrency),
+    migrationCompleteTokenLimit: normalizeMigrationCompleteTokenLimit(merged.migrationCompleteTokenLimit),
     autoCheckUpdates: Boolean(merged.autoCheckUpdates),
     openVikingMemoryEnabled: Boolean(merged.openVikingMemoryEnabled),
     openVikingClaudeEnabled: Boolean(merged.openVikingClaudeEnabled),
@@ -222,6 +225,11 @@ function normalizeSummaryMaxAgeDays(value: number): number {
 function normalizeCompressionConcurrency(value: number): number {
   if (!Number.isFinite(value) || value < 1) return defaultSettings.compressionConcurrency;
   return Math.min(32, Math.round(value));
+}
+
+function normalizeMigrationCompleteTokenLimit(value: number): number {
+  if (!Number.isFinite(value)) return defaultSettings.migrationCompleteTokenLimit;
+  return Math.max(10_000, Math.min(1_000_000, Math.round(value)));
 }
 
 const ITERM_APPLICATION_NAMES = ["iTerm", "iTerm2"];
