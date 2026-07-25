@@ -17,13 +17,20 @@ import type {
   TeamChatMessagePage,
   TeamChatRoom,
   TeamChatRoomAgent,
+  TeamChatRoomMemberInput,
   TeamChatRoomSummary,
   UpdateTeamChatRoomRequest,
 } from "../../shared/team-chat";
-import { buildTeamChatPrompt, resolveTeamChatRoute, resolveTeamChatTargets } from "./team-chat-routing";
-import type { TeamChatAgentSession, TeamChatContextPage, TeamChatStore } from "./team-chat-store";
+import {
+  buildTeamChatPrompt,
+  resolveTeamChatTargets,
+} from "./team-chat-routing";
+import type {
+  TeamChatAgentSession,
+  TeamChatContextPage,
+  TeamChatStore,
+} from "./team-chat-store";
 
-const MAX_AGENT_EXECUTIONS_PER_TURN = 8;
 const CONTEXT_MESSAGE_LIMIT = 40;
 
 interface TeamChatServiceDependencies {
@@ -44,18 +51,13 @@ interface TeamChatServiceDependencies {
   now?: () => Date;
 }
 
-interface QueuedHop {
-  sourceMessage: TeamChatMessage;
-  targetAgentIds: string[];
-  hop: number;
-}
-
 type TeamChatEventListener = (event: TeamChatEvent) => void;
 
 export class TeamChatService {
   private readonly listeners = new Set<TeamChatEventListener>();
-  private readonly activeTurns = new Map<string, AbortController>();
-  private readonly activeTurnPromises = new Set<Promise<void>>();
+  private readonly rootControllers = new Map<string, AbortController>();
+  private readonly memberQueueTails = new Map<string, Promise<void>>();
+  private readonly activeWorkPromises = new Set<Promise<void>>();
   private store: TeamChatStore | undefined;
   private connectionQueue: Promise<void> = Promise.resolve();
   private pendingConnection: Promise<TeamChatConnectionStatus> | undefined;
@@ -155,15 +157,15 @@ export class TeamChatService {
   }
 
   async createRoom(request: CreateTeamChatRoomRequest): Promise<TeamChatRoom> {
-    const agents = this.resolveConfiguredAgents(request.agentIds);
     const createdAt = this.timestamp();
     const roomId = this.id();
+    const agents = this.resolveRoomMembers(roomId, request.members, [], createdAt);
     const room: TeamChatRoom = {
       id: roomId,
       name: request.name.trim(),
       workDir: request.workDir.trim(),
       archived: false,
-      agents: agents.map((agent, position) => roomAgentSnapshot(roomId, agent, position, createdAt)),
+      agents,
       createdAt,
       updatedAt: createdAt,
     };
@@ -177,15 +179,14 @@ export class TeamChatService {
     const current = await store.getRoom(request.roomId);
     if (!current) throw new Error("Team Chat room was not found.");
     const updatedAt = this.timestamp();
-    const members = request.agentIds
-      ? this.resolveConfiguredAgents(request.agentIds).map((agent, position) =>
-          roomAgentSnapshot(current.id, agent, position, updatedAt))
+    const agents = request.members
+      ? this.resolveRoomMembers(current.id, request.members, current.agents, updatedAt)
       : current.agents;
     const updated: TeamChatRoom = {
       ...current,
       name: request.name === undefined ? current.name : request.name.trim(),
       workDir: request.workDir === undefined ? current.workDir : request.workDir.trim(),
-      agents: members,
+      agents,
       updatedAt,
     };
     const saved = await store.updateRoom(updated);
@@ -207,7 +208,7 @@ export class TeamChatService {
     const room = await store.getRoom(roomId);
     if (!room || room.archived) throw new Error("Team Chat room is unavailable.");
     if (!room.agents.some((agent) => agent.agentId === agentId)) {
-      throw new Error("Team Chat room member was not found.");
+      throw new Error("Studio employee was not found.");
     }
     await store.deleteAgentSession(roomId, agentId);
     this.emit({ type: "agent-session-changed", roomId, agentId });
@@ -220,124 +221,75 @@ export class TeamChatService {
     if (!room || room.archived) throw new Error("Team Chat room is unavailable.");
     const content = request.content.trim();
     if (!content) throw new Error("Enter a message before sending.");
+    const targets = resolveTeamChatTargets(request.targetMemberIds, this.routableRoomMembers(room));
+    if (targets.length === 0) throw new Error("Select at least one available employee.");
 
     const messageId = this.id();
     const createdAt = this.timestamp();
-    const message: TeamChatMessage = {
+    const message = await store.insertMessage({
       id: messageId,
       roomId: room.id,
+      sequence: 0,
       senderType: "human",
       senderName: "You",
       content,
+      ...(targets.length === 1 ? { recipientMemberId: targets[0] } : {}),
+      deliveryType: request.replyToMessageId ? "reply" : "message",
       rootMessageId: messageId,
+      ...(request.replyToMessageId ? { sourceMessageId: request.replyToMessageId } : {}),
       hop: 0,
       status: "final",
       createdAt,
       updatedAt: createdAt,
-    };
-    await store.insertMessage(message);
+    });
     this.emit({ type: "message-created", roomId: room.id, rootMessageId: messageId, message });
     this.emit({ type: "rooms-changed" });
 
     const controller = new AbortController();
-    this.activeTurns.set(messageId, controller);
-    const route = resolveTeamChatRoute(content, this.routableRoomMembers(room), "human");
-    const promise = this.runRootTurn(room, message, route.targetAgentIds, controller, route.mentionedNames)
-      .finally(() => this.activeTurnPromises.delete(promise));
-    this.activeTurnPromises.add(promise);
-    void promise;
+    this.rootControllers.set(messageId, controller);
+    const work = Promise.allSettled(targets.map((targetAgentId) => this.enqueueMemberExecution({
+      room,
+      targetAgentId,
+      sourceMessage: message,
+      rootMessage: message,
+      hop: 0,
+      controller,
+    }))).then(() => undefined).finally(() => {
+      if (this.rootControllers.get(messageId) === controller) this.rootControllers.delete(messageId);
+      this.emit({ type: "turn-finished", roomId: room.id, rootMessageId: messageId });
+    });
+    this.trackWork(work);
     return { message, rootMessageId: messageId };
   }
 
   async stopTurn(rootMessageId: string): Promise<boolean> {
-    const controller = this.activeTurns.get(rootMessageId);
+    const controller = this.rootControllers.get(rootMessageId);
     if (!controller) return false;
     controller.abort();
     return true;
   }
 
-  private async runRootTurn(
-    room: TeamChatRoom,
-    rootMessage: TeamChatMessage,
-    initialTargets: string[],
-    controller: AbortController,
-    mentionedNames: string[],
-  ): Promise<void> {
-    const executedAgentIds = new Set<string>();
-    const queue: QueuedHop[] = [{ sourceMessage: rootMessage, targetAgentIds: initialTargets, hop: 0 }];
-    let reachedLimit = false;
-
-    try {
-      if (initialTargets.length === 0) {
-        const mention = mentionedNames.length > 0
-          ? mentionedNames.map((name) => `@${name}`).join(", ")
-          : undefined;
-        await this.insertSystemMessage(
-          room.id,
-          rootMessage.id,
-          rootMessage.id,
-          0,
-          mention
-            ? `No available Agent matched ${mention}. Choose an available room member.`
-            : "No available Agent can respond in this room. Add or enable a room member first.",
-          "error",
-        );
-        return;
-      }
-      while (queue.length > 0 && !controller.signal.aborted) {
-        const next = queue.shift()!;
-        const candidates = next.targetAgentIds.filter((id) => !executedAgentIds.has(id));
-        const remaining = MAX_AGENT_EXECUTIONS_PER_TURN - executedAgentIds.size;
-        if (candidates.length > remaining) reachedLimit = true;
-        const batchIds = candidates.slice(0, remaining);
-        if (batchIds.length === 0) continue;
-        for (const agentId of batchIds) executedAgentIds.add(agentId);
-
-        const completed = await Promise.all(batchIds.map((agentId) => this.runAgent({
-          room,
-          targetAgentId: agentId,
-          sourceMessage: next.sourceMessage,
-          rootMessage,
-          hop: next.hop,
-          executedAgentIds: [...executedAgentIds],
-          controller,
-        })));
-
-        for (const message of completed) {
-          if (!message || controller.signal.aborted) continue;
-          const nextTargets = resolveTeamChatTargets(message.content, this.routableRoomMembers(room), "agent")
-            .filter((agentId) => !executedAgentIds.has(agentId));
-          if (nextTargets.length > 0) {
-            queue.push({ sourceMessage: message, targetAgentIds: nextTargets, hop: next.hop + 1 });
-          }
-        }
-        if (executedAgentIds.size >= MAX_AGENT_EXECUTIONS_PER_TURN && queue.length > 0) reachedLimit = true;
-      }
-
-      if (reachedLimit && !controller.signal.aborted) {
-        await this.insertSystemMessage(
-          room.id,
-          rootMessage.id,
-          rootMessage.id,
-          MAX_AGENT_EXECUTIONS_PER_TURN,
-          `This turn stopped after ${MAX_AGENT_EXECUTIONS_PER_TURN} Agent executions to prevent an endless loop.`,
-        );
-      }
-    } catch (error) {
-      if (!controller.signal.aborted) {
-        await this.insertSystemMessage(
-          room.id,
-          rootMessage.id,
-          rootMessage.id,
-          0,
-          `Team Chat stopped: ${sanitizeTeamChatError(error)}`,
-          "error",
-        ).catch(() => undefined);
-      }
-    } finally {
-      if (this.activeTurns.get(rootMessage.id) === controller) this.activeTurns.delete(rootMessage.id);
-      this.emit({ type: "turn-finished", roomId: room.id, rootMessageId: rootMessage.id });
-    }
+  private enqueueMemberExecution(input: {
+    room: TeamChatRoom;
+    targetAgentId: string;
+    sourceMessage: TeamChatMessage;
+    rootMessage: TeamChatMessage;
+    hop: number;
+    controller: AbortController;
+  }): Promise<void> {
+    const key = `${input.room.id}:${input.targetAgentId}`;
+    const prior = this.memberQueueTails.get(key) ?? Promise.resolve();
+    const next = prior
+      .catch(() => undefined)
+      .then(async () => {
+        if (!input.controller.signal.aborted) await this.runAgent(input);
+      });
+    this.memberQueueTails.set(key, next);
+    void next.finally(() => {
+      if (this.memberQueueTails.get(key) === next) this.memberQueueTails.delete(key);
+    });
+    this.trackWork(next);
+    return next;
   }
 
   private async runAgent(input: {
@@ -346,27 +298,42 @@ export class TeamChatService {
     sourceMessage: TeamChatMessage;
     rootMessage: TeamChatMessage;
     hop: number;
-    executedAgentIds: string[];
     controller: AbortController;
-  }): Promise<TeamChatMessage | undefined> {
-    const target = input.room.agents.find((agent) => agent.agentId === input.targetAgentId && agent.enabled);
-    if (!target) return undefined;
+  }): Promise<void> {
+    const target = input.room.agents.find(
+      (agent) => agent.agentId === input.targetAgentId && agent.enabled,
+    );
+    if (!target) return;
     const configured = this.dependencies.configuredAgents()
-      .find((agent) => agent.id === input.targetAgentId);
-    if (!configured) return undefined;
+      .find((agent) => agent.id === target.configuredAgentId);
+    if (!configured) {
+      await this.insertSystemMessage(
+        input.room.id,
+        input.rootMessage.id,
+        input.sourceMessage.id,
+        input.hop + 1,
+        `${target.displayName} is no longer connected to an available Agent configuration.`,
+        "error",
+      );
+      return;
+    }
+
     const store = this.requireStore();
     const continuationAvailable = supportsConfiguredAgentConversation(configured.runtimeAgentId);
     let agentSession = (await store.listAgentSessions(input.room.id))
       .find((session) => session.agentId === target.agentId);
-    if (
-      agentSession &&
-      (!continuationAvailable || !agentSessionMatches(agentSession, configured))
-    ) {
+    if (agentSession && (!continuationAvailable || !agentSessionMatches(agentSession, configured))) {
       await store.deleteAgentSession(input.room.id, target.agentId);
       this.emit({ type: "agent-session-changed", roomId: input.room.id, agentId: target.agentId });
       agentSession = undefined;
     }
-    let context = await this.loadAgentContext(input.room.id, agentSession);
+    let context = await this.loadAgentContext(
+      input.room.id,
+      target.agentId,
+      input.sourceMessage,
+      agentSession,
+    );
+
     const dispatchId = this.id();
     const createdAt = this.timestamp();
     const dispatch: TeamChatDispatch = {
@@ -399,16 +366,17 @@ export class TeamChatService {
         currentSession?: TeamChatAgentSession,
       ) => {
         attemptSawDelta = false;
+        const range = messageSequenceRange(currentContext.messages);
         return this.dependencies.executeAgent(
           {
-            configuredAgentId: target.agentId,
+            configuredAgentId: target.configuredAgentId,
             prompt: buildTeamChatPrompt({
               room: input.room,
               target,
-              messages: currentContext.messages,
+              explicitContext: currentContext.messages,
               triggerMessage: input.sourceMessage,
-              executedAgentIds: input.executedAgentIds,
-              remainingExecutions: MAX_AGENT_EXECUTIONS_PER_TURN - input.executedAgentIds.length,
+              unreadCount: currentContext.messages.length,
+              ...(range ? { unreadSequenceRange: range } : {}),
               continuing: Boolean(currentSession),
               contextTruncated: currentContext.truncated,
             }),
@@ -444,27 +412,33 @@ export class TeamChatService {
         await store.deleteAgentSession(input.room.id, target.agentId);
         this.emit({ type: "agent-session-changed", roomId: input.room.id, agentId: target.agentId });
         agentSession = undefined;
-        context = await this.loadAgentContext(input.room.id);
+        context = await this.loadAgentContext(
+          input.room.id,
+          target.agentId,
+          input.sourceMessage,
+        );
         result = await executeAttempt(context);
       }
       if (input.controller.signal.aborted) throw new DOMException("Aborted", "AbortError");
-      const content = result.output.trim() || "Agent completed without a text response.";
+
+      const content = result.output.trim() || "Employee completed without a text response.";
       const messageAt = this.timestamp();
-      const message: TeamChatMessage = {
+      const message = await store.insertMessage({
         id: this.id(),
         roomId: input.room.id,
+        sequence: 0,
         senderType: "agent",
         senderAgentId: target.agentId,
         senderName: target.displayName,
         content,
+        deliveryType: "reply",
         rootMessageId: input.rootMessage.id,
         sourceMessageId: input.sourceMessage.id,
         hop: input.hop + 1,
         status: "final",
         createdAt: messageAt,
         updatedAt: messageAt,
-      };
-      await store.insertMessage(message);
+      });
 
       const nextConversation =
         result.runtimeConversation?.runtimeId === configured.runtimeAgentId
@@ -478,7 +452,7 @@ export class TeamChatService {
           channelId: configured.channelId,
           modelId: configured.modelId,
           runtimeConversation: nextConversation,
-          lastContextMessageId: context.messages.at(-1)?.id ?? input.sourceMessage.id,
+          lastContextMessageId: input.sourceMessage.id,
           updatedAt: messageAt,
         });
         this.emit({ type: "agent-session-changed", roomId: input.room.id, agentId: target.agentId });
@@ -501,7 +475,6 @@ export class TeamChatService {
         agentId: target.agentId,
         status: "completed",
       });
-      return message;
     } catch (error) {
       const interrupted = input.controller.signal.aborted || isAbortError(error);
       const status = interrupted ? "interrupted" : "failed";
@@ -533,23 +506,38 @@ export class TeamChatService {
         status,
         ...(interrupted ? {} : { error: safeError }),
       });
-      return undefined;
     }
   }
 
   private async loadAgentContext(
     roomId: string,
+    memberId: string,
+    triggerMessage: TeamChatMessage,
     agentSession?: TeamChatAgentSession,
   ): Promise<TeamChatContextPage> {
     const store = this.requireStore();
-    if (agentSession?.lastContextMessageId) {
-      return store.listMessagesAfter(roomId, agentSession.lastContextMessageId, CONTEXT_MESSAGE_LIMIT);
+    const page = agentSession?.lastContextMessageId
+      ? await store.listMessagesAfter(roomId, agentSession.lastContextMessageId, CONTEXT_MESSAGE_LIMIT)
+      : await store.listMessages({ roomId, limit: CONTEXT_MESSAGE_LIMIT }).then((result) => ({
+          messages: result.messages,
+          truncated: Boolean(result.nextBefore),
+        }));
+    const messages = page.messages.filter((message) =>
+      message.id === triggerMessage.id ||
+      message.senderAgentId === memberId ||
+      message.recipientMemberId === memberId ||
+      message.senderType === "system" ||
+      message.deliveryType === "post");
+
+    if (
+      triggerMessage.sourceMessageId &&
+      !messages.some((message) => message.id === triggerMessage.sourceMessageId)
+    ) {
+      const recent = await store.listMessages({ roomId, limit: 100 });
+      const parent = recent.messages.find((message) => message.id === triggerMessage.sourceMessageId);
+      if (parent) messages.unshift(parent);
     }
-    const page = await store.listMessages({ roomId, limit: CONTEXT_MESSAGE_LIMIT });
-    return {
-      messages: page.messages,
-      truncated: Boolean(page.nextBefore),
-    };
+    return { messages, truncated: page.truncated };
   }
 
   private async insertSystemMessage(
@@ -561,51 +549,87 @@ export class TeamChatService {
     status: TeamChatMessage["status"] = "final",
   ): Promise<TeamChatMessage> {
     const createdAt = this.timestamp();
-    const message: TeamChatMessage = {
+    const message = await this.requireStore().insertMessage({
       id: this.id(),
       roomId,
+      sequence: 0,
       senderType: "system",
       senderName: "AgentRecall",
       content,
+      deliveryType: "post",
       rootMessageId,
       sourceMessageId,
       hop,
       status,
       createdAt,
       updatedAt: createdAt,
-    };
-    await this.requireStore().insertMessage(message);
+    });
     this.emit({ type: "message-created", roomId, rootMessageId, message });
     this.emit({ type: "rooms-changed" });
     return message;
   }
 
-  private resolveConfiguredAgents(agentIds: string[]): ConfiguredAgent[] {
-    const uniqueIds = [...new Set(agentIds)];
-    if (uniqueIds.length === 0) throw new Error("Select at least one Agent for the room.");
-    const byId = new Map(this.dependencies.configuredAgents().map((agent) => [agent.id, agent]));
-    return uniqueIds.map((id) => {
-      const agent = byId.get(id);
-      if (!agent) throw new Error(`Configured Agent is unavailable: ${id}`);
-      return agent;
+  private resolveRoomMembers(
+    roomId: string,
+    inputs: TeamChatRoomMemberInput[],
+    current: TeamChatRoomAgent[],
+    joinedAt: string,
+  ): TeamChatRoomAgent[] {
+    if (inputs.length === 0) throw new Error("Select at least one employee for the studio.");
+    const configuredById = new Map(
+      this.dependencies.configuredAgents().map((agent) => [agent.id, agent]),
+    );
+    const memberIds = new Set<string>();
+    const displayNames = new Set<string>();
+    return inputs.map((input, position) => {
+      const configured = configuredById.get(input.configuredAgentId);
+      if (!configured) {
+        throw new Error(`Configured Agent is unavailable: ${input.configuredAgentId}`);
+      }
+      const displayName = input.displayName.trim();
+      if (!displayName) throw new Error("Employee name is required.");
+      const normalizedName = displayName.toLocaleLowerCase();
+      if (displayNames.has(normalizedName)) {
+        throw new Error(`Employee names must be unique in a studio: ${displayName}`);
+      }
+      displayNames.add(normalizedName);
+      const existing = input.memberId
+        ? current.find((member) => member.agentId === input.memberId)
+        : undefined;
+      if (input.memberId && !existing) {
+        throw new Error(`Studio employee was not found: ${input.memberId}`);
+      }
+      const memberId = existing?.agentId ?? this.id();
+      if (memberIds.has(memberId)) throw new Error("Studio employees must be unique.");
+      memberIds.add(memberId);
+      return roomAgentSnapshot(
+        roomId,
+        memberId,
+        displayName,
+        configured,
+        position,
+        existing?.joinedAt ?? joinedAt,
+      );
     });
   }
 
   private routableRoomMembers(room: TeamChatRoom): TeamChatRoomAgent[] {
     const availableAgentIds = new Set(this.dependencies.configuredAgents().map((agent) => agent.id));
-    return room.agents.map((member) => availableAgentIds.has(member.agentId)
+    return room.agents.map((member) => availableAgentIds.has(member.configuredAgentId)
       ? member
       : { ...member, enabled: false });
   }
 
   private async decorateRoom(room: TeamChatRoom): Promise<TeamChatRoom> {
     const store = this.requireStore();
-    const configuredById = new Map(this.dependencies.configuredAgents().map((agent) => [agent.id, agent]));
+    const configuredById = new Map(
+      this.dependencies.configuredAgents().map((agent) => [agent.id, agent]),
+    );
     const sessionsByAgentId = new Map(
       (await store.listAgentSessions(room.id)).map((session) => [session.agentId, session]),
     );
     const agents = await Promise.all(room.agents.map(async (member): Promise<TeamChatRoomAgent> => {
-      const configured = configuredById.get(member.agentId);
+      const configured = configuredById.get(member.configuredAgentId);
       const continuationAvailable = Boolean(
         configured && supportsConfiguredAgentConversation(configured.runtimeAgentId),
       );
@@ -638,15 +662,25 @@ export class TeamChatService {
   }
 
   private async closeCurrentStore(): Promise<void> {
-    for (const controller of this.activeTurns.values()) controller.abort();
-    if (this.activeTurnPromises.size > 0) await Promise.allSettled([...this.activeTurnPromises]);
-    this.activeTurns.clear();
+    for (const controller of this.rootControllers.values()) controller.abort();
+    if (this.activeWorkPromises.size > 0) {
+      await Promise.allSettled([...this.activeWorkPromises]);
+    }
+    this.rootControllers.clear();
+    this.memberQueueTails.clear();
     const current = this.store;
     this.store = undefined;
     if (current) await current.close();
   }
 
-  private enqueueConnection(operation: () => Promise<TeamChatConnectionStatus>): Promise<TeamChatConnectionStatus> {
+  private trackWork(work: Promise<void>): void {
+    this.activeWorkPromises.add(work);
+    void work.finally(() => this.activeWorkPromises.delete(work));
+  }
+
+  private enqueueConnection(
+    operation: () => Promise<TeamChatConnectionStatus>,
+  ): Promise<TeamChatConnectionStatus> {
     const promise = this.connectionQueue.then(operation, operation);
     this.connectionQueue = promise.then(() => undefined, () => undefined);
     return promise;
@@ -673,14 +707,17 @@ export class TeamChatService {
 
 function roomAgentSnapshot(
   roomId: string,
+  memberId: string,
+  displayName: string,
   agent: ConfiguredAgent,
   position: number,
   joinedAt: string,
 ): TeamChatRoomAgent {
   return {
     roomId,
-    agentId: agent.id,
-    displayName: agent.name,
+    agentId: memberId,
+    configuredAgentId: agent.id,
+    displayName,
     runtimeId: agent.runtimeAgentId,
     channelId: agent.channelId,
     modelId: agent.modelId,
@@ -689,6 +726,16 @@ function roomAgentSnapshot(
     joinedAt,
     continuationAvailable: supportsConfiguredAgentConversation(agent.runtimeAgentId),
     hasActiveConversation: false,
+  };
+}
+
+function messageSequenceRange(
+  messages: TeamChatMessage[],
+): { from: number; to: number } | undefined {
+  if (messages.length === 0) return undefined;
+  return {
+    from: Math.min(...messages.map((message) => message.sequence)),
+    to: Math.max(...messages.map((message) => message.sequence)),
   };
 }
 

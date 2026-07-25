@@ -1,118 +1,102 @@
 import type { TeamChatMessage, TeamChatRoom, TeamChatRoomAgent } from "../../shared/team-chat";
 
-const MAX_CONTEXT_MESSAGES = 40;
-const MAX_CONTEXT_CHARACTERS = 48_000;
-
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-function mentions(content: string, displayName: string): boolean {
-  const name = displayName.trim();
-  if (!name) return false;
-  return new RegExp(`(?:^|[\\s,，。.!！?？:：;；(\\[<{])@${escapeRegExp(name)}(?=$|[\\s,，。.!！?？:：;；)\\]}>])`, "iu").test(content);
-}
-
-function mentionTokens(content: string): string[] {
-  const tokens: string[] = [];
-  const pattern = /(?:^|[\s,，。.!！?？:：;；(\[<{])@([^\s,，。.!！?？:：;；)\]}>]+)/gu;
-  for (const match of content.matchAll(pattern)) {
-    const token = match[1]?.trim();
-    if (token && !tokens.some((item) => item.toLocaleLowerCase() === token.toLocaleLowerCase())) tokens.push(token);
-  }
-  return tokens;
-}
-
-export interface TeamChatRoute {
-  targetAgentIds: string[];
-  explicitMention: boolean;
-  mentionedNames: string[];
-}
-
-export function resolveTeamChatRoute(
-  content: string,
-  members: TeamChatRoomAgent[],
-  senderType: "human" | "agent",
-): TeamChatRoute {
-  const ordered = [...members].sort((left, right) => left.position - right.position);
-  const matched = [...ordered]
-    .sort((left, right) => right.displayName.length - left.displayName.length)
-    .filter((member) => mentions(content, member.displayName));
-  const matchedIds = new Set(matched.map((member) => member.agentId));
-  const tokens = mentionTokens(content);
-  const explicitMention = matchedIds.size > 0 || tokens.length > 0;
-  const enabled = ordered.filter((member) => member.enabled);
-  const targetAgentIds = explicitMention
-    ? enabled.filter((member) => matchedIds.has(member.agentId)).map((member) => member.agentId)
-    : senderType === "human" ? enabled.map((member) => member.agentId) : [];
-  return {
-    targetAgentIds,
-    explicitMention,
-    mentionedNames: matched.length > 0 ? matched.map((member) => member.displayName) : tokens,
-  };
-}
+const MAX_EXPLICIT_CONTEXT_MESSAGES = 20;
+const MAX_EXPLICIT_CONTEXT_CHARACTERS = 24_000;
 
 export function resolveTeamChatTargets(
-  content: string,
+  targetMemberIds: string[],
   members: TeamChatRoomAgent[],
-  senderType: "human" | "agent",
 ): string[] {
-  return resolveTeamChatRoute(content, members, senderType).targetAgentIds;
+  const enabled = new Set(
+    members.filter((member) => member.enabled).map((member) => member.agentId),
+  );
+  return [...new Set(targetMemberIds)].filter((memberId) => enabled.has(memberId));
 }
 
-function transcriptWithinBudget(messages: TeamChatMessage[]): TeamChatMessage[] {
-  const recent = messages.slice(-MAX_CONTEXT_MESSAGES);
+function contextWithinBudget(messages: TeamChatMessage[]): TeamChatMessage[] {
+  const recent = messages.slice(-MAX_EXPLICIT_CONTEXT_MESSAGES);
   const selected: TeamChatMessage[] = [];
   let characters = 0;
   for (let index = recent.length - 1; index >= 0; index -= 1) {
     const message = recent[index]!;
-    const formattedLength = message.content.length + message.senderName.length + message.createdAt.length + 8;
-    if (selected.length > 0 && characters + formattedLength > MAX_CONTEXT_CHARACTERS) break;
+    const length = message.senderName.length + message.content.length + 32;
+    if (selected.length > 0 && characters + length > MAX_EXPLICIT_CONTEXT_CHARACTERS) break;
     selected.push(message);
-    characters += formattedLength;
+    characters += length;
   }
   return selected.reverse();
+}
+
+function formatContextMessage(message: TeamChatMessage): string {
+  const recipient = message.recipientMemberId ? ` -> ${message.recipientMemberId}` : "";
+  return `[${message.sequence}] ${message.senderName}${recipient}: ${message.content}`;
+}
+
+export function buildStudioDeveloperInstructions(
+  room: TeamChatRoom,
+  target: TeamChatRoomAgent,
+): string {
+  const members = room.agents
+    .filter((member) => member.enabled)
+    .sort((left, right) => left.position - right.position)
+    .map((member) => `${member.displayName} (${member.agentId})`)
+    .join(", ");
+  return [
+    "You are one employee instance in an AgentRecall studio. You are not the manager of the other employees.",
+    `Studio: ${room.name}.`,
+    `Your employee identity: ${target.displayName} (${target.agentId}).`,
+    `Studio employees: ${members || "none"}.`,
+    `The shared project directory is ${room.workDir || "(not selected)"}.`,
+    "Your normal final response is visible to the user but does not activate another employee.",
+    "When another employee must act, call studio_send_message with that employee's member ID.",
+    "Use studio_post for visible status or shared information that must not activate another employee.",
+    "Do not invent another employee's messages, progress, or results.",
+  ].join(" ");
 }
 
 export function buildTeamChatPrompt(input: {
   room: TeamChatRoom;
   target: TeamChatRoomAgent;
-  messages: TeamChatMessage[];
+  explicitContext: TeamChatMessage[];
   triggerMessage: TeamChatMessage;
-  executedAgentIds: string[];
-  remainingExecutions: number;
-  continuing?: boolean;
-  contextTruncated?: boolean;
+  unreadCount: number;
+  unreadSequenceRange?: { from: number; to: number };
+  continuing: boolean;
+  contextTruncated: boolean;
 }): string {
-  const byId = new Map(input.room.agents.map((agent) => [agent.agentId, agent.displayName]));
-  const executed = input.executedAgentIds.map((id) => byId.get(id) ?? id);
-  const contextMessages = input.messages.filter((message) =>
-    message.id !== input.triggerMessage.id &&
-    (!input.continuing || message.senderAgentId !== input.target.agentId));
-  const transcript = transcriptWithinBudget(contextMessages)
-    .map((message) => `[${message.createdAt}] ${message.senderName}: ${message.content}`)
-    .join("\n");
-  const memberNames = input.room.agents
-    .filter((agent) => agent.enabled)
-    .sort((left, right) => left.position - right.position)
-    .map((agent) => `@${agent.displayName}`)
-    .join(", ");
-
+  const context = contextWithinBudget(
+    input.explicitContext.filter((message) => message.id !== input.triggerMessage.id),
+  );
+  const from = input.triggerMessage.senderType === "human"
+    ? input.triggerMessage.senderName
+    : `${input.triggerMessage.senderName} (${input.triggerMessage.senderAgentId ?? "unknown"})`;
+  const replyTo = input.triggerMessage.sourceMessageId
+    ? `Reply to: ${input.triggerMessage.sourceMessageId}`
+    : undefined;
+  const unreadRange = input.unreadSequenceRange
+    ? ` (sequence ${input.unreadSequenceRange.from}-${input.unreadSequenceRange.to})`
+    : "";
   return [
-    "You are participating in a persistent multi-Agent room.",
-    `Room: ${input.room.name}`,
-    `You are ${input.target.displayName}.`,
-    `Room members: ${memberNames || "none"}`,
-    `Already executed: ${executed.length > 0 ? executed.join(", ") : "none"}`,
-    `Remaining Agent executions: ${input.remainingExecutions}`,
-    "Reply directly to the room. Do not invent messages from other members.",
-    "If another room member must continue the work, mention that member by exact @name.",
+    "[AgentRecall Studio Delivery]",
+    `Studio: ${input.room.name}`,
+    `To: ${input.target.displayName} (${input.target.agentId})`,
+    `From: ${from}`,
+    `Message: ${input.triggerMessage.id}`,
+    ...(replyTo ? [replyTo] : []),
+    `Root: ${input.triggerMessage.rootMessageId}`,
+    `Session: ${input.continuing ? "resumed" : "new"}`,
     "",
-    input.continuing ? "Room updates since your previous turn:" : "Recent room transcript:",
-    ...(input.contextTruncated ? ["Earlier room updates were omitted because the context limit was reached."] : []),
-    transcript || (input.continuing ? "(no other room updates)" : "(empty)"),
-    "",
-    `Current triggering message from ${input.triggerMessage.senderName}:`,
+    ...(context.length > 0
+      ? [
+          "Explicit context:",
+          ...(input.contextTruncated ? ["Some earlier directed context was omitted."] : []),
+          ...context.map(formatContextMessage),
+          "",
+        ]
+      : []),
     input.triggerMessage.content,
+    "",
+    `Other unread studio messages: ${input.unreadCount}${unreadRange}`,
+    "Use studio_read_messages or studio_read_range only when needed.",
   ].join("\n");
 }

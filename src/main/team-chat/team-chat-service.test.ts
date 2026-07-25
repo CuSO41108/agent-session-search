@@ -14,7 +14,11 @@ import type {
   TeamChatRoomSummary,
 } from "../../shared/team-chat";
 import { TeamChatService } from "./team-chat-service";
-import type { TeamChatAgentSession, TeamChatDispatchUpdate, TeamChatStore } from "./team-chat-store";
+import type {
+  TeamChatAgentSession,
+  TeamChatDispatchUpdate,
+  TeamChatStore,
+} from "./team-chat-store";
 
 class MemoryTeamChatStore implements TeamChatStore {
   readonly rooms: TeamChatRoom[] = [];
@@ -28,22 +32,26 @@ class MemoryTeamChatStore implements TeamChatStore {
   async close(): Promise<void> { this.closed = true; }
   async listRooms(): Promise<TeamChatRoomSummary[]> {
     return this.rooms.filter((room) => !room.archived).map((room) => ({
-      ...room,
+      id: room.id,
+      name: room.name,
+      workDir: room.workDir,
+      archived: room.archived,
       agentCount: room.agents.length,
-      agents: undefined,
-    })) as unknown as TeamChatRoomSummary[];
+      createdAt: room.createdAt,
+      updatedAt: room.updatedAt,
+    }));
   }
   async getRoom(roomId: string): Promise<TeamChatRoom | undefined> {
     return this.rooms.find((room) => room.id === roomId);
   }
   async createRoom(room: TeamChatRoom): Promise<TeamChatRoom> {
-    this.rooms.push(room);
-    return room;
+    this.rooms.push(structuredClone(room));
+    return structuredClone(room);
   }
   async updateRoom(room: TeamChatRoom): Promise<TeamChatRoom> {
     const index = this.rooms.findIndex((item) => item.id === room.id);
-    if (index >= 0) this.rooms[index] = room;
-    return room;
+    if (index >= 0) this.rooms[index] = structuredClone(room);
+    return structuredClone(room);
   }
   async archiveRoom(roomId: string, updatedAt: string): Promise<void> {
     const room = this.rooms.find((item) => item.id === roomId);
@@ -51,21 +59,33 @@ class MemoryTeamChatStore implements TeamChatStore {
   }
   async listMessages(request: ListTeamChatMessagesRequest): Promise<TeamChatMessagePage> {
     const limit = request.limit ?? 100;
-    return { messages: this.messages.filter((message) => message.roomId === request.roomId).slice(-limit) };
+    return {
+      messages: this.messages
+        .filter((message) => message.roomId === request.roomId)
+        .slice(-limit)
+        .map((message) => structuredClone(message)),
+    };
   }
   async listMessagesAfter(roomId: string, afterMessageId: string, limit: number) {
     const roomMessages = this.messages.filter((message) => message.roomId === roomId);
     const marker = roomMessages.findIndex((message) => message.id === afterMessageId);
-    const messages = marker >= 0 ? roomMessages.slice(marker + 1) : [];
-    return { messages: messages.slice(-limit), truncated: messages.length > limit };
+    const messages = marker >= 0 ? roomMessages.slice(marker + 1) : roomMessages;
+    return {
+      messages: messages.slice(-limit).map((message) => structuredClone(message)),
+      truncated: messages.length > limit,
+    };
   }
   async insertMessage(message: TeamChatMessage): Promise<TeamChatMessage> {
-    this.messages.push(message);
-    return message;
+    const saved = {
+      ...structuredClone(message),
+      sequence: this.messages.filter((item) => item.roomId === message.roomId).length + 1,
+    };
+    this.messages.push(saved);
+    return structuredClone(saved);
   }
   async insertDispatch(dispatch: TeamChatDispatch): Promise<TeamChatDispatch> {
-    this.dispatches.push(dispatch);
-    return dispatch;
+    this.dispatches.push(structuredClone(dispatch));
+    return structuredClone(dispatch);
   }
   async updateDispatch(dispatchId: string, patch: TeamChatDispatchUpdate): Promise<void> {
     const dispatch = this.dispatches.find((item) => item.id === dispatchId);
@@ -79,7 +99,9 @@ class MemoryTeamChatStore implements TeamChatStore {
     }
   }
   async listAgentSessions(roomId: string): Promise<TeamChatAgentSession[]> {
-    return this.sessions.filter((session) => session.roomId === roomId).map((session) => structuredClone(session));
+    return this.sessions
+      .filter((session) => session.roomId === roomId)
+      .map((session) => structuredClone(session));
   }
   async upsertAgentSession(session: TeamChatAgentSession): Promise<void> {
     const index = this.sessions.findIndex((item) =>
@@ -94,7 +116,7 @@ class MemoryTeamChatStore implements TeamChatStore {
   }
 }
 
-function agent(id: string, name: string): ConfiguredAgent {
+function configuredAgent(id = "codex-profile", name = "Codex"): ConfiguredAgent {
   return {
     id,
     name,
@@ -108,55 +130,57 @@ function agent(id: string, name: string): ConfiguredAgent {
   };
 }
 
-const agents = [agent("builder", "Builder"), agent("reviewer", "Reviewer")];
+type ExecuteInput = {
+  configuredAgentId: string;
+  prompt: string;
+  workDir?: string;
+  runtimeConversation?: RuntimeConversation;
+};
 
 async function createFixture(options: {
-  configuredAgents?: ConfiguredAgent[];
   executeAgent?: (
-    input: {
-      configuredAgentId: string;
-      prompt: string;
-      workDir?: string;
-      runtimeConversation?: RuntimeConversation;
-    },
+    input: ExecuteInput,
     onEvent?: (event: WorkflowAgentEvent) => void,
     signal?: AbortSignal,
   ) => Promise<{ output: string; durationMs: number; runtimeConversation?: RuntimeConversation }>;
+  members?: Array<{ configuredAgentId: string; displayName: string }>;
 } = {}) {
   const store = new MemoryTeamChatStore();
   const events: TeamChatEvent[] = [];
-  let sequence = 0;
-  const executeAgent = options.executeAgent ?? (async ({ configuredAgentId }) => ({
-    output: `${configuredAgentId} complete`,
-    durationMs: 1,
-  }));
+  let idSequence = 0;
+  let timeSequence = 0;
+  const profile = configuredAgent();
   const service = new TeamChatService({
-    configuredAgents: () => options.configuredAgents ?? agents,
-    executeAgent,
+    configuredAgents: () => [profile],
+    executeAgent: options.executeAgent ?? (async () => ({ output: "done", durationMs: 1 })),
     storeFactory: () => store,
     emit: (event) => events.push(event),
-    idFactory: () => `019c0000-0000-7000-8000-${String(++sequence).padStart(12, "0")}`,
-    now: () => new Date(Date.UTC(2026, 6, 23, 8, 0, sequence)),
+    idFactory: () => `019c0000-0000-7000-8000-${String(++idSequence).padStart(12, "0")}`,
+    now: () => new Date(Date.UTC(2026, 6, 23, 8, 0, ++timeSequence)),
   });
   await service.connect();
   const room = await service.createRoom({
-    name: "Release room",
+    name: "Release studio",
     workDir: "/synthetic/repo",
-    agentIds: (options.configuredAgents ?? agents).map((item) => item.id),
+    members: options.members ?? [
+      { configuredAgentId: profile.id, displayName: "Codex" },
+      { configuredAgentId: profile.id, displayName: "Codex2" },
+    ],
   });
   return { service, store, events, room };
 }
 
-function waitForTurn(events: TeamChatEvent[], rootMessageId: string): Promise<void> {
+function waitForRoot(events: TeamChatEvent[], rootMessageId: string): Promise<void> {
   return new Promise((resolve, reject) => {
     const startedAt = Date.now();
     const poll = (): void => {
-      if (events.some((event) => event.type === "turn-finished" && event.rootMessageId === rootMessageId)) {
+      if (events.some((event) =>
+        event.type === "turn-finished" && event.rootMessageId === rootMessageId)) {
         resolve();
         return;
       }
       if (Date.now() - startedAt > 2_000) {
-        reject(new Error("Timed out waiting for Team Chat turn"));
+        reject(new Error("Timed out waiting for studio dispatches"));
         return;
       }
       setTimeout(poll, 1);
@@ -165,476 +189,192 @@ function waitForTurn(events: TeamChatEvent[], rootMessageId: string): Promise<vo
   });
 }
 
-describe("TeamChatService", () => {
-  it("opens the shared AgentRecall database without user configuration", async () => {
-    const store = new MemoryTeamChatStore();
-    const storeFactory = vi.fn(() => store);
-    const service = new TeamChatService({
-      configuredAgents: () => agents,
-      executeAgent: async () => ({ output: "", durationMs: 0 }),
-      storeFactory,
-    });
+function conversation(threadId: string): RuntimeConversation {
+  return {
+    runtimeId: "codex",
+    codecVersion: "1",
+    payload: { native: { threadId } },
+  };
+}
 
-    await expect(service.connect()).resolves.toEqual({
-      state: "ready",
-      mode: "local",
-      databaseLabel: "AgentRecall database",
-    });
+describe("TeamChatService studio employees", () => {
+  it("creates separate employee instances backed by the same configured Agent", async () => {
+    const { room } = await createFixture();
 
-    expect(store.initialized).toBe(true);
-    expect(storeFactory).toHaveBeenCalledTimes(1);
+    expect(room.agents).toHaveLength(2);
+    expect(room.agents[0]?.agentId).not.toBe(room.agents[1]?.agentId);
+    expect(room.agents.map((member) => member.configuredAgentId)).toEqual([
+      "codex-profile",
+      "codex-profile",
+    ]);
+    expect(room.agents.map((member) => member.displayName)).toEqual(["Codex", "Codex2"]);
   });
 
-  it("coalesces concurrent automatic database startup", async () => {
-    const store = new MemoryTeamChatStore();
-    const initialize = vi.spyOn(store, "initialize");
-    const storeFactory = vi.fn(() => store);
-    const service = new TeamChatService({
-      configuredAgents: () => agents,
-      executeAgent: async () => ({ output: "", durationMs: 0 }),
-      storeFactory,
-    });
-
-    await Promise.all([service.connect(), service.connect()]);
-
-    expect(storeFactory).toHaveBeenCalledTimes(1);
-    expect(initialize).toHaveBeenCalledTimes(1);
-  });
-
-  it("reopens the shared database after disconnecting", async () => {
-    const stores = [new MemoryTeamChatStore(), new MemoryTeamChatStore()];
-    let nextStore = 0;
-    const service = new TeamChatService({
-      configuredAgents: () => agents,
-      executeAgent: async () => ({ output: "", durationMs: 0 }),
-      storeFactory: () => stores[nextStore++]!,
-    });
-    await service.connect();
-    await service.disconnect();
-
-    await expect(service.connect()).resolves.toMatchObject({ state: "ready", mode: "local" });
-
-    expect(stores[0]!.closed).toBe(true);
-    expect(stores[1]!.initialized).toBe(true);
-  });
-
-  it("persists the human message and returns before a pending Agent finishes", async () => {
-    let resolveExecution: ((value: { output: string; durationMs: number }) => void) | undefined;
-    const execution = new Promise<{ output: string; durationMs: number }>((resolve) => { resolveExecution = resolve; });
-    const { service, store, events, room } = await createFixture({ executeAgent: () => execution });
-
-    const sent = await service.sendMessage({ roomId: room.id, content: "Please review" });
-
-    expect(store.messages).toHaveLength(1);
-    expect(store.messages[0]).toMatchObject({ senderType: "human", content: "Please review" });
-    expect(events.some((event) => event.type === "message-created" && event.message.id === sent.message.id)).toBe(true);
-    resolveExecution?.({ output: "done", durationMs: 1 });
-    await waitForTurn(events, sent.rootMessageId);
-  });
-
-  it("broadcasts an unmentioned human message and narrows an explicit mention", async () => {
-    const calls: string[] = [];
-    const fixture = await createFixture({
-      executeAgent: async ({ configuredAgentId }) => {
-        calls.push(configuredAgentId);
-        return { output: "done", durationMs: 1 };
-      },
-    });
-
-    const broadcast = await fixture.service.sendMessage({ roomId: fixture.room.id, content: "一起看看" });
-    await waitForTurn(fixture.events, broadcast.rootMessageId);
-    expect(calls.sort()).toEqual(["builder", "reviewer"]);
-
-    calls.length = 0;
-    const mentioned = await fixture.service.sendMessage({ roomId: fixture.room.id, content: "@Reviewer 请检查" });
-    await waitForTurn(fixture.events, mentioned.rootMessageId);
-    expect(calls).toEqual(["reviewer"]);
-  });
-
-  it("shows a visible routing message instead of silently broadcasting an unknown mention", async () => {
-    const calls: string[] = [];
-    const fixture = await createFixture({
-      executeAgent: async ({ configuredAgentId }) => {
-        calls.push(configuredAgentId);
-        return { output: "unexpected", durationMs: 1 };
-      },
-    });
-
-    const sent = await fixture.service.sendMessage({ roomId: fixture.room.id, content: "@Unknown 请检查" });
-    await waitForTurn(fixture.events, sent.rootMessageId);
-
-    expect(calls).toEqual([]);
-    expect(fixture.store.messages).toContainEqual(expect.objectContaining({
-      senderType: "system",
-      status: "error",
-      content: expect.stringContaining("@Unknown"),
-    }));
-  });
-
-  it("skips room members whose configured Agent was removed", async () => {
-    const configuredAgents = [...agents];
-    const calls: string[] = [];
-    const fixture = await createFixture({
-      configuredAgents,
-      executeAgent: async ({ configuredAgentId }) => {
-        calls.push(configuredAgentId);
-        return { output: "done", durationMs: 1 };
-      },
-    });
-    configuredAgents.splice(configuredAgents.findIndex((item) => item.id === "reviewer"), 1);
-
-    const broadcast = await fixture.service.sendMessage({ roomId: fixture.room.id, content: "一起看看" });
-    await waitForTurn(fixture.events, broadcast.rootMessageId);
-    expect(calls).toEqual(["builder"]);
-
-    calls.length = 0;
-    const mentioned = await fixture.service.sendMessage({ roomId: fixture.room.id, content: "@Reviewer 请检查" });
-    await waitForTurn(fixture.events, mentioned.rootMessageId);
-    expect(calls).toEqual([]);
-    expect(fixture.store.messages).toContainEqual(expect.objectContaining({
-      senderType: "system",
-      status: "error",
-      content: expect.stringContaining("@Reviewer"),
-    }));
-  });
-
-  it("forwards Codex deltas and persists the final Agent response in the room", async () => {
-    const fixture = await createFixture({
-      executeAgent: async (_input, onEvent) => {
-        onEvent?.({ requestId: "codex-request", type: "delta", content: "正在" });
-        onEvent?.({ requestId: "codex-request", type: "delta", content: "处理" });
-        return { output: "正在处理", durationMs: 8 };
-      },
-    });
-
-    const sent = await fixture.service.sendMessage({ roomId: fixture.room.id, content: "@Builder 开始" });
-    await waitForTurn(fixture.events, sent.rootMessageId);
-
-    expect(fixture.events.filter((event) => event.type === "dispatch-delta").map((event) => event.content))
-      .toEqual(["正在", "处理"]);
-    expect(fixture.store.messages).toContainEqual(expect.objectContaining({
-      senderType: "agent",
-      senderAgentId: "builder",
-      senderName: "Builder",
-      content: "正在处理",
-    }));
-  });
-
-  it("persists a room Agent conversation and reuses it with only incremental context", async () => {
-    const firstConversation: RuntimeConversation = {
-      runtimeId: "codex",
-      codecVersion: "1",
-      payload: { native: { threadId: "thread-1" } },
-    };
-    const secondConversation: RuntimeConversation = {
-      runtimeId: "codex",
-      codecVersion: "1",
-      payload: { native: { threadId: "thread-2" } },
-    };
-    const calls: Array<{
-      configuredAgentId: string;
-      prompt: string;
-      runtimeConversation?: RuntimeConversation;
-    }> = [];
+  it("requires explicit recipients and invokes only the selected employee", async () => {
+    const calls: ExecuteInput[] = [];
     const fixture = await createFixture({
       executeAgent: async (input) => {
         calls.push(structuredClone(input));
-        return {
-          output: calls.length === 1 ? "first answer" : "second answer",
-          durationMs: 1,
-          runtimeConversation: calls.length === 1 ? firstConversation : secondConversation,
-        };
+        return { output: "@Codex2 is text only", durationMs: 1 };
       },
     });
 
-    const first = await fixture.service.sendMessage({ roomId: fixture.room.id, content: "@Builder first request" });
-    await waitForTurn(fixture.events, first.rootMessageId);
-    const roomAfterFirst = await fixture.service.getRoom(fixture.room.id);
-
-    expect(fixture.store.sessions).toContainEqual(expect.objectContaining({
+    await expect(fixture.service.sendMessage({
       roomId: fixture.room.id,
-      agentId: "builder",
-      runtimeConversation: firstConversation,
-    }));
-    expect(roomAfterFirst?.agents[0]).toMatchObject({
-      continuationAvailable: true,
-      hasActiveConversation: true,
+      content: "no target",
+      targetMemberIds: [],
+    })).rejects.toThrow(/select.*employee/i);
+
+    const target = fixture.room.agents[0]!;
+    const sent = await fixture.service.sendMessage({
+      roomId: fixture.room.id,
+      content: "check auth",
+      targetMemberIds: [target.agentId],
     });
-    expect(Object.prototype.hasOwnProperty.call(roomAfterFirst?.agents[0] ?? {}, "runtimeConversation")).toBe(false);
+    await waitForRoot(fixture.events, sent.rootMessageId);
 
-    const second = await fixture.service.sendMessage({ roomId: fixture.room.id, content: "@Builder second request" });
-    await waitForTurn(fixture.events, second.rootMessageId);
-
-    expect(calls[0]?.runtimeConversation).toBeUndefined();
-    expect(calls[1]?.runtimeConversation).toEqual(firstConversation);
-    expect(calls[1]?.prompt).toContain("Room updates since your previous turn:");
-    expect(calls[1]?.prompt.match(/second request/g)).toHaveLength(1);
-    expect(calls[1]?.prompt).not.toContain("first request");
-    expect(fixture.store.sessions[0]?.runtimeConversation).toEqual(secondConversation);
-  });
-
-  it("keeps the same configured Agent conversation isolated between rooms", async () => {
-    const conversation: RuntimeConversation = {
-      runtimeId: "codex",
-      codecVersion: "1",
-      payload: { native: { threadId: "room-one-thread" } },
-    };
-    const calls: Array<{ runtimeConversation?: RuntimeConversation }> = [];
-    const fixture = await createFixture({
-      configuredAgents: [agents[0]!],
-      executeAgent: async (input) => {
-        calls.push(structuredClone(input));
-        return { output: "done", durationMs: 1, runtimeConversation: conversation };
-      },
-    });
-    const first = await fixture.service.sendMessage({ roomId: fixture.room.id, content: "first room" });
-    await waitForTurn(fixture.events, first.rootMessageId);
-    const otherRoom = await fixture.service.createRoom({
-      name: "Other room",
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatchObject({
+      configuredAgentId: "codex-profile",
       workDir: "/synthetic/repo",
-      agentIds: ["builder"],
     });
-
-    const second = await fixture.service.sendMessage({ roomId: otherRoom.id, content: "second room" });
-    await waitForTurn(fixture.events, second.rootMessageId);
-
-    expect(calls).toHaveLength(2);
-    expect(calls[0]?.runtimeConversation).toBeUndefined();
-    expect(calls[1]?.runtimeConversation).toBeUndefined();
-    expect(fixture.store.sessions.map((session) => session.roomId).sort())
-      .toEqual([fixture.room.id, otherRoom.id].sort());
+    expect(calls[0]?.prompt).toContain(`To: Codex (${target.agentId})`);
+    expect(fixture.store.dispatches[0]?.targetAgentId).toBe(target.agentId);
   });
 
-  it("drops an incompatible conversation when the configured Agent Runtime settings change", async () => {
-    const configuredAgents = [structuredClone(agents[0]!)];
-    const conversation: RuntimeConversation = {
-      runtimeId: "codex",
-      codecVersion: "1",
-      payload: { native: { threadId: "old-thread" } },
-    };
-    const calls: Array<{ runtimeConversation?: RuntimeConversation }> = [];
+  it("keeps Runtime sessions isolated between two employees using one profile", async () => {
+    const calls: ExecuteInput[] = [];
     const fixture = await createFixture({
-      configuredAgents,
       executeAgent: async (input) => {
         calls.push(structuredClone(input));
-        return { output: "done", durationMs: 1, runtimeConversation: conversation };
-      },
-    });
-    const first = await fixture.service.sendMessage({ roomId: fixture.room.id, content: "first" });
-    await waitForTurn(fixture.events, first.rootMessageId);
-    configuredAgents[0] = {
-      ...configuredAgents[0]!,
-      channelId: "codex-next",
-      modelId: "gpt-5-next",
-    };
-
-    const second = await fixture.service.sendMessage({ roomId: fixture.room.id, content: "second" });
-    await waitForTurn(fixture.events, second.rootMessageId);
-
-    expect(calls[1]?.runtimeConversation).toBeUndefined();
-    expect(fixture.store.sessions[0]).toMatchObject({
-      channelId: "codex-next",
-      modelId: "gpt-5-next",
-    });
-  });
-
-  it("lets a user start a fresh conversation for one room Agent without removing room history", async () => {
-    const conversation: RuntimeConversation = {
-      runtimeId: "codex",
-      codecVersion: "1",
-      payload: { native: { threadId: "thread-to-reset" } },
-    };
-    const fixture = await createFixture({
-      configuredAgents: [agents[0]!],
-      executeAgent: async () => ({ output: "done", durationMs: 1, runtimeConversation: conversation }),
-    });
-    const sent = await fixture.service.sendMessage({ roomId: fixture.room.id, content: "remember this" });
-    await waitForTurn(fixture.events, sent.rootMessageId);
-    const messageCount = fixture.store.messages.length;
-
-    const room = await fixture.service.resetAgentSession(fixture.room.id, "builder");
-
-    expect(fixture.store.sessions).toEqual([]);
-    expect(fixture.store.messages).toHaveLength(messageCount);
-    expect(room.agents[0]).toMatchObject({
-      continuationAvailable: true,
-      hasActiveConversation: false,
-    });
-  });
-
-  it("retries fresh once when an untouched native conversation is no longer available", async () => {
-    const expiredConversation: RuntimeConversation = {
-      runtimeId: "codex",
-      codecVersion: "1",
-      payload: { native: { threadId: "expired-thread" } },
-    };
-    const replacementConversation: RuntimeConversation = {
-      runtimeId: "codex",
-      codecVersion: "1",
-      payload: { native: { threadId: "replacement-thread" } },
-    };
-    const calls: Array<{ runtimeConversation?: RuntimeConversation }> = [];
-    const fixture = await createFixture({
-      configuredAgents: [agents[0]!],
-      executeAgent: async (input) => {
-        calls.push(structuredClone(input));
-        if (calls.length === 1) {
-          return { output: "first", durationMs: 1, runtimeConversation: expiredConversation };
-        }
-        if (input.runtimeConversation) throw new Error("Runtime conversation not found");
-        return { output: "fresh retry", durationMs: 1, runtimeConversation: replacementConversation };
-      },
-    });
-    const first = await fixture.service.sendMessage({ roomId: fixture.room.id, content: "first" });
-    await waitForTurn(fixture.events, first.rootMessageId);
-
-    const second = await fixture.service.sendMessage({ roomId: fixture.room.id, content: "continue" });
-    await waitForTurn(fixture.events, second.rootMessageId);
-
-    expect(calls).toHaveLength(3);
-    expect(calls[1]?.runtimeConversation).toEqual(expiredConversation);
-    expect(calls[2]?.runtimeConversation).toBeUndefined();
-    expect(fixture.store.messages).toContainEqual(expect.objectContaining({
-      senderType: "agent",
-      content: "fresh retry",
-    }));
-    expect(fixture.store.sessions[0]?.runtimeConversation).toEqual(replacementConversation);
-  });
-
-  it("does not retry an unavailable conversation after text has already streamed", async () => {
-    const conversation: RuntimeConversation = {
-      runtimeId: "codex",
-      codecVersion: "1",
-      payload: { native: { threadId: "streaming-thread" } },
-    };
-    let calls = 0;
-    const fixture = await createFixture({
-      configuredAgents: [agents[0]!],
-      executeAgent: async (input, onEvent) => {
-        calls += 1;
-        if (calls === 1) return { output: "first", durationMs: 1, runtimeConversation: conversation };
-        onEvent?.({ requestId: "request-2", type: "delta", content: "partial" });
-        throw new Error("Runtime conversation not found");
-      },
-    });
-    const first = await fixture.service.sendMessage({ roomId: fixture.room.id, content: "first" });
-    await waitForTurn(fixture.events, first.rootMessageId);
-
-    const second = await fixture.service.sendMessage({ roomId: fixture.room.id, content: "continue" });
-    await waitForTurn(fixture.events, second.rootMessageId);
-
-    expect(calls).toBe(2);
-    expect(fixture.store.dispatches.at(-1)?.status).toBe("failed");
-  });
-
-  it("does not retry a generic failure from a continued conversation", async () => {
-    const conversation: RuntimeConversation = {
-      runtimeId: "codex",
-      codecVersion: "1",
-      payload: { native: { threadId: "healthy-thread" } },
-    };
-    let calls = 0;
-    const fixture = await createFixture({
-      configuredAgents: [agents[0]!],
-      executeAgent: async () => {
-        calls += 1;
-        if (calls === 1) return { output: "first", durationMs: 1, runtimeConversation: conversation };
-        throw new Error("Network unavailable");
-      },
-    });
-    const first = await fixture.service.sendMessage({ roomId: fixture.room.id, content: "first" });
-    await waitForTurn(fixture.events, first.rootMessageId);
-
-    const second = await fixture.service.sendMessage({ roomId: fixture.room.id, content: "continue" });
-    await waitForTurn(fixture.events, second.rootMessageId);
-
-    expect(calls).toBe(2);
-    expect(fixture.store.dispatches.at(-1)?.status).toBe("failed");
-  });
-
-  it("allows one Agent handoff while executing each Agent at most once", async () => {
-    const calls: string[] = [];
-    const fixture = await createFixture({
-      executeAgent: async ({ configuredAgentId }) => {
-        calls.push(configuredAgentId);
+        const member = input.prompt.includes("To: Codex2 (") ? "two" : "one";
         return {
-          output: configuredAgentId === "builder" ? "请 @Reviewer 继续" : "请 @Builder 再看一次",
+          output: `${member} done`,
           durationMs: 1,
+          runtimeConversation: conversation(`${member}-thread-${calls.length}`),
         };
       },
     });
+    const [one, two] = fixture.room.agents;
 
-    const sent = await fixture.service.sendMessage({ roomId: fixture.room.id, content: "@Builder 开始" });
-    await waitForTurn(fixture.events, sent.rootMessageId);
+    for (const target of [one!, two!, one!, two!]) {
+      const sent = await fixture.service.sendMessage({
+        roomId: fixture.room.id,
+        content: `message for ${target.displayName}`,
+        targetMemberIds: [target.agentId],
+      });
+      await waitForRoot(fixture.events, sent.rootMessageId);
+    }
 
-    expect(calls).toEqual(["builder", "reviewer"]);
-    expect(fixture.store.dispatches.map((dispatch) => dispatch.hop)).toEqual([0, 1]);
+    expect(calls[0]?.runtimeConversation).toBeUndefined();
+    expect(calls[1]?.runtimeConversation).toBeUndefined();
+    expect(calls[2]?.runtimeConversation).toEqual(conversation("one-thread-1"));
+    expect(calls[3]?.runtimeConversation).toEqual(conversation("two-thread-2"));
+    expect(fixture.store.sessions.map((session) => session.agentId).sort())
+      .toEqual([one!.agentId, two!.agentId].sort());
   });
 
-  it("caps a root turn at eight Agent executions and writes a visible system notice", async () => {
-    const manyAgents = Array.from({ length: 9 }, (_, index) => agent(`agent-${index}`, `Agent ${index}`));
-    const calls: string[] = [];
+  it("serializes one employee while allowing different employees to run in parallel", async () => {
+    const starts: string[] = [];
+    const resolvers: Array<() => void> = [];
     const fixture = await createFixture({
-      configuredAgents: manyAgents,
-      executeAgent: async ({ configuredAgentId }) => {
-        calls.push(configuredAgentId);
-        return { output: "done", durationMs: 1 };
-      },
-    });
-
-    const sent = await fixture.service.sendMessage({ roomId: fixture.room.id, content: "All Agents respond" });
-    await waitForTurn(fixture.events, sent.rootMessageId);
-
-    expect(calls).toHaveLength(8);
-    expect(fixture.store.messages.some((message) => message.senderType === "system" && message.content.includes("8"))).toBe(true);
-  });
-
-  it("keeps sibling responses when one Agent fails", async () => {
-    const fixture = await createFixture({
-      executeAgent: async ({ configuredAgentId }) => {
-        if (configuredAgentId === "builder") throw new Error("synthetic failure");
-        return { output: "review complete", durationMs: 1 };
-      },
-    });
-
-    const sent = await fixture.service.sendMessage({ roomId: fixture.room.id, content: "一起看看" });
-    await waitForTurn(fixture.events, sent.rootMessageId);
-
-    expect(fixture.store.dispatches.find((item) => item.targetAgentId === "builder")?.status).toBe("failed");
-    expect(fixture.store.dispatches.find((item) => item.targetAgentId === "reviewer")?.status).toBe("completed");
-    expect(fixture.store.messages.some((message) => message.content === "review complete")).toBe(true);
-    expect(fixture.store.messages.some((message) => message.status === "error")).toBe(true);
-  });
-
-  it("stops active Agent executions and marks them interrupted", async () => {
-    const fixture = await createFixture({
-      executeAgent: (_input, _onEvent, signal) => new Promise((_resolve, reject) => {
-        signal?.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")), { once: true });
+      executeAgent: (input) => new Promise((resolve) => {
+        starts.push(input.prompt.includes("To: Codex2 (") ? "two" : "one");
+        resolvers.push(() => resolve({ output: "done", durationMs: 1 }));
       }),
     });
+    const [one, two] = fixture.room.agents;
 
-    const sent = await fixture.service.sendMessage({ roomId: fixture.room.id, content: "@Builder wait" });
-    await new Promise((resolve) => setTimeout(resolve, 1));
-    await fixture.service.stopTurn(sent.rootMessageId);
-    await waitForTurn(fixture.events, sent.rootMessageId);
+    const first = await fixture.service.sendMessage({
+      roomId: fixture.room.id,
+      content: "one-a",
+      targetMemberIds: [one!.agentId],
+    });
+    const second = await fixture.service.sendMessage({
+      roomId: fixture.room.id,
+      content: "one-b",
+      targetMemberIds: [one!.agentId],
+    });
+    const third = await fixture.service.sendMessage({
+      roomId: fixture.room.id,
+      content: "two-a",
+      targetMemberIds: [two!.agentId],
+    });
+    await vi.waitFor(() => expect(starts).toEqual(["one", "two"]));
 
-    expect(fixture.store.dispatches).toHaveLength(1);
-    expect(fixture.store.dispatches[0]?.status).toBe("interrupted");
+    resolvers.splice(0).forEach((resolve) => resolve());
+    await vi.waitFor(() => expect(starts).toEqual(["one", "two", "one"]));
+    resolvers.splice(0).forEach((resolve) => resolve());
+    await Promise.all([
+      waitForRoot(fixture.events, first.rootMessageId),
+      waitForRoot(fixture.events, second.rootMessageId),
+      waitForRoot(fixture.events, third.rootMessageId),
+    ]);
   });
 
-  it("does not expose database failure details in status or events", async () => {
+  it("resets one employee Session without affecting its coworker", async () => {
+    const fixture = await createFixture({
+      executeAgent: async (input) => ({
+        output: "done",
+        durationMs: 1,
+        runtimeConversation: conversation(
+          input.prompt.includes("To: Codex2 (") ? "two-thread" : "one-thread",
+        ),
+      }),
+    });
+    for (const target of fixture.room.agents) {
+      const sent = await fixture.service.sendMessage({
+        roomId: fixture.room.id,
+        content: "remember",
+        targetMemberIds: [target.agentId],
+      });
+      await waitForRoot(fixture.events, sent.rootMessageId);
+    }
+
+    await fixture.service.resetAgentSession(fixture.room.id, fixture.room.agents[0]!.agentId);
+
+    expect(fixture.store.sessions).toHaveLength(1);
+    expect(fixture.store.sessions[0]?.agentId).toBe(fixture.room.agents[1]!.agentId);
+  });
+
+  it("stops all active employee dispatches in one user root", async () => {
+    const fixture = await createFixture({
+      executeAgent: (_input, _onEvent, signal) => new Promise((_resolve, reject) => {
+        signal?.addEventListener(
+          "abort",
+          () => reject(new DOMException("Aborted", "AbortError")),
+          { once: true },
+        );
+      }),
+    });
+    const sent = await fixture.service.sendMessage({
+      roomId: fixture.room.id,
+      content: "wait",
+      targetMemberIds: fixture.room.agents.map((member) => member.agentId),
+    });
+    await vi.waitFor(() => expect(fixture.store.dispatches).toHaveLength(2));
+
+    await fixture.service.stopTurn(sent.rootMessageId);
+    await waitForRoot(fixture.events, sent.rootMessageId);
+
+    expect(fixture.store.dispatches.map((dispatch) => dispatch.status))
+      .toEqual(["interrupted", "interrupted"]);
+  });
+
+  it("does not expose connection failure details", async () => {
+    const store = new MemoryTeamChatStore();
+    store.initialize = async () => {
+      throw new Error("postgresql://user:top-secret@private.example/db");
+    };
     const events: TeamChatEvent[] = [];
-    const failingStore = new MemoryTeamChatStore();
-    failingStore.initialize = async () => { throw new Error("postgresql://user:top-secret@private.example/db"); };
     const service = new TeamChatService({
-      configuredAgents: () => agents,
+      configuredAgents: () => [configuredAgent()],
       executeAgent: async () => ({ output: "", durationMs: 0 }),
-      storeFactory: () => failingStore,
+      storeFactory: () => store,
       emit: (event) => events.push(event),
     });
 
     await expect(service.connect()).rejects.toThrow("Unable to open Chat data");
-
     expect(JSON.stringify(service.getConnectionStatus())).not.toContain("top-secret");
     expect(JSON.stringify(events)).not.toContain("top-secret");
   });
