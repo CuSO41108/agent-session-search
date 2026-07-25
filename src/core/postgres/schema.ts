@@ -931,4 +931,42 @@ export const POSTGRES_MIGRATIONS: readonly PostgresMigration[] = [{
         ON agent_recall.chat_workspace_reservations (expires_at);
     `,
   ],
+}, {
+  version: 7,
+  name: "cache safe session attachments",
+  statements: [
+    `
+      CREATE TABLE agent_recall.session_attachments (
+        session_key text NOT NULL
+          REFERENCES agent_recall.sessions(session_key) ON DELETE CASCADE,
+        attachment_id text NOT NULL,
+        message_index integer NOT NULL,
+        file_name text NOT NULL,
+        mime_type text NOT NULL,
+        preview_kind text NOT NULL,
+        status text NOT NULL,
+        size_bytes bigint,
+        cache_path text,
+        PRIMARY KEY (session_key, attachment_id)
+      );
+
+      CREATE INDEX session_attachments_message_idx
+        ON agent_recall.session_attachments (session_key, message_index);
+    `,
+  ],
+}, {
+  version: 8,
+  name: "track Session storage separately from execution",
+  statements: [
+    `
+      ALTER TABLE agent_recall.sessions
+        ADD COLUMN IF NOT EXISTS storage_environment_id text DEFAULT 'local';
+
+      UPDATE agent_recall.sessions
+      SET storage_environment_id = environment_id;
+
+      ALTER TABLE agent_recall.sessions
+        ALTER COLUMN storage_environment_id SET NOT NULL;
+    `,
+  ],
 }];

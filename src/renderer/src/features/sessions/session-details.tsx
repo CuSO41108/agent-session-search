@@ -1,5 +1,6 @@
-import type { ReactElement } from "react";
+import { useEffect, useState, type ReactElement } from "react";
 import type { RemoteSessionDetailSnapshot } from "../../../../core/remote-session-sync";
+import type { SessionFamily } from "../../../../core/session-family";
 import type {
   SessionSearchResult,
   SessionTurnDetail,
@@ -9,7 +10,6 @@ import type { ActionStatus } from "../../app-types";
 import type { LanguageMode } from "../../language";
 import type { LiveSessionState } from "../../live-filter";
 import {
-  isRemoteSession,
   remoteMigrationTitle,
   supportsMigrationSource,
   supportsResumeSource,
@@ -69,9 +69,33 @@ export function SessionDetails({
   actions: SessionDetailsActions;
 }): ReactElement | null {
   const l = (en: string, zh: string): string => language === "zh" ? zh : en;
+  const [sessionFamily, setSessionFamily] = useState<SessionFamily>({
+    parent: null,
+    children: [],
+    truncated: false,
+  });
+
+  useEffect(() => {
+    if (!detail) {
+      setSessionFamily({ parent: null, children: [], truncated: false });
+      return;
+    }
+    let cancelled = false;
+    void window.sessionSearch.getSessionFamily(detail.sessionKey)
+      .then((family) => {
+        if (!cancelled) setSessionFamily(family);
+      })
+      .catch(() => {
+        if (!cancelled) setSessionFamily({ parent: null, children: [], truncated: false });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [detail?.sessionKey]);
+
   if (detail) {
-    const canMigrate = !isRemoteSession(detail) && supportsMigrationSource(detail.source);
-    const migrationTitle = isRemoteSession(detail)
+    const canMigrate = detail.environmentKind !== "ssh" && supportsMigrationSource(detail.source);
+    const migrationTitle = detail.environmentKind === "ssh"
       ? remoteMigrationTitle(language)
       : canMigrate
         ? l("Migrate session to…", "迁移会话到…")
@@ -79,6 +103,7 @@ export function SessionDetails({
     return (
       <DetailPanel
         session={detail}
+        sessionFamily={sessionFamily}
         turns={turns}
         turnsLoading={turnsLoading}
         matchedTurnId={matchedTurnId}
@@ -128,6 +153,7 @@ export function SessionDetails({
   return (
     <DetailPanel
       session={remoteDetail.snapshot.session}
+      sessionFamily={{ parent: null, children: [], truncated: false }}
       turns={null}
       turnsLoading={false}
       matchedTurnId={null}

@@ -5,8 +5,17 @@ export interface SessionEnvironmentIdentity {
   environmentId: string;
 }
 
+export interface SessionStorageIdentity {
+  environmentId: string;
+  storageEnvironmentId?: string;
+}
+
 export function isLocalSessionEnvironment(session: SessionEnvironmentIdentity): boolean {
   return session.environmentKind === "local" && session.environmentId === "local";
+}
+
+export function isLocalSessionStorage(session: SessionStorageIdentity): boolean {
+  return (session.storageEnvironmentId ?? session.environmentId) === "local";
 }
 
 export function remoteSessionKey(environment: SessionEnvironment, source: SessionSource | "codewiz", rawId: string): string {

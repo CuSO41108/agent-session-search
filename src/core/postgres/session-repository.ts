@@ -12,6 +12,11 @@ import type {
   TokenUsageEvent,
 } from "../types";
 import {
+  materializeSessionAttachment,
+  MAX_SESSION_ATTACHMENT_BYTES,
+  type MaterializedAttachment,
+} from "../session-attachments";
+import {
   deriveSessionTimeline,
   type DerivedRawEvent,
   type DerivedSessionTurn,
@@ -398,7 +403,10 @@ async function insertTurn(
 }
 
 export class PostgresSessionRepository {
-  constructor(private readonly database: PostgresDatabase) {}
+  constructor(
+    private readonly database: PostgresDatabase,
+    private readonly attachmentCacheRoot: string | null = null,
+  ) {}
 
   async upsertIndexedSession(
     session: IndexedSession,
@@ -406,10 +414,33 @@ export class PostgresSessionRepository {
     tokenEvents: readonly TokenUsageEvent[] = [],
     traceEvents: readonly SessionTraceEvent[] = [],
   ): Promise<void> {
-    const persistedMessages = messages.map((message) => ({
-      ...message,
-      content: postgresText(message.content),
-    }));
+    let remainingAttachmentBytes = MAX_SESSION_ATTACHMENT_BYTES;
+    const attachmentRows: Array<MaterializedAttachment & { messageIndex: number }> = [];
+    const persistedMessages = messages.map((message) => {
+      const attachments = message.attachments?.map((attachment, attachmentIndex) => {
+        const attachmentId = `${message.index}-${attachmentIndex}-${attachment.id}`;
+        const materialized = materializeSessionAttachment(attachment, {
+          cacheRoot: this.attachmentCacheRoot,
+          sessionFilePath: session.filePath,
+          attachmentId,
+          remainingSessionBytes: remainingAttachmentBytes,
+        });
+        if (materialized.status === "available") {
+          remainingAttachmentBytes = Math.max(
+            0,
+            remainingAttachmentBytes - (materialized.sizeBytes ?? 0),
+          );
+        }
+        attachmentRows.push({ ...materialized, messageIndex: message.index });
+        const { cachePath: _cachePath, ...publicAttachment } = materialized;
+        return publicAttachment;
+      });
+      return {
+        ...message,
+        content: postgresText(message.content),
+        ...(attachments?.length ? { attachments } : {}),
+      };
+    });
     const persistedTokenEvents = tokenEvents.map((event) => ({
       ...event,
       dedupeKey: postgresText(event.dedupeKey),
@@ -449,22 +480,23 @@ export class PostgresSessionRepository {
       await client.query(
         `
           insert into agent_recall.sessions (
-            session_key, raw_id, source, environment_id, project_path, file_path,
+            session_key, raw_id, source, environment_id, storage_environment_id, project_path, file_path,
             original_title, first_question, started_at, file_mtime_ms, file_size,
             pr_url, pr_number, message_count, turn_count, input_tokens, output_tokens,
             cached_input_tokens, reasoning_output_tokens, total_tokens, indexed_at,
             is_subagent, parent_session_id
           )
           values (
-            $1, $2, $3, $4, $5, $6,
-            $7, $8, $9, $10, $11,
-            $12, $13, $14, $15, $16, $17,
-            $18, $19, $20, now(), $21, $22
+            $1, $2, $3, $4, $5, $6, $7,
+            $8, $9, $10, $11, $12,
+            $13, $14, $15, $16, $17, $18,
+            $19, $20, $21, now(), $22, $23
           )
           on conflict (session_key) do update set
             raw_id = excluded.raw_id,
             source = excluded.source,
             environment_id = excluded.environment_id,
+            storage_environment_id = excluded.storage_environment_id,
             project_path = excluded.project_path,
             file_path = excluded.file_path,
             original_title = excluded.original_title,
@@ -490,6 +522,7 @@ export class PostgresSessionRepository {
           session.rawId,
           session.source,
           environmentId,
+          session.storageEnvironmentId || environmentId,
           session.projectPath,
           session.filePath,
           postgresText(session.originalTitle),
@@ -513,6 +546,7 @@ export class PostgresSessionRepository {
 
       await client.query("delete from agent_recall.session_raw_events where session_key = $1", [session.sessionKey]);
       await client.query("delete from agent_recall.session_message_events where session_key = $1", [session.sessionKey]);
+      await client.query("delete from agent_recall.session_attachments where session_key = $1", [session.sessionKey]);
       await client.query("delete from agent_recall.session_turns where session_key = $1", [session.sessionKey]);
       await client.query("delete from agent_recall.token_events where session_key = $1", [session.sessionKey]);
 
@@ -534,6 +568,28 @@ export class PostgresSessionRepository {
         );
       }
       for (const turn of timeline.turns) await insertTurn(client, session.sessionKey, turn);
+      for (const attachment of attachmentRows) {
+        await client.query(
+          `
+            insert into agent_recall.session_attachments (
+              session_key, attachment_id, message_index, file_name, mime_type,
+              preview_kind, status, size_bytes, cache_path
+            )
+            values ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+          `,
+          [
+            session.sessionKey,
+            attachment.id,
+            attachment.messageIndex,
+            attachment.fileName,
+            attachment.mimeType,
+            attachment.previewKind,
+            attachment.status,
+            attachment.sizeBytes ?? null,
+            attachment.cachePath,
+          ],
+        );
+      }
       for (const event of persistedTokenEvents) {
         await client.query(
           `
@@ -559,6 +615,41 @@ export class PostgresSessionRepository {
       const branchTag = branchTagName(session.gitBranch);
       if (branchTag) await this.addTagWithClient(client, session.sessionKey, branchTag);
     });
+  }
+
+  async getAttachmentFile(
+    sessionKey: string,
+    attachmentId: string,
+  ): Promise<(MaterializedAttachment & { cachePath: string }) | null> {
+    const result = await this.database.query<{
+      attachment_id: string;
+      file_name: string;
+      mime_type: string;
+      preview_kind: MaterializedAttachment["previewKind"];
+      status: MaterializedAttachment["status"];
+      size_bytes: number | string | null;
+      cache_path: string | null;
+    }>(
+      `
+        select
+          attachment_id, file_name, mime_type, preview_kind,
+          status, size_bytes, cache_path
+        from agent_recall.session_attachments
+        where session_key = $1 and attachment_id = $2
+      `,
+      [sessionKey, attachmentId],
+    );
+    const row = result.rows[0];
+    if (!row?.cache_path || row.status !== "available") return null;
+    return {
+      id: row.attachment_id,
+      fileName: row.file_name,
+      mimeType: row.mime_type,
+      previewKind: row.preview_kind,
+      status: row.status,
+      ...(row.size_bytes === null ? {} : { sizeBytes: numberValue(row.size_bytes) }),
+      cachePath: row.cache_path,
+    };
   }
 
   async upsertIndexedSessionSummary(
@@ -587,22 +678,23 @@ export class PostgresSessionRepository {
       await client.query(
         `
           insert into agent_recall.sessions (
-            session_key, raw_id, source, environment_id, project_path, file_path,
+            session_key, raw_id, source, environment_id, storage_environment_id, project_path, file_path,
             original_title, first_question, started_at, file_mtime_ms, file_size,
             pr_url, pr_number, message_count, turn_count, input_tokens, output_tokens,
             cached_input_tokens, reasoning_output_tokens, total_tokens, indexed_at,
             is_subagent, parent_session_id
           )
           values (
-            $1, $2, $3, $4, $5, $6,
-            $7, $8, $9, $10, $11,
-            $12, $13, $14, 0, $15, $16,
-            $17, $18, $19, now(), $20, $21
+            $1, $2, $3, $4, $5, $6, $7,
+            $8, $9, $10, $11, $12,
+            $13, $14, $15, 0, $16, $17,
+            $18, $19, $20, now(), $21, $22
           )
           on conflict (session_key) do update set
             raw_id = excluded.raw_id,
             source = excluded.source,
             environment_id = excluded.environment_id,
+            storage_environment_id = excluded.storage_environment_id,
             project_path = excluded.project_path,
             file_path = excluded.file_path,
             original_title = excluded.original_title,
@@ -627,6 +719,7 @@ export class PostgresSessionRepository {
           session.rawId,
           session.source,
           environmentId,
+          session.storageEnvironmentId || environmentId,
           session.projectPath,
           session.filePath,
           session.originalTitle,
@@ -781,13 +874,6 @@ export class PostgresSessionRepository {
     await this.database.query(
       "update agent_recall.sessions set custom_title = $2 where session_key = $1",
       [sessionKey, title?.trim() || null],
-    );
-  }
-
-  async setPinned(sessionKey: string, pinned: boolean): Promise<void> {
-    await this.database.query(
-      "update agent_recall.sessions set pinned = $2 where session_key = $1",
-      [sessionKey, pinned],
     );
   }
 
@@ -1103,7 +1189,7 @@ export class PostgresSessionRepository {
         await client.query(
           `
             insert into agent_recall.sessions (
-              session_key, raw_id, source, environment_id, project_path, file_path,
+              session_key, raw_id, source, environment_id, storage_environment_id, project_path, file_path,
               original_title, first_question, started_at, file_mtime_ms, file_size,
               pr_url, pr_number, custom_title, favorited, pinned, hidden,
               last_opened_at, last_resumed_at, message_count, turn_count,
@@ -1112,7 +1198,7 @@ export class PostgresSessionRepository {
               ai_summary, ai_summary_model, ai_summary_at, ai_summary_basis
             )
             select
-              $2, raw_id, source, environment_id, project_path, file_path,
+              $2, raw_id, source, environment_id, storage_environment_id, project_path, file_path,
               original_title, first_question, started_at, file_mtime_ms, file_size,
               pr_url, pr_number, custom_title, favorited, pinned, hidden,
               last_opened_at, last_resumed_at, message_count, turn_count,

@@ -7,7 +7,7 @@ import type {
   SessionSearchResult,
 } from "../../../core/types";
 import { localize, type LanguageMode } from "../language";
-import { isRemoteSession, migrationAgentLabel } from "../session-ui";
+import { migrationAgentLabel } from "../session-ui";
 
 export function SessionMigrationDialog({
   session,
@@ -29,8 +29,8 @@ export function SessionMigrationDialog({
   onClose: () => void;
 }): ReactElement {
   const l = (en: string, zh: string) => localize(language, en, zh);
-  const remote = isRemoteSession(session);
-  const availableTargets = remote ? [] : targets;
+  const ssh = session.environmentKind === "ssh";
+  const availableTargets = ssh ? [] : targets;
 
   return (
     <div className="dialog-backdrop" onMouseDown={onClose}>
@@ -42,7 +42,9 @@ export function SessionMigrationDialog({
           </button>
         </div>
         <p className="dialog-copy">
-          {l("Create a new local target-agent session from", "从当前会话创建新的本地目标 Agent 会话：")} <strong>{session.displayTitle}</strong>
+          {session.environmentKind === "wsl"
+            ? l("Create a new WSL target-agent session from", "从当前会话创建新的 WSL 目标 Agent 会话：")
+            : l("Create a new local target-agent session from", "从当前会话创建新的本地目标 Agent 会话：")} <strong>{session.displayTitle}</strong>
         </p>
         {throughTurnIndex !== undefined ? (
           <p className="dialog-copy">
@@ -52,7 +54,7 @@ export function SessionMigrationDialog({
             )}
           </p>
         ) : null}
-        {remote ? <p className="dialog-copy danger-copy">{l("Remote session migration is not supported yet.", "首版仅支持本地会话迁移。")}</p> : null}
+        {ssh ? <p className="dialog-copy danger-copy">{l("SSH session migration is not supported yet.", "暂不支持 SSH 会话迁移。")}</p> : null}
         {busy ? <MigrationProgressPanel progress={progress ?? null} language={language} /> : null}
         <div className="migration-targets">
           {availableTargets.length === 0 ? (

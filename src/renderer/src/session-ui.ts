@@ -4,6 +4,7 @@ import type {
   ProjectSummary,
   SearchOptions,
   SessionSearchResult,
+  SessionSortBy,
   SessionSource,
   SessionSourceStats,
   SessionStatsPeriod,
@@ -68,6 +69,30 @@ export function usageStatsDisplayRows(rows: SessionSourceStats[]): UsageStatsDis
 
 export function hasTokenUsage(value: Pick<SessionStatsSummary, "totalTokens">): boolean {
   return value.totalTokens > 0;
+}
+
+export type UsageDeltaKind = "new" | "up" | "down" | "flat";
+
+export interface UsageDelta {
+  kind: UsageDeltaKind;
+  percent?: number;
+}
+
+export function usageDelta(
+  current: number,
+  previous: number | null | undefined,
+): UsageDelta | null {
+  if (previous === null || previous === undefined) return null;
+  if (previous === 0) return current === 0 ? { kind: "flat" } : { kind: "new" };
+  if (current === previous) return { kind: "flat" };
+  const change = ((current - previous) / previous) * 100;
+  return { kind: change > 0 ? "up" : "down", percent: Math.round(Math.abs(change)) };
+}
+
+export function formatUsageDelta(delta: UsageDelta): string {
+  if (delta.kind === "new") return "NEW";
+  if (delta.kind === "flat") return "0%";
+  return `${delta.kind === "up" ? "+" : "-"}${delta.percent ?? 0}%`;
 }
 
 export function usageCacheRate(value: Pick<SessionStatsSummary, "inputTokens" | "cachedInputTokens">): number | null {
@@ -137,6 +162,9 @@ export function migrationTargetsForSession(
   session: Pick<SessionSearchResult, "source" | "environmentId" | "environmentKind">,
   settings: MigrationTargetSettings,
 ): MigrationTarget[] {
+  if (session.environmentKind === "wsl") {
+    return migrationTargetsForSource(session.source, settings).filter((target) => target === "claude" || target === "codex");
+  }
   return isLocalSessionEnvironment(session) ? migrationTargetsForSource(session.source, settings) : [];
 }
 
@@ -150,12 +178,24 @@ export function sourceMigrationAgent(source: SessionSource): MigrationAgent | nu
 
 export function sessionSortTimestamp(
   session: Pick<SessionSearchResult, "timestamp" | "fileMtimeMs" | "lastActivityAt">,
+  sortBy?: SessionSortBy,
 ): number {
+  if (sortBy === "created") return session.timestamp || 0;
   return session.lastActivityAt || session.fileMtimeMs || session.timestamp || 0;
 }
 
 export function projectSortTimestamp(project: Pick<ProjectSummary, "createdAt" | "lastActivityAt">): number {
   return project.lastActivityAt || project.createdAt || 0;
+}
+
+export function projectDisplayLabel(
+  project: Pick<ProjectSummary, "label" | "labelKind" | "labelSuffix">,
+  language: LanguageMode,
+): string {
+  const base = project.labelKind === "codex-task-untitled"
+    ? localize(language, "Untitled session", "未命名会话")
+    : project.label;
+  return project.labelSuffix ? `${base} · ${project.labelSuffix}` : base;
 }
 
 export function statsPeriodLabel(value: SessionStatsPeriod, language: LanguageMode): string {

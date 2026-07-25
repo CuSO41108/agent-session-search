@@ -31,7 +31,7 @@ import {
   PostgresSkillRepository,
   type SkillSyncBinding,
 } from "./postgres/skill-repository";
-import { findRelatedSessions, type RelatedSession } from "./related-sessions";
+import { findSessionFamily, type SessionFamily as SessionFamilyResult } from "./session-family";
 import type {
   EnvironmentSyncState,
   EnvironmentUpsertInput,
@@ -65,7 +65,11 @@ export type {
 } from "./postgres/metadata-repository";
 export type { SavedSearch } from "./store/saved-searches";
 export type { SearchHistoryEntry } from "./store/search-history-store";
-export type { RelatedSession } from "./related-sessions";
+export type {
+  SessionFamily,
+  SubagentSessionNode,
+  SubagentSessionSummary,
+} from "./session-family";
 export type { TraceEventQueryOptions } from "./postgres/session-turn-repository";
 export type {
   SkillSyncBinding,
@@ -87,8 +91,9 @@ export class SessionStore {
   constructor(
     private readonly database: PostgresDatabase,
     private readonly ready: Promise<void> = Promise.resolve(),
+    attachmentCacheRoot: string | null = null,
   ) {
-    this.sessions = new PostgresSessionRepository(database);
+    this.sessions = new PostgresSessionRepository(database, attachmentCacheRoot);
     this.search = new PostgresSessionSearchRepository(database);
     this.stats = new PostgresSessionStatsRepository(database);
     this.turns = new PostgresSessionTurnRepository(database);
@@ -154,11 +159,6 @@ export class SessionStore {
   async setCustomTitle(sessionKey: string, title: string | null): Promise<void> {
     await this.ready;
     await this.sessions.setCustomTitle(sessionKey, title);
-  }
-
-  async setPinned(sessionKey: string, pinned: boolean): Promise<void> {
-    await this.ready;
-    await this.sessions.setPinned(sessionKey, pinned);
   }
 
   async setFavorited(sessionKey: string, favorited: boolean): Promise<void> {
@@ -395,6 +395,11 @@ export class SessionStore {
     return this.turns.getAllMessages(sessionKey);
   }
 
+  async getAttachmentFile(sessionKey: string, attachmentId: string) {
+    await this.ready;
+    return this.sessions.getAttachmentFile(sessionKey, attachmentId);
+  }
+
   async listSessionTurns(sessionKey: string): Promise<SessionTurnSummary[]> {
     await this.ready;
     return this.turns.listSessionTurns(sessionKey);
@@ -589,9 +594,9 @@ export class SessionStore {
     await this.historyStore.clearHistory();
   }
 
-  async getRelatedSessions(sessionKey: string, limit = 8): Promise<RelatedSession[]> {
+  async getSessionFamily(sessionKey: string): Promise<SessionFamilyResult> {
     await this.ready;
-    return findRelatedSessions(this.database, sessionKey, limit);
+    return findSessionFamily(this.database, sessionKey);
   }
 }
 

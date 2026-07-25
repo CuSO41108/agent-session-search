@@ -21,10 +21,14 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { createRequire } from "node:module";
 import { randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
+import { homedir } from "node:os";
 import { loadActiveCodexSummaryEndpointDefaults } from "../core/codex-profile";
 import type { CodexRequestFidelity } from "../core/codex-request-export";
 import { indexMigratedSessionFile, syncDefaultSessionsInBatches, type IndexStatus } from "../core/indexer";
-import type { SessionJsonExportFormat } from "../core/format-session";
+import { createIndexProgressPublisher } from "./index-progress";
+import {
+  type SessionJsonExportFormat,
+} from "../core/format-session";
 import { normalizeExternalLink } from "../core/external-link";
 import {
   defaultSettings,
@@ -33,6 +37,8 @@ import {
   inspectMigrationCli,
   mergeAppSettings,
   normalizeTerminal,
+  getResumeCommand,
+  openResumeInTerminal,
   openMigrationResumeInTerminal,
   revealInFileManager,
 } from "../core/platform";
@@ -54,19 +60,24 @@ import {
   type ToolExecutionResult,
 } from "../core/ai-assistant";
 import { applyMigrationLengthPolicy, createMigrationCompressor } from "../core/session-migration-compression";
-import { migrateSession } from "../core/session-migration";
+import { migrateSession, portableSessionFrom } from "../core/session-migration";
 import {
   loadLocalSessionMigrationSource,
   runLocalSessionMigration,
 } from "./local-session-migration";
-import { targetFilePath, writeMigratedSession } from "../core/session-migration-writers";
+import {
+  targetFilePath,
+  targetFilePathForRemoteEnvironment,
+  writeMigratedSession,
+} from "../core/session-migration-writers";
+import { assertMigrationTargetEnabled, isMigrationTarget, migrationTargetDescriptor } from "../core/migration-targets";
 import { writeDatabaseUrlPointer } from "../core/app-paths";
 import { PostgresDatabase } from "../core/postgres/database";
 import { POSTGRES_MIGRATIONS } from "../core/postgres/schema";
 import { diagnoseRemoteEnvironment } from "../core/remote-health";
 import { buildRemoteSyncSshArgs, fetchRemoteSessionMessagePage, syncRemoteEnvironment } from "../core/remote-sync";
-import { REMOTE_PROCESS_EXEC_OPTIONS, runRemoteCommandWithInput } from "../core/remote-process";
-import type { RemoteSessionRestoreDependencies } from "../core/remote-session-restore";
+import { REMOTE_PROCESS_EXEC_OPTIONS, runRemoteCommand, runRemoteCommandWithInput } from "../core/remote-process";
+import { restoreRemotePortableSession, type RemoteSessionRestoreDependencies } from "../core/remote-session-restore";
 import { RemoteEnvironmentLifecycle } from "../core/remote-environment-lifecycle";
 import { RemoteWatchManager } from "../core/remote-watch";
 import { SessionStore } from "../core/session-store";
@@ -76,14 +87,17 @@ import { listWslDistributions } from "../core/wsl";
 import { deleteWslSessionFile } from "../core/wsl-session-actions";
 import { AUTO_INDEX_REFRESH_INTERVAL_MS, INITIAL_INDEX_DELAY_MS } from "../core/refresh-policy";
 import { globalShortcutLabel, normalizeGlobalShortcut } from "../core/shortcuts";
+import { remoteSessionKey } from "../core/session-environment";
 import { OPTIONAL_SESSION_SOURCE_DESCRIPTORS } from "../core/session-sources";
 import type { AppSettings, AppSettingsUpdate } from "../core/platform";
 import { APP_UPDATE_EVENTS } from "../shared/ipc/app-update";
+import { QUOTA_EVENTS } from "../shared/ipc/quota";
 import type { OpenVikingRuntimeInstallProgress } from "../core/openviking-memory";
 import { registerOpenVikingMemoryIpc } from "./ipc/openviking-memory";
 import { registerAutomationIpc } from "./ipc/automation";
 import { registerTeamChatIpc } from "./ipc/team-chat";
 import { registerAppUpdateIpc } from "./ipc/app-update";
+import { registerQuotaIpc } from "./ipc/quota";
 import { registerProvidersIpc } from "./ipc/providers";
 import { registerRemoteSessionsIpc } from "./ipc/remote-sessions";
 import { registerMemoriesIpc, type MemoriesIpcService } from "./ipc/memories";
@@ -120,6 +134,13 @@ import {
 import { NativeAutomationService } from "./services/automation-service";
 import { createLocalTextFilePreviewUnderRoots } from "../automation/engine/main/platform/local-file-preview";
 import { ProviderService } from "./services/provider-service";
+import {
+  codexAuthPath,
+  createQuotaCache,
+  QuotaService,
+  readCodexAuthIdentity,
+  watchQuotaAuthFile,
+} from "./services/quota-service";
 import {
   RemoteSessionService,
   type SessionSyncHookSetup,
@@ -263,14 +284,20 @@ let openVikingHookManifestService: OpenVikingHookManifestService | null = null;
 let automationQuitReady = false;
 let postgresRuntime: PostgresRuntime | null = null;
 let postgresDatabase: PostgresDatabase | null = null;
+let quickSearchWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
 let store: SessionStore;
 let indexStatus: IndexStatus = { running: false, indexed: 0, skipped: 0, total: 0, lastIndexedAt: null, error: null };
 let activeIndexRun: Promise<IndexStatus> | null = null;
+const indexProgressPublisher = createIndexProgressPublisher(
+  (status) => mainWindow?.webContents.send("index-status", status),
+  { minIntervalMs: 200 },
+);
 let autoIndexTimer: ReturnType<typeof setInterval> | null = null;
 let registeredGlobalShortcut: string | null = null;
 let remoteWatchManager: RemoteWatchManager | null = null;
 let remoteEnvironmentLifecycle: RemoteEnvironmentLifecycle | null = null;
+let quotaService: QuotaService;
 
 const settingsStore = new Store<AppSettings>({
   defaults: defaultSettings,
@@ -330,13 +357,39 @@ async function pickAutomationDirectory(defaultPath?: string): Promise<string | u
   return result.canceled ? undefined : result.filePaths[0];
 }
 
+function createQuotaService(): QuotaService {
+  const authFile = codexAuthPath(process.env, homedir());
+  const cache = createQuotaCache(path.join(app.getPath("userData"), "quota-cache.json"));
+  return new QuotaService({
+    load: (settings) => loadUsageQuotaSnapshot(settings),
+    getSettings: () => {
+      const settings = getSettings();
+      return {
+        hideCodexQuota: settings.hideCodexQuota,
+        hideClaudeQuota: settings.hideClaudeQuota,
+      };
+    },
+    authPath: () => authFile,
+    identity: readCodexAuthIdentity,
+    ...cache,
+    publish: (snapshot) => mainWindow?.webContents.send(QUOTA_EVENTS.updated, snapshot),
+    delay: (delayMs) => new Promise((resolve) => setTimeout(resolve, delayMs)),
+    now: () => Date.now(),
+    watch: watchQuotaAuthFile,
+  });
+}
 const appUpdateService = new AppUpdateService({
   getClient: loadUpdateClient,
   releaseRuntime: releaseUpdateRuntime,
   getAutoCheckEnabled: () => getSettings().autoCheckUpdates,
   autoCheckDisabled: () => process.env.AGENT_RECALL_NO_UPDATE_CHECK === "1",
   publishStatus: (status) => mainWindow?.webContents.send(APP_UPDATE_EVENTS.status, status),
-  launchInstaller: (manifest) => launchDetachedAppUpdateInstaller(manifest, { applyUpdatePath: APPLY_UPDATE_PATH }),
+  publishProgress: (progress) => mainWindow?.webContents.send(APP_UPDATE_EVENTS.progress, progress),
+  stageInstaller: (manifest, onProgress) => loadUpdateClient().stageUpdate(manifest, {
+    nodePath: process.env.AGENT_RECALL_NODE_PATH,
+    onProgress,
+  }),
+  launchInstaller: (staged) => launchDetachedAppUpdateInstaller(staged, { applyUpdatePath: APPLY_UPDATE_PATH }),
   requestQuit: () => app.quit(),
   schedule: (callback, delayMs) => setTimeout(callback, delayMs),
   showMessageBox: (options) => mainWindow
@@ -397,7 +450,7 @@ const remoteSessionService = new RemoteSessionService({
 });
 
 function visibleSearchOptions(options: SearchOptions = {}): SearchOptions {
-  return { ...options, excludeSubagents: getSettings().hideSubagentSessions };
+  return { ...options, excludeSubagents: true };
 }
 
 function createRulesSyncService(): RulesIpcService {
@@ -515,16 +568,16 @@ function createDiscoveryService(): DiscoveryIpcService {
     searchHistory: (query, limit) => store.searchHistory(query, limit),
     clearSearchHistory: () => store.clearSearchHistory(),
     recordSearch: (query, resultCount, options) => store.recordSearch(query, resultCount, options),
-    getRelatedSessions: (sessionKey, limit) => store.getRelatedSessions(sessionKey, limit),
+    getSessionFamily: (sessionKey) => store.getSessionFamily(sessionKey),
   };
 }
 
 function visibleStatsOptions(options: SessionStatsOptions = {}): SessionStatsOptions {
-  return { ...options, excludeSubagents: getSettings().hideSubagentSessions };
+  return { ...options, excludeSubagents: true };
 }
 
 function visibleProjectOptions(): { excludeSubagents: boolean } {
-  return { excludeSubagents: getSettings().hideSubagentSessions };
+  return { excludeSubagents: true };
 }
 
 async function pruneDisabledOptionalSources(settings: AppSettings): Promise<void> {
@@ -994,6 +1047,61 @@ function createWindow(): void {
   }
 }
 
+function createQuickSearchWindow(): BrowserWindow {
+  const preloadPath = path.join(__dirname, "../preload/index.mjs");
+  const window = new BrowserWindow({
+    width: 560,
+    height: 430,
+    minWidth: 560,
+    minHeight: 430,
+    maxWidth: 560,
+    maxHeight: 430,
+    show: false,
+    frame: false,
+    transparent: true,
+    resizable: false,
+    skipTaskbar: true,
+    backgroundColor: "#00000000",
+    webPreferences: {
+      preload: preloadPath,
+      sandbox: false,
+      contextIsolation: true,
+      nodeIntegration: false,
+    },
+  });
+  window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+  window.webContents.on("will-navigate", (event) => event.preventDefault());
+  window.on("blur", () => window.hide());
+  window.on("closed", () => {
+    if (quickSearchWindow === window) quickSearchWindow = null;
+  });
+  if (process.env.ELECTRON_RENDERER_URL) {
+    void window.loadURL(new URL("quick-search.html", process.env.ELECTRON_RENDERER_URL).toString());
+  } else {
+    void window.loadFile(path.join(__dirname, "../renderer/quick-search.html"));
+  }
+  return window;
+}
+
+function showQuickSearch(): void {
+  if (!quickSearchWindow || quickSearchWindow.isDestroyed()) {
+    quickSearchWindow = createQuickSearchWindow();
+  }
+  const display = screen.getDisplayNearestPoint(screen.getCursorScreenPoint());
+  const bounds = quickSearchWindow.getBounds();
+  quickSearchWindow.setPosition(
+    Math.round(display.workArea.x + (display.workArea.width - bounds.width) / 2),
+    Math.round(display.workArea.y + Math.min(72, display.workArea.height * 0.08)),
+  );
+  quickSearchWindow.show();
+  quickSearchWindow.focus();
+}
+
+function applyDockVisibility(showInDock: boolean): void {
+  if (process.platform !== "darwin" || !app.dock) return;
+  if (showInDock) app.dock.show();
+  else app.dock.hide();
+}
 function toggleWindow(): void {
   if (mainWindow?.isVisible() && mainWindow.isFocused()) {
     mainWindow.hide();
@@ -1041,6 +1149,7 @@ function createTray(): void {
   tray.setContextMenu(
     Menu.buildFromTemplate([
       { label: `Open ${PRODUCT_NAME}`, click: () => showWindow() },
+      { label: "快速搜索会话…", click: showQuickSearch },
       { label: "Refresh Now", click: () => void runIndexSync() },
       { type: "separator" },
       { label: "Quit", click: () => app.quit() },
@@ -1141,8 +1250,14 @@ function createApplicationMenu(): void {
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 }
 
-function emitEnvironmentsUpdated(environments: SessionEnvironment[]): void {
-  mainWindow?.webContents.send("environments-updated", environments);
+function emitEnvironmentsUpdated(environments?: SessionEnvironment[]): void {
+  if (environments) {
+    mainWindow?.webContents.send("environments-updated", environments);
+    return;
+  }
+  void store.listEnvironments().then((next) => {
+    mainWindow?.webContents.send("environments-updated", next);
+  });
 }
 
 function remoteSyncErrorMessage(error: unknown): string {
@@ -1188,10 +1303,11 @@ async function runIndexSync(): Promise<IndexStatus> {
   const settings = getSettings();
   await pruneDisabledOptionalSources(settings);
   indexStatus = { ...indexStatus, running: true, error: null };
-  mainWindow?.webContents.send("index-status", indexStatus);
+  indexProgressPublisher.publish(indexStatus, true);
 
   activeIndexRun = syncDefaultSessionsInBatches(store, {
-    batchSize: 2,
+    batchSize: 50,
+    timeBudgetMs: 8,
     loadOptions: {
       includeClaudeInternal: settings.includeClaudeInternal,
       includeCodexInternal: settings.includeCodexInternal,
@@ -1207,14 +1323,15 @@ async function runIndexSync(): Promise<IndexStatus> {
       includeTrae: settings.includeTrae,
       includeQoder: settings.includeQoder,
     },
+    onEnvironmentsChanged: emitEnvironmentsUpdated,
     onProgress: (status) => {
       indexStatus = { ...status, lastIndexedAt: indexStatus.lastIndexedAt };
-      mainWindow?.webContents.send("index-status", indexStatus);
+      indexProgressPublisher.publish(indexStatus);
     },
   })
     .then((status) => {
       indexStatus = status;
-      mainWindow?.webContents.send("index-status", indexStatus);
+      indexProgressPublisher.publish(indexStatus, true);
       void maybeAutoBackfillSummaries();
       return indexStatus;
     })
@@ -1227,7 +1344,7 @@ async function runIndexSync(): Promise<IndexStatus> {
         lastIndexedAt: indexStatus.lastIndexedAt,
         error: String(error),
       };
-      mainWindow?.webContents.send("index-status", indexStatus);
+      indexProgressPublisher.publish(indexStatus, true);
       return indexStatus;
     })
     .finally(() => {
@@ -1395,7 +1512,8 @@ async function createSourceRemoteRestoreDependencies(
     : null;
 
   return {
-    inspectCli: async () => undefined,
+    inspectCli: (target) =>
+      environment.kind === "wsl" ? inspectWslMigrationCli(environment, target) : undefined,
     prepare: (session, listener) => applyMigrationLengthPolicy(
       session,
       compressor,
@@ -1410,7 +1528,15 @@ async function createSourceRemoteRestoreDependencies(
       });
       mainWindow?.webContents.send("environments-updated", await store.listEnvironments());
     },
-    launch: async () => undefined,
+    launch: async (target, targetSessionId, projectPath) => {
+      if (environment.kind !== "wsl") return;
+      const session = migrationLaunchSession(environment, target, targetSessionId, projectPath);
+      await openResumeInTerminal(
+        session,
+        getSettings(),
+        await remoteSessionAccess.requireWslResumeOptions(session),
+      );
+    },
     resumeCommand: (target, targetSessionId, projectPath) =>
       remoteMigrationResumeDisplayCommand(environment, target, targetSessionId, projectPath),
     fallbackResumeCommand: (target, targetSessionId, projectPath) =>
@@ -1423,12 +1549,74 @@ async function createSourceRemoteRestoreDependencies(
   };
 }
 
+async function inspectWslMigrationCli(environment: SessionEnvironment, target: MigrationAgent): Promise<void> {
+  const settings = getSettings();
+  await inspectMigrationCli(
+    target,
+    { ...settings, claudeBinary: "claude", codexBinary: "codex" },
+    async (command, args) => runRemoteCommand(environment, [command, ...args].join(" ")),
+    { platform: "linux" },
+  );
+}
+
+function migrationLaunchSession(
+  environment: SessionEnvironment,
+  target: MigrationAgent,
+  sessionId: string,
+  projectPath: string,
+): SessionSearchResult {
+  const source = migrationTargetDescriptor(target).source;
+  return {
+    sessionKey: remoteSessionKey(environment, migrationTargetDescriptor(target).source, sessionId),
+    rawId: sessionId,
+    source,
+    projectPath,
+    filePath: "",
+    originalTitle: sessionId,
+    firstQuestion: "",
+    displayTitle: sessionId,
+    timestamp: Date.now(),
+    fileMtimeMs: 0,
+    fileSize: 0,
+    prUrl: null,
+    prNumber: null,
+    gitBranch: null,
+    isSubagent: false,
+    parentSessionId: null,
+    tokenUsage: { inputTokens: 0, outputTokens: 0, cachedInputTokens: 0, reasoningOutputTokens: 0, totalTokens: 0 },
+    environmentId: environment.id,
+    environmentKind: "wsl",
+    environmentLabel: environment.label,
+    customTitle: null,
+    favorited: false,
+    hidden: false,
+    tags: [],
+    matchSnippet: null,
+    lastOpenedAt: null,
+    lastResumedAt: null,
+    lastActivityAt: 0,
+    messageCount: 0,
+    aiSummary: null,
+    aiSummaryStale: false,
+  };
+}
+
 function remoteMigrationResumeDisplayCommand(
   environment: SessionEnvironment,
   target: MigrationAgent,
   sessionId: string,
   projectPath: string,
 ): string {
+  if (environment.kind === "wsl") {
+    if (!environment.wslDistribution) {
+      throw new Error("WSL distribution is not configured for this remote session.");
+    }
+    return getResumeCommand(
+      migrationLaunchSession(environment, target, sessionId, projectPath),
+      getSettings(),
+      { wslDistribution: environment.wslDistribution },
+    );
+  }
   const remoteCommand = getMigrationResumeProcessSpec(target, sessionId, projectPath, getSettings(), { platform: "linux" }).displayCommand;
   return ["ssh", ...buildRemoteSyncSshArgs(environment, remoteCommand).map(quotePosixToken)].join(" ");
 }
@@ -1486,15 +1674,64 @@ async function writeMigratedSessionToSshEnvironment(
   try {
     const written = await writeMigratedSession({ target, session, homeDir: tempHome, now });
     const remoteHome = await remoteHomeDir(environment);
-    const remotePath = targetFilePath(target, session.projectPath, written.sessionId, remoteHome, now);
+    const remotePath = targetFilePathForRemoteEnvironment(target, session.projectPath, written.sessionId, remoteHome, now);
     const content = await fs.readFile(written.filePath);
     await runRemotePython(environment, REMOTE_WRITE_FILE_SCRIPT, {
       path: remotePath,
       contentBase64: content.toString("base64"),
     });
+    if (target === "codex") {
+      await updateRemoteCodexSessionIndex(environment, remoteHome, session, written.sessionId, now);
+      await updateRemoteCodexAppState(environment, remoteHome, remotePath, session, written.sessionId, now);
+    }
     return { sessionId: written.sessionId, filePath: remotePath };
   } finally {
     await fs.rm(tempHome, { recursive: true, force: true });
+  }
+}
+
+async function updateRemoteCodexSessionIndex(
+  environment: SessionEnvironment,
+  remoteHome: string,
+  session: PortableSession,
+  sessionId: string,
+  now: Date,
+): Promise<void> {
+  const indexPath = `${remoteHome.replace(/[\\/]+$/, "")}/.codex/session_index.jsonl`;
+  const title = session.title || session.messages.find((message) => message.role === "user")?.content || sessionId;
+  await runRemotePython(environment, REMOTE_UPDATE_CODEX_INDEX_SCRIPT, {
+    path: indexPath,
+    id: sessionId,
+    threadName: title,
+    updatedAt: now.toISOString(),
+  });
+}
+
+async function updateRemoteCodexAppState(
+  environment: SessionEnvironment,
+  remoteHome: string,
+  rolloutPath: string,
+  session: PortableSession,
+  sessionId: string,
+  now: Date,
+): Promise<void> {
+  try {
+    const title = session.title || session.messages.find((message) => message.role === "user")?.content || sessionId;
+    const firstUserMessage = session.messages.find((message) => message.role === "user")?.content || "";
+    await runRemotePython(environment, REMOTE_UPDATE_CODEX_STATE_SCRIPT, {
+      home: remoteHome,
+      id: sessionId,
+      rolloutPath,
+      cwd: session.projectPath,
+      title,
+      firstUserMessage,
+      createdAtMs: new Date(session.startedAt).getTime(),
+      updatedAtMs: now.getTime(),
+      modelProvider: "openai",
+    });
+  } catch {
+    // The Codex app-server may hold its state database open. The rollout file
+    // and session index remain authoritative when this display update fails.
   }
 }
 
@@ -1570,6 +1807,70 @@ const REMOTE_WRITE_FILE_SCRIPT = [
   "os.chmod(tmp, 0o600)",
   "os.replace(tmp, target)",
   "print(str(target))",
+].join("\n");
+
+const REMOTE_UPDATE_CODEX_INDEX_SCRIPT = [
+  "import json, os, sys, uuid",
+  "from pathlib import Path",
+  "payload = json.load(sys.stdin)",
+  "index = Path(payload['path'])",
+  "rows = []",
+  "if index.exists():",
+  "    for line in index.read_text(encoding='utf-8').splitlines():",
+  "        if line.strip(): rows.append(json.loads(line))",
+  "rows = [row for row in rows if not isinstance(row, dict) or row.get('id') != payload['id']]",
+  "rows.append({'id': payload['id'], 'thread_name': payload['threadName'], 'updated_at': payload['updatedAt']})",
+  "index.parent.mkdir(parents=True, exist_ok=True)",
+  "tmp = index.with_name(index.name + '.tmp-' + uuid.uuid4().hex)",
+  "tmp.write_text(''.join(json.dumps(row, ensure_ascii=False) + '\\n' for row in rows), encoding='utf-8')",
+  "os.chmod(tmp, 0o600)",
+  "os.replace(tmp, index)",
+  "print(str(index))",
+].join("\n");
+
+const REMOTE_UPDATE_CODEX_STATE_SCRIPT = [
+  "import json, sqlite3, sys",
+  "from pathlib import Path",
+  "payload = json.load(sys.stdin)",
+  "home = Path(payload['home'])",
+  "candidates = sorted((home / '.codex').glob('state_*.sqlite'), key=lambda item: item.stat().st_mtime, reverse=True)",
+  "if not candidates: print('Codex state database not found'); sys.exit(0)",
+  "db = sqlite3.connect(str(candidates[0]), timeout=5)",
+  "db.row_factory = sqlite3.Row",
+  "columns = {row[1] for row in db.execute('PRAGMA table_info(threads)')}",
+  "required = {'id', 'rollout_path', 'created_at', 'updated_at', 'source', 'model_provider', 'cwd', 'title', 'sandbox_policy', 'approval_mode'}",
+  "if not required.issubset(columns): db.close(); print('Codex state database schema not supported'); sys.exit(0)",
+  "existing = db.execute('SELECT * FROM threads WHERE id = ?', (payload['id'],)).fetchone()",
+  "order_column = 'updated_at_ms' if 'updated_at_ms' in columns else 'updated_at'",
+  "template = existing or db.execute(f'SELECT * FROM threads ORDER BY {order_column} DESC LIMIT 1').fetchone()",
+  "def value(name, fallback=None): return existing[name] if existing and name in existing.keys() and existing[name] is not None else (template[name] if template and name in template.keys() and template[name] is not None else fallback)",
+  "created_ms = int(payload['createdAtMs'])",
+  "updated_ms = int(payload['updatedAtMs'])",
+  "values = {",
+  "  'id': payload['id'], 'rollout_path': payload['rolloutPath'],",
+  "  'created_at': value('created_at', created_ms // 1000), 'updated_at': updated_ms // 1000,",
+  "  'source': 'vscode', 'model_provider': value('model_provider', payload['modelProvider']),",
+  "  'cwd': payload['cwd'], 'title': payload['title'],",
+  "  'sandbox_policy': value('sandbox_policy', '{}'), 'approval_mode': value('approval_mode', 'on-request'),",
+  "  'tokens_used': value('tokens_used', 0), 'has_user_event': 1, 'archived': value('archived', 0),",
+  "  'cli_version': 'migration', 'first_user_message': payload['firstUserMessage'],",
+  "  'memory_mode': value('memory_mode', 'enabled'), 'model': value('model'), 'reasoning_effort': value('reasoning_effort'),",
+  "  'agent_path': value('agent_path'), 'created_at_ms': value('created_at_ms', created_ms), 'updated_at_ms': updated_ms,",
+  "  'thread_source': 'user', 'preview': payload['title'], 'recency_at': updated_ms // 1000, 'recency_at_ms': updated_ms,",
+  "  'history_mode': 'legacy'",
+  "}",
+  "values = {key: value for key, value in values.items() if key in columns}",
+  "if existing:",
+  "    assignments = ', '.join(f'{key} = ?' for key in values if key != 'id')",
+  "    params = [values[key] for key in values if key != 'id'] + [payload['id']]",
+  "    db.execute(f'UPDATE threads SET {assignments} WHERE id = ?', params)",
+  "else:",
+  "    names = ', '.join(values)",
+  "    placeholders = ', '.join('?' for _ in values)",
+  "    db.execute(f'INSERT INTO threads ({names}) VALUES ({placeholders})', list(values.values()))",
+  "db.commit()",
+  "db.close()",
+  "print(str(candidates[0]))",
 ].join("\n");
 
 async function maybeAutoBackfillSummaries(): Promise<void> {
@@ -1654,6 +1955,13 @@ function registerIpc(): void {
     loadLiveSessions: () => loadCachedLiveSessionSnapshot({
       includeTrae: getSettings().includeTrae,
       includeQoder: getSettings().includeQoder,
+      includeOpenClaw: getSettings().includeOpenClaw,
+      includeHermes: getSettings().includeHermes,
+      includeOpenCode: getSettings().includeOpenCode,
+      includeZcode: getSettings().includeZcode,
+      includeCursor: getSettings().includeCursorAgent,
+      includeCodeBuddy: getSettings().includeCodeBuddyCli,
+      includeCodeWiz: getSettings().includeCodeWizCli,
     }),
     refreshIndex: runIndexSync,
     getIndexStatus: () => indexStatus,
@@ -1664,6 +1972,13 @@ function registerIpc(): void {
         loadLiveSessions: () => loadCachedLiveSessionSnapshot({
           includeTrae: getSettings().includeTrae,
           includeQoder: getSettings().includeQoder,
+          includeOpenClaw: getSettings().includeOpenClaw,
+          includeHermes: getSettings().includeHermes,
+          includeOpenCode: getSettings().includeOpenCode,
+          includeZcode: getSettings().includeZcode,
+          includeCursor: getSettings().includeCursorAgent,
+          includeCodeBuddy: getSettings().includeCodeBuddyCli,
+          includeCodeWiz: getSettings().includeCodeWizCli,
         }),
         setLiveTerminalTitle: (pid, displayTitle) => setLiveSessionTerminalTitle(pid, displayTitle),
         onSyncError: (error) => console.warn(
@@ -1673,6 +1988,27 @@ function registerIpc(): void {
       }),
     deleteWslSession: deleteWslSessionFile,
   }));
+  ipcMain.handle("attachment:preview", async (_event, sessionKey: string, attachmentId: string) => {
+    const attachment = await store.getAttachmentFile(sessionKey, attachmentId);
+    if (!attachment) throw new Error("Attachment is unavailable.");
+    if (attachment.previewKind === "image") {
+      const bytes = await fs.readFile(attachment.cachePath);
+      return { kind: "image", data: `data:${attachment.mimeType};base64,${bytes.toString("base64")}` };
+    }
+    if (attachment.previewKind === "text") {
+      const text = await fs.readFile(attachment.cachePath, "utf8");
+      return { kind: "text", data: text.slice(0, 256 * 1024) };
+    }
+    const error = await shell.openPath(attachment.cachePath);
+    if (error) throw new Error(error);
+    return { kind: "external" };
+  });
+  ipcMain.handle("attachment:open", async (_event, sessionKey: string, attachmentId: string) => {
+    const attachment = await store.getAttachmentFile(sessionKey, attachmentId);
+    if (!attachment) throw new Error("Attachment is unavailable.");
+    const error = await shell.openPath(attachment.cachePath);
+    if (error) throw new Error(error);
+  });
   ipcMain.handle("session:summarize", async (_event, sessionKey: string) => {
     await remoteSessionAccess.ensureDetails(sessionKey);
     const endpoint = await resolveSummaryEndpointFromSettings();
@@ -1828,13 +2164,6 @@ function registerIpc(): void {
     settingsStore.set("sessionSearchMcpEnabled", enabled);
     return setup.status();
   });
-  ipcMain.handle("quota:get", () => {
-    const settings = getSettings();
-    return loadUsageQuotaSnapshot({
-      hideCodexQuota: settings.hideCodexQuota,
-      hideClaudeQuota: settings.hideClaudeQuota,
-    });
-  });
   ipcMain.handle("ssh-config:list-hosts", () => readUserSshConfig());
   ipcMain.handle("wsl:list-distributions", () => listWslDistributions());
   ipcMain.handle("environment:save", (_event, input: EnvironmentUpsertInput) =>
@@ -1852,7 +2181,16 @@ function registerIpc(): void {
     return diagnoseRemoteEnvironment(await remoteSessionAccess.requireSshEnvironment(environmentId));
   });
   registerAppUpdateIpc(ipcMain, appUpdateService);
+  registerQuotaIpc(ipcMain, quotaService);
   disposeOpenVikingMemoryIpc = registerOpenVikingMemoryIpc(ipcMain, openVikingControlService);
+  ipcMain.handle("quick-search:open-session", async (_event, sessionKey: string) => {
+    const session = await store.getSession(sessionKey);
+    if (!session) throw new Error("Session was not found.");
+    await store.markOpened(sessionKey);
+    quickSearchWindow?.hide();
+    showWindow();
+    mainWindow?.webContents.send("open-session", sessionKey);
+  });
   ipcMain.handle("settings:get", () => providerService.hydrateSettings());
   registerProvidersIpc(ipcMain, providerService);
   ipcMain.handle("settings:set", async (_event, settings: AppSettingsUpdate) => {
@@ -1886,6 +2224,7 @@ function registerIpc(): void {
     }
     if ("autoCheckUpdates" in settings) await appUpdateService.setAutoCheckEnabled(next.autoCheckUpdates);
     await pruneDisabledOptionalSources(next);
+    if ("showInDock" in settings) applyDockVisibility(next.showInDock);
     return providerService.addStoredKeys(next);
   });
   registerSkillsIpc(ipcMain, skillService);
@@ -1918,8 +2257,29 @@ function registerIpc(): void {
     showJsonExportNotice,
   }));
   ipcMain.handle("session:migrate", async (event, request: SessionMigrationRequest) => {
+    const source = await store.getSession(request.sessionKey);
+    if (source?.environmentKind === "wsl") {
+      await remoteSessionAccess.ensureDetails(request.sessionKey);
+    }
     const migrationSource = await loadLocalSessionMigrationSource(store, request);
     const settings = Object.freeze(await providerService.hydrateSettings());
+    if (migrationSource.source.environmentKind === "wsl") {
+      assertMigrationTargetEnabled(request.target, settings);
+      if (!["claude", "codex", "codebuddy", "codewiz", "cursor"].includes(request.target)) {
+        throw new Error(`Migration target ${request.target} is not supported in WSL.`);
+      }
+      const environment = await remoteSessionAccess.requireWslEnvironment(migrationSource.source);
+      const portable = portableSessionFrom(migrationSource.source, migrationSource.messages);
+      const progress = (item: SessionMigrationProgress): void => event.sender.send("session:migration-progress", item);
+      const deps = await createSourceRemoteRestoreDependencies(environment, progress);
+      return restoreRemotePortableSession({
+        remoteId: request.sessionKey,
+        portable,
+        target: request.target as MigrationAgent,
+        localProjectPath: portable.projectPath,
+        deps,
+      });
+    }
 
     return runLocalSessionMigration({
       ...migrationSource,
@@ -1946,7 +2306,12 @@ app.whenReady().then(async () => {
     migrations: POSTGRES_MIGRATIONS,
   });
   await postgresDatabase.initialize();
-  store = new SessionStore(postgresDatabase);
+  store = new SessionStore(
+    postgresDatabase,
+    Promise.resolve(),
+    path.join(app.getPath("userData"), "session-attachments"),
+  );
+  quotaService = createQuotaService();
   initializeOpenVikingMemory();
   try {
     await refreshOpenVikingHookManifest();
@@ -1970,9 +2335,11 @@ app.whenReady().then(async () => {
   await pruneDisabledOptionalSources(getSettings());
   automationService = createAutomationService();
   registerIpc();
+  quotaService.start();
   createApplicationMenu();
   createWindow();
   createTray();
+  applyDockVisibility(getSettings().showInDock);
   void appUpdateService.showPreviousUpdateResult();
   const shortcut = getSettings().globalShortcut;
   if (!registerAppGlobalShortcut(shortcut)) {
@@ -2008,6 +2375,7 @@ app.on("before-quit", (event) => {
   stopAutoIndexRefresh();
   skillService.stopUsageRefresh();
   remoteSessionService.stopQueue();
+  quotaService?.stop();
   remoteEnvironmentLifecycle?.stopAll();
   disposeAutomationIpc?.();
   disposeAutomationIpc = null;

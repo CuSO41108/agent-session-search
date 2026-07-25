@@ -35,6 +35,8 @@ function writeCursorStateDb(
     createdAt?: number;
     isSubagent?: boolean;
     parentComposerId?: string;
+    uriScheme?: string;
+    uriAuthority?: string;
   }>,
   bubbles: Array<{
     composerId: string;
@@ -82,7 +84,11 @@ function writeCursorStateDb(
         isDraft: false,
         workspaceIdentifier: {
           id: `workspace-${header.composerId}`,
-          uri: { fsPath: header.projectPath },
+          uri: {
+            scheme: header.uriScheme ?? "file",
+            authority: header.uriAuthority ?? "",
+            fsPath: header.projectPath,
+          },
         },
         ...(header.parentComposerId
           ? { subagentInfo: { parentComposerId: header.parentComposerId } }
@@ -301,6 +307,64 @@ describe("extra session sources", () => {
     expect(loaded).toHaveLength(1);
     expect(loaded[0].session.rawId).toBe("proj-aabbccdd/task-multi");
     expect(loaded[0].messages[0].content).toBe("First part\nSecond part");
+
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  it("strips Qoder wrapper tags and uses user_query as title", () => {
+    const root = tmpDir("qoder-wrapped");
+    const filePath = path.join(root, "cache", "projects", "demo-app-1a2b3c4d", "conversation-history", "task-wrap", "task-wrap.jsonl");
+    writeJsonl(filePath, [
+      {
+        role: "user",
+        message: {
+          content: [
+            {
+              type: "text",
+              text: "<system-reminder>\n[IMPORTANT] You must always respond in 中文.\n</system-reminder>\n\n<user_query>\n我的目标在：D:\\oss-contrib\\giki\\IMPROVEMENT-LOOP.md\n</user_query>",
+            },
+          ],
+        },
+      },
+      { role: "assistant", message: { content: [{ type: "text", text: "明白，开始执行。" }] } },
+    ]);
+
+    const loaded = loadQoderSessions(root);
+
+    expect(loaded).toHaveLength(1);
+    expect(loaded[0].session.originalTitle).toBe("我的目标在：D:\\oss-contrib\\giki\\IMPROVEMENT-LOOP.md");
+    expect(loaded[0].session.firstQuestion).toBe("我的目标在：D:\\oss-contrib\\giki\\IMPROVEMENT-LOOP.md");
+    expect(loaded[0].messages[0].content).toBe("我的目标在：D:\\oss-contrib\\giki\\IMPROVEMENT-LOOP.md");
+    // system-reminder content should not appear in searchable message text
+    expect(loaded[0].messages[0].content).not.toContain("system-reminder");
+
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  it("strips attached_files wrapper from Qoder messages without user_query", () => {
+    const root = tmpDir("qoder-attached");
+    const filePath = path.join(root, "cache", "projects", "proj-aabbccdd", "conversation-history", "task-att", "task-att.jsonl");
+    writeJsonl(filePath, [
+      {
+        role: "user",
+        message: {
+          content: [
+            {
+              type: "text",
+              text: "<attached_files>\n#file:d:\\project\\architecture.zip\n#file:d:\\project\\ux-report.md\n</attached_files>\n\n直接帮我重构这个模块",
+            },
+          ],
+        },
+      },
+      { role: "assistant", message: { content: [{ type: "text", text: "好的。" }] } },
+    ]);
+
+    const loaded = loadQoderSessions(root);
+
+    expect(loaded).toHaveLength(1);
+    expect(loaded[0].session.originalTitle).toBe("直接帮我重构这个模块");
+    expect(loaded[0].messages[0].content).toBe("直接帮我重构这个模块");
+    expect(loaded[0].messages[0].content).not.toContain("attached_files");
 
     fs.rmSync(root, { recursive: true, force: true });
   });
@@ -732,6 +796,55 @@ describe("extra session sources", () => {
       "user:Investigate login failures",
       "assistant:I will inspect the authentication flow.",
     ]);
+
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  it("omits empty Cursor composer headers even when Cursor does not mark them as drafts", () => {
+    const root = tmpDir("cursor-empty-header");
+    const stateDbPath = path.join(root, "cursor-state.vscdb");
+    writeCursorStateDb(stateDbPath, [
+      {
+        composerId: "cursor-empty-1",
+        name: "",
+        projectPath: "",
+      },
+    ]);
+
+    const loaded = loadCursorAgentSessions(root, { cursorStateDbPath: stateDbPath });
+
+    expect(loaded).toEqual([]);
+
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  it("describes Cursor Remote SSH execution separately from local storage", () => {
+    const root = tmpDir("cursor-remote-ssh");
+    const stateDbPath = path.join(root, "cursor-state.vscdb");
+    writeCursorStateDb(stateDbPath, [
+      {
+        composerId: "cursor-remote-1",
+        name: "Remote Cursor session",
+        projectPath: "/home/me/project",
+        uriScheme: "vscode-remote",
+        uriAuthority: "ssh-remote+dev",
+      },
+      {
+        composerId: "cursor-local-1",
+        name: "Local Cursor session",
+        projectPath: "/Users/me/project",
+      },
+    ]);
+
+    const loaded = loadCursorAgentSessions(root, { cursorStateDbPath: stateDbPath });
+    const remote = loaded.find((item) => item.session.rawId === "cursor-remote-1");
+    const local = loaded.find((item) => item.session.rawId === "cursor-local-1");
+
+    expect(remote).toMatchObject({
+      session: { storageEnvironmentId: "local" },
+      executionEnvironmentHint: { kind: "ssh", label: "dev", hostAlias: "dev" },
+    });
+    expect(local?.executionEnvironmentHint).toBeUndefined();
 
     fs.rmSync(root, { recursive: true, force: true });
   });

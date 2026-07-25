@@ -27,10 +27,10 @@ import type {
   SessionTurnDetail,
   SessionTurnSummary,
   TagListOptions,
-  UsageQuotaSnapshot,
 } from "../core/types";
 import { createAppUpdateApi } from "./app-update";
 import { createAutomationApi } from "./automation";
+import { createQuotaApi } from "./quota";
 import { createProvidersApi } from "./providers";
 import { createRemoteSessionsApi } from "./remote-sessions";
 import { createMemoriesApi } from "./memories";
@@ -48,6 +48,7 @@ export interface AiAssistantReply {
 const api = {
   platform: process.platform as NodeJS.Platform,
   automation: createAutomationApi(ipcRenderer),
+  quota: createQuotaApi(ipcRenderer),
   teamChat: createTeamChatApi(ipcRenderer),
   askAiAssistant: (messages: AiChatMessage[]): Promise<AiAssistantReply> => ipcRenderer.invoke("ai:assistant-chat", messages),
   searchSessions: (options: SearchOptions): Promise<SessionSearchResult[]> => ipcRenderer.invoke("search:sessions", options),
@@ -55,6 +56,13 @@ const api = {
   getSession: (sessionKey: string): Promise<SessionSearchResult | null> => ipcRenderer.invoke("session:get", sessionKey),
   getMessages: (sessionKey: string, offset?: number, limit?: number): Promise<SessionMessage[]> =>
     ipcRenderer.invoke("session:messages", sessionKey, offset, limit),
+  previewAttachment: (
+    sessionKey: string,
+    attachmentId: string,
+  ): Promise<{ kind: "image" | "text" | "external"; data?: string }> =>
+    ipcRenderer.invoke("attachment:preview", sessionKey, attachmentId),
+  openAttachment: (sessionKey: string, attachmentId: string): Promise<void> =>
+    ipcRenderer.invoke("attachment:open", sessionKey, attachmentId),
   getTraceEvents: (sessionKey: string, options?: TraceEventQueryOptions): Promise<SessionTraceEvent[]> =>
     ipcRenderer.invoke("session:trace-events", sessionKey, options),
   listSessionTurns: (sessionKey: string): Promise<SessionTurnSummary[]> =>
@@ -75,7 +83,7 @@ const api = {
   getStatsTrend: (options?: SessionStatsOptions): Promise<SessionStatsTrend> => ipcRenderer.invoke("stats:trend", options),
   getMcpStatus: (): Promise<boolean> => ipcRenderer.invoke("mcp:status"),
   setMcpEnabled: (enabled: boolean): Promise<boolean> => ipcRenderer.invoke("mcp:set-enabled", enabled),
-  getQuotas: (): Promise<UsageQuotaSnapshot> => ipcRenderer.invoke("quota:get"),
+  ...createQuotaApi(ipcRenderer),
   listTags: (options?: TagListOptions): Promise<string[]> => ipcRenderer.invoke("tags:list", options),
   listProjects: (options?: ProjectQueryOptions): Promise<ProjectSummary[]> => ipcRenderer.invoke("projects:list", options),
   listTagsByProject: (): Promise<ProjectTagEntry[]> => ipcRenderer.invoke("tags:by-project"),
@@ -92,7 +100,6 @@ const api = {
   removeTag: (sessionKey: string, tagName: string): Promise<void> => ipcRenderer.invoke("tag:remove", sessionKey, tagName),
   deleteTag: (tagName: string): Promise<void> => ipcRenderer.invoke("tag:delete", tagName),
   setFavorited: (sessionKey: string, favorited: boolean): Promise<void> => ipcRenderer.invoke("favorite:set", sessionKey, favorited),
-  setPinned: (sessionKey: string, pinned: boolean): Promise<void> => ipcRenderer.invoke("pin:set", sessionKey, pinned),
   setHidden: (sessionKey: string, hidden: boolean): Promise<void> => ipcRenderer.invoke("hide:set", sessionKey, hidden),
   deleteSession: (sessionKey: string): Promise<boolean> => ipcRenderer.invoke("session:delete", sessionKey),
   refreshIndex: (): Promise<IndexStatus> => ipcRenderer.invoke("index:refresh"),
@@ -143,6 +150,13 @@ const api = {
     const listener = () => callback();
     ipcRenderer.on("focus-search", listener);
     return () => ipcRenderer.removeListener("focus-search", listener);
+  },
+  openQuickSearchSession: (sessionKey: string): Promise<void> =>
+    ipcRenderer.invoke("quick-search:open-session", sessionKey),
+  onOpenSession: (callback: (sessionKey: string) => void): (() => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, sessionKey: string) => callback(sessionKey);
+    ipcRenderer.on("open-session", listener);
+    return () => ipcRenderer.removeListener("open-session", listener);
   },
   onOpenSettings: (callback: () => void): (() => void) => {
     const listener = () => callback();

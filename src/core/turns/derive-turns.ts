@@ -297,7 +297,7 @@ function buildTurns(sessionKey: string, drafts: readonly TurnDraft[]): DerivedSe
         role: message.role,
         content: message.content,
         occurredAt: timestampString(message.timestamp),
-        metadata: {},
+        metadata: message.attachments?.length ? { attachments: message.attachments } : {},
       }));
     const spans = buildSpans(turnId, draft.traceEvents);
     const userText = messages

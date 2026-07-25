@@ -106,6 +106,91 @@ describe("remote sync", () => {
     }
   });
 
+  it("preserves Subagent relationships from remote summary records", async () => {
+    const store = createInMemoryStore();
+    const environment = await upsertSshEnvironment(store);
+    try {
+      await syncRemoteEnvironment(store, environment, {
+        runSsh: async () => `${JSON.stringify({
+          kind: "codex-session",
+          source: "codex-cli",
+          path: "/home/me/.codex/sessions/child.jsonl",
+          mtimeMs: 1,
+          size: 1,
+          rawId: "child",
+          projectPath: "/repo",
+          timestamp: 1,
+          originalTitle: "Child",
+          firstQuestion: "subtask",
+          messageCount: 1,
+          isSubagent: true,
+          parentSessionId: "parent",
+        })}\n`,
+      });
+
+      expect(await store.getSession("ssh:ssh-devbox:codex-cli:child")).toMatchObject({
+        isSubagent: true,
+        parentSessionId: "parent",
+      });
+      expect(await store.searchSessions({ environmentId: environment.id, excludeSubagents: true })).toEqual([]);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("detects Codex and Claude Subagents in the remote collector", async () => {
+    const store = createInMemoryStore();
+    const environment = await upsertSshEnvironment(store);
+    const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "session-search-remote-subagents-"));
+    const writeJsonl = (filePath: string, rows: unknown[]) => {
+      fs.mkdirSync(path.dirname(filePath), { recursive: true });
+      fs.writeFileSync(filePath, rows.map((row) => JSON.stringify(row)).join("\n"), "utf8");
+    };
+    try {
+      writeJsonl(path.join(tempHome, ".codex", "sessions", "2026", "07", "24", "child.jsonl"), [
+        {
+          type: "session_meta",
+          timestamp: "2026-07-24T10:00:00Z",
+          payload: {
+            id: "codex-child",
+            cwd: "/repo",
+            source: { subagent: { thread_spawn: { parent_thread_id: "codex-parent", depth: 1 } } },
+          },
+        },
+      ]);
+      writeJsonl(path.join(tempHome, ".claude", "projects", "repo", "claude-parent", "subagents", "claude-child.jsonl"), [
+        {
+          type: "user",
+          timestamp: "2026-07-24T10:00:00Z",
+          cwd: "/repo",
+          sessionId: "claude-parent",
+          agentId: "claude-child",
+          message: { role: "user", content: "subtask" },
+        },
+      ]);
+
+      await syncRemoteEnvironment(store, environment, {
+        runSsh: async (_environment, remoteCommand) => execFileSync(
+          "python3",
+          ["-c", decodeCollectorScript(remoteCommand)],
+          { encoding: "utf8", env: { ...process.env, HOME: tempHome } },
+        ),
+      });
+
+      expect(await store.getSession("ssh:ssh-devbox:codex-cli:codex-child")).toMatchObject({
+        isSubagent: true,
+        parentSessionId: "codex-parent",
+      });
+      expect(await store.getSession("ssh:ssh-devbox:claude-cli:claude-child")).toMatchObject({
+        isSubagent: true,
+        parentSessionId: "claude-parent",
+      });
+    } finally {
+      store.close();
+      fs.rmSync(tempHome, { recursive: true, force: true });
+    }
+  });
+
   it("collects summaries from all five CLI sources and keeps same raw IDs isolated by source", async () => {
     const store = createInMemoryStore();
     const environment = await upsertSshEnvironment(store);
@@ -333,7 +418,6 @@ describe("remote sync", () => {
     }, []);
     await store.setCustomTitle(legacyKey, "Legacy custom title");
     await store.setFavorited(legacyKey, true);
-    await store.setPinned(legacyKey, true);
     await store.setHidden(legacyKey, true);
     await store.setAiSummary(legacyKey, "Legacy AI summary", "legacy-model");
     await store.addTag(legacyKey, "legacy-tag");
@@ -364,7 +448,6 @@ describe("remote sync", () => {
     expect(await store.getSession(`ssh:ssh-devbox:${source}:${rawId}`)).toMatchObject({
       customTitle: "Legacy custom title",
       favorited: true,
-      pinned: true,
       hidden: true,
       aiSummary: "Legacy AI summary",
       lastOpenedAt: new Date("2026-07-15T10:00:00Z").getTime(),
@@ -404,14 +487,12 @@ describe("remote sync", () => {
     await seed(legacyKey, "Legacy");
     await store.setCustomTitle(legacyKey, "Legacy custom");
     await store.setFavorited(legacyKey, legacyState);
-    await store.setPinned(legacyKey, legacyState);
     await store.setHidden(legacyKey, legacyState);
     await store.setAiSummary(legacyKey, "Legacy summary", "legacy-model");
     await store.addTag(legacyKey, "legacy-tag");
     await seed(targetKey, "Target");
     await store.setCustomTitle(targetKey, "Target custom");
     await store.setFavorited(targetKey, targetState);
-    await store.setPinned(targetKey, targetState);
     await store.setHidden(targetKey, targetState);
     await store.setAiSummary(targetKey, "Target summary", "target-model");
     await store.addTag(targetKey, "target-tag");
@@ -435,7 +516,6 @@ describe("remote sync", () => {
     expect(await store.getSession(targetKey)).toMatchObject({
       customTitle: "Target custom",
       favorited: true,
-      pinned: true,
       hidden: true,
       aiSummary: "Target summary",
       tags: ["legacy-tag", "target-tag"],
@@ -1077,7 +1157,6 @@ db.close()
       customTitle: null,
       displayTitle: "Remote Summary",
       favorited: false,
-      pinned: false,
       hidden: false,
       tags: [],
       matchSnippet: null,

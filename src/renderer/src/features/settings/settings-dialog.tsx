@@ -26,7 +26,7 @@ import {
   Wrench,
   X,
 } from "lucide-react";
-import type { AppUpdateStatus } from "../../../../core/app-update-types";
+import type { AppUpdateProgress, AppUpdateStatus } from "../../../../core/app-update-types";
 import { formatRelativeTime } from "../../../../core/format-session";
 import type { AppSettings, AppSettingsUpdate } from "../../../../core/platform";
 import type { RemoteHealthReport } from "../../../../core/remote-health";
@@ -104,11 +104,33 @@ function UpdateReleaseSection({
   );
 }
 
+function updateProgressLabel(progress: AppUpdateProgress, language: LanguageMode): string {
+  switch (progress.phase) {
+    case "downloading":
+      return localize(language, "Downloading update", "正在下载更新");
+    case "verifying":
+      return localize(language, "Verifying download", "正在校验下载文件");
+    case "staging":
+      return localize(language, "Installing to staging area", "正在安装到临时目录");
+    case "validating":
+      return localize(language, "Validating application", "正在验证应用");
+    case "restarting":
+      return localize(language, "Restarting application", "正在重新启动");
+    case "completed":
+      return localize(language, "Update complete", "更新完成");
+    case "error":
+      return localize(language, "Update failed", "更新失败");
+    default:
+      return localize(language, "Checking for updates", "正在检查更新");
+  }
+}
+
 export function SettingsDialog({
   platform,
   initialSection,
   settings,
   appUpdateStatus,
+  appUpdateProgress,
   appUpdateBusy,
   appUpdateError,
   environments,
@@ -144,6 +166,7 @@ export function SettingsDialog({
   initialSection: SettingsSection;
   settings: AppSettings | null;
   appUpdateStatus: AppUpdateStatus | null;
+  appUpdateProgress: AppUpdateProgress | null;
   appUpdateBusy: boolean;
   appUpdateError: string | null;
   environments: SessionEnvironment[];
@@ -507,24 +530,6 @@ export function SettingsDialog({
                   <h3>{l("Optional sources", "可选来源")}</h3>
                   <p>{l("Choose which local agent data sources are monitored and indexed.", "选择要监测和索引的本地 agent 数据源。")}</p>
                 </header>
-                <label className="settings-field settings-toggle">
-                  <div className="settings-field-text">
-                    <span className="settings-field-title">{l("Hide subagent sessions", "隐藏 Subagent 会话")}</span>
-                    <span className="settings-field-sub">
-                      {l(
-                        "Exclude subagents from session lists, project counts, and statistics.",
-                        "从会话列表、项目数量和统计中排除 Subagent。",
-                      )}
-                    </span>
-                  </div>
-                  <input
-                    type="checkbox"
-                    className="switch"
-                    checked={Boolean(settings?.hideSubagentSessions)}
-                    disabled={!settings || saving}
-                    onChange={(event) => onSettingsChange({ hideSubagentSessions: event.currentTarget.checked })}
-                  />
-                </label>
                 <label className="settings-field settings-toggle">
                   <div className="settings-field-text">
                     <span className="settings-field-title">Include CodeWiz</span>
@@ -918,6 +923,24 @@ export function SettingsDialog({
                         onChange={(event) => onSettingsChange({ remoteSyncSupabaseAnonKey: event.currentTarget.value })}
                       />
                     </label>
+                    <label className="settings-field settings-toggle">
+                      <div className="settings-field-text">
+                        <span className="settings-field-title">{l("Sync session attachments", "同步会话附件")}</span>
+                        <span className="settings-field-sub">
+                          {l(
+                            "Upload available attachments with remote sessions. Enabled by default.",
+                            "远程同步会话时一并上传可用附件，默认开启。",
+                          )}
+                        </span>
+                      </div>
+                      <input
+                        type="checkbox"
+                        className="switch"
+                        checked={settings.syncSessionAttachments !== false}
+                        disabled={saving}
+                        onChange={(event) => onSettingsChange({ syncSessionAttachments: event.currentTarget.checked })}
+                      />
+                    </label>
                     <SupabaseSetupGuide
                       language={language}
                       tone="info"
@@ -1126,6 +1149,26 @@ export function SettingsDialog({
                     </button>
                   </div>
                 </div>
+                {platform === "darwin" ? (
+                  <label className="settings-field settings-toggle">
+                    <div className="settings-field-text">
+                      <span className="settings-field-title">{l("Keep in Dock", "保留在程序坞")}</span>
+                      <span className="settings-field-sub">
+                        {l(
+                          "Turn this off to use AgentRecall only from the menu bar. Enabled by default.",
+                          "关闭后仅从顶部菜单栏使用 AgentRecall，默认开启。",
+                        )}
+                      </span>
+                    </div>
+                    <input
+                      type="checkbox"
+                      className="switch"
+                      checked={settings?.showInDock !== false}
+                      disabled={!settings || saving}
+                      onChange={(event) => onSettingsChange({ showInDock: event.currentTarget.checked })}
+                    />
+                  </label>
+                ) : null}
               </section>
             ) : null}
             {activeSection === "about" ? (
@@ -1170,6 +1213,18 @@ export function SettingsDialog({
                       <UpdateReleaseSection kind="features" title={l("New features", "新增功能")} items={appUpdateStatus.manifest.notes.features} />
                       <UpdateReleaseSection kind="fixes" title={l("Fixes", "问题修复")} items={appUpdateStatus.manifest.notes.fixes} />
                     </div>
+                    {appUpdateProgress ? (
+                      <div className="update-progress-panel" role="status" aria-live="polite">
+                        <div className="update-progress-copy">
+                          <strong>{updateProgressLabel(appUpdateProgress, language)}</strong>
+                          {typeof appUpdateProgress.percent === "number" ? <span>{appUpdateProgress.percent}%</span> : null}
+                        </div>
+                        <div className={`update-progress-track ${typeof appUpdateProgress.percent === "number" ? "" : "indeterminate"}`}>
+                          <span style={typeof appUpdateProgress.percent === "number" ? { width: `${appUpdateProgress.percent}%` } : undefined} />
+                        </div>
+                        {appUpdateProgress.message ? <small>{appUpdateProgress.message}</small> : null}
+                      </div>
+                    ) : null}
                     <div className="update-card-footer">
                       <span>{l("The App will reopen automatically after updating.", "更新完成后会自动重新打开应用。")}</span>
                       <div className="update-card-actions">

@@ -33,7 +33,14 @@ export function buildWslProcessSpec(distribution: string, remoteCommand: string)
   if (!normalized) throw new Error("WSL distribution is required.");
   return {
     command: "wsl.exe",
-    args: ["--distribution", normalized, "--exec", "bash", "-lc", remoteCommand],
+    args: [
+      "--distribution",
+      normalized,
+      "--exec",
+      "bash",
+      "-lc",
+      `if [ -s "$HOME/.nvm/nvm.sh" ]; then . "$HOME/.nvm/nvm.sh"; fi; ${remoteCommand}`,
+    ],
   };
 }
 

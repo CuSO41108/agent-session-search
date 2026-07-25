@@ -14,7 +14,6 @@ import {
   Folder,
   GitBranch,
   Laptop,
-  Pin,
   RefreshCw,
   Server,
   Sparkles,
@@ -84,7 +83,7 @@ export interface SessionsPageModel {
   expandedTreeProjects: Set<string>;
   source: SearchOptions["source"];
   sourceFilters: Array<{ label: string; value: SearchOptions["source"] }>;
-  visibility: "default" | "favorites" | "pinned" | "hidden";
+  visibility: "default" | "favorites" | "hidden";
   searchRef: RefObject<HTMLInputElement | null>;
   searchPlaceholder: string;
   query: string;
@@ -525,13 +524,6 @@ function SessionSidebar({
           >
             <Star size={14} />
             {l("Favorites", "收藏")}
-          </button>
-          <button
-            className={model.visibility === "pinned" ? "active" : ""}
-            onClick={() => actions.setVisibility("pinned")}
-          >
-            <Pin size={14} />
-            {l("Pinned", "置顶")}
           </button>
           <button
             className={model.visibility === "hidden" ? "active" : ""}

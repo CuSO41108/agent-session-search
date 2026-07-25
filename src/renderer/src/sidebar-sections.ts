@@ -1,9 +1,10 @@
-export type SidebarSectionId = "views" | "environments" | "sources";
+export type SidebarSectionId = "views" | "remaining" | "environments" | "sources";
 
 export type SidebarSectionsState = Record<SidebarSectionId, boolean>;
 
 export const DEFAULT_SIDEBAR_SECTIONS: SidebarSectionsState = {
   environments: true,
+  remaining: true,
   sources: true,
   views: false,
 };
@@ -15,6 +16,7 @@ export function readSidebarSections(value: string | null): SidebarSectionsState 
     return {
       environments:
         typeof parsed.environments === "boolean" ? parsed.environments : DEFAULT_SIDEBAR_SECTIONS.environments,
+      remaining: typeof parsed.remaining === "boolean" ? parsed.remaining : DEFAULT_SIDEBAR_SECTIONS.remaining,
       sources: typeof parsed.sources === "boolean" ? parsed.sources : DEFAULT_SIDEBAR_SECTIONS.sources,
       views: typeof parsed.views === "boolean" ? parsed.views : DEFAULT_SIDEBAR_SECTIONS.views,
     };

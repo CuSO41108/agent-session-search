@@ -8,8 +8,6 @@ import {
   Download,
   Eye,
   FolderOpen,
-  Pin,
-  PinOff,
   Play,
   Star,
   Tag,
@@ -37,7 +35,6 @@ export function SessionContextMenu({
   onRename,
   onAddTag,
   onFavorite,
-  onPin,
   onHide,
   onResume,
   onResumeIterm,
@@ -59,7 +56,6 @@ export function SessionContextMenu({
   onRename(): void;
   onAddTag(): void;
   onFavorite(): void;
-  onPin(): void;
   onHide(): void;
   onResume(): void;
   onResumeIterm(): void;
@@ -102,10 +98,6 @@ export function SessionContextMenu({
       <button onClick={onFavorite}>
         <Star size={14} fill={state.session.favorited ? "currentColor" : "none"} />{" "}
         {state.session.favorited ? l("Unfavorite", "取消收藏") : l("Favorite", "收藏")}
-      </button>
-      <button onClick={onPin}>
-        {state.session.pinned ? <PinOff size={14} /> : <Pin size={14} />}{" "}
-        {state.session.pinned ? l("Unpin", "取消置顶") : l("Pin", "置顶")}
       </button>
       <button onClick={onHide}>
         {state.session.hidden ? <Eye size={14} /> : <Archive size={14} />}{" "}

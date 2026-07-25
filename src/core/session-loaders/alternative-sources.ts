@@ -343,11 +343,19 @@ function qoderContentFromRow(row: Record<string, unknown>): string {
   if (!isRecord(message)) return "";
   const content = message.content;
   if (!Array.isArray(content)) return "";
-  return content
+  const raw = content
     .filter((item): item is Record<string, unknown> => isRecord(item) && stringField(item, "type") === "text")
     .map((item) => stringField(item, "text"))
     .filter(Boolean)
     .join("\n");
+  return stripQoderWrapperTags(raw);
+}
+
+function stripQoderWrapperTags(text: string): string {
+  const withoutSystemReminder = text.replace(/<system-reminder>[\s\S]*?<\/system-reminder>/giu, "");
+  const withoutAttachedFiles = withoutSystemReminder.replace(/<attached_files>[\s\S]*?<\/attached_files>/giu, "");
+  const userQueryMatch = withoutAttachedFiles.match(/<user_query>([\s\S]*?)<\/user_query>/iu);
+  return (userQueryMatch?.[1] ?? withoutAttachedFiles).trim();
 }
 
 function loadQoderConversationFile(filePath: string, slug: string, stat: VirtualSessionFileStat): LoadedSession | null {
@@ -1029,6 +1037,20 @@ interface CursorComposerMetadata {
   isSubagent: boolean;
   parentSessionId: string | null;
   messages: SessionMessage[];
+  executionEnvironmentHint?: LoadedSession["executionEnvironmentHint"];
+}
+
+function cursorSshEnvironmentHint(
+  ...uris: Array<Record<string, unknown> | null>
+): LoadedSession["executionEnvironmentHint"] | undefined {
+  for (const uri of uris) {
+    if (!uri || stringField(uri, "scheme") !== "vscode-remote") continue;
+    const authority = stringField(uri, "authority");
+    if (!authority.startsWith("ssh-remote+")) continue;
+    const hostAlias = authority.slice("ssh-remote+".length).trim();
+    if (hostAlias) return { kind: "ssh", label: hostAlias, hostAlias };
+  }
+  return undefined;
 }
 
 function loadCursorComposerMetadata(stateDbPath: string): Map<string, CursorComposerMetadata> {
@@ -1106,6 +1128,7 @@ function loadCursorComposerMetadata(stateDbPath: string): Map<string, CursorComp
         isSubagent: numberField(row, "isSubagent") === 1 || Boolean(subagentInfo),
         parentSessionId: stringField(subagentInfo, "parentComposerId") || null,
         messages: drafts.map((draft, index) => messageFromParts(draft.role, draft.content, draft.timestamp, index)),
+        executionEnvironmentHint: cursorSshEnvironmentHint(workspaceUri, agentUri, draftUri),
       });
     }
   } catch {
@@ -1191,7 +1214,9 @@ export function* loadCursorAgentSessionsIterator(cursorDir = path.join(os.homedi
           timestamp: header.createdAt || loaded.session.timestamp,
           isSubagent: header.isSubagent || loaded.session.isSubagent,
           parentSessionId: header.parentSessionId || loaded.session.parentSessionId,
+          storageEnvironmentId: "local",
         };
+        loaded.executionEnvironmentHint = header.executionEnvironmentHint;
       }
       yield loaded;
     }
@@ -1200,6 +1225,7 @@ export function* loadCursorAgentSessionsIterator(cursorDir = path.join(os.homedi
   for (const header of composerMetadata.values()) {
     if (transcriptSessionIds.has(header.composerId)) continue;
     const question = cleanTitle(firstQuestion(header.messages));
+    if (!header.title && header.messages.length === 0 && !header.projectPath) continue;
     if (header.isDraft && !header.title && !question) continue;
     const workspaceSlug = encodeCursorWorkspaceSlug(header.projectPath);
     const session = createIndexedSession({
@@ -1219,8 +1245,10 @@ export function* loadCursorAgentSessionsIterator(cursorDir = path.join(os.homedi
       session: {
         ...session,
         sessionKey: `cursor:${workspaceSlug}:${header.composerId}`,
+        storageEnvironmentId: "local",
       },
       messages: header.messages,
+      executionEnvironmentHint: header.executionEnvironmentHint,
     };
   }
 }

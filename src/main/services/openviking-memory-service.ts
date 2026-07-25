@@ -135,7 +135,6 @@ export class OpenVikingMemoryService {
         environmentId: "local",
         limit: 10_000,
         excludeSubagents: true,
-        prioritizePinned: false,
       }),
       this.options.store.findOpenVikingWorkspaceByRootPath(rootPath),
     ]);
@@ -221,7 +220,6 @@ export class OpenVikingMemoryService {
       limit: 10_000,
       excludeSubagents: true,
       sortBy: "created",
-      prioritizePinned: false,
     });
     const candidates = await this.collectCandidates(sessions);
     const importedCandidates = new Set<ImportCandidate>();

@@ -1,5 +1,6 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { performance } from "node:perf_hooks";
 import {
   loadClaudeCliSessionRows,
   loadCodeBuddyCliSessionFile,
@@ -13,7 +14,7 @@ import {
 } from "./session-loader";
 import { migrationTargetDescriptor } from "./migration-targets";
 import type { SessionStore } from "./session-store";
-import type { LoadedSession, MigrationTarget } from "./types";
+import type { LoadedSession, MigrationTarget, SessionEnvironment } from "./types";
 
 export interface IndexStatus {
   running: boolean;
@@ -46,9 +47,12 @@ export async function syncDefaultSessions(
 
 export interface BatchIndexOptions {
   batchSize?: number;
+  timeBudgetMs?: number;
   loadOptions?: SessionLoadOptions;
   onProgress?: (status: IndexStatus) => void;
+  onEnvironmentsChanged?: () => void;
   yieldToEventLoop?: () => Promise<void>;
+  now?: () => number;
 }
 
 function indexFailureMessage(failed: number): string | null {
@@ -62,14 +66,29 @@ export async function syncLoadedSessionsInBatches(
   options: BatchIndexOptions = {},
 ): Promise<IndexStatus> {
   const batchSize = Math.max(1, options.batchSize ?? 3);
+  const timeBudgetMs = Math.max(1, options.timeBudgetMs ?? Number.POSITIVE_INFINITY);
   const yieldToEventLoop = options.yieldToEventLoop ?? (() => new Promise<void>((resolve) => setTimeout(resolve, 0)));
+  const now = options.now ?? (() => performance.now());
   let indexed = 0;
   let skipped = 0;
   let failed = 0;
   let total = 0;
   let pendingInBatch = 0;
+  let sliceStartedAt = now();
+  const environments = await store.listEnvironments();
+  const sshEnvironmentByHostAlias = new Map(
+    environments
+      .filter((environment) => environment.kind === "ssh" && environment.hostAlias)
+      .map((environment) => [environment.hostAlias!, environment]),
+  );
 
-  for (const item of loaded) {
+  for (const loadedItem of loaded) {
+    const item = await resolveExecutionEnvironment(
+      store,
+      loadedItem,
+      sshEnvironmentByHostAlias,
+      options.onEnvironmentsChanged,
+    );
     try {
       if (await store.isIndexedSessionFresh(item.session)) {
         await store.touchIndexedAtIfMissing(item.session.sessionKey);
@@ -85,7 +104,7 @@ export async function syncLoadedSessionsInBatches(
     total++;
     pendingInBatch++;
 
-    if (pendingInBatch >= batchSize) {
+    if (pendingInBatch >= batchSize || now() - sliceStartedAt >= timeBudgetMs) {
       pendingInBatch = 0;
       options.onProgress?.({
         running: true,
@@ -96,6 +115,7 @@ export async function syncLoadedSessionsInBatches(
         error: indexFailureMessage(failed),
       });
       await yieldToEventLoop();
+      sliceStartedAt = now();
     }
   }
 
@@ -118,6 +138,39 @@ export async function syncLoadedSessionsInBatches(
     total,
     lastIndexedAt: Date.now(),
     error: indexFailureMessage(failed),
+  };
+}
+
+async function resolveExecutionEnvironment(
+  store: SessionStore,
+  item: LoadedSession,
+  sshEnvironmentByHostAlias: Map<string, SessionEnvironment>,
+  onEnvironmentsChanged?: () => void,
+): Promise<LoadedSession> {
+  const hint = item.executionEnvironmentHint;
+  if (!hint) return item;
+
+  let environment = sshEnvironmentByHostAlias.get(hint.hostAlias);
+  if (!environment) {
+    environment = await store.upsertEnvironment({
+      kind: "ssh",
+      label: hint.label,
+      hostAlias: hint.hostAlias,
+      enabled: false,
+    });
+    sshEnvironmentByHostAlias.set(hint.hostAlias, environment);
+    onEnvironmentsChanged?.();
+  }
+
+  return {
+    ...item,
+    session: {
+      ...item.session,
+      environmentId: environment.id,
+      environmentKind: environment.kind,
+      environmentLabel: environment.label,
+      storageEnvironmentId: item.session.storageEnvironmentId ?? "local",
+    },
   };
 }
 

@@ -39,7 +39,6 @@ export class PostgresSessionSearchRepository {
 
     if (options.visibility === "hidden") filters.push("sessions.hidden = true");
     else if (options.visibility === "favorites") filters.push("sessions.hidden = false and sessions.favorited = true");
-    else if (options.visibility === "pinned") filters.push("sessions.hidden = false and sessions.pinned = true");
     else filters.push("sessions.hidden = false");
     if (options.excludeSubagents) filters.push("sessions.is_subagent = false");
     if (options.projectPath) filters.push(`sessions.project_path = ${bind(options.projectPath)}`);
@@ -138,7 +137,6 @@ export class PostgresSessionSearchRepository {
 
     const limit = Math.max(0, options.limit ?? 200);
     const limitPlaceholder = bind(limit);
-    const pinnedOrder = options.prioritizePinned === false ? "" : "sessions.pinned desc,";
     const primarySort =
       options.sortBy === "created"
         ? "sessions.started_at desc"
@@ -172,7 +170,7 @@ export class PostgresSessionSearchRepository {
         join agent_recall.environments environments on environments.id = sessions.environment_id
         ${bestTurnJoin}
         where ${filters.join(" and ")}
-        order by ${pinnedOrder} ${primarySort}, sessions.session_key
+        order by ${primarySort}, sessions.session_key
         limit ${limitPlaceholder}
       `,
       values,

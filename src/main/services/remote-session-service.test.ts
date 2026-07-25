@@ -57,7 +57,6 @@ function localSession(overrides: Partial<SessionSearchResult> = {}): SessionSear
     customTitle: null,
     displayTitle: "Session 1",
     favorited: false,
-    pinned: false,
     hidden: false,
     tags: [],
     matchSnippet: null,
@@ -413,6 +412,22 @@ describe("RemoteSessionService cloud orchestration", () => {
       [{ session: regular, revision: "local-revision" }],
       [],
       [],
+    );
+  });
+
+  it("uses the attachment sync setting when comparing local and cloud revisions", async () => {
+    const settings = configuredSettings();
+    settings.syncSessionAttachments = false;
+    const harness = createHarness({ settings });
+
+    await harness.service.listSyncItems();
+
+    expect(harness.buildUpload).toHaveBeenCalledWith(
+      harness.store,
+      "local:session-1",
+      0,
+      undefined,
+      false,
     );
   });
 

@@ -13,7 +13,7 @@ import type { MouseEvent as ReactMouseEvent, ReactElement } from "react";
 import { GitBranch } from "lucide-react";
 import type { ApiConfig, ClaudeApiConfig } from "../../core/api-config";
 import type { IndexStatus } from "../../core/indexer";
-import type { AppUpdateStatus } from "../../core/app-update-types";
+import type { AppUpdateProgress, AppUpdateStatus } from "../../core/app-update-types";
 import type { AppSettings, AppSettingsUpdate } from "../../core/platform";
 import type { MigrationTargetSettings } from "../../core/migration-targets";
 import type { RemoteHealthReport } from "../../core/remote-health";
@@ -262,6 +262,7 @@ export function App(): ReactElement {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsInitialSection, setSettingsInitialSection] = useState<SettingsSection>("terminal");
   const [appUpdateStatus, setAppUpdateStatus] = useState<AppUpdateStatus | null>(null);
+  const [appUpdateProgress, setAppUpdateProgress] = useState<AppUpdateProgress | null>(null);
   const [appUpdateBusy, setAppUpdateBusy] = useState(false);
   const [appUpdateError, setAppUpdateError] = useState<string | null>(null);
   const shouldSignalAppUpdate = Boolean(appUpdateStatus?.updateAvailable && !appUpdateStatus.updateSkipped && !appUpdateStatus.promptSnoozed);
@@ -438,6 +439,7 @@ export function App(): ReactElement {
       setSettingsOpen(true);
     });
     const offAppUpdate = window.sessionSearch.onAppUpdateStatus(setAppUpdateStatus);
+    const offAppUpdateProgress = window.sessionSearch.onAppUpdateProgress(setAppUpdateProgress);
     const offEnvironments = window.sessionSearch.onEnvironmentsUpdated((nextEnvironments) => {
       setEnvironments(nextEnvironments);
       if (activePage === "sessions") void load();
@@ -447,6 +449,7 @@ export function App(): ReactElement {
       offFocus();
       offOpenSettings();
       offAppUpdate();
+      offAppUpdateProgress();
       offEnvironments();
     };
   }, [activePage, load, loadSidebarMetadata, loadStats, loadWorkbenchSessions, navigateToPage]);
@@ -904,6 +907,7 @@ export function App(): ReactElement {
   async function checkAppUpdate(): Promise<void> {
     setAppUpdateBusy(true);
     setAppUpdateError(null);
+    setAppUpdateProgress(null);
     try {
       setAppUpdateStatus(await window.sessionSearch.getAppUpdateStatus(true));
     } catch (error) {
@@ -916,6 +920,7 @@ export function App(): ReactElement {
   async function installAppUpdate(): Promise<void> {
     setAppUpdateBusy(true);
     setAppUpdateError(null);
+    setAppUpdateProgress(null);
     try {
       await window.sessionSearch.installAppUpdate();
     } catch (error) {
@@ -1431,7 +1436,7 @@ export function App(): ReactElement {
           revealLabel={FILE_MANAGER_LABEL}
           showMacActions={IS_MAC}
           canResume={supportsResumeSource(contextMenu.session.source)}
-          canMigrate={!isRemoteSession(contextMenu.session) && supportsMigrationSource(contextMenu.session.source)}
+          canMigrate={contextMenu.session.environmentKind !== "ssh" && supportsMigrationSource(contextMenu.session.source)}
           onRename={() => beginRename(contextMenu.session)}
           onAddTag={() => beginAddTag(contextMenu.session)}
           onFavorite={() =>
@@ -1440,9 +1445,6 @@ export function App(): ReactElement {
               () => window.sessionSearch.setFavorited(contextMenu.session.sessionKey, !contextMenu.session.favorited),
               contextMenu.session.favorited ? t("Removed from favorites.", "已取消收藏。") : t("Added to favorites.", "已加入收藏。"),
             )
-          }
-          onPin={() =>
-            void runAction(t("Updating pin", "正在更新置顶"), () => window.sessionSearch.setPinned(contextMenu.session.sessionKey, !contextMenu.session.pinned), t("Pin updated.", "置顶已更新。"))
           }
           onHide={() =>
             void runAction(
@@ -1550,6 +1552,7 @@ export function App(): ReactElement {
           initialSection={settingsInitialSection}
           settings={appSettings}
           appUpdateStatus={appUpdateStatus}
+          appUpdateProgress={appUpdateProgress}
           appUpdateBusy={appUpdateBusy}
           appUpdateError={appUpdateError}
           environments={environments}

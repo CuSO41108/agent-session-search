@@ -30,6 +30,7 @@ describe("AgentRecall PostgreSQL schema", () => {
       "turn_messages",
       "session_raw_events",
       "session_message_events",
+      "session_attachments",
       "saved_searches",
       "search_history",
       "trace_spans",
@@ -51,7 +52,7 @@ describe("AgentRecall PostgreSQL schema", () => {
       "openviking_import_jobs",
       "openviking_imported_turns",
     ]));
-    expect(names).toHaveLength(54);
+    expect(names).toHaveLength(55);
     await database.close();
   });
 
@@ -122,7 +123,7 @@ describe("AgentRecall PostgreSQL schema", () => {
     const migrations = await upgradedDatabase.query<{ version: number }>(
       "select version from agent_recall.schema_migrations order by version",
     );
-    expect(migrations.rows.map((row) => Number(row.version))).toEqual([1, 2, 3, 4, 5, 6]);
+    expect(migrations.rows.map((row) => Number(row.version))).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
     await upgradedDatabase.close();
   });
 

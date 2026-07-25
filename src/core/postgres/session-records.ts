@@ -14,6 +14,7 @@ export interface SessionRow extends Record<string, unknown> {
   raw_id: string;
   source: SessionSource;
   environment_id: string;
+  storage_environment_id: string | null;
   environment_kind: EnvironmentKind;
   environment_label: string;
   project_path: string;
@@ -315,6 +316,7 @@ export function hydrateSession(
     rawId: row.raw_id,
     source: row.source,
     environmentId: row.environment_id,
+    storageEnvironmentId: row.storage_environment_id || row.environment_id,
     environmentKind: row.environment_kind,
     environmentLabel: row.environment_label,
     projectPath: row.project_path,
@@ -336,7 +338,6 @@ export function hydrateSession(
     customTitle: row.custom_title,
     displayTitle,
     favorited: Boolean(row.favorited),
-    pinned: Boolean(row.pinned),
     hidden: Boolean(row.hidden),
     tags: row.tag_names ?? [],
     matchSnippet: bestTurn?.snippet ?? null,

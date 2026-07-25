@@ -475,6 +475,16 @@ export function targetFilePath(
   return path.join(homeDir, root, "projects", encodeCodeBuddyProjectDir(projectPath), `${sessionId}.jsonl`);
 }
 
+export function targetFilePathForRemoteEnvironment(
+  target: MigrationTarget,
+  projectPath: string,
+  sessionId: string,
+  homeDir: string,
+  now: Date,
+): string {
+  return targetFilePath(target, projectPath, sessionId, homeDir, now).replaceAll("\\", "/");
+}
+
 const TARGET_ROOTS: Record<MigrationTarget, string> = {
   claude: ".claude",
   tclaude: ".tclaude",

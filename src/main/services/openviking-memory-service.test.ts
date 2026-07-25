@@ -75,7 +75,6 @@ function session(sessionKey: string, source: SessionSearchResult["source"] = "co
     customTitle: null,
     displayTitle: sessionKey,
     favorited: false,
-    pinned: false,
     hidden: false,
     tags: [],
     matchSnippet: null,

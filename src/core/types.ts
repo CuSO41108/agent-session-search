@@ -60,6 +60,25 @@ export interface SessionMessage {
   content: string;
   timestamp: string;
   index: number;
+  attachments?: SessionAttachment[];
+}
+
+export type SessionAttachmentStatus = "available" | "unsafe" | "missing" | "too_large";
+export type SessionAttachmentPreviewKind = "image" | "pdf" | "text" | "file";
+
+export interface SessionAttachment {
+  id: string;
+  fileName: string;
+  mimeType: string;
+  sizeBytes?: number;
+  previewKind: SessionAttachmentPreviewKind;
+  status: SessionAttachmentStatus;
+  source?: {
+    kind: "inline" | "path";
+    value: string;
+  };
+  remoteObjectKey?: string;
+  sha256?: string;
 }
 
 export interface SessionMessageEvent {
@@ -181,6 +200,7 @@ export interface SessionTurnMessage {
   role: SessionMessage["role"];
   content: string;
   timestamp: string;
+  attachments?: SessionAttachment[];
 }
 
 export interface SessionTraceSpan {
@@ -233,6 +253,7 @@ export interface IndexedSession {
   gitBranch?: string | null;
   tokenUsage?: TokenUsage;
   environmentId?: string;
+  storageEnvironmentId?: string;
   environmentKind?: EnvironmentKind;
   environmentLabel?: string;
   isSubagent?: boolean;
@@ -244,6 +265,11 @@ export interface LoadedSession {
   messages: SessionMessage[];
   tokenEvents?: TokenUsageEvent[];
   traceEvents?: SessionTraceEvent[];
+  executionEnvironmentHint?: {
+    kind: "ssh";
+    label: string;
+    hostAlias: string;
+  };
 }
 
 export type SessionSourceFilter = SessionSource | "claude" | "codex" | "all";
@@ -397,6 +423,8 @@ export interface SessionStats {
 
 export type UsageQuotaProvider = "codex" | "claude-code";
 export type UsageQuotaStatus = "supported" | "unsupported_api_key" | "not_configured" | "error";
+export type UsageQuotaFreshness = "fresh" | "stale" | "auth-required" | "unavailable";
+export type UsageQuotaFailureKind = "transient" | "auth" | "rate_limit" | "permanent";
 
 export interface UsageQuota {
   key: string;
@@ -417,15 +445,32 @@ export interface UsageQuotaCard {
   plan?: string;
   quotas: UsageQuota[];
   detail?: string;
+  errorKind?: UsageQuotaFailureKind;
 }
 
 export interface UsageQuotaSnapshot {
   generatedAt: string;
   providers: UsageQuotaCard[];
   hiddenProviders?: UsageQuotaProvider[];
+  freshness?: UsageQuotaFreshness;
+  lastSuccessfulAt?: string;
+  error?: string;
 }
 
-export type LiveSessionFamily = "claude" | "codex" | "tclaude" | "tcodex" | "codebuddy" | "codewiz" | "trae" | "qoder";
+export type LiveSessionFamily =
+  | "claude"
+  | "codex"
+  | "tclaude"
+  | "tcodex"
+  | "codebuddy"
+  | "codewiz"
+  | "openclaw"
+  | "hermes"
+  | "opencode"
+  | "zcode"
+  | "cursor"
+  | "trae"
+  | "qoder";
 
 export interface LiveSession {
   family: LiveSessionFamily;
@@ -486,7 +531,12 @@ export interface CodexConversationLine {
   timestamp?: string;
   id?: string;
   instructions?: string | null;
-  git?: { cwd?: string };
+  git?: {
+    cwd?: string;
+    branch?: string;
+    commit_hash?: string;
+    repository_url?: string;
+  };
   role?: "user" | "assistant" | string;
   content?: Array<{ type?: string; text?: string }>;
   payload?: {

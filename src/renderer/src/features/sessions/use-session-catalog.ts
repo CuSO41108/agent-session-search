@@ -22,7 +22,7 @@ import {
 } from "../../live-filter";
 import { resolveSearchScope } from "../search/search-scope";
 
-export type SessionVisibility = "default" | "favorites" | "pinned" | "hidden";
+export type SessionVisibility = "default" | "favorites" | "hidden";
 
 export const INITIAL_SESSION_LIMIT = 30;
 export const SESSION_PAGE_SIZE = 30;

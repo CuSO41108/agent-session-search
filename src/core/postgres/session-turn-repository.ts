@@ -1,4 +1,5 @@
 import type {
+  SessionAttachment,
   SessionMessage,
   SessionTraceEvent,
   SessionTraceSpan,
@@ -17,6 +18,18 @@ import {
   sessionTurnSummaryFromRow,
   type SessionTurnSummaryRow,
 } from "./session-records";
+
+function attachmentsFromMetadata(
+  value: Record<string, unknown> | string | null,
+): SessionAttachment[] | undefined {
+  if (value === null) return undefined;
+  const attachments = jsonValue(value).attachments;
+  if (!Array.isArray(attachments) || attachments.length === 0) return undefined;
+  return attachments.filter(
+    (attachment): attachment is SessionAttachment =>
+      Boolean(attachment && typeof attachment === "object" && !Array.isArray(attachment)),
+  );
+}
 
 export interface TraceEventQueryOptions {
   startTimestamp?: string;
@@ -65,9 +78,10 @@ export class PostgresSessionTurnRepository {
         role: SessionTurnMessage["role"];
         content: string;
         occurred_at: Date | string | null;
+        metadata: Record<string, unknown> | string;
       }>(
         `
-          select message_index, source_message_index, role, content, occurred_at
+          select message_index, source_message_index, role, content, occurred_at, metadata
           from agent_recall.turn_messages
           where turn_id = $1
           order by message_index
@@ -110,6 +124,9 @@ export class PostgresSessionTurnRepository {
         role: row.role,
         content: row.content,
         timestamp: isoValue(row.occurred_at),
+        ...(attachmentsFromMetadata(row.metadata)
+          ? { attachments: attachmentsFromMetadata(row.metadata) }
+          : {}),
       })),
       spans: spanResult.rows.map((row) => ({
         id: row.id,
@@ -135,9 +152,12 @@ export class PostgresSessionTurnRepository {
       content: string;
       occurred_at: Date | string | null;
       source_message_index: number | string;
+      metadata: Record<string, unknown> | string;
     }>(
       `
-        select messages.role, messages.content, messages.occurred_at, messages.source_message_index
+        select
+          messages.role, messages.content, messages.occurred_at,
+          messages.source_message_index, messages.metadata
         from agent_recall.turn_messages messages
         join agent_recall.session_turns turns on turns.id = messages.turn_id
         where turns.session_key = $1
@@ -147,12 +167,16 @@ export class PostgresSessionTurnRepository {
       `,
       [sessionKey, Math.max(0, offset), Math.max(0, limit)],
     );
-    return result.rows.map((row) => ({
-      role: row.role,
-      content: row.content,
-      timestamp: isoValue(row.occurred_at),
-      index: numberValue(row.source_message_index),
-    }));
+    return result.rows.map((row) => {
+      const attachments = attachmentsFromMetadata(row.metadata);
+      return {
+        role: row.role,
+        content: row.content,
+        timestamp: isoValue(row.occurred_at),
+        index: numberValue(row.source_message_index),
+        ...(attachments ? { attachments } : {}),
+      };
+    });
   }
 
   async getAllMessages(sessionKey: string): Promise<SessionMessage[]> {

@@ -166,10 +166,6 @@ export class SessionCatalogService {
     return this.dependencies.store.setFavorited(sessionKey, favorited);
   }
 
-  setPinned(sessionKey: string, pinned: boolean): Promise<void> {
-    return this.dependencies.store.setPinned(sessionKey, pinned);
-  }
-
   setHidden(sessionKey: string, hidden: boolean): Promise<void> {
     return this.dependencies.store.setHidden(sessionKey, hidden);
   }

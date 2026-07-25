@@ -74,7 +74,6 @@ export function useWorkbenchOverview(language: LanguageMode) {
         source: "all",
         visibility: "default",
         sortBy: "smart",
-        prioritizePinned: false,
         limit: WORKBENCH_SESSION_LIMIT,
       });
       if (requestId === sessionsLoadSequence.current) setSessions(page.sessions);
@@ -86,7 +85,6 @@ export function useWorkbenchOverview(language: LanguageMode) {
       source: "all",
       visibility: "default",
       sortBy: "activity",
-      prioritizePinned: false,
       liveStatus: liveDetectionFailed ? undefined : "closed",
       liveSessionKeys: liveDetectionFailed ? [] : liveSearchKeys,
       limit: WORKBENCH_SESSION_LIMIT,
@@ -97,7 +95,6 @@ export function useWorkbenchOverview(language: LanguageMode) {
           source: "all",
           visibility: "default",
           sortBy: "activity",
-          prioritizePinned: false,
           liveStatus: "open",
           liveSessionKeys: liveSearchKeys,
           limit: WORKBENCH_SESSION_LIMIT,
@@ -189,7 +186,11 @@ export function useWorkbenchOverview(language: LanguageMode) {
   useEffect(() => {
     void loadQuotas();
     const timer = window.setInterval(() => void loadQuotas("background"), QUOTA_REFRESH_INTERVAL_MS);
-    return () => window.clearInterval(timer);
+    const unsubscribe = window.sessionSearch.onQuotaUpdated(setQuotas);
+    return () => {
+      window.clearInterval(timer);
+      unsubscribe();
+    };
   }, [loadQuotas]);
 
   useEffect(() => {

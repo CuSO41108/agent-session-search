@@ -48,8 +48,6 @@ export function registerSessionCatalogIpc(
   ipc.handle("tag:delete", (_event, tagName: string) => service.deleteTag(tagName));
   ipc.handle("favorite:set", (_event, sessionKey: string, favorited: boolean) =>
     service.setFavorited(sessionKey, favorited));
-  ipc.handle("pin:set", (_event, sessionKey: string, pinned: boolean) =>
-    service.setPinned(sessionKey, pinned));
   ipc.handle("hide:set", (_event, sessionKey: string, hidden: boolean) =>
     service.setHidden(sessionKey, hidden));
   ipc.handle("session:delete", (_event, sessionKey: string) => service.delete(sessionKey));

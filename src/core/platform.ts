@@ -98,8 +98,8 @@ export interface AppSettings {
   openVikingLocalEmbeddingModel: "BAAI/bge-small-zh-v1.5";
   hideCodexQuota: boolean;
   hideClaudeQuota: boolean;
-  hideSubagentSessions: boolean;
   autoCheckUpdates: boolean;
+  showInDock: boolean;
   summaryAutoBackfill: boolean;
   summaryMaxAgeDays: number;
   compressionConcurrency: number;
@@ -110,6 +110,7 @@ export interface AppSettings {
   skillSyncSupabaseUrl: string;
   skillSyncSupabaseAnonKey: string;
   remoteSyncEnabled: boolean;
+  syncSessionAttachments: boolean;
   remoteSyncSupabaseUrl: string;
   remoteSyncSupabaseAnonKey: string;
   apiConfig: ApiConfig;
@@ -165,8 +166,8 @@ export const defaultSettings: AppSettings = {
   openVikingLocalEmbeddingModel: "BAAI/bge-small-zh-v1.5",
   hideCodexQuota: false,
   hideClaudeQuota: false,
-  hideSubagentSessions: true,
   autoCheckUpdates: true,
+  showInDock: true,
   summaryAutoBackfill: false,
   summaryMaxAgeDays: 30,
   compressionConcurrency: 8,
@@ -177,6 +178,7 @@ export const defaultSettings: AppSettings = {
   skillSyncSupabaseUrl: "",
   skillSyncSupabaseAnonKey: "",
   remoteSyncEnabled: false,
+  syncSessionAttachments: true,
   remoteSyncSupabaseUrl: "",
   remoteSyncSupabaseAnonKey: "",
   apiConfig: defaultApiConfig,
@@ -185,7 +187,10 @@ export const defaultSettings: AppSettings = {
 };
 
 export function mergeAppSettings(previous: AppSettings, updates: AppSettingsUpdate): AppSettings {
-  const merged = { ...previous, ...updates };
+  const {
+    hideSubagentSessions: _legacySubagentVisibility,
+    ...merged
+  } = { ...previous, ...updates } as AppSettings & { hideSubagentSessions?: unknown };
   return {
     ...merged,
     defaultTerminal: normalizeTerminal(merged.defaultTerminal),
@@ -200,11 +205,13 @@ export function mergeAppSettings(previous: AppSettings, updates: AppSettingsUpda
     openVikingOpenCodeEnabled: Boolean(merged.openVikingOpenCodeEnabled),
     openVikingEmbeddingMode: merged.openVikingEmbeddingMode === "remote" ? "remote" : "local",
     openVikingLocalEmbeddingModel: "BAAI/bge-small-zh-v1.5",
+    showInDock: merged.showInDock !== false,
     summarySource: merged.summarySource === "claude" || merged.summarySource === "custom" ? merged.summarySource : "codex",
     skillSyncEnabled: Boolean(merged.skillSyncEnabled),
     skillSyncSupabaseUrl: normalizeSupabaseSettingUrl(merged.skillSyncSupabaseUrl),
     skillSyncSupabaseAnonKey: String(merged.skillSyncSupabaseAnonKey ?? "").trim(),
     remoteSyncEnabled: Boolean(merged.remoteSyncEnabled),
+    syncSessionAttachments: merged.syncSessionAttachments !== false,
     remoteSyncSupabaseUrl: normalizeSupabaseSettingUrl(merged.remoteSyncSupabaseUrl),
     remoteSyncSupabaseAnonKey: String(merged.remoteSyncSupabaseAnonKey ?? "").trim(),
     apiConfig: normalizeApiConfig({ ...previous.apiConfig, ...(updates.apiConfig ?? {}) }),

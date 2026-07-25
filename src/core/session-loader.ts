@@ -74,7 +74,7 @@ const TCLAUDE_DIR = ".tclaude";
 const TCODEX_DIR = ".tcodex";
 const CODEBUDDY_DIR = ".codebuddy";
 
-export function parseCodexSessionMetaLine(parsed: unknown): {
+interface CodexSessionMeta {
   id: string;
   projectPath: string;
   ts: number;
@@ -83,7 +83,9 @@ export function parseCodexSessionMetaLine(parsed: unknown): {
   originator?: string;
   isSubagent: boolean;
   parentSessionId: string | null;
-} | null {
+}
+
+export function parseCodexSessionMetaLine(parsed: unknown): CodexSessionMeta | null {
   if (!parsed || typeof parsed !== "object") return null;
 
   const line = parsed as CodexConversationLine;
@@ -110,12 +112,35 @@ export function parseCodexSessionMetaLine(parsed: unknown): {
       id: line.id,
       projectPath: line.git?.cwd || "",
       ts: new Date(line.timestamp).getTime(),
+      gitBranch: line.git?.branch,
       isSubagent: false,
       parentSessionId: null,
     };
   }
 
   return null;
+}
+
+function findCodexSessionMeta(
+  rows: unknown[],
+): CodexSessionMeta | null {
+  let result: CodexSessionMeta | null = null;
+  for (const row of rows) {
+    const parsed = parseCodexSessionMetaLine(row);
+    if (!parsed) continue;
+    if (!result) {
+      result = parsed;
+      continue;
+    }
+    if (!result.projectPath) result.projectPath = parsed.projectPath;
+    if (!result.ts) result.ts = parsed.ts;
+    if (!result.title) result.title = parsed.title;
+    if (!result.gitBranch) result.gitBranch = parsed.gitBranch;
+    if (!result.originator) result.originator = parsed.originator;
+    result.isSubagent ||= parsed.isSubagent;
+    if (!result.parentSessionId) result.parentSessionId = parsed.parentSessionId;
+  }
+  return result;
 }
 
 function extractClaudeTraceEvents(rows: unknown[]): TraceEventDraft[] {
@@ -593,11 +618,17 @@ function firstAiTitle(rows: unknown[]): string {
 export function loadCodexSessionRows(
   filePath: string,
   rows: unknown[],
-  options: { title?: string; updatedAt?: string; sourceOverride?: SessionSource; stat?: VirtualSessionFileStat } = {},
+  options: {
+    title?: string;
+    updatedAt?: string;
+    sourceOverride?: SessionSource;
+    stat?: VirtualSessionFileStat;
+    sessionMeta?: NonNullable<ReturnType<typeof parseCodexSessionMetaLine>>;
+  } = {},
 ): LoadedSession | null {
   if (rows.length === 0) return null;
 
-  const meta = parseCodexSessionMetaLine(rows[0] as CodexConversationLine);
+  const meta = options.sessionMeta ?? findCodexSessionMeta(rows);
   if (!meta) return null;
 
   const messages = extractMessages(rows, "codex");
@@ -654,7 +685,7 @@ export function* loadCodexSessionsIterator(
     const stat = safeStat(filePath);
     if (shouldSkipFile(options, filePath, stat, indexStat.mtimeMs)) continue;
     const rows = readJsonl(filePath);
-    const meta = rows.length > 0 ? parseCodexSessionMetaLine(rows[0] as CodexConversationLine) : null;
+    const meta = findCodexSessionMeta(rows);
     if (!meta) continue;
     const indexedTitle = titleMap.get(meta.id);
     const loaded = loadCodexSessionRows(filePath, rows, {
@@ -662,6 +693,7 @@ export function* loadCodexSessionsIterator(
       updatedAt: indexedTitle?.updatedAt,
       sourceOverride,
       stat,
+      sessionMeta: meta,
     });
     if (loaded) yield loaded;
   }

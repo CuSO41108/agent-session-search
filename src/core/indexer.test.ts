@@ -50,6 +50,34 @@ describe("indexer", () => {
     expect(await store.searchSessions({ query: "Question", limit: 10 })).toHaveLength(3);
   });
 
+  it("yields when the time budget is exhausted before the batch limit", async () => {
+    const store = createInMemoryStore();
+    const progress: number[] = [];
+    let yields = 0;
+    let clock = 0;
+    const loaded = (function* () {
+      clock = 4;
+      yield session(1);
+      clock = 9;
+      yield session(2);
+      clock = 10;
+      yield session(3);
+    })();
+
+    await syncLoadedSessionsInBatches(store, loaded, {
+      batchSize: 100,
+      timeBudgetMs: 8,
+      now: () => clock,
+      onProgress: (nextStatus) => progress.push(nextStatus.indexed),
+      yieldToEventLoop: async () => {
+        yields++;
+      },
+    });
+
+    expect(progress).toEqual([2, 3]);
+    expect(yields).toBe(2);
+  });
+
   it("skips rebuilding unchanged sessions", async () => {
     const store = createInMemoryStore();
     await store.upsertIndexedSession(session(1).session, [
@@ -81,6 +109,76 @@ describe("indexer", () => {
       error: "1 session could not be indexed; the remaining sessions were processed.",
     });
     expect(await store.searchSessions({ query: "Question 2", limit: 10 })).toHaveLength(1);
+  });
+
+  it("creates a disabled SSH environment for locally stored Cursor Remote sessions", async () => {
+    const store = createInMemoryStore();
+    const remote = session(1);
+    remote.session = {
+      ...remote.session,
+      sessionKey: "cursor:workspace:remote-1",
+      rawId: "remote-1",
+      source: "cursor-agent",
+      storageEnvironmentId: "local",
+    };
+    remote.executionEnvironmentHint = { kind: "ssh", label: "dev", hostAlias: "dev" };
+    let environmentsChanged = 0;
+
+    await syncLoadedSessionsInBatches(store, [remote], {
+      batchSize: 1,
+      onEnvironmentsChanged: () => {
+        environmentsChanged++;
+      },
+    });
+
+    expect(await store.listEnvironments()).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "dev", kind: "ssh", label: "dev", hostAlias: "dev", enabled: false }),
+    ]));
+    expect(await store.getSession("cursor:workspace:remote-1")).toMatchObject({
+      sessionKey: "cursor:workspace:remote-1",
+      environmentId: "dev",
+      environmentKind: "ssh",
+      environmentLabel: "dev",
+      storageEnvironmentId: "local",
+    });
+    expect(environmentsChanged).toBe(1);
+  });
+
+  it("reuses an enabled SSH environment for Cursor Remote sessions without disabling it", async () => {
+    const store = createInMemoryStore();
+    const existing = await store.upsertEnvironment({
+      id: "ssh-dev",
+      kind: "ssh",
+      label: "Development",
+      hostAlias: "dev",
+      enabled: true,
+    });
+    const remote = session(1);
+    remote.session = {
+      ...remote.session,
+      sessionKey: "cursor:workspace:remote-1",
+      rawId: "remote-1",
+      source: "cursor-agent",
+      storageEnvironmentId: "local",
+    };
+    remote.executionEnvironmentHint = { kind: "ssh", label: "dev", hostAlias: "dev" };
+    let environmentsChanged = 0;
+
+    await syncLoadedSessionsInBatches(store, [remote], {
+      batchSize: 1,
+      onEnvironmentsChanged: () => {
+        environmentsChanged++;
+      },
+    });
+
+    expect(await store.getSession("cursor:workspace:remote-1")).toMatchObject({
+      environmentId: existing.id,
+      environmentKind: "ssh",
+      environmentLabel: "Development",
+      storageEnvironmentId: "local",
+    });
+    expect(await store.getEnvironment(existing.id)).toMatchObject({ enabled: true });
+    expect(environmentsChanged).toBe(0);
   });
 
   it("skips unchanged default session files before reading them", async () => {
