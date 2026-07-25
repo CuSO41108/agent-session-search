@@ -1098,7 +1098,10 @@ def emit_codex_summary(path, stat, titles, source):
             first_question = parsed["content"]
   except Exception:
     return
-  indexed_title = titles.get(raw_id, ("", ""))[0]
+  indexed_title, indexed_updated_at = titles.get(raw_id, ("", ""))
+  indexed_timestamp = _iso_timestamp_ms(indexed_updated_at)
+  if indexed_timestamp is not None:
+    timestamp = max(timestamp, indexed_timestamp)
   emit({
     "kind": "codex-session",
     "source": source,

@@ -1499,7 +1499,7 @@ const REMOTE_UPDATE_CODEX_STATE_SCRIPT = [
   "from pathlib import Path",
   "payload = json.load(sys.stdin)",
   "home = Path(payload['home'])",
-  "candidates = sorted(home.glob('state_*.sqlite'), key=lambda item: item.stat().st_mtime, reverse=True)",
+  "candidates = sorted((home / '.codex').glob('state_*.sqlite'), key=lambda item: item.stat().st_mtime, reverse=True)",
   "if not candidates: print('Codex state database not found'); sys.exit(0)",
   "db = sqlite3.connect(str(candidates[0]), timeout=5)",
   "db.row_factory = sqlite3.Row",
