@@ -14,7 +14,13 @@
 interface WorkflowTransactionPolicy {
   defaultMode: "strict_atomic" | "controlled" | "direct";
   approvalMode: "batch" | "per_operation" | "user_choice";
-  checkpoints: Array<{ id: string; title: string; kind: "savepoint" | "commit" }>;
+  checkpoints: Array<{
+    id: string;
+    title: string;
+    afterNodeIds: string[];
+    kind: "savepoint" | "commit";
+    approval: "automatic" | "required";
+  }>;
   retentionDays: number;
   onUnknown: "pause";
   onConflict: "user_or_manager";

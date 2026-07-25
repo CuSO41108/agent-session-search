@@ -20,6 +20,8 @@ Agent 完成声明不是权威。协调器必须综合：
 
 必需工具失败、缺失或状态未知时，节点不能 `clean completed`。按节点策略进入重试、人工确认或失败。
 
+工具事件按稳定 tool-call ID 配对；没有 ID 时不得凭名称和时间猜测成功对应关系。一次 attempt 内允许“失败后重试成功”，但必须保留全部结果并按节点合同定义最小成功次数；存在未配对的终态结果或缺失终态结果时，结论为 `degraded` 或 `rejected`，不能直接视为成功。
+
 ### 重试与继续
 
 - 重试：恢复节点 attempt 开始前的保存点，再启动新 attempt；
@@ -57,6 +59,13 @@ compensationAdapter?: string;
 ### 副作用未知
 
 超时、进程树未完全结束、外部请求无响应或本地 receipt 缺失时，脚本节点进入 `effect_unknown`，不得因 `onError=retry` 自动重跑非幂等操作。
+
+脚本运行异常的映射必须遵守副作用合同：
+
+- `pure` 且无副作用证据：按 `onError` 处理；
+- `workspace_only`：先保留隔离区，只有确认进程停止后才允许 retry/skip；
+- `brokered_external`：存在 receipt 或状态未知时进入 `paused + recovery_required`，不得直接 retry；
+- `effect_unknown` 不是新的节点终态，而是节点问题结论和事务恢复状态的组合，必须同时写入报告和账本。
 
 ## 节点验收输出
 

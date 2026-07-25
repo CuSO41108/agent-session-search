@@ -49,6 +49,21 @@ persist planned
 
 补偿按成功操作的逆序执行；同一操作的补偿必须幂等。补偿失败后停止自动补偿，状态进入 `partially_rolled_back` 或 `recovery_required`。
 
+## 提交协调协议
+
+事务协调器不能把文件和外部系统包装成一个虚假的原子事务。最终收口必须保存一份不可变 `commitPlan`，其中列出顺序、前置条件、补偿动作和用户确认凭据：
+
+```text
+prepare 全部操作
+→ persist commitPlan
+→ apply 可查询/可补偿外部操作
+→ apply 隔离工作区 diff
+→ apply 已确认的不可撤销操作
+→ persist committed
+```
+
+如果文件应用失败，保留隔离区并补偿已经成功的外部操作；如果不可撤销操作已经执行，事务不得回写为 `rolled_back`，只能进入 `partially_rolled_back` 并生成未恢复项。任何步骤崩溃都从 `commitPlan` 和 operation ledger 恢复，不重新猜测执行顺序。
+
 ## 验收
 
 - apply 前必有持久化 planned；
