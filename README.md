@@ -274,6 +274,13 @@ npm run package:smoke
                 </a>
             </td>
             <td align="center">
+                <a href="https://github.com/CuSO41108">
+                    <img src="https://avatars.githubusercontent.com/u/177388097?v=4" width="80;" alt="CuSO41108"/>
+                    <br />
+                    <sub><b>CuSO41108</b></sub>
+                </a>
+            </td>
+            <td align="center">
                 <a href="https://github.com/vinkiYu">
                     <img src="https://avatars.githubusercontent.com/u/239156258?v=4" width="80;" alt="vinkiYu"/>
                     <br />
@@ -285,13 +292,6 @@ npm run package:smoke
                     <img src="https://avatars.githubusercontent.com/u/278380769?v=4" width="80;" alt="wanglongze123"/>
                     <br />
                     <sub><b>wanglongze123</b></sub>
-                </a>
-            </td>
-            <td align="center">
-                <a href="https://github.com/CuSO41108">
-                    <img src="https://avatars.githubusercontent.com/u/177388097?v=4" width="80;" alt="CuSO41108"/>
-                    <br />
-                    <sub><b>CuSO41108</b></sub>
                 </a>
             </td>
 		</tr>
