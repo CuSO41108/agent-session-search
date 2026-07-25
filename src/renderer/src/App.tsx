@@ -2006,9 +2006,9 @@ export function App(): ReactElement {
           onSummarize={() => void summarizeDetail(detail)}
           summarizing={summarizing}
           canResume={supportsResumeSource(detail.source)}
-          canMigrate={!isRemoteSession(detail) && supportsMigrationSource(detail.source)}
+          canMigrate={detail.environmentKind !== "ssh" && supportsMigrationSource(detail.source)}
           migrationTitle={
-            isRemoteSession(detail)
+            detail.environmentKind === "ssh"
               ? remoteMigrationTitle(language)
               : supportsMigrationSource(detail.source)
                 ? t("Migrate session to…", "迁移会话到…")
@@ -2095,7 +2095,7 @@ export function App(): ReactElement {
           revealLabel={FILE_MANAGER_LABEL}
           showMacActions={IS_MAC}
           canResume={supportsResumeSource(contextMenu.session.source)}
-          canMigrate={!isRemoteSession(contextMenu.session) && supportsMigrationSource(contextMenu.session.source)}
+          canMigrate={contextMenu.session.environmentKind !== "ssh" && supportsMigrationSource(contextMenu.session.source)}
           onRename={() => beginRename(contextMenu.session)}
           onAddTag={() => beginAddTag(contextMenu.session)}
           onFavorite={() =>
@@ -2418,10 +2418,11 @@ function ContextMenu({
 }): ReactElement {
   const l = (en: string, zh: string) => localize(language, en, zh);
   const menu = useClampedContextMenuStyle(state);
-  const localOnlyDisabled = isRemoteSession(state.session);
+  const localOnlyDisabled = state.session.environmentKind !== "local";
+  const migrationDisabled = state.session.environmentKind === "ssh";
   const revealTitle = localOnlyDisabled ? remoteRevealTitle(language) : l(`Show in ${revealLabel}`, `在${revealLabel}中显示`);
   const openAppTitle = localOnlyDisabled ? remoteOpenAppTitle(language) : l("Open native app", "打开原生应用");
-  const migrateTitle = localOnlyDisabled
+  const migrateTitle = migrationDisabled
     ? remoteMigrationTitle(language)
     : canMigrate
       ? l("Migrate session to…", "迁移会话到…")
@@ -2457,7 +2458,7 @@ function ContextMenu({
           <AppWindow size={14} /> Open App
         </button>
       ) : null}
-      <button onClick={onMigrate} disabled={!canMigrate || localOnlyDisabled} title={migrateTitle}>
+      <button onClick={onMigrate} disabled={!canMigrate || migrationDisabled} title={migrateTitle}>
         <ArrowRightLeft size={14} /> {l("Migrate to…", "迁移到…")}
       </button>
       {canResume ? (

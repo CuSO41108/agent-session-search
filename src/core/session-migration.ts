@@ -83,8 +83,8 @@ export function portableSessionFrom(
   if (!sourceAgent) {
     throw new Error(`Session source ${session.source} cannot be migrated.`);
   }
-  if (!isLocalSessionEnvironment(session)) {
-    throw new Error("Remote session migration is not supported yet.");
+  if (!isLocalSessionEnvironment(session) && session.environmentKind !== "wsl") {
+    throw new Error("SSH session migration is not supported yet.");
   }
   if (!session.projectPath.trim()) {
     throw new Error("Session has no project path.");
@@ -249,8 +249,8 @@ async function validateMigrationRequest(
   if (!sourceAgent) {
     throw new Error(`Session source ${source.source} cannot be migrated.`);
   }
-  if (!isLocalSessionEnvironment(source)) {
-    throw new Error("Remote session migration is not supported yet.");
+  if (!isLocalSessionEnvironment(source) && source.environmentKind !== "wsl") {
+    throw new Error("SSH session migration is not supported yet.");
   }
   if (!isMigrationTarget(target)) {
     throw new Error(`Migration target ${target} is not supported.`);

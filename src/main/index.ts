@@ -70,16 +70,17 @@ import {
   type ToolExecutionResult,
 } from "../core/ai-assistant";
 import { applyMigrationLengthPolicy, createMigrationCompressor } from "../core/session-migration-compression";
-import { migrateSession } from "../core/session-migration";
+import { migrateSession, portableSessionFrom } from "../core/session-migration";
 import { runLocalSessionMigration } from "./local-session-migration";
 import { targetFilePath, writeMigratedSession } from "../core/session-migration-writers";
+import { assertMigrationTargetEnabled, isMigrationTarget, migrationTargetDescriptor } from "../core/migration-targets";
 import { writeDbPointer } from "../core/app-paths";
 import { routeResumeSession } from "../core/resume-router";
 import { diagnoseRemoteEnvironment, preflightRemoteSessionResume } from "../core/remote-health";
 import { buildRemoteSyncSshArgs, fetchRemoteSessionFilePayload, fetchRemoteSessionMessagePage, syncRemoteEnvironment } from "../core/remote-sync";
-import { REMOTE_PROCESS_EXEC_OPTIONS, runRemoteCommandWithInput } from "../core/remote-process";
+import { REMOTE_PROCESS_EXEC_OPTIONS, runRemoteCommand, runRemoteCommandWithInput } from "../core/remote-process";
 import { loadRemoteSessionDetailPayload, loadWslSessionDetailPayload } from "../core/remote-session-loader";
-import type { RemoteSessionRestoreDependencies } from "../core/remote-session-restore";
+import { restoreRemotePortableSession, type RemoteSessionRestoreDependencies } from "../core/remote-session-restore";
 import { RemoteEnvironmentLifecycle } from "../core/remote-environment-lifecycle";
 import { RemoteWatchManager } from "../core/remote-watch";
 import { SessionStore, type TraceEventQueryOptions } from "../core/session-store";
@@ -89,7 +90,7 @@ import { listWslDistributions } from "../core/wsl";
 import { deleteWslSessionFile } from "../core/wsl-session-actions";
 import { AUTO_INDEX_REFRESH_INTERVAL_MS, INITIAL_INDEX_DELAY_MS } from "../core/refresh-policy";
 import { globalShortcutLabel, normalizeGlobalShortcut } from "../core/shortcuts";
-import { isLocalSessionEnvironment, isLocalSessionStorage } from "../core/session-environment";
+import { isLocalSessionEnvironment, isLocalSessionStorage, remoteSessionKey } from "../core/session-environment";
 import { OPTIONAL_SESSION_SOURCE_DESCRIPTORS } from "../core/session-sources";
 import type { AppSettings, AppSettingsUpdate } from "../core/platform";
 import { APP_UPDATE_EVENTS } from "../shared/ipc/app-update";
@@ -1193,7 +1194,7 @@ async function createSourceRemoteRestoreDependencies(
     : null;
 
   return {
-    inspectCli: async () => undefined,
+    inspectCli: (target) => environment.kind === "wsl" ? inspectWslMigrationCli(environment, target) : undefined,
     prepare: (session, listener) => applyMigrationLengthPolicy(session, compressor, listener),
     write: (target, session) => writeMigratedSessionToSshEnvironment(environment, target, session),
     record: (record) => store.recordSessionMigration(record),
@@ -1203,7 +1204,11 @@ async function createSourceRemoteRestoreDependencies(
       });
       mainWindow?.webContents.send("environments-updated", store.listEnvironments());
     },
-    launch: async () => undefined,
+    launch: async (target, targetSessionId, projectPath) => {
+      if (environment.kind !== "wsl") return;
+      const session = migrationLaunchSession(environment, target, targetSessionId, projectPath);
+      await openResumeInTerminal(session, getSettings(), requireWslResumeOptions(session));
+    },
     resumeCommand: (target, targetSessionId, projectPath) =>
       remoteMigrationResumeDisplayCommand(environment, target, targetSessionId, projectPath),
     fallbackResumeCommand: (target, targetSessionId, projectPath) =>
@@ -1216,12 +1221,71 @@ async function createSourceRemoteRestoreDependencies(
   };
 }
 
+async function inspectWslMigrationCli(environment: SessionEnvironment, target: MigrationAgent): Promise<void> {
+  const settings = getSettings();
+  await inspectMigrationCli(
+    target,
+    { ...settings, claudeBinary: "claude", codexBinary: "codex" },
+    async (command, args) => runRemoteCommand(environment, [command, ...args].join(" ")),
+    { platform: "linux" },
+  );
+}
+
+function migrationLaunchSession(
+  environment: SessionEnvironment,
+  target: MigrationAgent,
+  sessionId: string,
+  projectPath: string,
+): SessionSearchResult {
+  const source = migrationTargetDescriptor(target).source;
+  return {
+    sessionKey: remoteSessionKey(environment, migrationTargetDescriptor(target).source, sessionId),
+    rawId: sessionId,
+    source,
+    projectPath,
+    filePath: "",
+    originalTitle: sessionId,
+    firstQuestion: "",
+    displayTitle: sessionId,
+    timestamp: Date.now(),
+    fileMtimeMs: 0,
+    fileSize: 0,
+    prUrl: null,
+    prNumber: null,
+    gitBranch: null,
+    isSubagent: false,
+    parentSessionId: null,
+    tokenUsage: { inputTokens: 0, outputTokens: 0, cachedInputTokens: 0, reasoningOutputTokens: 0, totalTokens: 0 },
+    environmentId: environment.id,
+    environmentKind: "wsl",
+    environmentLabel: environment.label,
+    customTitle: null,
+    favorited: false,
+    hidden: false,
+    tags: [],
+    matchSnippet: null,
+    lastOpenedAt: null,
+    lastResumedAt: null,
+    lastActivityAt: 0,
+    messageCount: 0,
+    aiSummary: null,
+    aiSummaryStale: false,
+  };
+}
+
 function remoteMigrationResumeDisplayCommand(
   environment: SessionEnvironment,
   target: MigrationAgent,
   sessionId: string,
   projectPath: string,
 ): string {
+  if (environment.kind === "wsl") {
+    return getResumeCommand(
+      migrationLaunchSession(environment, target, sessionId, projectPath),
+      getSettings(),
+      requireWslResumeOptions(migrationLaunchSession(environment, target, sessionId, projectPath)),
+    );
+  }
   const remoteCommand = getMigrationResumeProcessSpec(target, sessionId, projectPath, getSettings(), { platform: "linux" }).displayCommand;
   return ["ssh", ...buildRemoteSyncSshArgs(environment, remoteCommand).map(quotePosixToken)].join(" ");
 }
@@ -1779,6 +1843,23 @@ function registerIpc(): void {
   ipcMain.handle("session:migrate", async (event, sessionKey: string, target: unknown) => {
     const session = store.getSession(sessionKey);
     if (!session) throw new Error("Session not found.");
+    if (session.environmentKind === "wsl") {
+      if (!isMigrationTarget(target)) throw new Error(`Migration target ${String(target)} is not supported.`);
+      const settings = await providerService.hydrateSettings();
+      assertMigrationTargetEnabled(target, settings);
+      await ensureRemoteSessionDetailsLoaded(sessionKey);
+      const environment = requireWslEnvironment(session);
+      const portable = portableSessionFrom(session, store.getAllMessages(sessionKey));
+      const progress = (item: SessionMigrationProgress): void => event.sender.send("session:migration-progress", item);
+      const deps = await createSourceRemoteRestoreDependencies(environment, progress);
+      return restoreRemotePortableSession({
+        remoteId: sessionKey,
+        portable,
+        target: target as MigrationAgent,
+        localProjectPath: portable.projectPath,
+        deps,
+      });
+    }
     const messages = store.getAllMessages(sessionKey);
     const settings = Object.freeze(await providerService.hydrateSettings());
 

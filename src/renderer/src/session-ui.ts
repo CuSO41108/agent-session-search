@@ -142,6 +142,9 @@ export function migrationTargetsForSession(
   session: Pick<SessionSearchResult, "source" | "environmentId" | "environmentKind">,
   settings: MigrationTargetSettings,
 ): MigrationTarget[] {
+  if (session.environmentKind === "wsl") {
+    return migrationTargetsForSource(session.source, settings).filter((target) => target === "claude" || target === "codex");
+  }
   return isLocalSessionEnvironment(session) ? migrationTargetsForSource(session.source, settings) : [];
 }
 
