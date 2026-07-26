@@ -380,7 +380,22 @@ async function workflowV2RuntimeFixture(input: {
       tasks = tasks.filter((task) => task.id !== taskId);
       return snapshot();
     },
-    executeWorkflowV2Script: input.executeScript,
+    executeWorkflowV2Script: async (request) => {
+      const output = await input.executeScript(request);
+      return {
+        ...output,
+        acceptance: output.acceptance ?? { outcome: "clean", issues: [], changedPaths: [], operationIds: [] },
+        scriptReceipt: output.scriptReceipt ?? {
+          exitCode: 0,
+          signal: null,
+          timedOut: false,
+          stderrSummary: "",
+          stdoutDigest: "test-stdout-digest",
+          operationDigest: request.authorization.operationDigest,
+          effectState: request.node.script.effectMode === "workspace_only" ? "workspace_changed" : request.node.script.effectMode === "brokered_external" ? "brokered" : "none",
+        },
+      };
+    },
     startWorkflowNodeConversation: input.startWorkflowNodeConversation ?? (async () => { throw new Error("Unexpected interactive workflow node in test."); }),
     markWorkflowNodeConversationWaiting: input.markWorkflowNodeConversationWaiting ?? (() => { throw new Error("Unexpected interactive workflow node wait state in test."); }),
     stopWorkflowNodeConversations: async () => undefined,
@@ -884,13 +899,9 @@ describe("WorkflowRuntime Workflow V2 bridge", () => {
       status: "committed",
       operationCount: 0,
     });
-    expect(operations).toHaveLength(1);
-    expect(operations[0]).toMatchObject({ nodeId: "draft", state: "applied", kind: "other" });
+    expect(operations).toEqual([]);
     expect(durableEvents.map((event) => event.type)).toEqual(expect.arrayContaining([
       "transaction_started",
-      "operation_planned",
-      "operation_started",
-      "operation_applied",
       "commit_started",
       "commit_completed",
       "hooks_beforeExecute",
@@ -944,7 +955,7 @@ describe("WorkflowRuntime Workflow V2 bridge", () => {
         }) }],
         createdAt: index,
         updatedAt: index,
-      } as TaskRun),
+      } as unknown as TaskRun),
       executeScript: async () => { throw new Error("script runner should not be called"); },
     });
 
@@ -1395,6 +1406,24 @@ describe("WorkflowRuntime Workflow V2 bridge", () => {
           },
         }),
         readCacheEntry: async () => undefined,
+        readOperations: async () => [{
+          operationId: "operation-already-applied",
+          transactionId: "transaction-recovery",
+          runId: "run-v2-intervention",
+          nodeId: "draft",
+          attempt: 1,
+          kind: "http",
+          target: "example",
+          idempotencyKey: "already-applied",
+          state: "applied",
+          reversible: false,
+          createdAt: 1_150,
+          updatedAt: 1_160,
+        }],
+        planOperation: async ({ record }) => record,
+        transitionOperation: async ({ operationId }) => {
+          throw new Error(`Unexpected operation transition ${operationId}`);
+        },
       },
       executeScript: async () => {
         throw new Error("script runner should not be called");
@@ -1419,6 +1448,9 @@ describe("WorkflowRuntime Workflow V2 bridge", () => {
     });
     expect(fixture.taskRequests[0]?.contextDocument).toContain("# Recovery checkpoint");
     expect(fixture.taskRequests[0]?.contextDocument).toContain("checkpoint-from-progress-probe");
+    expect(fixture.taskRequests[0]?.contextDocument).toContain("# Recovery execution state");
+    expect(fixture.taskRequests[0]?.contextDocument).toContain("operation-already-applied");
+    expect(fixture.taskRequests[0]?.contextDocument).toContain("Do not repeat a completed operation");
   });
 
   test("skips an intervened node and continues eligible downstream work", async () => {
@@ -2016,9 +2048,14 @@ describe("WorkflowRuntime Workflow V2 bridge", () => {
     };
     let aborted = false;
     let observedTimeoutMs: number | undefined;
+    const persistedStates: WorkflowV2PersistedRunState[] = [];
     const fixture = await workflowV2RuntimeFixture({
       definition: scriptDefinition,
       costBudget: { maxWallClockMs: 100 },
+      store: {
+        persistRunState: async (state) => { persistedStates.push(structuredClone(state)); },
+        appendEvents: async () => undefined,
+      },
       executeScript: async (request) => {
         observedTimeoutMs = request.timeoutMs;
         if (!(request.signal instanceof AbortSignal)) throw new Error("expected an AbortSignal");
@@ -2038,17 +2075,13 @@ describe("WorkflowRuntime Workflow V2 bridge", () => {
     });
 
     fixture.runtime.runWorkflow({ workflowId: fixture.workflow.workflowId });
-    const finished = await fixture.finished;
+    await vi.waitFor(() => expect(fixture.updates.at(-1)?.status).toBe("waiting_for_user"));
 
     expect(observedTimeoutMs).toBeGreaterThan(0);
     expect(observedTimeoutMs).toBeLessThanOrEqual(100);
     expect(aborted).toBe(true);
-    expect(finished).toMatchObject({
-      status: "failed",
-      progress: [{ nodeId: "script-only", status: "failed", detail: expect.stringContaining("timed out") }],
-      lastError: expect.stringContaining("timed out"),
-    });
-    expect(finished.finalReport).not.toContain("late completion must be ignored");
+    expect(fixture.updates.at(-1)?.progress).toEqual([expect.objectContaining({ nodeId: "script-only", status: "paused", detail: expect.stringContaining("timed out") })]);
+    expect(persistedStates.at(-1)?.transaction?.status).toBe("recovery_required");
   });
 
   test("bounds an oversized script timeout to the platform timer range", async () => {
@@ -2311,11 +2344,14 @@ describe("WorkflowRuntime Workflow V2 bridge", () => {
           id: "message-1",
           role: "assistant",
           content: "This text is not the structured result.",
-          events: [{ id: "tool-1", type: "tool_call", name: "workflow_node_complete", content: "{truncated...", timestamp: 1 }],
+          events: [
+            { id: "tool-call", type: "tool_call", name: "workflow_node_complete", content: "{truncated...", timestamp: 1, metadata: { id: "completion-call-1" } },
+            { id: "tool-result", type: "tool_result", name: "workflow_node_complete", content: "submitted", timestamp: 2, metadata: { id: "completion-call-1", status: "completed" } },
+          ],
         }],
         createdAt: 1,
         updatedAt: 1,
-      } as TaskRun),
+      } as unknown as TaskRun),
       executeScript: async ({ node }) => ({ nodeId: node.id, summary: "Verified", outputs: { verified: true }, proposals: [] }),
     });
 
@@ -2325,7 +2361,41 @@ describe("WorkflowRuntime Workflow V2 bridge", () => {
     expect(finished.status).toBe("completed");
     expect(executionIdentity).toMatchObject({ workflowId: fixture.workflow.workflowId, runId: "run-v2-runtime", nodeId: "draft" });
     expect(resolvedStatus).toBe("consumed");
-    expect(persistedStates.at(-1)?.workerOutputs.find((output) => output.nodeId === "draft")).toEqual(submittedOutput);
+    expect(persistedStates.at(-1)?.workerOutputs.find((output) => output.nodeId === "draft")).toMatchObject(submittedOutput);
+  });
+
+  test("rejects an Agent node when a required tool failed despite valid final output", async () => {
+    const definition = workflowV2Definition();
+    const draft = definition.nodes[0];
+    if (draft?.execModel !== "llm") throw new Error("expected llm fixture");
+    draft.requiredTools = ["publish"];
+    definition.nodes = [draft];
+    definition.edges = [];
+    const fixture = await workflowV2RuntimeFixture({
+      definition,
+      taskFactory: (request) => ({
+        id: "task-required-tool-failed",
+        title: "Required tool failure",
+        status: "completed",
+        prompt: request.prompt,
+        configuredAgentId: request.configuredAgentId,
+        messages: [{
+          id: "message",
+          role: "assistant",
+          content: JSON.stringify({ nodeId: "draft", summary: "Claims success", outputs: { draft: "done" }, proposals: [] }),
+          events: [
+            { id: "call", type: "tool_call", name: "publish", content: "{}", timestamp: 1, metadata: { id: "publish-1" } },
+            { id: "result", type: "tool_result", name: "publish", content: "failed", timestamp: 2, metadata: { id: "publish-1", status: "failed" } },
+          ],
+        }],
+        createdAt: 1,
+        updatedAt: 2,
+      } as unknown as TaskRun),
+      executeScript: async () => { throw new Error("script should not run"); },
+    });
+
+    fixture.runtime.runWorkflow({ workflowId: fixture.workflow.workflowId });
+    await expect(fixture.finished).resolves.toMatchObject({ status: "failed", lastError: expect.stringContaining("Required tool publish") });
   });
 
   test("keeps one-shot message history when structured output parsing fails", async () => {
@@ -2376,7 +2446,7 @@ describe("WorkflowRuntime Workflow V2 bridge", () => {
     ]);
   });
 
-  test("fails the current script node and run when the injected sandbox policy rejects execution", async () => {
+  test("pauses for recovery when the script executor fails without an effect receipt", async () => {
     const fixture = await workflowV2RuntimeFixture({
       executeScript: async () => {
         throw new Error("Workflow V2 workspace sandbox policy is unavailable on this platform.");
@@ -2384,24 +2454,17 @@ describe("WorkflowRuntime Workflow V2 bridge", () => {
     });
 
     fixture.runtime.runWorkflow({ workflowId: fixture.workflow.workflowId });
-    const finished = await fixture.finished;
+    while (!fixture.updates.some((update) => update.status === "waiting_for_user")) await new Promise((resolve) => setTimeout(resolve, 5));
+    while (fixture.runtime.isRunning("run-v2-runtime")) await new Promise((resolve) => setTimeout(resolve, 0));
 
-    expect(finished).toMatchObject({
-      status: "failed",
-      progress: [
-        { nodeId: "draft", status: "completed" },
-        {
-          nodeId: "verify",
-          status: "failed",
-          detail: "Workflow V2 workspace sandbox policy is unavailable on this platform.",
-        },
-      ],
-      lastError: "Workflow V2 workspace sandbox policy is unavailable on this platform.",
+    expect(fixture.updates.flatMap((update) => update.progress ?? []).filter((item) => item.nodeId === "verify").at(-1)).toMatchObject({
+      status: "paused",
+      detail: expect.stringContaining("sandbox policy is unavailable"),
     });
     const events = fixture.updates.flatMap((update) => update.appendEvents ?? []);
     expect(events.filter((event) => event.nodeId === "verify").map((event) => event.type)).toEqual([
       "node_started",
-      "node_failed",
+      "node_paused",
     ]);
   });
 });

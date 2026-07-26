@@ -816,7 +816,15 @@ export type {
   WorkflowV2TaskPacket,
   WorkflowV2UpstreamDigest,
 } from "./workflow-v2/planning";
-export type { WorkflowV2WorkProposal, WorkflowV2WorkerOutput } from "./workflow-v2/packets";
+export type {
+  WorkflowV2NodeAcceptanceIssue,
+  WorkflowV2NodeAcceptanceOutcome,
+  WorkflowV2NodeAcceptanceReport,
+  WorkflowV2ScriptExecutionReceipt,
+  WorkflowV2ScriptWorkerOutput,
+  WorkflowV2WorkProposal,
+  WorkflowV2WorkerOutput,
+} from "./workflow-v2/packets";
 export type { WorkflowV2InterventionAction, WorkflowV2HumanIntervention, WorkflowV2ReviewVerdict } from "./workflow-v2/review";
 export type {
   WorkflowV2NodeExecutionState,

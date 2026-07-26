@@ -1,6 +1,7 @@
 import type { WorkflowV2Plan } from "../workflow-v2/planning";
 import type { WorkflowV2HumanIntervention } from "../workflow-v2/review";
 import type { WorkflowV2ScriptParameterDef } from "../workflow-v2/definition";
+import type { WorkflowV2NodeAcceptanceReport } from "../workflow-v2/packets";
 
 export interface WorkflowNodeMessage {
   id: string;
@@ -30,6 +31,7 @@ export interface WorkflowRunProgressItem {
   detail?: string;
   taskId?: string;
   intervention?: WorkflowV2HumanIntervention;
+  acceptance?: WorkflowV2NodeAcceptanceReport;
   inputRequest?: WorkflowNodeInputRequest;
   /** Safe, persisted summary of submitted human inputs; secret values are redacted upstream. */
   inputSummary?: Record<string, unknown>;

@@ -17,6 +17,9 @@ export type WorkflowV2ExecutionMode = "one-shot" | "interactive" | "script";
 export type WorkflowV2ModelProfile = "fast" | "balanced" | "expert";
 export type WorkflowV2ScriptLanguage = "python" | "typescript" | "bash";
 export type WorkflowV2ScriptRiskLevel = "safe" | "read" | "write" | "dangerous";
+export type WorkflowV2ScriptEffectMode = "pure" | "workspace_only" | "brokered_external";
+export type WorkflowV2ScriptIdempotency = "safe_retry" | "keyed" | "non_idempotent";
+export type WorkflowV2ScriptStderrPolicy = "ignore" | "warn" | "fail";
 export type WorkflowV2ScriptCapability = "workspace_read" | "workspace_write" | "workspace_delete" | "external_read" | "external_write" | "external_delete" | "network_read" | "network_write" | "process_spawn" | "shell_execute" | "environment_read" | "credential_read" | "system_config_write";
 export type WorkflowV2ScriptPermissionDecision = "auto_allow" | "allow_once" | "require_confirmation" | "deny";
 export type WorkflowV2ScriptParameterLocation = "argument" | "environment" | "header" | "query" | "body" | "stdin";
@@ -143,8 +146,23 @@ export interface WorkflowV2ScriptSpec {
   parameters: WorkflowV2ScriptParameterDef[];
   capabilities: WorkflowV2ScriptCapability[];
   managerRisk: { level: WorkflowV2ScriptRiskLevel; rationale: string };
+  /** Required for governed workflows; optional only while loading legacy direct-mode definitions. */
+  effectMode?: WorkflowV2ScriptEffectMode;
+  /** Required for governed workflows; optional only while loading legacy direct-mode definitions. */
+  idempotency?: WorkflowV2ScriptIdempotency;
+  /** Required for governed workflows; optional only while loading legacy direct-mode definitions. */
+  stderrPolicy?: WorkflowV2ScriptStderrPolicy;
+  compensationAdapter?: string;
   timeoutMs?: number;
-  outputSchema?: { type: "object"; required?: string[] };
+  outputSchema?: {
+    type: "object";
+    required?: string[];
+    properties?: Record<string, {
+      type: "string" | "number" | "boolean" | "object" | "array" | "null";
+      nullable?: boolean;
+      items?: { type: "string" | "number" | "boolean" | "object" };
+    }>;
+  };
 }
 
 export function createWorkflowV2InlineScriptSpec(input: {
@@ -153,7 +171,7 @@ export function createWorkflowV2InlineScriptSpec(input: {
   risk?: WorkflowV2ScriptRiskLevel;
   rationale?: string;
   timeoutMs?: number;
-  outputSchema?: { type: "object"; required?: string[] };
+  outputSchema?: WorkflowV2ScriptSpec["outputSchema"];
 }): WorkflowV2ScriptSpec {
   // Shared helper for tests and future callers that need a canonical "pure
   // inline transform" script contract without filling every field manually.
@@ -162,6 +180,9 @@ export function createWorkflowV2InlineScriptSpec(input: {
     parameters: [],
     capabilities: [],
     managerRisk: { level: input.risk ?? "safe", rationale: input.rationale ?? "Pure in-memory transformation without external side effects." },
+    effectMode: "pure",
+    idempotency: "safe_retry",
+    stderrPolicy: "warn",
     ...(input.timeoutMs !== undefined ? { timeoutMs: input.timeoutMs } : {}),
     ...(input.outputSchema ? { outputSchema: input.outputSchema } : {}),
   };

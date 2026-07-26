@@ -1,5 +1,7 @@
 import { spawn } from "node:child_process";
-import type { WorkflowV2WorkerOutput } from "../../../shared/workflow-v2/packets";
+import { createHash } from "node:crypto";
+import type { WorkflowV2ScriptExecutionReceipt, WorkflowV2ScriptWorkerOutput } from "../../../shared/workflow-v2/packets";
+import { sanitizeWorkflowTransactionValue } from "../../../shared/workflow-v2/transaction";
 import type { ExecuteWorkflowV2ScriptRequest } from "../workflow-runtime-ports";
 import { workflowV2ScriptCapabilityDigest, workflowV2ScriptOperationDigest } from "./workflow-v2-script-analysis";
 
@@ -20,33 +22,132 @@ function assertAuthorized(input: ExecuteWorkflowV2ScriptRequest): void {
 }
 
 function validateOutput(input: ExecuteWorkflowV2ScriptRequest, output: Record<string, unknown>): void {
-  for (const key of input.node.script.outputSchema?.required ?? []) {
-    if (!(key in output)) throw new Error(`Workflow V2 script output is missing required field ${key}.`);
+  const schema = input.node.script.outputSchema;
+  for (const key of schema?.required ?? []) {
+    if (!(key in output) || output[key] === undefined || output[key] === null) throw new Error(`Workflow V2 script output is missing required field ${key}.`);
+  }
+  for (const [key, property] of Object.entries(schema?.properties ?? {})) {
+    const value = output[key];
+    if (value === undefined) continue;
+    if (value === null) {
+      if (!property.nullable && property.type !== "null") throw new Error(`Workflow V2 script output field ${key} must not be null.`);
+      continue;
+    }
+    if (!matchesSchemaType(value, property.type)) throw new Error(`Workflow V2 script output field ${key} must be ${property.type}.`);
+    if (property.type === "array" && property.items && !(value as unknown[]).every((item) => matchesSchemaType(item, property.items!.type))) {
+      throw new Error(`Workflow V2 script output field ${key} contains an invalid array item.`);
+    }
   }
 }
 
-async function executeCommand(input: ExecuteWorkflowV2ScriptRequest): Promise<Record<string, unknown>> {
+function matchesSchemaType(value: unknown, type: "string" | "number" | "boolean" | "object" | "array" | "null"): boolean {
+  if (type === "null") return value === null;
+  if (type === "array") return Array.isArray(value);
+  if (type === "object") return typeof value === "object" && value !== null && !Array.isArray(value);
+  if (type === "number") return typeof value === "number" && Number.isFinite(value);
+  return typeof value === type;
+}
+
+export class WorkflowV2ScriptExecutionError extends Error {
+  constructor(message: string, readonly receipt: WorkflowV2ScriptExecutionReceipt) {
+    super(message);
+    this.name = "WorkflowV2ScriptExecutionError";
+  }
+}
+
+async function executeCommand(input: ExecuteWorkflowV2ScriptRequest): Promise<{ outputs: Record<string, unknown>; receipt: WorkflowV2ScriptExecutionReceipt }> {
   const executable = input.node.script.executable;
   if (executable.kind !== "command") throw new Error("Expected command executable.");
   return new Promise((resolve, reject) => {
     const child = spawn(executable.command, executable.args ?? [], { cwd: input.workDir, shell: false, windowsHide: true, signal: input.signal });
     let stdout = "";
     let stderr = "";
+    let spawnError: Error | undefined;
     child.stdout.on("data", (chunk) => { stdout += String(chunk); });
     child.stderr.on("data", (chunk) => { stderr += String(chunk); });
-    child.on("error", reject);
-    child.on("close", (code) => code === (input.node.expectedExitCode ?? 0) ? resolve({ stdout: stdout.trim() }) : reject(new Error(stderr || `Script exited with code ${code}.`)));
+    child.on("error", (error) => { spawnError = error; });
+    child.on("close", (code, signal) => {
+      const receipt = scriptReceipt(input, { code, signal, stdout, stderr, timedOut: isTimeoutAbort(input.signal) });
+      const expectedExitCode = input.node.expectedExitCode ?? 0;
+      if (spawnError || code !== expectedExitCode) {
+        reject(new WorkflowV2ScriptExecutionError(spawnError?.message || stderr.trim() || `Script exited with code ${code}.`, receipt));
+        return;
+      }
+      if (stderr.trim() && (input.node.script.stderrPolicy ?? "warn") === "fail") {
+        reject(new WorkflowV2ScriptExecutionError("Workflow V2 script produced stderr while stderrPolicy is fail.", receipt));
+        return;
+      }
+      resolve({ outputs: { stdout: stdout.trim() }, receipt });
+    });
   });
 }
 
-export async function executeWorkflowV2Script(input: ExecuteWorkflowV2ScriptRequest): Promise<WorkflowV2WorkerOutput> {
+export async function executeWorkflowV2Script(input: ExecuteWorkflowV2ScriptRequest): Promise<WorkflowV2ScriptWorkerOutput> {
   assertAuthorized(input);
   const executable = input.node.script.executable;
-  const outputs = executable.kind === "command"
-    ? await executeCommand(input)
-    : executable.language === "typescript"
-      ? await Promise.resolve(new Function("inputs", executable.code)(structuredClone(input.inputs))) as Record<string, unknown>
-      : (() => { throw new Error(`Inline ${executable.language} execution is not available.`); })();
-  validateOutput(input, outputs);
-  return { nodeId: input.node.id, summary: `${input.node.title} completed.`, outputs, evidence: [], proposals: [] };
+  let outputs: Record<string, unknown>;
+  let receipt: WorkflowV2ScriptExecutionReceipt;
+  if (executable.kind === "command") {
+    ({ outputs, receipt } = await executeCommand(input));
+  } else {
+    try {
+      outputs = executable.language === "typescript"
+        ? await Promise.resolve(new Function("inputs", executable.code)(structuredClone(input.inputs))) as Record<string, unknown>
+        : (() => { throw new Error(`Inline ${executable.language} execution is not available.`); })();
+      receipt = scriptReceipt(input, { code: 0, signal: null, stdout: JSON.stringify(outputs), stderr: "", timedOut: false });
+    } catch (error) {
+      const failedReceipt = scriptReceipt(input, { code: 1, signal: null, stdout: "", stderr: error instanceof Error ? error.message : String(error), timedOut: false });
+      throw new WorkflowV2ScriptExecutionError(error instanceof Error ? error.message : String(error), failedReceipt);
+    }
+  }
+  try {
+    validateOutput(input, outputs);
+  } catch (error) {
+    throw new WorkflowV2ScriptExecutionError(error instanceof Error ? error.message : String(error), receipt);
+  }
+  const stderrWarning = receipt.stderrSummary && (input.node.script.stderrPolicy ?? "warn") === "warn";
+  return {
+    nodeId: input.node.id,
+    summary: `${input.node.title} completed.`,
+    outputs,
+    evidence: [],
+    proposals: [],
+    scriptReceipt: receipt,
+    acceptance: {
+      outcome: stderrWarning ? "degraded" : "clean",
+      issues: stderrWarning ? [{ code: "script_stderr", severity: "warning", detail: receipt.stderrSummary }] : [],
+      changedPaths: [],
+      operationIds: [],
+    },
+  };
+}
+
+function scriptReceipt(
+  input: ExecuteWorkflowV2ScriptRequest,
+  process: { code: number | null; signal: NodeJS.Signals | null; stdout: string; stderr: string; timedOut: boolean },
+): WorkflowV2ScriptExecutionReceipt {
+  const effectMode = input.node.script.effectMode;
+  const executionFailed = process.code !== (input.node.expectedExitCode ?? 0);
+  const legacyCommandFailure = effectMode === undefined && input.node.script.executable.kind === "command" && executionFailed;
+  const effectState = process.timedOut || input.signal.aborted || legacyCommandFailure || (effectMode === "brokered_external" && executionFailed)
+    ? "unknown"
+    : effectMode === "workspace_only"
+      ? "workspace_changed"
+      : effectMode === "brokered_external"
+        ? "brokered"
+        : "none";
+  const sanitizedStderr = String(sanitizeWorkflowTransactionValue(process.stderr.trim())).slice(0, 1_000);
+  return {
+    exitCode: process.code,
+    signal: process.signal,
+    timedOut: process.timedOut,
+    stderrSummary: sanitizedStderr,
+    stdoutDigest: createHash("sha256").update(process.stdout).digest("hex"),
+    operationDigest: input.authorization.operationDigest,
+    effectState,
+  };
+}
+
+function isTimeoutAbort(signal: AbortSignal): boolean {
+  return signal.aborted && signal.reason instanceof Error && /timed out/i.test(signal.reason.message);
 }

@@ -92,6 +92,32 @@ describe("workflow-v2 recovery", () => {
     expect(report).toBe("原样内容");
   });
 
+  test("appends transactional acceptance evidence to the completed user report", async () => {
+    const workflow = definition();
+    const plan = await buildWorkflowV2Plan({ definition: workflow, approvedBy: "tester", now: 1_000 });
+    const report = buildWorkflowV2FinalReport(plan, [
+      { nodeId: "first", summary: "Prepared", outputs: { value: "context" }, proposals: [] },
+      {
+        nodeId: "second",
+        summary: "Answered",
+        outputs: { answer_markdown: "# Final answer" },
+        proposals: [],
+        acceptance: {
+          outcome: "degraded",
+          changedPaths: ["result.md"],
+          operationIds: ["operation-1"],
+          issues: [{ code: "tool_retry", severity: "warning", detail: "A failed tool call was retried successfully." }],
+        },
+      },
+    ], "completed");
+
+    expect(report).toContain("# Final answer");
+    expect(report).toContain("## Transactional node acceptance");
+    expect(report).toContain("result.md");
+    expect(report).toContain("operation-1");
+    expect(report).toContain("tool_retry");
+  });
+
   test("reuses completed work and resumes a checkpoint under the same graph version", async () => {
     const state = await persisted();
     const recovery = buildWorkflowV2RecoveryPlan({

@@ -131,6 +131,10 @@ export class WorkflowV2FileStore {
     return this.enqueueValue(() => this.workspaceTransaction(input.workflowId, input.runId).inspectDiff());
   }
 
+  inspectWorkspaceSavepointDiff(input: { workflowId: string; runId: string; savepointId: string }): Promise<WorkflowWorkspaceDiffResult> {
+    return this.enqueueValue(() => this.workspaceTransaction(input.workflowId, input.runId).inspectDiffSinceSavepoint(input.savepointId));
+  }
+
   persistCommitPlan(plan: WorkflowCommitPlan): Promise<WorkflowCommitPlan> {
     return this.enqueueValue(async () => {
       if (!isWorkflowCommitPlan(plan)) throw new Error("Workflow commit plan is malformed.");

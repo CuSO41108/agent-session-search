@@ -2,7 +2,8 @@ import { afterEach, describe, expect, test } from "vitest";
 import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { WorkflowV2WorkspaceTransaction } from "./workflow-v2-workspace-transaction";
+import type { WorkflowV2Plan } from "../../../shared/workflow-v2/planning";
+import { WorkflowV2WorkspaceTransaction, workflowV2WorkspaceIsolationPlanError } from "./workflow-v2-workspace-transaction";
 
 const temporaryDirectories: string[] = [];
 
@@ -11,6 +12,30 @@ afterEach(async () => {
 });
 
 describe("WorkflowV2WorkspaceTransaction", () => {
+  test("rejects unconstrained and unbrokered external scripts in strict mode", () => {
+    const strictPlan = (script: Record<string, unknown>) => ({
+      definition: {
+        transactionPolicy: { defaultMode: "strict_atomic" },
+        nodes: [{ id: "script-1", execModel: "script", script }],
+      },
+      nodes: [{ nodeId: "script-1", scriptGovernance: { capabilities: [] } }],
+    }) as unknown as WorkflowV2Plan;
+
+    expect(workflowV2WorkspaceIsolationPlanError(strictPlan({
+      effectMode: "workspace_only",
+      idempotency: "safe_retry",
+      stderrPolicy: "warn",
+      executable: { kind: "command", command: "echo unsafe" },
+    }))).toContain("unconstrained command");
+    expect(workflowV2WorkspaceIsolationPlanError(strictPlan({
+      effectMode: "brokered_external",
+      idempotency: "safe_retry",
+      stderrPolicy: "fail",
+      compensationAdapter: "undo-test",
+      executable: { kind: "inline", handler: "test" },
+    }))).toContain("Broker execution port");
+  });
+
   test("freezes dirty and untracked files into an isolated workspace without changing the source", async () => {
     const root = await temporaryRoot("workflow-workspace-prepare-");
     const sourceDir = path.join(root, "source");
@@ -75,6 +100,8 @@ describe("WorkflowV2WorkspaceTransaction", () => {
     const prepared = await transaction.prepare({ workflowId: "workflow-1", runId: "run-1", sourceDir, baselineId: "baseline-1" });
     await transaction.createSavepoint({ savepointId: "node-1-attempt-1", nodeId: "node-1", attempt: 1, now: 10 });
     await writeFile(path.join(prepared.workspaceDir, "file.txt"), "failed attempt", "utf8");
+    await writeFile(path.join(prepared.workspaceDir, "created.txt"), "attempt artifact", "utf8");
+    expect(await transaction.inspectDiffSinceSavepoint("node-1-attempt-1")).toEqual({ created: ["created.txt"], modified: ["file.txt"], deleted: [] });
     await transaction.createSavepoint({ savepointId: "node-1-attempt-1", nodeId: "node-1", attempt: 1, now: 20 });
 
     await transaction.restoreSavepoint("node-1-attempt-1");

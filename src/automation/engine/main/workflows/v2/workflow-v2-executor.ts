@@ -63,6 +63,7 @@ export interface ExecuteWorkflowV2PlanInput {
     output?: WorkflowV2WorkerOutput;
   }) => Promise<void>;
   beforeNodeExecute?: (input: { node: WorkflowV2Node; attempt: number }) => Promise<void>;
+  onNodeAccepted?: (input: { node: WorkflowV2Node; output: WorkflowV2WorkerOutput }) => Promise<void>;
   onNodeStateTransition?: (input: WorkflowV2NodeStateTransitionEvent) => void;
   onRunCheckpoint?: (input: ExecuteWorkflowV2Checkpoint) => Promise<void>;
   now?: () => number;
@@ -392,6 +393,7 @@ export async function executeWorkflowV2Plan(input: ExecuteWorkflowV2PlanInput): 
           }
         }
 
+        await input.onNodeAccepted?.({ node, output: cloneWorkflowV2WorkerOutput(authoritativeWorkerOutput) });
         await input.runNodeHooks?.({
           lifecycle: "afterComplete",
           node,

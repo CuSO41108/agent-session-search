@@ -173,11 +173,11 @@ export class WorkflowV2RunPersistence {
     const now = Date.now();
     if (this.transaction.mode === "direct") {
       const previousStatus = this.transaction.status;
-      if (this.transaction.unknownOperationCount > 0) this.transaction.status = "recovery_required";
+      if (previousStatus === "recovery_required" || this.transaction.unknownOperationCount > 0) this.transaction.status = "recovery_required";
       else if (checkpoint.runState.status === "completed") this.transaction.status = "committed";
       else if (checkpoint.runState.status === "failed") this.transaction.status = "recovery_required";
       else if (checkpoint.runState.status === "paused") this.transaction.status = "waiting_for_user";
-      else if (previousStatus !== "recovery_required") this.transaction.status = "active";
+      else this.transaction.status = "active";
       if (previousStatus !== this.transaction.status && this.transaction.status === "committed") {
         await this.appendEventsUnlocked([
           { type: "commit_started", transactionId: this.transaction.transactionId, at: now, detail: "Direct mode changes were already applied during node execution." },

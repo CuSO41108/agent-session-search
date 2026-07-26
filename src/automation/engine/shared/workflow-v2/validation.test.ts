@@ -3,6 +3,7 @@ import { describe, expect, test } from "vitest";
 import type { WorkflowV2AuthoredDefinition, WorkflowV2Definition, WorkflowV2NodeTemplate, WorkflowV2ScriptLanguage } from "./definition";
 import { createWorkflowV2TemplateRegistry } from "./templates";
 import { compileAndValidateWorkflowV2Definition, validateWorkflowV2ConfiguredAgentReferences, validateWorkflowV2Definition } from "./validation";
+import { createStrictWorkflowTransactionPolicy } from "./transaction";
 
 function validDefinition(): WorkflowV2Definition {
   return {
@@ -86,6 +87,22 @@ describe("workflow-v2 validation", () => {
     expect(result.valid).toBe(true);
     expect(result.errors).toEqual([]);
     expect(result.topologicalNodeIds).toEqual(["plan", "apply"]);
+  });
+
+  test("requires the complete script side-effect contract in governed modes", () => {
+    const definition = validDefinition();
+    definition.transactionPolicy = createStrictWorkflowTransactionPolicy();
+    const script = definition.nodes[1];
+    if (script?.execModel !== "script") throw new Error("expected script fixture");
+    expect(validateWorkflowV2Definition(definition).errors).toEqual(expect.arrayContaining([
+      expect.stringContaining("must declare effectMode"),
+      expect.stringContaining("must declare idempotency"),
+      expect.stringContaining("must declare stderrPolicy"),
+    ]));
+    script.script.effectMode = "pure";
+    script.script.idempotency = "safe_retry";
+    script.script.stderrPolicy = "warn";
+    expect(validateWorkflowV2Definition(definition).errors).not.toEqual(expect.arrayContaining([expect.stringContaining("must declare")]));
   });
 
   test("rejects definitions with multiple terminal nodes", () => {

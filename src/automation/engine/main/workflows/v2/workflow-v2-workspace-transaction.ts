@@ -10,14 +10,30 @@ const EXCLUDED_NAMES = new Set([".git", "node_modules", ".cache", "dist", "build
 const MANIFEST_VERSION = 1 as const;
 const WORKSPACE_CAPABILITIES = new Set(["workspace_read", "workspace_write", "workspace_delete"]);
 
-export function workflowV2WorkspaceIsolationPlanError(plan: WorkflowV2Plan): string | undefined {
+export function workflowV2WorkspaceIsolationPlanError(plan: WorkflowV2Plan, capabilities: { brokeredScriptExecution?: boolean } = {}): string | undefined {
   if (plan.definition.transactionPolicy?.defaultMode !== "strict_atomic") return undefined;
   for (const planNode of plan.nodes) {
     if (!planNode.scriptGovernance) continue;
+    const node = plan.definition.nodes.find((candidate) => candidate.id === planNode.nodeId);
+    if (node?.execModel !== "script") continue;
+    if (!node.script.effectMode || !node.script.idempotency || !node.script.stderrPolicy) {
+      return `Workflow strict_atomic script node ${planNode.nodeId} has no complete effect, idempotency, and stderr contract.`;
+    }
+    if (node.script.executable.kind === "command") {
+      return `Workflow strict_atomic cannot execute unconstrained command script node ${planNode.nodeId}.`;
+    }
+    if (node.script.effectMode === "brokered_external" && !node.script.compensationAdapter) {
+      return `Workflow strict_atomic brokered script node ${planNode.nodeId} has no compensation adapter.`;
+    }
+    if (node.script.effectMode === "brokered_external" && !capabilities.brokeredScriptExecution) {
+      return `Workflow strict_atomic brokered script node ${planNode.nodeId} has no external operation Broker execution port.`;
+    }
     const unsupported = planNode.scriptGovernance.capabilities.filter((capability) => !WORKSPACE_CAPABILITIES.has(capability));
-    if (unsupported.length > 0) {
+    if (node.script.effectMode !== "brokered_external" && unsupported.length > 0) {
       return `Workflow strict_atomic workspace isolation cannot execute node ${planNode.nodeId} with unbrokered capabilities: ${unsupported.join(", ")}.`;
     }
+    const workspaceWrites = planNode.scriptGovernance.capabilities.some((capability) => capability === "workspace_write" || capability === "workspace_delete");
+    if (node.script.effectMode === "pure" && workspaceWrites) return `Workflow strict_atomic pure script node ${planNode.nodeId} declares workspace side effects.`;
   }
   return undefined;
 }
@@ -257,22 +273,19 @@ export class WorkflowV2WorkspaceTransaction {
     const manifest = await readManifest(paths.manifestPath);
     if (!manifest) throw new Error("Workflow workspace baseline manifest was not found.");
     await verifyBaselineSnapshot(manifest, paths.baselineDir);
-    const baseline = await scanDirectory(paths.baselineDir, new Set());
-    const workspace = await scanDirectory(paths.workspaceDir, new Set());
-    assertWorkspaceContainsOnlyGovernedFiles(workspace.excluded);
-    const baselineByPath = new Map(baseline.files.map((file) => [file.relativePath, file]));
-    const workspaceByPath = new Map(workspace.files.map((file) => [file.relativePath, file]));
-    const allPaths = [...new Set([...baselineByPath.keys(), ...workspaceByPath.keys()])].sort();
-    const result: WorkflowWorkspaceDiffResult = { created: [], modified: [], deleted: [] };
-    for (const relativePath of allPaths) {
-      const before = baselineByPath.get(relativePath);
-      const after = workspaceByPath.get(relativePath);
-      if (!before && after) result.created.push(relativePath);
-      else if (before && !after) result.deleted.push(relativePath);
-      else if (!sameFile(before, after)) result.modified.push(relativePath);
-    }
+    const result = await diffDirectories(paths.baselineDir, paths.workspaceDir);
     await writeJson(path.join(paths.reportsDir, "last-diff.json"), { ...result, inspectedAt: Date.now() });
     return result;
+  }
+
+  async inspectDiffSinceSavepoint(savepointId: string): Promise<WorkflowWorkspaceDiffResult> {
+    assertSafeSegment(savepointId, "savepoint id");
+    const paths = this.paths();
+    const snapshotDir = path.join(paths.snapshotsDir, savepointId);
+    await assertInside(paths.snapshotsDir, snapshotDir);
+    const metadata = await readSavepointMetadata(path.join(snapshotDir, "metadata.json"));
+    if (metadata.savepointId !== savepointId) throw new Error("Workflow workspace savepoint metadata does not match its storage path.");
+    return diffDirectories(await existingDirectory(path.join(snapshotDir, "contents")), paths.workspaceDir);
   }
 
   async rollbackCommitted(): Promise<WorkflowWorkspaceRollbackResult> {
@@ -350,6 +363,24 @@ export class WorkflowV2WorkspaceTransaction {
   paths(): WorkflowWorkspaceTransactionPaths {
     return workspacePaths(this.transactionRoot);
   }
+}
+
+async function diffDirectories(beforeDir: string, afterDir: string): Promise<WorkflowWorkspaceDiffResult> {
+  const beforeScan = await scanDirectory(beforeDir, new Set());
+  const afterScan = await scanDirectory(afterDir, new Set());
+  assertWorkspaceContainsOnlyGovernedFiles(afterScan.excluded);
+  const beforeByPath = new Map(beforeScan.files.map((file) => [file.relativePath, file]));
+  const afterByPath = new Map(afterScan.files.map((file) => [file.relativePath, file]));
+  const allPaths = [...new Set([...beforeByPath.keys(), ...afterByPath.keys()])].sort();
+  const result: WorkflowWorkspaceDiffResult = { created: [], modified: [], deleted: [] };
+  for (const relativePath of allPaths) {
+    const before = beforeByPath.get(relativePath);
+    const after = afterByPath.get(relativePath);
+    if (!before && after) result.created.push(relativePath);
+    else if (before && !after) result.deleted.push(relativePath);
+    else if (!sameFile(before, after)) result.modified.push(relativePath);
+  }
+  return result;
 }
 
 function workspacePaths(rootDir: string): WorkflowWorkspaceTransactionPaths {

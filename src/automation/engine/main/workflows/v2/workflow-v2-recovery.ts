@@ -140,6 +140,7 @@ export function buildWorkflowV2FinalReport(
   status: "completed" | "failed" | "paused" | "running",
 ): string {
   const outputByNodeId = new Map(workerOutputs.map((output) => [output.nodeId, output]));
+  const transactionReport = workflowV2NodeTransactionReport(plan.definition.nodes, outputByNodeId);
   if (status === "completed") {
     const terminalNodeIds = new Set(plan.definition.nodes.map((node) => node.id));
     for (const edge of plan.definition.edges) terminalNodeIds.delete(edge.fromNodeId);
@@ -147,7 +148,7 @@ export function buildWorkflowV2FinalReport(
       if (!terminalNodeIds.has(node.id)) continue;
       const output = outputByNodeId.get(node.id);
       const userReport = output ? workflowV2ExplicitUserFacingOutput(output) : undefined;
-      if (userReport) return userReport;
+      if (userReport) return transactionReport ? `${userReport}\n\n${transactionReport}` : userReport;
     }
   }
   return [
@@ -164,7 +165,30 @@ export function buildWorkflowV2FinalReport(
       const outputKeys = Object.keys(output.outputs).sort();
       return `- ${node.title} (${node.id}): ${output.summary} [outputs: ${outputKeys.join(", ") || "none"}]`;
     }),
+    ...(transactionReport ? ["", transactionReport] : []),
   ].join("\n");
+}
+
+function workflowV2NodeTransactionReport(
+  nodes: readonly WorkflowV2Node[],
+  outputByNodeId: ReadonlyMap<string, WorkflowV2WorkerOutput>,
+): string {
+  const lines = nodes.flatMap((node) => {
+    const output = outputByNodeId.get(node.id);
+    const acceptance = output?.acceptance;
+    if (!acceptance) return [];
+    return [
+      `### ${node.title} (${node.id}) — ${acceptance.outcome}`,
+      `- Changed paths: ${acceptance.changedPaths.join(", ") || "none"}`,
+      `- Operations: ${acceptance.operationIds.join(", ") || "none"}`,
+      ...acceptance.issues.map((issue) => `- ${issue.severity.toUpperCase()} ${issue.code}: ${issue.detail}`),
+      ...(output.scriptReceipt ? [
+        `- Script receipt: exit=${output.scriptReceipt.exitCode ?? "none"}; signal=${output.scriptReceipt.signal ?? "none"}; timeout=${output.scriptReceipt.timedOut}; effect=${output.scriptReceipt.effectState}; stdout=${output.scriptReceipt.stdoutDigest}`,
+        ...(output.scriptReceipt.stderrSummary ? [`- Stderr: ${output.scriptReceipt.stderrSummary}`] : []),
+      ] : []),
+    ];
+  });
+  return lines.length > 0 ? ["## Transactional node acceptance", ...lines].join("\n") : "";
 }
 
 export function materializeWorkflowV2Recovery(input: {

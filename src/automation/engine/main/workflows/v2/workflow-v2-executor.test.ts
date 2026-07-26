@@ -851,6 +851,7 @@ describe("workflow-v2 executor", () => {
     retryDefinition.edges = [];
     const plan = await buildWorkflowV2Plan({ definition: retryDefinition, approvedBy: "tester", now: 5_000 });
     let attempts = 0;
+    const acceptedSummaries: string[] = [];
 
     const result = await executeWorkflowV2Plan({
       plan,
@@ -866,6 +867,7 @@ describe("workflow-v2 executor", () => {
       executeScript: async () => {
         throw new Error("script runner should not be called");
       },
+      onNodeAccepted: async ({ output }) => { acceptedSummaries.push(output.summary); },
     });
 
     expect(attempts).toBe(2);
@@ -877,6 +879,7 @@ describe("workflow-v2 executor", () => {
       outputs: { draft: "accepted" },
       proposals: [],
     }]);
+    expect(acceptedSummaries).toEqual(["attempt 2"]);
   });
 
   test("pauses through one intervention contract when validation requires a human", async () => {
@@ -923,6 +926,7 @@ describe("workflow-v2 executor", () => {
     reviewedDefinition.edges = [];
     const plan = await buildWorkflowV2Plan({ definition: reviewedDefinition, approvedBy: "tester", now: 5_200 });
     const reviewerInputs: string[] = [];
+    const acceptanceOrder: string[] = [];
 
     const result = await executeWorkflowV2Plan({
       plan,
@@ -936,6 +940,7 @@ describe("workflow-v2 executor", () => {
         throw new Error("script runner should not be called");
       },
       reviewNodeOutput: async (reviewInput) => {
+        acceptanceOrder.push("review");
         reviewerInputs.push(JSON.stringify(reviewInput));
         return {
           reviewerNodeId: "independent-reviewer",
@@ -947,12 +952,14 @@ describe("workflow-v2 executor", () => {
           },
         };
       },
+      onNodeAccepted: async () => { acceptanceOrder.push("materialize"); },
     });
 
     expect(result.runState.status).toBe("completed");
     expect(result.runState.nodes.draft?.reviewVerdict?.decision).toBe("accept");
     expect(reviewerInputs).toHaveLength(1);
     expect(reviewerInputs[0]).not.toContain("executor self-assessment");
+    expect(acceptanceOrder).toEqual(["review", "materialize"]);
   });
 
   test("requeues a reviewer rejection and accepts a later corrected attempt", async () => {
