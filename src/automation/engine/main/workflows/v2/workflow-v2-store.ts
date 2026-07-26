@@ -20,7 +20,9 @@ import type { WorkflowV2WorkerOutput } from "../../../shared/workflow-v2/packets
 import {
   WorkflowV2WorkspaceTransaction,
   type WorkflowWorkspaceCommitResult,
+  type WorkflowWorkspaceDiffResult,
   type WorkflowWorkspacePreparation,
+  type WorkflowWorkspaceRollbackResult,
 } from "./workflow-v2-workspace-transaction";
 import {
   WORKFLOW_TRANSACTION_EVENT_TYPES,
@@ -115,6 +117,14 @@ export class WorkflowV2FileStore {
 
   discardWorkspaceTransaction(input: { workflowId: string; runId: string }): Promise<void> {
     return this.enqueueValue(() => this.workspaceTransaction(input.workflowId, input.runId).discard());
+  }
+
+  rollbackWorkspaceTransaction(input: { workflowId: string; runId: string }): Promise<WorkflowWorkspaceRollbackResult> {
+    return this.enqueueValue(() => this.workspaceTransaction(input.workflowId, input.runId).rollbackCommitted());
+  }
+
+  inspectWorkspaceTransaction(input: { workflowId: string; runId: string }): Promise<WorkflowWorkspaceDiffResult> {
+    return this.enqueueValue(() => this.workspaceTransaction(input.workflowId, input.runId).inspectDiff());
   }
 
   planOperation(input: { workflowId: string; record: WorkflowOperationRecord }): Promise<WorkflowOperationRecord> {

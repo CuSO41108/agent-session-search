@@ -68,22 +68,33 @@ export interface WorkflowWorkspaceCommitResult {
   conflicts: string[];
 }
 
+export type WorkflowWorkspaceRollbackResult = WorkflowWorkspaceCommitResult;
+
+export interface WorkflowWorkspaceDiffResult {
+  created: string[];
+  modified: string[];
+  deleted: string[];
+}
+
 export class WorkflowV2WorkspaceTransaction {
   constructor(private readonly transactionRoot: string) {}
 
   async prepare(input: { workflowId: string; runId: string; sourceDir: string; baselineId: string; now?: number }): Promise<WorkflowWorkspacePreparation> {
     const sourceDir = await existingDirectory(input.sourceDir);
     const paths = this.paths();
+    assertSeparatedDirectories(sourceDir, paths.rootDir);
     const existing = await readManifest(paths.manifestPath);
     if (existing) {
       if (existing.workflowId !== input.workflowId || existing.runId !== input.runId || path.resolve(existing.sourceDir) !== sourceDir) {
         throw new Error("Workflow workspace transaction belongs to a different run or source directory.");
       }
+      await existingDirectory(paths.workspaceDir);
+      await verifyBaselineSnapshot(existing, paths.baselineDir);
       return { baselineId: existing.baselineId, workspaceDir: paths.workspaceDir, manifest: existing, reused: true };
     }
     await mkdir(paths.rootDir, { recursive: true });
     const manifest = await buildManifest({ workflowId: input.workflowId, runId: input.runId, sourceDir, baselineId: input.baselineId, now: input.now ?? Date.now() });
-    await assertSufficientSpace(sourceDir, manifest.files.reduce((sum, file) => sum + file.size, 0));
+    await assertSufficientSpace(path.dirname(paths.rootDir), manifest.files.reduce((sum, file) => sum + file.size, 0));
     const stagingKey = createHash("sha256").update(`${input.workflowId}\0${input.runId}`).digest("hex").slice(0, 16);
     const stagingRoot = path.join(path.dirname(paths.rootDir), `.transaction-workspace-${stagingKey}.staging`);
     await assertInside(path.dirname(paths.rootDir), stagingRoot);
@@ -104,6 +115,7 @@ export class WorkflowV2WorkspaceTransaction {
         await copyFile(source, baselineTarget);
         await copyFile(source, workspaceTarget);
       }
+      await verifyBaselineSnapshot(manifest, stagingPaths.baselineDir);
       await writeJson(stagingPaths.manifestPath, manifest);
       await assertInside(path.dirname(paths.rootDir), paths.rootDir);
       await rm(paths.rootDir, { recursive: true, force: true });
@@ -121,10 +133,29 @@ export class WorkflowV2WorkspaceTransaction {
     await assertInside(paths.rootDir, paths.workspaceDir);
     const source = await existingDirectory(paths.workspaceDir);
     const target = path.join(paths.snapshotsDir, input.savepointId);
+    const staging = path.join(paths.snapshotsDir, `.${input.savepointId}.staging`);
     await assertInside(paths.snapshotsDir, target);
-    await rm(target, { recursive: true, force: true });
-    await cp(source, target, { recursive: true, force: false, errorOnExist: true });
-    await writeJson(path.join(paths.snapshotsDir, `${input.savepointId}.json`), { savepointId: input.savepointId, nodeId: input.nodeId, attempt: input.attempt, createdAt: input.now ?? Date.now() });
+    await assertInside(paths.snapshotsDir, staging);
+    try {
+      const existingMetadata = await readSavepointMetadata(path.join(target, "metadata.json"));
+      if (existingMetadata.savepointId !== input.savepointId || existingMetadata.nodeId !== input.nodeId || existingMetadata.attempt !== input.attempt) {
+        throw new Error("Workflow workspace savepoint already exists with different metadata.");
+      }
+      await existingDirectory(path.join(target, "contents"));
+      return;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+    await rm(staging, { recursive: true, force: true });
+    try {
+      await mkdir(staging, { recursive: true });
+      await cp(source, path.join(staging, "contents"), { recursive: true, force: false, errorOnExist: true });
+      await writeJson(path.join(staging, "metadata.json"), { savepointId: input.savepointId, nodeId: input.nodeId, attempt: input.attempt, createdAt: input.now ?? Date.now() });
+      await rename(staging, target);
+    } catch (error) {
+      await rm(staging, { recursive: true, force: true });
+      throw error;
+    }
   }
 
   async restoreSavepoint(savepointId: string): Promise<void> {
@@ -132,7 +163,9 @@ export class WorkflowV2WorkspaceTransaction {
     const paths = this.paths();
     const snapshotDir = path.join(paths.snapshotsDir, savepointId);
     await assertInside(paths.snapshotsDir, snapshotDir);
-    const source = await existingDirectory(snapshotDir);
+    const metadata = await readSavepointMetadata(path.join(snapshotDir, "metadata.json"));
+    if (metadata.savepointId !== savepointId) throw new Error("Workflow workspace savepoint metadata does not match its storage path.");
+    const source = await existingDirectory(path.join(snapshotDir, "contents"));
     await assertInside(paths.rootDir, paths.workspaceDir);
     await rm(paths.workspaceDir, { recursive: true, force: true });
     await cp(source, paths.workspaceDir, { recursive: true, force: false, errorOnExist: true });
@@ -142,9 +175,11 @@ export class WorkflowV2WorkspaceTransaction {
     const paths = this.paths();
     const manifest = await readManifest(paths.manifestPath);
     if (!manifest) throw new Error("Workflow workspace baseline manifest was not found.");
+    await verifyBaselineSnapshot(manifest, paths.baselineDir);
     const sourceDir = await existingDirectory(manifest.sourceDir);
     const baseline = await scanDirectory(paths.baselineDir, new Set());
     const workspace = await scanDirectory(paths.workspaceDir, new Set());
+    assertWorkspaceContainsOnlyGovernedFiles(workspace.excluded);
     const current = await scanDirectory(sourceDir, new Set());
     const baselineByPath = new Map(baseline.files.map((file) => [file.relativePath, file]));
     const workspaceByPath = new Map(workspace.files.map((file) => [file.relativePath, file]));
@@ -159,7 +194,7 @@ export class WorkflowV2WorkspaceTransaction {
       const actual = currentByPath.get(relativePath);
       const changedByWorkflow = !sameFile(before, desired);
       if (!changedByWorkflow) continue;
-      const changedByUser = !sameFile(before, actual);
+      const changedByUser = !sameFile(before, actual) || excludedCoversPath(current.excluded, relativePath);
       if (changedByUser && !sameFile(actual, desired)) {
         conflicts.push(relativePath);
         continue;
@@ -167,7 +202,30 @@ export class WorkflowV2WorkspaceTransaction {
       pathsToApply.push(relativePath);
     }
     if (conflicts.length > 0) {
-      await writeJson(path.join(paths.reportsDir, "last-commit.json"), { applied, conflicts, completedAt: Date.now() });
+      await writeJson(path.join(paths.reportsDir, "last-commit.json"), {
+        applied,
+        conflicts,
+        conflictDetails: buildConflictDetails(conflicts, baselineByPath, workspaceByPath, currentByPath),
+        completedAt: Date.now(),
+      });
+      return { applied, conflicts };
+    }
+    const revalidatedCurrent = await scanDirectory(sourceDir, new Set());
+    const revalidatedByPath = new Map(revalidatedCurrent.files.map((file) => [file.relativePath, file]));
+    conflicts.push(...pathsToApply.filter((relativePath) => currentPathChanged(
+      relativePath,
+      currentByPath,
+      current.excluded,
+      revalidatedByPath,
+      revalidatedCurrent.excluded,
+    )));
+    if (conflicts.length > 0) {
+      await writeJson(path.join(paths.reportsDir, "last-commit.json"), {
+        applied,
+        conflicts,
+        conflictDetails: buildConflictDetails(conflicts, baselineByPath, workspaceByPath, revalidatedByPath),
+        completedAt: Date.now(),
+      });
       return { applied, conflicts };
     }
     for (const relativePath of pathsToApply) {
@@ -178,8 +236,12 @@ export class WorkflowV2WorkspaceTransaction {
         await assertNoSymlinkSegments(sourceDir, target);
         await mkdir(path.dirname(target), { recursive: true });
         const temporary = `${target}.${createHash("sha256").update(relativePath).digest("hex").slice(0, 12)}.tmp`;
-        await copyFile(safeJoin(paths.workspaceDir, relativePath), temporary);
-        await rename(temporary, target);
+        try {
+          await copyFile(safeJoin(paths.workspaceDir, relativePath), temporary);
+          await rename(temporary, target);
+        } finally {
+          await rm(temporary, { force: true });
+        }
       } else if (actual) {
         await assertNoSymlinkSegments(sourceDir, target);
         await rm(target, { force: true });
@@ -187,6 +249,95 @@ export class WorkflowV2WorkspaceTransaction {
       applied.push(relativePath);
     }
     await writeJson(path.join(paths.reportsDir, "last-commit.json"), { applied, conflicts, completedAt: Date.now() });
+    return { applied, conflicts };
+  }
+
+  async inspectDiff(): Promise<WorkflowWorkspaceDiffResult> {
+    const paths = this.paths();
+    const manifest = await readManifest(paths.manifestPath);
+    if (!manifest) throw new Error("Workflow workspace baseline manifest was not found.");
+    await verifyBaselineSnapshot(manifest, paths.baselineDir);
+    const baseline = await scanDirectory(paths.baselineDir, new Set());
+    const workspace = await scanDirectory(paths.workspaceDir, new Set());
+    assertWorkspaceContainsOnlyGovernedFiles(workspace.excluded);
+    const baselineByPath = new Map(baseline.files.map((file) => [file.relativePath, file]));
+    const workspaceByPath = new Map(workspace.files.map((file) => [file.relativePath, file]));
+    const allPaths = [...new Set([...baselineByPath.keys(), ...workspaceByPath.keys()])].sort();
+    const result: WorkflowWorkspaceDiffResult = { created: [], modified: [], deleted: [] };
+    for (const relativePath of allPaths) {
+      const before = baselineByPath.get(relativePath);
+      const after = workspaceByPath.get(relativePath);
+      if (!before && after) result.created.push(relativePath);
+      else if (before && !after) result.deleted.push(relativePath);
+      else if (!sameFile(before, after)) result.modified.push(relativePath);
+    }
+    await writeJson(path.join(paths.reportsDir, "last-diff.json"), { ...result, inspectedAt: Date.now() });
+    return result;
+  }
+
+  async rollbackCommitted(): Promise<WorkflowWorkspaceRollbackResult> {
+    const paths = this.paths();
+    const manifest = await readManifest(paths.manifestPath);
+    if (!manifest) throw new Error("Workflow workspace baseline manifest was not found.");
+    await verifyBaselineSnapshot(manifest, paths.baselineDir);
+    const sourceDir = await existingDirectory(manifest.sourceDir);
+    const baseline = await scanDirectory(paths.baselineDir, new Set());
+    const workspace = await scanDirectory(paths.workspaceDir, new Set());
+    assertWorkspaceContainsOnlyGovernedFiles(workspace.excluded);
+    const current = await scanDirectory(sourceDir, new Set());
+    const baselineByPath = new Map(baseline.files.map((file) => [file.relativePath, file]));
+    const workspaceByPath = new Map(workspace.files.map((file) => [file.relativePath, file]));
+    const currentByPath = new Map(current.files.map((file) => [file.relativePath, file]));
+    const changedPaths = [...new Set([...baselineByPath.keys(), ...workspaceByPath.keys()])]
+      .filter((relativePath) => !sameFile(baselineByPath.get(relativePath), workspaceByPath.get(relativePath)));
+    const conflicts = changedPaths.filter((relativePath) => {
+      const before = baselineByPath.get(relativePath);
+      const desired = workspaceByPath.get(relativePath);
+      const actual = currentByPath.get(relativePath);
+      return excludedCoversPath(current.excluded, relativePath) || (!sameFile(actual, before) && !sameFile(actual, desired));
+    });
+    const applied: string[] = [];
+    let reportCurrentByPath = currentByPath;
+    if (conflicts.length === 0) {
+      const revalidatedCurrent = await scanDirectory(sourceDir, new Set());
+      const revalidatedByPath = new Map(revalidatedCurrent.files.map((file) => [file.relativePath, file]));
+      reportCurrentByPath = revalidatedByPath;
+      conflicts.push(...changedPaths.filter((relativePath) => currentPathChanged(
+        relativePath,
+        currentByPath,
+        current.excluded,
+        revalidatedByPath,
+        revalidatedCurrent.excluded,
+      )));
+    }
+    if (conflicts.length === 0) {
+      for (const relativePath of changedPaths) {
+        const before = baselineByPath.get(relativePath);
+        const actual = currentByPath.get(relativePath);
+        if (sameFile(actual, before)) continue;
+        const target = safeJoin(sourceDir, relativePath);
+        await assertNoSymlinkSegments(sourceDir, target);
+        if (before) {
+          await mkdir(path.dirname(target), { recursive: true });
+          const temporary = `${target}.${createHash("sha256").update(`rollback:${relativePath}`).digest("hex").slice(0, 12)}.tmp`;
+          try {
+            await copyFile(safeJoin(paths.baselineDir, relativePath), temporary);
+            await rename(temporary, target);
+          } finally {
+            await rm(temporary, { force: true });
+          }
+        } else if (actual) {
+          await rm(target, { force: true });
+        }
+        applied.push(relativePath);
+      }
+    }
+    await writeJson(path.join(paths.reportsDir, "last-rollback.json"), {
+      applied,
+      conflicts,
+      conflictDetails: buildConflictDetails(conflicts, baselineByPath, workspaceByPath, reportCurrentByPath),
+      completedAt: Date.now(),
+    });
     return { applied, conflicts };
   }
 
@@ -280,6 +431,62 @@ async function assertSufficientSpace(sourceDir: string, bytes: number): Promise<
   }
 }
 
+async function verifyBaselineSnapshot(manifest: WorkflowWorkspaceBaselineManifest, baselineDir: string): Promise<void> {
+  const baseline = await scanDirectory(await existingDirectory(baselineDir), new Set());
+  if (baseline.excluded.length > 0 || baseline.files.length !== manifest.files.length) {
+    throw new Error("Workflow workspace baseline snapshot does not match its frozen manifest.");
+  }
+  const expected = new Map(manifest.files.map((file) => [file.relativePath, file]));
+  if (baseline.files.some((file) => !sameFile(expected.get(file.relativePath), file))) {
+    throw new Error("Workflow workspace changed while its baseline snapshot was being frozen.");
+  }
+}
+
+function assertSeparatedDirectories(leftDir: string, rightDir: string): void {
+  const left = path.resolve(leftDir);
+  const right = path.resolve(rightDir);
+  const leftToRight = path.relative(left, right);
+  const rightToLeft = path.relative(right, left);
+  const nested = (relative: string): boolean => relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+  if (nested(leftToRight) || nested(rightToLeft)) {
+    throw new Error("Workflow workspace transaction storage must be outside the governed source directory.");
+  }
+}
+
+function assertWorkspaceContainsOnlyGovernedFiles(excluded: readonly WorkflowWorkspaceExcludedEntry[]): void {
+  if (excluded.length === 0) return;
+  throw new Error(`Workflow workspace contains a symbolic link or unsupported file and cannot be committed safely: ${excluded.map((entry) => entry.relativePath).join(", ")}`);
+}
+
+function excludedCoversPath(excluded: readonly WorkflowWorkspaceExcludedEntry[], relativePath: string): boolean {
+  return excluded.some((entry) => relativePath === entry.relativePath || relativePath.startsWith(`${entry.relativePath}/`));
+}
+
+function currentPathChanged(
+  relativePath: string,
+  before: ReadonlyMap<string, WorkflowWorkspaceFileEntry>,
+  beforeExcluded: readonly WorkflowWorkspaceExcludedEntry[],
+  after: ReadonlyMap<string, WorkflowWorkspaceFileEntry>,
+  afterExcluded: readonly WorkflowWorkspaceExcludedEntry[],
+): boolean {
+  return !sameFile(before.get(relativePath), after.get(relativePath))
+    || excludedCoversPath(beforeExcluded, relativePath) !== excludedCoversPath(afterExcluded, relativePath);
+}
+
+function buildConflictDetails(
+  conflicts: readonly string[],
+  baseline: ReadonlyMap<string, WorkflowWorkspaceFileEntry>,
+  workspace: ReadonlyMap<string, WorkflowWorkspaceFileEntry>,
+  current: ReadonlyMap<string, WorkflowWorkspaceFileEntry>,
+): Array<{ relativePath: string; baseline?: WorkflowWorkspaceFileEntry; workspace?: WorkflowWorkspaceFileEntry; current?: WorkflowWorkspaceFileEntry }> {
+  return conflicts.map((relativePath) => ({
+    relativePath,
+    ...(baseline.get(relativePath) ? { baseline: baseline.get(relativePath) } : {}),
+    ...(workspace.get(relativePath) ? { workspace: workspace.get(relativePath) } : {}),
+    ...(current.get(relativePath) ? { current: current.get(relativePath) } : {}),
+  }));
+}
+
 async function existingDirectory(directory: string): Promise<string> {
   const resolved = path.resolve(directory);
   const metadata = await lstat(resolved);
@@ -347,4 +554,12 @@ async function readManifest(filePath: string): Promise<WorkflowWorkspaceBaseline
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
     throw error;
   }
+}
+
+async function readSavepointMetadata(filePath: string): Promise<{ savepointId: string; nodeId: string; attempt: number; createdAt: number }> {
+  const value = JSON.parse(await readFile(filePath, "utf8")) as Record<string, unknown>;
+  if (typeof value.savepointId !== "string" || typeof value.nodeId !== "string" || !Number.isSafeInteger(value.attempt) || typeof value.createdAt !== "number") {
+    throw new Error("Workflow workspace savepoint metadata is malformed.");
+  }
+  return value as { savepointId: string; nodeId: string; attempt: number; createdAt: number };
 }

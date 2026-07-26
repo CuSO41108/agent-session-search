@@ -19,7 +19,7 @@ import type {
   WorkflowV2PersistedRunState,
 } from "../../shared/workflow-v2/storage";
 import type { WorkflowOperationRecord, WorkflowOperationState } from "../../shared/workflow-v2/transaction";
-import type { WorkflowWorkspaceCommitResult, WorkflowWorkspacePreparation } from "./v2/workflow-v2-workspace-transaction";
+import type { WorkflowWorkspaceCommitResult, WorkflowWorkspaceDiffResult, WorkflowWorkspacePreparation, WorkflowWorkspaceRollbackResult } from "./v2/workflow-v2-workspace-transaction";
 
 export interface WorkflowRunStateUpdate {
   workflowId: string;
@@ -75,6 +75,8 @@ export interface WorkflowV2StorePort {
   restoreWorkspaceSavepoint?: (input: { workflowId: string; runId: string; savepointId: string }) => Promise<void>;
   commitWorkspaceTransaction?: (input: { workflowId: string; runId: string }) => Promise<WorkflowWorkspaceCommitResult>;
   discardWorkspaceTransaction?: (input: { workflowId: string; runId: string }) => Promise<void>;
+  rollbackWorkspaceTransaction?: (input: { workflowId: string; runId: string }) => Promise<WorkflowWorkspaceRollbackResult>;
+  inspectWorkspaceTransaction?: (input: { workflowId: string; runId: string }) => Promise<WorkflowWorkspaceDiffResult>;
   persistCacheEntry?: (entry: WorkflowV2CacheEntryMetadata) => Promise<void>;
   readRunState?: (workflowId: string, runId: string) => Promise<WorkflowV2PersistedRunState | undefined>;
   readCacheEntry?: (
