@@ -818,6 +818,45 @@ describe("extra session sources", () => {
     fs.rmSync(root, { recursive: true, force: true });
   });
 
+  it("omits untitled zero-message Cursor composer shells that only have a project path", () => {
+    const root = tmpDir("cursor-empty-project-shell");
+    const stateDbPath = path.join(root, "cursor-state.vscdb");
+    writeCursorStateDb(stateDbPath, [
+      {
+        composerId: "2c975d5b-073b-4757-9901-0b85fceb58e9",
+        name: "",
+        projectPath: "/Users/mac/PycharmProjects/learn-claude-code",
+        createdAt: Date.parse("2026-04-28T07:07:50Z"),
+      },
+      {
+        composerId: "named-empty-draft",
+        name: "Saved empty draft",
+        projectPath: "/Users/mac/PycharmProjects/learn-claude-code",
+      },
+      {
+        composerId: "with-messages",
+        name: "",
+        projectPath: "/Users/mac/IdeaProjects/sky-take-out",
+      },
+    ], [
+      {
+        composerId: "with-messages",
+        bubbleId: "bubble-user",
+        type: 1,
+        text: "Explain the takeout order flow",
+        createdAt: "2026-07-26T02:00:00Z",
+      },
+    ]);
+
+    const loaded = loadCursorAgentSessions(root, { cursorStateDbPath: stateDbPath });
+
+    expect(loaded.map((item) => item.session.rawId).sort()).toEqual(["named-empty-draft", "with-messages"]);
+    expect(loaded.find((item) => item.session.rawId === "named-empty-draft")?.session.originalTitle).toBe("Saved empty draft");
+    expect(loaded.find((item) => item.session.rawId === "with-messages")?.session.firstQuestion).toBe("Explain the takeout order flow");
+
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
   it("describes Cursor Remote SSH execution separately from local storage", () => {
     const root = tmpDir("cursor-remote-ssh");
     const stateDbPath = path.join(root, "cursor-state.vscdb");

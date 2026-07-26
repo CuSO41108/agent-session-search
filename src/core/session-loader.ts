@@ -2375,7 +2375,9 @@ export function* loadCursorAgentSessionsIterator(cursorDir = path.join(os.homedi
   for (const header of composerMetadata.values()) {
     if (transcriptSessionIds.has(header.composerId)) continue;
     const question = cleanTitle(firstQuestion(header.messages));
-    if (!header.title && header.messages.length === 0 && !header.projectPath) continue;
+    // Untitled zero-message composer shells (often only a workspace path) are
+    // not real sessions; indexing them yields UUID titles that sort to the top.
+    if (!header.title && header.messages.length === 0) continue;
     if (header.isDraft && !header.title && !question) continue;
     const workspaceSlug = encodeCursorWorkspaceSlug(header.projectPath);
     const session = createIndexedSession({

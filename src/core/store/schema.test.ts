@@ -259,4 +259,101 @@ describe("session store schema", () => {
       db.close();
     }
   });
+
+  it("removes untitled zero-message Cursor shells even when they already have a project path", () => {
+    const db = new DatabaseSync(":memory:");
+    try {
+      migrateSessionStore(db);
+      db.prepare("DELETE FROM data_migrations WHERE id = 'cursor-empty-composer-shells-v1'").run();
+      const insert = db.prepare(`
+        INSERT INTO sessions (
+          session_key, raw_id, source, project_path, file_path,
+          original_title, first_question, timestamp, file_mtime_ms, file_size, message_count
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, 10, ?)
+      `);
+      insert.run(
+        "cursor:Users-mac-PycharmProjects-learn-claude-code:2c975d5b-073b-4757-9901-0b85fceb58e9",
+        "2c975d5b-073b-4757-9901-0b85fceb58e9",
+        "cursor-agent",
+        "/Users/mac/PycharmProjects/learn-claude-code",
+        "/tmp/state.vscdb",
+        "2c975d5b-073b-4757-9901-0b85fceb58e9",
+        "",
+        999,
+        0,
+      );
+      insert.run(
+        "cursor:named",
+        "named",
+        "cursor-agent",
+        "/Users/mac/PycharmProjects/learn-claude-code",
+        "/tmp/state.vscdb",
+        "Saved empty draft",
+        "",
+        888,
+        0,
+      );
+      insert.run(
+        "cursor:with-messages",
+        "with-messages",
+        "cursor-agent",
+        "/Users/mac/IdeaProjects/sky-take-out",
+        "/tmp/state.vscdb",
+        "with-messages",
+        "Explain the takeout order flow",
+        777,
+        1,
+      );
+      db.prepare(
+        "INSERT INTO session_fts (session_key, title, first_question, content_text, project_path) VALUES (?, ?, '', '', ?)",
+      ).run(
+        "cursor:Users-mac-PycharmProjects-learn-claude-code:2c975d5b-073b-4757-9901-0b85fceb58e9",
+        "2c975d5b-073b-4757-9901-0b85fceb58e9",
+        "/Users/mac/PycharmProjects/learn-claude-code",
+      );
+
+      migrateSessionStore(db);
+
+      expect(
+        db
+          .prepare(
+            "SELECT 1 FROM sessions WHERE session_key = 'cursor:Users-mac-PycharmProjects-learn-claude-code:2c975d5b-073b-4757-9901-0b85fceb58e9'",
+          )
+          .get(),
+      ).toBeUndefined();
+      expect(
+        db
+          .prepare(
+            "SELECT 1 FROM session_fts WHERE session_key = 'cursor:Users-mac-PycharmProjects-learn-claude-code:2c975d5b-073b-4757-9901-0b85fceb58e9'",
+          )
+          .get(),
+      ).toBeUndefined();
+      expect(db.prepare("SELECT session_key FROM sessions WHERE source = 'cursor-agent' ORDER BY session_key").all()).toEqual([
+        { session_key: "cursor:named" },
+        { session_key: "cursor:with-messages" },
+      ]);
+
+      insert.run(
+        "cursor:Users-mac-IdeaProjects-sky-take-out:fddb6eff-4dc5-46b3-bb68-e2d19e2f1932",
+        "fddb6eff-4dc5-46b3-bb68-e2d19e2f1932",
+        "cursor-agent",
+        "/Users/mac/IdeaProjects/sky-take-out",
+        "/tmp/state.vscdb",
+        "fddb6eff-4dc5-46b3-bb68-e2d19e2f1932",
+        "",
+        666,
+        0,
+      );
+      migrateSessionStore(db);
+      expect(
+        db
+          .prepare(
+            "SELECT 1 FROM sessions WHERE session_key = 'cursor:Users-mac-IdeaProjects-sky-take-out:fddb6eff-4dc5-46b3-bb68-e2d19e2f1932'",
+          )
+          .get(),
+      ).toEqual({ 1: 1 });
+    } finally {
+      db.close();
+    }
+  });
 });

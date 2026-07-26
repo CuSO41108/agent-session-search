@@ -287,6 +287,7 @@ export function migrateSessionStore(db: SessionStoreDatabase): void {
   runCodeBuddyTokenEventsMigration(db);
   runCursorComposerMetadataMigration(db);
   runCursorRuntimeEnvironmentMigration(db);
+  runCursorEmptyComposerShellsMigration(db);
   addColumnIfMissing(db, "skill_sync_bindings", "remote_version", "INTEGER NOT NULL DEFAULT 1");
   addColumnIfMissing(db, "skill_sync_bindings", "portable_identity", "TEXT NOT NULL DEFAULT ''");
   addColumnIfMissing(db, "skill_sync_bindings", "last_content_hash", "TEXT NOT NULL DEFAULT ''");
@@ -456,6 +457,33 @@ function runCursorRuntimeEnvironmentMigration(db: SessionStoreDatabase): void {
       db.prepare(
         "UPDATE sessions SET file_mtime_ms = 0 WHERE source = 'cursor-agent' AND storage_environment_id = 'local'",
       ).run();
+      db.prepare("INSERT INTO data_migrations (id, applied_at) VALUES (?, ?)").run(migrationId, Date.now());
+    }
+    db.exec("COMMIT");
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
+}
+
+function runCursorEmptyComposerShellsMigration(db: SessionStoreDatabase): void {
+  const migrationId = "cursor-empty-composer-shells-v1";
+  // Broader than cursor-runtime-environment-v1: Cursor also leaves untitled
+  // zero-message shells that already have a workspace/project path.
+  const emptyCursorSessionWhere = `
+    source = 'cursor-agent'
+    AND message_count = 0
+    AND trim(first_question) = ''
+    AND original_title = raw_id
+  `;
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    const applied = db.prepare("SELECT 1 FROM data_migrations WHERE id = ?").get(migrationId);
+    if (!applied) {
+      db.prepare(
+        `DELETE FROM session_fts WHERE session_key IN (SELECT session_key FROM sessions WHERE ${emptyCursorSessionWhere})`,
+      ).run();
+      db.prepare(`DELETE FROM sessions WHERE ${emptyCursorSessionWhere}`).run();
       db.prepare("INSERT INTO data_migrations (id, applied_at) VALUES (?, ?)").run(migrationId, Date.now());
     }
     db.exec("COMMIT");
