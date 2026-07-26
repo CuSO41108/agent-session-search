@@ -7,6 +7,7 @@ import { describe, expect, it, vi } from "vitest";
 import { createInMemoryStore } from "./session-store";
 import {
   buildRemoteSyncSshArgs,
+  decodeRemotePayload,
   encodeRemotePayloadForTest,
   fetchRemoteSessionMessagePage,
   fetchRemoteSessionFilePayload,
@@ -608,6 +609,21 @@ describe("remote sync", () => {
       "ssh:ssh-devbox:codex-cli:remote-codex",
     ]);
     expect(store.getEnvironment("ssh-devbox")).toMatchObject({ syncState: "watching", lastError: null });
+  });
+
+  it("decodes large canonical base64 payloads without overflowing the call stack", () => {
+    const contentBase64 = "A".repeat(4 * 1024 * 1024);
+    const output = JSON.stringify({
+      kind: "codex-session",
+      source: "codex-cli",
+      path: "/home/me/.codex/sessions/large.jsonl",
+      mtimeMs: 100,
+      size: 3 * 1024 * 1024,
+      contentBase64,
+    });
+
+    expect(() => decodeRemotePayload(output)).not.toThrow();
+    expect(decodeRemotePayload(output)[0]?.content.length).toBe(3 * 1024 * 1024);
   });
 
   it("indexes lightweight remote session summaries without transferring file content", async () => {
