@@ -22,6 +22,11 @@ interface ActiveIndexRun {
   promise: Promise<void>;
 }
 
+interface FailedSessionVersion {
+  fileMtimeMs: number;
+  fileSize: number;
+}
+
 const DEFAULT_CONCURRENCY = 2;
 
 export class WslSessionIndexer {
@@ -33,6 +38,7 @@ export class WslSessionIndexer {
   private readonly onSessionError: (session: SessionSearchResult, error: unknown) => void;
   private readonly activeRuns = new Map<string, ActiveIndexRun>();
   private readonly pendingRuns = new Set<string>();
+  private readonly failedVersions = new Map<string, FailedSessionVersion>();
 
   constructor(options: WslSessionIndexerOptions) {
     this.store = options.store;
@@ -71,7 +77,9 @@ export class WslSessionIndexer {
   private async runPass(environment: SessionEnvironment): Promise<void> {
     const sessions = this.listSessions(environment.id);
     const candidates = sessions.filter(
-      (session) => !this.store.isSessionContentFresh(session.sessionKey, session.fileMtimeMs, session.fileSize),
+      (session) =>
+        !this.store.isSessionContentFresh(session.sessionKey, session.fileMtimeMs, session.fileSize) &&
+        !this.hasFailedVersion(session),
     );
     let next = 0;
     let indexed = 0;
@@ -80,15 +88,20 @@ export class WslSessionIndexer {
     const worker = async (): Promise<void> => {
       while (next < candidates.length) {
         const session = candidates[next++];
+        let stage: "fetch" | "parse" | "store" = "fetch";
         try {
           const payload = await this.fetchSessionFile(environment, session);
+          stage = "parse";
           const loaded = this.loadSession(environment, payload, session);
           if (!loaded) throw new Error("WSL session file could not be parsed.");
+          stage = "store";
           this.store.upsertIndexedSession(loaded.session, loaded.messages, loaded.tokenEvents, loaded.traceEvents);
+          this.failedVersions.delete(session.sessionKey);
           indexed += 1;
         } catch (error) {
+          this.failedVersions.set(session.sessionKey, { fileMtimeMs: session.fileMtimeMs, fileSize: session.fileSize });
           failed += 1;
-          this.onSessionError(session, error);
+          this.onSessionError(session, new Error(`WSL ${stage} failed: ${error instanceof Error ? error.message : String(error)}`, { cause: error }));
         }
       }
     };
@@ -100,6 +113,11 @@ export class WslSessionIndexer {
       skipped: sessions.length - candidates.length,
       failed,
     });
+  }
+
+  private hasFailedVersion(session: SessionSearchResult): boolean {
+    const failed = this.failedVersions.get(session.sessionKey);
+    return failed !== undefined && failed.fileMtimeMs === session.fileMtimeMs && failed.fileSize === session.fileSize;
   }
 
   private listSessions(environmentId: string): SessionSearchResult[] {

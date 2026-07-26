@@ -713,9 +713,9 @@ function createWindow(): void {
     console.error("[renderer] did-fail-load", { errorCode, errorDescription, validatedURL });
   });
 
-  mainWindow.webContents.on("console-message", (_event, level, message, line, sourceId) => {
-    if (level >= 2) console.error("[renderer]", message, `${sourceId}:${line}`);
-    else console.log("[renderer]", message);
+  mainWindow.webContents.on("console-message", (details) => {
+    if (details.level === "error") console.error("[renderer]", details.message, `${details.sourceId}:${details.lineNumber}`);
+    else console.log("[renderer]", details.message);
   });
 
   mainWindow.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
@@ -990,13 +990,16 @@ function ensureWslSessionIndexer(): WslSessionIndexer {
     wslSessionIndexer = new WslSessionIndexer({
       store,
       fetchSessionFile: (environment, session) => fetchRemoteSessionFilePayload(environment, session),
-      loadSession: (environment, payload, summary) => loadWslSessionDetailPayload(environment, payload, summary),
+      loadSession: (environment, payload, summary) =>
+        loadWslSessionDetailPayload(environment, payload, summary, { includeTraceEvents: false }),
       onComplete: (environment, result) => {
         if (result.indexed > 0) emitEnvironmentsUpdated();
       },
       onSessionError: (session, error) => {
+        const cause = error instanceof Error && error.cause instanceof Error ? error.cause : error;
         console.warn(
           `Could not build the WSL search index for ${session.sessionKey}: ${error instanceof Error ? error.message : String(error)}`,
+          cause instanceof Error ? cause.stack : undefined,
         );
       },
     });
