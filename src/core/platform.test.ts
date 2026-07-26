@@ -131,6 +131,13 @@ describe("platform application resolution", () => {
     }).migrationCompleteTokenLimit).toBe(1_000_000);
   });
 
+  it("defaults AI Skill exploration to the automatic Runtime and preserves a selected channel", () => {
+    expect(defaultSettings.skillAiRuntimeId).toBe("");
+    expect(mergeAppSettings(defaultSettings, {
+      skillAiRuntimeId: "  runtime-claude-team  ",
+    }).skillAiRuntimeId).toBe("runtime-claude-team");
+  });
+
   it("does not expose a setting that can count subagents as top-level sessions", () => {
     expect("hideSubagentSessions" in defaultSettings).toBe(false);
     expect("hideSubagentSessions" in mergeAppSettings(

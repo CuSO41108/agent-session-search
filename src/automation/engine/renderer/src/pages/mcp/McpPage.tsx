@@ -81,7 +81,7 @@ export function McpPage({
           { id: "agents", label: zh ? "Agent 绑定" : "Agent bindings", count: agents.length },
         ]}
       />
-      {view === "agents" ? <McpAgentBindings agents={agents} servers={model.servers} onSaveAgents={onSaveAgents} /> : (
+      {view === "agents" ? <McpAgentBindings language={language} agents={agents} servers={model.servers} onSaveAgents={onSaveAgents} /> : (
         <>
       {model.error ? (
         <div className="workbench-error" role="alert">

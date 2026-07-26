@@ -21,7 +21,7 @@ describe("McpPage", () => {
       onSaveAgents={async () => undefined}
     />);
 
-    expect(html).toContain("Custom servers");
+    expect(html).toContain("Registered servers");
     expect(html).toContain("Filesystem");
     expect(html).toContain("checked");
   });
@@ -33,7 +33,7 @@ describe("McpPage", () => {
       onSaveAgents={async () => undefined}
     />);
 
-    expect(html).toContain("API runtime does not support MCP servers");
+    expect(html).toContain("API Agents do not support MCP servers");
     expect(html).not.toContain('type="checkbox"');
   });
 });

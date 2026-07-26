@@ -188,4 +188,21 @@ describe("PostgreSQL Turn search", () => {
     expect(limited.totalCount).toBe(4);
     expect(limited.hasMore).toBe(true);
   });
+
+  it("prioritizes favorites while ignoring legacy pin state", async () => {
+    await repository.setFavorited("codex:one", true);
+    await database.query(
+      "update agent_recall.sessions set pinned = true where session_key = $1",
+      ["codex:two"],
+    );
+
+    const page = await searchRepository.searchSessionPage({ limit: 10 });
+
+    expect(page.sessions.map((item) => item.sessionKey)).toEqual([
+      "codex:one",
+      "codex:roles",
+      "codex:subagent",
+      "codex:two",
+    ]);
+  });
 });

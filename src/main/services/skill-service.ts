@@ -3,7 +3,6 @@ import * as path from "node:path";
 import type { AppSettings } from "../../core/platform";
 import type { SkillSyncBinding } from "../../core/session-store";
 import { runSkillAiSearch, type SkillAiSearchResult } from "../../core/skill-ai-search";
-import type { ChatCompletionFn, SummaryEndpoint } from "../../core/session-summarizer";
 import {
   ManagedSkillLibrary,
   type ManagedSkill,
@@ -134,8 +133,7 @@ export interface SkillServiceDependencies {
   logError(message: string): void;
   managedLibrary?: ManagedSkillLibraryPort;
   skillsShClient?: SkillsShClientPort;
-  resolveAiEndpoint?(): Promise<SummaryEndpoint | null>;
-  completeAi?: ChatCompletionFn;
+  executeAiSearch?(runtimeChannelId: string, prompt: string): Promise<string>;
   libraryRoot?: string;
   skillsShCachePath?: string;
   homeDir?: string;
@@ -259,15 +257,15 @@ export class SkillService {
   }
 
   async aiSearchDiscoveredSkills(input: { query: string; language: "en" | "zh" }): Promise<SkillAiSearchResult> {
-    if (!this.dependencies.resolveAiEndpoint) throw new Error("AI Skill search is unavailable.");
-    const endpoint = await this.dependencies.resolveAiEndpoint();
-    if (!endpoint) throw new Error("AI Skill search has no usable provider. Configure one on the Provider page.");
+    if (!this.dependencies.executeAiSearch) throw new Error("AI Skill exploration is unavailable.");
     const client = this.requireSkillsShClient();
     const result = await runSkillAiSearch(
       input,
-      endpoint,
       (query) => client.list({ page: 0, query }),
-      this.dependencies.completeAi,
+      (prompt) => this.dependencies.executeAiSearch!(
+        this.dependencies.getSettings().skillAiRuntimeId,
+        prompt,
+      ),
     );
     for (const entry of result.skills) this.discoveredSkills.set(entry.id, entry);
     return result;

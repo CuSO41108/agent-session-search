@@ -62,4 +62,16 @@ describe("SavedSearchStore", () => {
     const list = await store.listSavedSearches();
     expect(list.map((item) => item.name)).toEqual(["often", "rare"]);
   });
+
+  it("maps legacy pinned searches to favorites", async () => {
+    await database.query(
+      `insert into agent_recall.saved_searches (name, options, created_at, use_count)
+       values ($1, $2::jsonb, now(), 0)`,
+      ["Legacy pinned", JSON.stringify({ visibility: "pinned" })],
+    );
+
+    await expect(store.listSavedSearches()).resolves.toMatchObject([
+      { name: "Legacy pinned", options: { visibility: "favorites" } },
+    ]);
+  });
 });

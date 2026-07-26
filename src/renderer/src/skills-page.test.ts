@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import type { ManagedSkill } from "../../core/managed-skill-library";
 import type { SkillSyncSnapshot } from "../../core/skill-sync";
 import { SkillsPage } from "./features/skills/skills-page";
+import { SkillDiscoveryDialog } from "./features/skills/skill-discovery-dialog";
 
 const managedSkill: ManagedSkill = {
   id: "agent-recall:/library/review/SKILL.md",
@@ -73,5 +74,20 @@ describe("SkillsPage", () => {
     expect(html).toContain("使用 12 次");
     expect(html).toContain("Codex");
     expect(html).toContain("Claude Code");
+  });
+});
+
+describe("SkillDiscoveryDialog", () => {
+  it("keeps AI exploration clickable while the user is still entering a request", () => {
+    const html = renderToStaticMarkup(createElement(SkillDiscoveryDialog, {
+      open: true,
+      language: "zh",
+      onClose: () => undefined,
+      onImported: () => undefined,
+    }));
+
+    expect(html).toContain("AI 探索");
+    expect(html).toMatch(/class="skill-discovery-ai-action"/);
+    expect(html).not.toMatch(/class="skill-discovery-ai-action"[^>]*disabled/);
   });
 });

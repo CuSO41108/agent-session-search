@@ -29,6 +29,7 @@ import {
 import type { AppUpdateProgress, AppUpdateStatus } from "../../../../core/app-update-types";
 import { formatRelativeTime } from "../../../../core/format-session";
 import type { AppSettings, AppSettingsUpdate } from "../../../../core/platform";
+import type { AgentChannel } from "../../../../automation/contracts";
 import type { RemoteHealthReport } from "../../../../core/remote-health";
 import type { SessionSyncHookStatus } from "../../../../core/session-sync-queue";
 import { globalShortcutOptions } from "../../../../core/shortcuts";
@@ -129,6 +130,7 @@ export function SettingsDialog({
   platform,
   initialSection,
   settings,
+  runtimeChannels,
   appUpdateStatus,
   appUpdateProgress,
   appUpdateBusy,
@@ -165,6 +167,7 @@ export function SettingsDialog({
   platform: NodeJS.Platform;
   initialSection: SettingsSection;
   settings: AppSettings | null;
+  runtimeChannels: AgentChannel[];
   appUpdateStatus: AppUpdateStatus | null;
   appUpdateProgress: AppUpdateProgress | null;
   appUpdateBusy: boolean;
@@ -979,6 +982,36 @@ export function SettingsDialog({
             {activeSection === "skills" ? (
               <section className="settings-pane">
                 <header className="settings-pane-head">
+                  <h3>{l("AI Skill exploration", "AI Skill 探索")}</h3>
+                  <p>{l(
+                    "Choose which configured Runtime understands natural-language requests before searching skills.sh.",
+                    "选择由哪个已配置的 Runtime 理解自然语言需求，再搜索 skills.sh。",
+                  )}</p>
+                </header>
+                <label className="settings-field">
+                  <div className="settings-field-text">
+                    <span className="settings-field-title">{l("Exploration Runtime", "探索 Runtime")}</span>
+                    <span className="settings-field-sub">{l(
+                      "Automatic uses the first available Runtime. The request is executed through the same Runtime stack as Chat and Workflow.",
+                      "自动模式使用第一个可用 Runtime；探索请求与 Chat、Workflow 共用同一套 Runtime 执行链路。",
+                    )}</span>
+                  </div>
+                  <select
+                    value={settings?.skillAiRuntimeId ?? ""}
+                    disabled={!settings || saving}
+                    onChange={(event) => onSettingsChange({ skillAiRuntimeId: event.currentTarget.value })}
+                  >
+                    <option value="">{l("Automatic (first available)", "自动（第一个可用 Runtime）")}</option>
+                    {settings?.skillAiRuntimeId
+                      && !runtimeChannels.some((channel) => channel.id === settings.skillAiRuntimeId)
+                      ? <option value={settings.skillAiRuntimeId}>{l("Missing Runtime", "已删除的 Runtime")} · {settings.skillAiRuntimeId}</option>
+                      : null}
+                    {runtimeChannels.map((channel) => (
+                      <option key={channel.id} value={channel.id}>{channel.label} · {channel.agentId}</option>
+                    ))}
+                  </select>
+                </label>
+                <header className="settings-pane-head" style={{ marginTop: 18 }}>
                   <h3>{l("Skill usage", "Skill 统计")}</h3>
                   <p>{l("Count how often each skill is used so the Skills panel can sort by most used.", "统计每个 skill 的使用次数，让 Skills 面板可以按使用最多排序。")}</p>
                 </header>

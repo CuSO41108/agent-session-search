@@ -149,13 +149,7 @@ function createHarness(options: { settings?: AppSettings; groups?: RemoteSkillGr
     list: vi.fn(async () => discoveredPage),
     getDetail: vi.fn(async () => discoveredDetail),
   };
-  const resolveAiEndpoint = vi.fn(async () => ({
-    baseUrl: "https://provider.example/v1",
-    model: "test-model",
-    apiKey: "test-key",
-    apiFormat: "openai_chat" as const,
-  }));
-  const completeAi = vi.fn(async () => JSON.stringify({
+  const executeAiSearch = vi.fn(async () => JSON.stringify({
     queries: ["code review"],
     interpretation: "寻找代码审查 Skill。",
   }));
@@ -200,10 +194,9 @@ function createHarness(options: { settings?: AppSettings; groups?: RemoteSkillGr
     operations,
     managedLibrary,
     skillsShClient,
-    resolveAiEndpoint,
-    completeAi,
+    executeAiSearch,
   });
-  return { service, settings, store, bindings, usageSources, client, operations, hookSetup, copyText, revealPath, diffResult, managedLibrary, skillsShClient, discoveredEntry, discoveredPage, discoveredDetail, resolveAiEndpoint, completeAi };
+  return { service, settings, store, bindings, usageSources, client, operations, hookSetup, copyText, revealPath, diffResult, managedLibrary, skillsShClient, discoveredEntry, discoveredPage, discoveredDetail, executeAiSearch };
 }
 
 describe("SkillService local skills and usage", () => {
@@ -277,15 +270,19 @@ describe("SkillService local skills and usage", () => {
     }));
   });
 
-  it("uses the configured AI provider to plan discovery searches and caches the returned candidates", async () => {
-    const harness = createHarness();
+  it("uses the selected Runtime to plan discovery searches and caches the returned candidates", async () => {
+    const settings = structuredClone(defaultSettings);
+    settings.skillAiRuntimeId = "runtime-claude-team";
+    const harness = createHarness({ settings });
     await expect(harness.service.aiSearchDiscoveredSkills({ query: "帮我找代码审查 Skill", language: "zh" })).resolves.toMatchObject({
       queries: ["code review"],
       interpretation: "寻找代码审查 Skill。",
       skills: [harness.discoveredEntry],
     });
-    expect(harness.resolveAiEndpoint).toHaveBeenCalledOnce();
-    expect(harness.completeAi).toHaveBeenCalledOnce();
+    expect(harness.executeAiSearch).toHaveBeenCalledWith(
+      "runtime-claude-team",
+      expect.stringContaining("帮我找代码审查 Skill"),
+    );
     expect(harness.skillsShClient.list).toHaveBeenCalledWith({ page: 0, query: "code review" });
     await expect(harness.service.getDiscoveredSkill(harness.discoveredEntry.id)).resolves.toBe(harness.discoveredDetail);
   });

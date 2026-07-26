@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { FormEvent, ReactElement } from "react";
 import { Download, ExternalLink, Search, Sparkles, Trophy, X } from "lucide-react";
 import type { SkillAiSearchResult } from "../../../../core/skill-ai-search";
@@ -36,12 +36,16 @@ export function SkillDiscoveryDialog({
   const [importing, setImporting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [detailError, setDetailError] = useState<string | null>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const requestVersionRef = useRef(0);
 
   const loadPage = async (nextPage: number, nextQuery: string, append: boolean) => {
+    const requestVersion = ++requestVersionRef.current;
     setLoading(true);
     setError(null);
     try {
       const result = await window.sessionSearch.listDiscoveredSkills({ page: nextPage, query: nextQuery });
+      if (requestVersion !== requestVersionRef.current) return;
       setSkills((current) => append ? dedupeEntries([...current, ...result.skills]) : result.skills);
       setPage(result.page);
       setTotal(result.total);
@@ -51,18 +55,25 @@ export function SkillDiscoveryDialog({
         ? current
         : result.skills[0]?.id ?? null);
     } catch (reason) {
+      if (requestVersion !== requestVersionRef.current) return;
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
-      setLoading(false);
+      if (requestVersion === requestVersionRef.current) setLoading(false);
     }
   };
 
   useEffect(() => {
-    if (!open) return;
+    if (!open) {
+      requestVersionRef.current += 1;
+      return;
+    }
     setInput("");
     setQuery("");
     setSearchMode("leaderboard");
     setAiResult(null);
+    setAiSearching(false);
+    setLoading(false);
+    setError(null);
     setSkills([]);
     setSelectedId(null);
     setDetail(null);
@@ -101,6 +112,7 @@ export function SkillDiscoveryDialog({
     setQuery(next);
     setSearchMode(next ? "keyword" : "leaderboard");
     setAiResult(null);
+    setAiSearching(false);
     setSelectedId(null);
     setDetail(null);
     void loadPage(0, next, false);
@@ -108,7 +120,13 @@ export function SkillDiscoveryDialog({
 
   const runAiSearch = async () => {
     const next = input.trim();
-    if (!next || loading) return;
+    if (!next) {
+      setError(l("Describe the capability you want to find.", "先描述你想寻找的能力。"));
+      inputRef.current?.focus();
+      return;
+    }
+    if (aiSearching) return;
+    const requestVersion = ++requestVersionRef.current;
     setQuery(next);
     setSearchMode("ai");
     setAiResult(null);
@@ -120,6 +138,7 @@ export function SkillDiscoveryDialog({
     setError(null);
     try {
       const result = await window.sessionSearch.aiSearchDiscoveredSkills({ query: next, language });
+      if (requestVersion !== requestVersionRef.current) return;
       setAiResult(result);
       setSkills(result.skills);
       setTotal(result.total);
@@ -127,10 +146,13 @@ export function SkillDiscoveryDialog({
       setStale(result.stale);
       setSelectedId(result.skills[0]?.id ?? null);
     } catch (reason) {
+      if (requestVersion !== requestVersionRef.current) return;
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
-      setLoading(false);
-      setAiSearching(false);
+      if (requestVersion === requestVersionRef.current) {
+        setLoading(false);
+        setAiSearching(false);
+      }
     }
   };
 
@@ -159,11 +181,11 @@ export function SkillDiscoveryDialog({
         <form className="managed-skill-dialog-search skill-discovery-search" onSubmit={submitSearch}>
           <span className="skill-discovery-search-field">
             <Search size={14} />
-            <input value={input} onChange={(event) => setInput(event.currentTarget.value)} placeholder={l("Enter keywords, or describe the capability you need", "输入关键词，或描述你想解决的问题")} />
+            <input ref={inputRef} value={input} onChange={(event) => setInput(event.currentTarget.value)} placeholder={l("Enter keywords, or describe the capability you need", "输入关键词，或描述你想解决的问题")} />
           </span>
           <button type="submit" className="skill-discovery-keyword-action" disabled={loading}>{l("Search", "搜索")}</button>
-          <button type="button" className="skill-discovery-ai-action" onClick={() => void runAiSearch()} disabled={loading || !input.trim()}>
-            <Sparkles size={13} />{aiSearching ? l("Thinking…", "分析中…") : l("AI search", "AI 搜索")}
+          <button type="button" className="skill-discovery-ai-action" onClick={() => void runAiSearch()} disabled={aiSearching}>
+            <Sparkles size={13} />{aiSearching ? l("Exploring…", "探索中…") : l("AI explore", "AI 探索")}
           </button>
         </form>
         {aiResult ? (

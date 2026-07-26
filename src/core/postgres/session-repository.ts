@@ -1161,7 +1161,6 @@ export class PostgresSessionRepository {
       const legacyResult = await client.query<{
         custom_title: string | null;
         favorited: boolean;
-        pinned: boolean;
         hidden: boolean;
         last_opened_at: Date | string | null;
         last_resumed_at: Date | string | null;
@@ -1171,7 +1170,7 @@ export class PostgresSessionRepository {
         ai_summary_basis: number | string | null;
       }>(
         `
-          select custom_title, favorited, pinned, hidden, last_opened_at, last_resumed_at,
+          select custom_title, favorited, hidden, last_opened_at, last_resumed_at,
             ai_summary, ai_summary_model, ai_summary_at, ai_summary_basis
           from agent_recall.sessions
           where session_key = $1
@@ -1191,7 +1190,7 @@ export class PostgresSessionRepository {
             insert into agent_recall.sessions (
               session_key, raw_id, source, environment_id, storage_environment_id, project_path, file_path,
               original_title, first_question, started_at, file_mtime_ms, file_size,
-              pr_url, pr_number, custom_title, favorited, pinned, hidden,
+              pr_url, pr_number, custom_title, favorited, hidden,
               last_opened_at, last_resumed_at, message_count, turn_count,
               input_tokens, output_tokens, cached_input_tokens, reasoning_output_tokens,
               total_tokens, indexed_at, is_subagent, parent_session_id,
@@ -1200,7 +1199,7 @@ export class PostgresSessionRepository {
             select
               $2, raw_id, source, environment_id, storage_environment_id, project_path, file_path,
               original_title, first_question, started_at, file_mtime_ms, file_size,
-              pr_url, pr_number, custom_title, favorited, pinned, hidden,
+              pr_url, pr_number, custom_title, favorited, hidden,
               last_opened_at, last_resumed_at, message_count, turn_count,
               input_tokens, output_tokens, cached_input_tokens, reasoning_output_tokens,
               total_tokens, indexed_at, is_subagent, parent_session_id,
@@ -1229,21 +1228,19 @@ export class PostgresSessionRepository {
             set
               custom_title = coalesce(custom_title, $2),
               favorited = favorited or $3,
-              pinned = pinned or $4,
-              hidden = hidden or $5,
-              last_opened_at = greatest(last_opened_at, $6),
-              last_resumed_at = greatest(last_resumed_at, $7),
-              ai_summary = coalesce(ai_summary, $8),
-              ai_summary_model = case when ai_summary is null then $9 else ai_summary_model end,
-              ai_summary_at = case when ai_summary is null then $10 else ai_summary_at end,
-              ai_summary_basis = case when ai_summary is null then $11 else ai_summary_basis end
+              hidden = hidden or $4,
+              last_opened_at = greatest(last_opened_at, $5),
+              last_resumed_at = greatest(last_resumed_at, $6),
+              ai_summary = coalesce(ai_summary, $7),
+              ai_summary_model = case when ai_summary is null then $8 else ai_summary_model end,
+              ai_summary_at = case when ai_summary is null then $9 else ai_summary_at end,
+              ai_summary_basis = case when ai_summary is null then $10 else ai_summary_basis end
             where session_key = $1
           `,
           [
             targetKey,
             legacy.custom_title,
             legacy.favorited,
-            legacy.pinned,
             legacy.hidden,
             legacy.last_opened_at,
             legacy.last_resumed_at,

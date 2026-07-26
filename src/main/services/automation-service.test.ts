@@ -54,6 +54,10 @@ function fixture(injectAgents = true) {
       return () => { listener = undefined; };
     }),
     getWorkDir: vi.fn(() => current.workDir),
+    askConfiguredAgent: vi.fn(async () => ({
+      content: "runtime output",
+      runtimeConversation: undefined,
+    })),
     shutdown: vi.fn(async () => { calls.push("hub-stop"); }),
   } as unknown as AgentHub;
   const registry = {
@@ -225,6 +229,47 @@ describe("NativeAutomationService", () => {
     emitWorkflow({ tasks: [] });
 
     expect(service.snapshot().workflowStore).toBe(originalStore);
+  });
+
+  it("runs a one-shot prompt through the managed Agent for the selected Runtime channel", async () => {
+    const { service, hub, emit } = fixture();
+    emit({
+      ...snapshot("/workspace"),
+      runtimes: [{
+        id: "claude",
+        label: "Claude",
+        command: "claude",
+        version: "1.0.0",
+        available: true,
+      }],
+      channels: [{
+        id: "runtime-claude-team",
+        agentId: "claude",
+        label: "Claude Team",
+        models: [{ id: "sonnet", label: "Sonnet" }],
+      }],
+      configuredAgents: [{
+        id: "runtime-agent:runtime-claude-team",
+        name: "Claude Team",
+        description: "",
+        runtimeAgentId: "claude",
+        channelId: "runtime-claude-team",
+        modelId: "sonnet",
+        tags: [],
+        managed: true,
+        createdAt: 1,
+        updatedAt: 1,
+      }],
+    });
+
+    await expect(service.runOneShotOnRuntime("runtime-claude-team", "Return JSON."))
+      .resolves.toBe("runtime output");
+    expect(hub.askConfiguredAgent).toHaveBeenCalledWith(expect.objectContaining({
+      configuredAgentId: "runtime-agent:runtime-claude-team",
+      runtimeId: "claude",
+      prompt: "Return JSON.",
+      workDir: "/workspace",
+    }), undefined, undefined);
   });
 
   it("applies a direct entity patch without rebuilding a workflow projection", () => {

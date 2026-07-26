@@ -1,5 +1,26 @@
-import type { CSSProperties, ReactElement } from "react";
-import { ArrowRight, Clock3, GitBranch, Plus, RefreshCw, Workflow } from "lucide-react";
+import { useEffect, useState } from "react";
+import type { CSSProperties, DragEvent as ReactDragEvent, ReactElement } from "react";
+import {
+  ArrowRight,
+  Check,
+  ChevronLeft,
+  ChevronRight,
+  Clock3,
+  Cpu,
+  GitBranch,
+  GripVertical,
+  MessageCircleMore,
+  PlugZap,
+  Plus,
+  RefreshCw,
+  Workflow,
+} from "lucide-react";
+import type {
+  AgentChannel,
+  AgentRuntime,
+  ConfiguredAgent,
+  McpServerDefinition,
+} from "../../../../automation/contracts";
 import { formatRelativeTime } from "../../../../core/format-session";
 import type {
   SessionSearchResult,
@@ -32,6 +53,64 @@ import {
 } from "../../session-ui";
 
 const PERIODS: SessionStatsPeriod[] = ["today", "sevenDay", "thirtyDay", "allTime"];
+const WORKBENCH_CARD_ORDER_STORAGE_KEY = "agent-recall.workbench-card-order.v1";
+
+export const DEFAULT_WORKBENCH_CARD_ORDER = [
+  "sessions",
+  "workflows",
+  "runtimes",
+  "mcp",
+  "chat",
+] as const;
+
+export type WorkbenchCardId = typeof DEFAULT_WORKBENCH_CARD_ORDER[number];
+
+export function normalizeWorkbenchCardOrder(value: unknown): WorkbenchCardId[] {
+  const known = new Set<WorkbenchCardId>();
+  const normalized: WorkbenchCardId[] = [];
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      if (
+        typeof item === "string"
+        && DEFAULT_WORKBENCH_CARD_ORDER.includes(item as WorkbenchCardId)
+        && !known.has(item as WorkbenchCardId)
+      ) {
+        known.add(item as WorkbenchCardId);
+        normalized.push(item as WorkbenchCardId);
+      }
+    }
+  }
+  for (const item of DEFAULT_WORKBENCH_CARD_ORDER) {
+    if (!known.has(item)) normalized.push(item);
+  }
+  return normalized;
+}
+
+export function reorderWorkbenchCard(
+  order: readonly WorkbenchCardId[],
+  source: WorkbenchCardId,
+  target: WorkbenchCardId,
+): WorkbenchCardId[] {
+  const normalized = normalizeWorkbenchCardOrder(order);
+  if (source === target) return normalized;
+  const sourceIndex = normalized.indexOf(source);
+  const targetIndex = normalized.indexOf(target);
+  if (sourceIndex < 0 || targetIndex < 0) return normalized;
+  normalized.splice(sourceIndex, 1);
+  normalized.splice(normalized.indexOf(target), 0, source);
+  return normalized;
+}
+
+function loadWorkbenchCardOrder(): WorkbenchCardId[] {
+  if (typeof window === "undefined") return [...DEFAULT_WORKBENCH_CARD_ORDER];
+  try {
+    return normalizeWorkbenchCardOrder(JSON.parse(
+      window.localStorage.getItem(WORKBENCH_CARD_ORDER_STORAGE_KEY) ?? "null",
+    ));
+  } catch {
+    return [...DEFAULT_WORKBENCH_CARD_ORDER];
+  }
+}
 
 export interface WorkbenchPageProps {
   stats: SessionStats;
@@ -62,6 +141,13 @@ export interface WorkbenchPageProps {
   onOpenWorkflow: (workflowId: string) => void;
   onNewWorkflow: () => void;
   onShowWorkflows: () => void;
+  runtimes: AgentRuntime[];
+  runtimeChannels: AgentChannel[];
+  configuredAgents: ConfiguredAgent[];
+  mcpServers: McpServerDefinition[] | null;
+  onShowRuntimes: () => void;
+  onShowMcp: () => void;
+  onShowChat: () => void;
 }
 
 export function WorkbenchPage({
@@ -93,6 +179,13 @@ export function WorkbenchPage({
   onOpenWorkflow,
   onNewWorkflow,
   onShowWorkflows,
+  runtimes,
+  runtimeChannels,
+  configuredAgents,
+  mcpServers,
+  onShowRuntimes,
+  onShowMcp,
+  onShowChat,
 }: WorkbenchPageProps): ReactElement {
   const l = (en: string, zh: string) => localize(language, en, zh);
   const cacheRate = usageCacheRate(stats.total);
@@ -107,6 +200,79 @@ export function WorkbenchPage({
   const visibleSessions = sessionQuery.trim()
     ? sessions.slice(0, WORKBENCH_SESSION_LIMIT)
     : selectWorkbenchSessions(sessions, liveSessionKeys, liveDetectionFailed);
+  const visibleQuotaProviders = (["codex", "claude-code"] as const)
+    .filter((provider) => !quotas.hiddenProviders?.includes(provider));
+  const [layoutEditing, setLayoutEditing] = useState(false);
+  const [cardOrder, setCardOrder] = useState<WorkbenchCardId[]>(loadWorkbenchCardOrder);
+  const [draggingCard, setDraggingCard] = useState<WorkbenchCardId | null>(null);
+  const availableRuntimeCount = runtimes.filter((runtime) => runtime.available).length;
+  const enabledMcpCount = mcpServers?.filter((server) => server.enabled).length ?? 0;
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(WORKBENCH_CARD_ORDER_STORAGE_KEY, JSON.stringify(cardOrder));
+    } catch {
+      // A read-only browser profile should not prevent layout changes for this run.
+    }
+  }, [cardOrder]);
+
+  const moveCardBy = (cardId: WorkbenchCardId, delta: -1 | 1): void => {
+    setCardOrder((current) => {
+      const next = normalizeWorkbenchCardOrder(current);
+      const index = next.indexOf(cardId);
+      const target = index + delta;
+      if (index < 0 || target < 0 || target >= next.length) return next;
+      [next[index], next[target]] = [next[target]!, next[index]!];
+      return next;
+    });
+  };
+
+  const layoutCardProps = (cardId: WorkbenchCardId) => ({
+    "data-card-id": cardId,
+    draggable: layoutEditing,
+    style: { order: cardOrder.indexOf(cardId) } as CSSProperties,
+    onDragStart: (event: ReactDragEvent<HTMLElement>) => {
+      event.dataTransfer.effectAllowed = "move";
+      event.dataTransfer.setData("text/plain", cardId);
+      setDraggingCard(cardId);
+    },
+    onDragEnd: () => setDraggingCard(null),
+    onDragOver: (event: ReactDragEvent<HTMLElement>) => {
+      if (layoutEditing && draggingCard && draggingCard !== cardId) event.preventDefault();
+    },
+    onDrop: (event: ReactDragEvent<HTMLElement>) => {
+      event.preventDefault();
+      const transferred = event.dataTransfer.getData("text/plain");
+      const source = DEFAULT_WORKBENCH_CARD_ORDER.includes(transferred as WorkbenchCardId)
+        ? transferred as WorkbenchCardId
+        : draggingCard;
+      if (!layoutEditing || !source) return;
+      setCardOrder((current) => reorderWorkbenchCard(current, source, cardId));
+      setDraggingCard(null);
+    },
+  });
+
+  const layoutControls = (cardId: WorkbenchCardId): ReactElement | null => {
+    if (!layoutEditing) return null;
+    const index = cardOrder.indexOf(cardId);
+    return (
+      <div className="workbench-card-layout-controls" aria-label={l("Move card", "移动卡片")}>
+        <GripVertical size={14} aria-hidden="true" />
+        <button
+          type="button"
+          disabled={index <= 0}
+          onClick={() => moveCardBy(cardId, -1)}
+          aria-label={l("Move card left", "向前移动卡片")}
+        ><ChevronLeft size={13} /></button>
+        <button
+          type="button"
+          disabled={index < 0 || index >= cardOrder.length - 1}
+          onClick={() => moveCardBy(cardId, 1)}
+          aria-label={l("Move card right", "向后移动卡片")}
+        ><ChevronRight size={13} /></button>
+      </div>
+    );
+  };
   return (
     <div className="workbench-page">
       <header className="app-page-head workbench-page-head">
@@ -114,6 +280,18 @@ export function WorkbenchPage({
           <h2>{l("Workbench", "工作台")}</h2>
           <p>One for all</p>
         </div>
+        <button
+          type="button"
+          className={`workbench-layout-action ${layoutEditing ? "active" : ""}`}
+          aria-pressed={layoutEditing}
+          onClick={() => {
+            setLayoutEditing((current) => !current);
+            setDraggingCard(null);
+          }}
+        >
+          {layoutEditing ? <Check size={14} /> : <GripVertical size={14} />}
+          {layoutEditing ? l("Done", "完成") : l("Adjust layout", "调整布局")}
+        </button>
       </header>
       <div className="workbench-page-content">
         <section className="workbench-overview" aria-label={l("Agent usage overview", "Agent 使用总览")}>
@@ -186,8 +364,8 @@ export function WorkbenchPage({
               <RefreshCw size={14} />
             </button>
           </div>
-          <div className="workbench-quota-pair">
-            {(["codex", "claude-code"] as const).map((provider) => (
+          <div className="workbench-quota-pair" data-count={visibleQuotaProviders.length}>
+            {visibleQuotaProviders.map((provider) => (
               <WorkbenchQuota
                 key={provider}
                 card={quotas.providers.find((item) => item.provider === provider) ?? null}
@@ -197,6 +375,12 @@ export function WorkbenchPage({
                 onOpenSettings={onOpenSettings}
               />
             ))}
+            {visibleQuotaProviders.length === 0 ? (
+              <div className="workbench-quota-hidden">
+                <span>{l("Usage limits are hidden in settings.", "额度已在设置中隐藏。")}</span>
+                <button onClick={onOpenSettings}>{l("Open settings", "打开设置")}</button>
+              </div>
+            ) : null}
           </div>
           {quotaFeedback ? <p className={`workbench-feedback quota ${quotaFeedback.kind}`}>{quotaFeedback.message}</p> : null}
         </section>
@@ -204,7 +388,12 @@ export function WorkbenchPage({
         <TokenTrendChart points={stats.dailyTokenUsage} language={language} onSelectDay={onSelectTrendDay} />
         </section>
 
-        <div className="workbench-primary-grid">
+        <div className={`workbench-primary-grid ${layoutEditing ? "is-editing" : ""}`}>
+        <article
+          className={`workbench-card-slot is-primary ${draggingCard === "sessions" ? "is-dragging" : ""}`}
+          {...layoutCardProps("sessions")}
+        >
+        {layoutControls("sessions")}
         <section className="workbench-panel workbench-sessions">
           <div className="workbench-panel-head">
             <h2>{l("Sessions", "会话")}</h2>
@@ -244,7 +433,13 @@ export function WorkbenchPage({
             }) : <div className="workbench-section-empty">{sessionQuery ? l("No matching sessions.", "没有匹配的会话。") : l("No recent sessions.", "暂无最近会话。")}</div>}
           </div>
         </section>
+        </article>
 
+        <article
+          className={`workbench-card-slot is-primary ${draggingCard === "workflows" ? "is-dragging" : ""}`}
+          {...layoutCardProps("workflows")}
+        >
+        {layoutControls("workflows")}
         <section className="workbench-panel workbench-workflows">
           <div className="workbench-panel-head">
             <h2>Workflow</h2>
@@ -274,9 +469,134 @@ export function WorkbenchPage({
             </div>
           )}
         </section>
+        </article>
+
+        <article
+          className={`workbench-card-slot is-compact ${draggingCard === "runtimes" ? "is-dragging" : ""}`}
+          {...layoutCardProps("runtimes")}
+        >
+          {layoutControls("runtimes")}
+          <WorkbenchFeatureCard
+            icon={<Cpu size={18} />}
+            title="Runtime"
+            metric={l(
+              `${runtimeChannels.length} configs · ${availableRuntimeCount}/${runtimes.length} executors available`,
+              `${runtimeChannels.length} 个配置 · ${availableRuntimeCount}/${runtimes.length} 个执行器可用`,
+            )}
+            description={l(
+              "Manage the model executors shared by Chat, Workflow, and AI exploration.",
+              "管理 Chat、Workflow 与 AI 探索共用的模型执行器。",
+            )}
+            rows={runtimeChannels.slice(0, 3).map((channel) => ({
+              id: channel.id,
+              title: channel.label,
+              detail: `${channel.agentId} · ${channel.models.length} ${l("models", "个模型")}`,
+            }))}
+            empty={l("No Runtime configs yet.", "还没有 Runtime 配置。")}
+            action={l("Open Runtime", "打开 Runtime")}
+            onOpen={onShowRuntimes}
+          />
+        </article>
+
+        <article
+          className={`workbench-card-slot is-compact ${draggingCard === "mcp" ? "is-dragging" : ""}`}
+          {...layoutCardProps("mcp")}
+        >
+          {layoutControls("mcp")}
+          <WorkbenchFeatureCard
+            icon={<PlugZap size={18} />}
+            title="MCP"
+            metric={mcpServers === null
+              ? l("Loading project MCP servers…", "正在加载项目 MCP…")
+              : l(
+                `${enabledMcpCount}/${mcpServers.length} servers enabled`,
+                `${enabledMcpCount}/${mcpServers.length} 个服务已启用`,
+              )}
+            description={l(
+              "Keep project tools and their Agent bindings in one place.",
+              "集中管理项目工具以及它们与 Agent 的绑定关系。",
+            )}
+            rows={(mcpServers ?? []).slice(0, 3).map((server) => ({
+              id: server.id,
+              title: server.name,
+              detail: `${server.status} · ${server.tools.length} tools`,
+            }))}
+            empty={mcpServers === null
+              ? l("Loading MCP servers…", "正在加载 MCP…")
+              : l("No project MCP servers yet.", "还没有项目 MCP。")}
+            action={l("Open MCP", "打开 MCP")}
+            onOpen={onShowMcp}
+          />
+        </article>
+
+        <article
+          className={`workbench-card-slot is-compact ${draggingCard === "chat" ? "is-dragging" : ""}`}
+          {...layoutCardProps("chat")}
+        >
+          {layoutControls("chat")}
+          <WorkbenchFeatureCard
+            icon={<MessageCircleMore size={18} />}
+            title="Chat"
+            metric={l(
+              `${configuredAgents.length} employees available`,
+              `${configuredAgents.length} 个员工可用`,
+            )}
+            description={l(
+              "Create a studio and talk to multiple Runtime sessions independently.",
+              "创建工作室，分别与多个 Runtime 会话持续交流。",
+            )}
+            rows={configuredAgents.slice(0, 3).map((agent) => ({
+              id: agent.id,
+              title: agent.name || agent.id,
+              detail: `${agent.runtimeAgentId} · ${agent.modelId}`,
+            }))}
+            empty={l("Configure a Runtime to start Chat.", "配置 Runtime 后即可开始 Chat。")}
+            action={l("Open Chat", "打开 Chat")}
+            onOpen={onShowChat}
+          />
+        </article>
         </div>
       </div>
     </div>
+  );
+}
+
+function WorkbenchFeatureCard({
+  icon,
+  title,
+  metric,
+  description,
+  rows,
+  empty,
+  action,
+  onOpen,
+}: {
+  icon: ReactElement;
+  title: string;
+  metric: string;
+  description: string;
+  rows: Array<{ id: string; title: string; detail: string }>;
+  empty: string;
+  action: string;
+  onOpen: () => void;
+}): ReactElement {
+  return (
+    <section className="workbench-panel workbench-feature-card">
+      <header className="workbench-feature-card-head">
+        <span>{icon}</span>
+        <div><h2>{title}</h2><small>{metric}</small></div>
+        <button type="button" onClick={onOpen}>{action}<ArrowRight size={13} /></button>
+      </header>
+      <p>{description}</p>
+      <div className="workbench-feature-list">
+        {rows.length > 0 ? rows.map((row) => (
+          <button key={row.id} type="button" onClick={onOpen}>
+            <span><strong>{row.title}</strong><small>{row.detail}</small></span>
+            <ArrowRight size={12} />
+          </button>
+        )) : <span className="workbench-feature-empty">{empty}</span>}
+      </div>
+    </section>
   );
 }
 

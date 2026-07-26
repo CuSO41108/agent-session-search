@@ -106,6 +106,7 @@ export interface AppSettings {
   migrationCompleteTokenLimit: number;
   summarySource: "codex" | "claude" | "custom";
   sessionSearchMcpEnabled: boolean;
+  skillAiRuntimeId: string;
   skillSyncEnabled: boolean;
   skillSyncSupabaseUrl: string;
   skillSyncSupabaseAnonKey: string;
@@ -174,6 +175,7 @@ export const defaultSettings: AppSettings = {
   migrationCompleteTokenLimit: 100_000,
   summarySource: "custom",
   sessionSearchMcpEnabled: true,
+  skillAiRuntimeId: "",
   skillSyncEnabled: false,
   skillSyncSupabaseUrl: "",
   skillSyncSupabaseAnonKey: "",
@@ -207,6 +209,7 @@ export function mergeAppSettings(previous: AppSettings, updates: AppSettingsUpda
     openVikingLocalEmbeddingModel: "BAAI/bge-small-zh-v1.5",
     showInDock: merged.showInDock !== false,
     summarySource: merged.summarySource === "claude" || merged.summarySource === "custom" ? merged.summarySource : "codex",
+    skillAiRuntimeId: String(merged.skillAiRuntimeId ?? "").trim(),
     skillSyncEnabled: Boolean(merged.skillSyncEnabled),
     skillSyncSupabaseUrl: normalizeSupabaseSettingUrl(merged.skillSyncSupabaseUrl),
     skillSyncSupabaseAnonKey: String(merged.skillSyncSupabaseAnonKey ?? "").trim(),

@@ -1,4 +1,3 @@
-import { requestSummaryCompletion, type ChatCompletionFn, type SummaryEndpoint } from "./session-summarizer";
 import type { SkillsShEntry, SkillsShPage } from "./skills-sh";
 
 export interface SkillAiSearchPlan {
@@ -28,6 +27,8 @@ const MAX_QUERIES = 3;
 const MAX_QUERY_LENGTH = 120;
 const MAX_INTERPRETATION_LENGTH = 300;
 const MAX_RESULTS = 50;
+
+export type SkillAiCompletionFn = (prompt: string) => Promise<string>;
 
 export function parseSkillAiSearchPlan(content: string): SkillAiSearchPlan {
   const start = content.indexOf("{");
@@ -66,23 +67,18 @@ export function parseSkillAiSearchPlan(content: string): SkillAiSearchPlan {
 
 export async function runSkillAiSearch(
   input: { query: string; language: "en" | "zh" },
-  endpoint: SummaryEndpoint,
   search: (query: string) => Promise<SkillsShPage>,
-  complete: ChatCompletionFn = requestSummaryCompletion,
+  complete: SkillAiCompletionFn,
 ): Promise<SkillAiSearchResult> {
   const originalQuery = input.query.replace(/\s+/g, " ").trim();
   if (!originalQuery) throw new Error("Describe the Skill you want to find.");
-  const rawPlan = await complete(endpoint, [
-    { role: "system", content: SKILL_AI_SEARCH_SYSTEM_PROMPT },
-    {
-      role: "user",
-      content: [
-        `User language: ${input.language === "zh" ? "Chinese" : "English"}`,
-        "Capability request:",
-        originalQuery,
-      ].join("\n"),
-    },
-  ]);
+  const rawPlan = await complete([
+    SKILL_AI_SEARCH_SYSTEM_PROMPT,
+    "",
+    `User language: ${input.language === "zh" ? "Chinese" : "English"}`,
+    "Capability request:",
+    originalQuery,
+  ].join("\n"));
   const plan = parseSkillAiSearchPlan(rawPlan);
   const settled = await Promise.allSettled(plan.queries.map((query) => search(query)));
   const successful = settled.flatMap((result, queryIndex) => result.status === "fulfilled"

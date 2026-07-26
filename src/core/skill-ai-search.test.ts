@@ -1,14 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import type { SummaryEndpoint } from "./session-summarizer";
 import { parseSkillAiSearchPlan, runSkillAiSearch } from "./skill-ai-search";
 import type { SkillsShEntry, SkillsShPage } from "./skills-sh";
-
-const endpoint: SummaryEndpoint = {
-  baseUrl: "https://provider.example/v1",
-  model: "test-model",
-  apiKey: "test-key",
-  apiFormat: "openai_chat",
-};
 
 function entry(id: string, installs = 0): SkillsShEntry {
   const [owner, repo, skillId] = id.split("/");
@@ -44,9 +36,9 @@ describe("AI Skill search", () => {
   });
 
   it("uses one model call, searches the planned queries, and ranks repeated candidates first", async () => {
-    const complete = vi.fn(async (_endpoint, messages) => {
-      expect(messages[0]?.content).toContain("Do not ask a follow-up question");
-      expect(messages[1]?.content).toContain("我想找一个检查 React 页面无障碍问题的 skill");
+    const complete = vi.fn(async (prompt: string) => {
+      expect(prompt).toContain("Do not ask a follow-up question");
+      expect(prompt).toContain("我想找一个检查 React 页面无障碍问题的 skill");
       return JSON.stringify({
         queries: ["react accessibility", "frontend a11y"],
         interpretation: "寻找检查 React 无障碍问题的 Skill。",
@@ -59,7 +51,7 @@ describe("AI Skill search", () => {
     const result = await runSkillAiSearch({
       query: "我想找一个检查 React 页面无障碍问题的 skill",
       language: "zh",
-    }, endpoint, search, complete);
+    }, search, complete);
 
     expect(complete).toHaveBeenCalledTimes(1);
     expect(search.mock.calls.map(([query]) => query)).toEqual(["react accessibility", "frontend a11y"]);
@@ -87,7 +79,7 @@ describe("AI Skill search", () => {
       return page([entry("one/repo/result", 10)]);
     });
 
-    await expect(runSkillAiSearch({ query: "help me test APIs", language: "en" }, endpoint, search, complete))
+    await expect(runSkillAiSearch({ query: "help me test APIs", language: "en" }, search, complete))
       .resolves.toMatchObject({ total: 1, partial: true });
   });
 
@@ -95,7 +87,6 @@ describe("AI Skill search", () => {
     const search = vi.fn();
     await expect(runSkillAiSearch(
       { query: "find something", language: "en" },
-      endpoint,
       search,
       async () => "I need more information",
     )).rejects.toThrow("valid search queries");

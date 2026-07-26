@@ -45,11 +45,12 @@ export class SavedSearchStore {
   async createSavedSearch(name: string, options: SearchOptions): Promise<SavedSearch> {
     const trimmed = name.trim();
     if (!trimmed) throw new Error("Saved search name is required.");
+    const normalizedOptions = normalizeSavedSearchOptions(options);
     const result = await this.database.query<SavedSearchRow>(
       `insert into agent_recall.saved_searches (name, options, created_at, use_count)
        values ($1, $2::jsonb, now(), 0)
        returning id, name, options, created_at, last_used_at, use_count`,
-      [trimmed, JSON.stringify(options)],
+      [trimmed, JSON.stringify(normalizedOptions)],
     );
     return this.hydrate(result.rows[0]);
   }
@@ -72,14 +73,15 @@ export class SavedSearchStore {
   }
 
   private hydrate(row: SavedSearchRow): SavedSearch {
-    let options: SearchOptions = {};
+    let rawOptions: unknown = {};
     try {
-      options = typeof row.options === "string"
-        ? JSON.parse(row.options) as SearchOptions
+      rawOptions = typeof row.options === "string"
+        ? JSON.parse(row.options) as unknown
         : row.options;
     } catch {
-      options = {};
+      rawOptions = {};
     }
+    const options = normalizeSavedSearchOptions(rawOptions);
     return {
       id: row.id,
       name: row.name,
@@ -89,6 +91,14 @@ export class SavedSearchStore {
       useCount: row.use_count,
     };
   }
+}
+
+function normalizeSavedSearchOptions(value: unknown): SearchOptions {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const options = { ...(value as Record<string, unknown>) };
+  if (options.visibility === "pinned") options.visibility = "favorites";
+  delete options.prioritizePinned;
+  return options as SearchOptions;
 }
 
 function timestamp(value: Date | string): number {

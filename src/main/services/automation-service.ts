@@ -189,6 +189,7 @@ export class NativeAutomationService {
   readonly evaluations: EvaluationService;
   readonly teamChat: TeamChatService;
   private readonly hubInstance: AgentHub;
+  private readonly configuredAgentExecutor: ConfiguredAgentExecutionService;
   private readonly registryInstance: McpRegistryStore;
   private readonly agentsInstance: McpAgentManagementService;
   private readonly loadWorkflows: (rootPath: string) => Promise<BundledWorkflowDefinition[]>;
@@ -219,7 +220,7 @@ export class NativeAutomationService {
     this.startBridgeService = dependencies.startBridge ?? startMcpBridge;
     this.startRouterService = dependencies.startRouter ?? startCodexChatRouter;
     this.setRouterBaseUrl = dependencies.setRouterBaseUrl ?? setCodexChatRouterBaseUrl;
-    const configuredAgentExecutor = new ConfiguredAgentExecutionService({
+    this.configuredAgentExecutor = new ConfiguredAgentExecutionService({
       agents: () => this.hubInstance.snapshot().configuredAgents,
       channels: () => this.hubInstance.snapshot().channels,
       defaultWorkDir: () => this.hubInstance.getWorkDir(),
@@ -229,12 +230,12 @@ export class NativeAutomationService {
       store: new EvaluationStore(options.database),
       agents: () => this.hubInstance.snapshot().configuredAgents,
       executeAgent: (configuredAgentId, prompt) =>
-        configuredAgentExecutor.runOneShot({ configuredAgentId, prompt }),
+        this.configuredAgentExecutor.runOneShot({ configuredAgentId, prompt }),
     });
     this.teamChat = dependencies.teamChats ?? new TeamChatService({
       storeFactory: () => new PostgresTeamChatStore(options.database),
       configuredAgents: () => this.hubInstance.snapshot().configuredAgents,
-      executeAgent: (input, onEvent, signal) => configuredAgentExecutor.runConversation(input, onEvent, signal),
+      executeAgent: (input, onEvent, signal) => this.configuredAgentExecutor.runConversation(input, onEvent, signal),
     });
     this.agentsInstance = dependencies.agents ?? new McpAgentManagementService({
       homeDir: () => options.homePath,
@@ -386,6 +387,34 @@ export class NativeAutomationService {
 
   health(): AutomationHealth {
     return { ...this.healthState };
+  }
+
+  async runOneShotOnRuntime(runtimeChannelId: string, prompt: string): Promise<string> {
+    await this.requireReady();
+    const snapshot = this.hubInstance.snapshot();
+    const requestedChannelId = runtimeChannelId.trim();
+    const channel = requestedChannelId
+      ? snapshot.channels.find((item) => item.id === requestedChannelId)
+      : snapshot.channels.find((item) =>
+        snapshot.runtimes.some((runtime) => runtime.id === item.agentId && runtime.available))
+        ?? snapshot.channels[0];
+    if (requestedChannelId && !channel) {
+      throw new Error(`The selected Runtime no longer exists: ${requestedChannelId}`);
+    }
+    if (!channel) {
+      throw new Error("No Runtime is configured. Add a Runtime before using AI Skill exploration.");
+    }
+    const agents = snapshot.configuredAgents.filter((agent) =>
+      agent.channelId === channel.id && agent.runtimeAgentId === channel.agentId);
+    const agent = agents.find((item) => item.managed) ?? agents[0];
+    if (!agent) {
+      throw new Error(`Runtime ${channel.label} does not have an execution Agent.`);
+    }
+    const result = await this.configuredAgentExecutor.runOneShot({
+      configuredAgentId: agent.id,
+      prompt,
+    });
+    return result.output;
   }
 
   resolveRuntimeApproval(request: {

@@ -423,8 +423,10 @@ const skillService = new SkillService({
   skillsShCachePath: path.join(app.getPath("userData"), "cache", "skills-sh.json"),
   homeDir: app.getPath("home"),
   codexHome: process.env.CODEX_HOME,
-  resolveAiEndpoint: async () =>
-    (await resolveSummaryEndpointFromSettings()) ?? buildCodexExecEndpoint(await providerService.hydrateSettings()),
+  executeAiSearch: async (runtimeChannelId, prompt) => {
+    if (!automationService) throw new Error("Runtime is not ready.");
+    return automationService.runOneShotOnRuntime(runtimeChannelId, prompt);
+  },
   copyText: (text) => clipboard.writeText(text),
   revealPath: (targetPath) => revealInFileManager(targetPath),
   now: () => Date.now(),

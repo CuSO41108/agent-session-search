@@ -16,6 +16,7 @@ import type { IndexStatus } from "../../core/indexer";
 import type { AppUpdateProgress, AppUpdateStatus } from "../../core/app-update-types";
 import type { AppSettings, AppSettingsUpdate } from "../../core/platform";
 import type { MigrationTargetSettings } from "../../core/migration-targets";
+import type { McpServerDefinition } from "../../automation/contracts";
 import type { RemoteHealthReport } from "../../core/remote-health";
 import type { SessionSyncHookStatus } from "../../core/session-sync-queue";
 import { OPTIONAL_SESSION_SOURCE_DESCRIPTORS } from "../../core/session-sources";
@@ -179,6 +180,22 @@ export function App(): ReactElement {
     () => selectWorkbenchWorkflows(automation.snapshot.workflowStore.workflows, automation.snapshot.workflowStore.runs),
     [automation.snapshot.workflowStore.runs, automation.snapshot.workflowStore.workflows],
   );
+  const [workbenchMcpServers, setWorkbenchMcpServers] = useState<McpServerDefinition[] | null>(null);
+  useEffect(() => {
+    if (activePage !== "workbench") return;
+    let active = true;
+    setWorkbenchMcpServers(null);
+    void automation.api.listMcpServers()
+      .then((servers) => {
+        if (active) setWorkbenchMcpServers(servers);
+      })
+      .catch(() => {
+        if (active) setWorkbenchMcpServers([]);
+      });
+    return () => {
+      active = false;
+    };
+  }, [activePage, automation.api]);
   const [sidebarSections, setSidebarSections] = useState<SidebarSectionsState>(() => loadInitialSidebarSections());
   const [collapsedProjectGroups, setCollapsedProjectGroups] = useState<Set<string>>(() => loadCollapsedProjectGroups());
   const [collapsedTreeProjects, setCollapsedTreeProjects] = useState<Set<string>>(new Set());
@@ -1203,6 +1220,13 @@ export function App(): ReactElement {
                 }).catch((error) => setActionStatus({ kind: "error", message: error instanceof Error ? error.message : String(error) }));
               }}
               onShowWorkflows={() => void navigateToPage("workflows")}
+              runtimes={automation.snapshot.runtimes}
+              runtimeChannels={automation.snapshot.channels}
+              configuredAgents={automation.snapshot.configuredAgents}
+              mcpServers={workbenchMcpServers}
+              onShowRuntimes={() => void navigateToPage("runtimes")}
+              onShowMcp={() => void navigateToPage("mcp")}
+              onShowChat={() => void navigateToPage("team-chat")}
             />
           ) : null}
 
@@ -1551,6 +1575,7 @@ export function App(): ReactElement {
           platform={RUNTIME_PLATFORM}
           initialSection={settingsInitialSection}
           settings={appSettings}
+          runtimeChannels={automation.snapshot.channels}
           appUpdateStatus={appUpdateStatus}
           appUpdateProgress={appUpdateProgress}
           appUpdateBusy={appUpdateBusy}

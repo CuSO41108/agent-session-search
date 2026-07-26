@@ -129,6 +129,16 @@ describe("PostgreSQL MCP data facade", () => {
     })).toMatchObject({ ok: true, hidden: true });
   });
 
+  it("rejects the removed pinned visibility", async () => {
+    expect(await mcp.setVisibility(database, {
+      sessionKey: "codex:auth",
+      visibility: "pinned",
+    })).toEqual({
+      ok: false,
+      error: 'visibility must be one of "default", "favorites", or "hidden".',
+    });
+  });
+
   it("resolves the private endpoint pointer and migration target schema", async () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), "agent-recall-mcp-"));
     try {

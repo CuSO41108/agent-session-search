@@ -284,9 +284,9 @@ export async function toggleFavorite(db, { sessionKey, favorited } = {}) {
   return { ok: true, sessionKey, favorited: Boolean(favorited) };
 }
 
-// Visibility is derived from favorited / hidden flags (see App.tsx ViewMode).
-// Each call sets the requested dimension and clears what would otherwise hide
-// the session from that view without disturbing unrelated flags.
+// Visibility is derived from favorited / hidden flags. Each call sets the
+// requested dimension and clears what would otherwise hide the session from
+// that view without disturbing unrelated flags.
 export async function setVisibility(db, { sessionKey, visibility } = {}) {
   if (!sessionKey || !await sessionExists(db, sessionKey)) return { ok: false, error: "Session not found." };
   switch (visibility) {

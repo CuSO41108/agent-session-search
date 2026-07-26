@@ -292,7 +292,7 @@ button { border: 0; background: none; cursor: pointer; }
 .src-dot { width: 8px; height: 8px; border-radius: 50%; flex: 0 0 auto; }
 .src-dot.claude { background: var(--claude); box-shadow: 0 0 8px var(--claude); }
 .src-dot.codex { background: var(--codex); box-shadow: 0 0 8px var(--codex); }
-.row-title .pin { color: var(--accent); flex: 0 0 auto; }
+.row-title .favorite { color: var(--accent); flex: 0 0 auto; }
 
 .row-meta { display: flex; align-items: center; gap: 9px; margin-top: 7px; font-size: 11.5px; color: var(--text-faint); min-width: 0; }
 .row-meta .mono { font-family: var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -409,7 +409,7 @@ button { border: 0; background: none; cursor: pointer; }
     <div class="filter-title">Library</div>
     <nav class="nav-group">
       <button class="active">All <span class="count">134</span></button>
-      <button>Pinned <span class="count">5</span></button>
+      <button>Favorites <span class="count">5</span></button>
       <button>Hidden <span class="count">12</span></button>
     </nav>
 
@@ -447,7 +447,7 @@ button { border: 0; background: none; cursor: pointer; }
     <div class="results" id="results">
       <article class="row selected" data-i="0">
         <div>
-          <div class="row-title"><span class="src-dot claude"></span><svg class="pin" width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M16 4v6l3 3v2h-6v6l-1 1-1-1v-6H5v-2l3-3V4z"/></svg><span>Fix the SQLite runtime version mismatch</span></div>
+          <div class="row-title"><span class="src-dot claude"></span><svg class="favorite" width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="m12 2 3.1 6.3 6.9 1-5 4.9 1.2 6.8-6.2-3.2L5.8 21 7 14.2 2 9.3l6.9-1z"/></svg><span>Fix the SQLite runtime version mismatch</span></div>
           <div class="row-meta">
             <span class="badge claude">Claude Code</span>
             <span class="mono">~/agent-recall</span><span class="sep">·</span>

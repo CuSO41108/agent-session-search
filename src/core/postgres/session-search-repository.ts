@@ -137,6 +137,7 @@ export class PostgresSessionSearchRepository {
 
     const limit = Math.max(0, options.limit ?? 200);
     const limitPlaceholder = bind(limit);
+    const favoriteOrder = options.prioritizeFavorites === false ? "" : "sessions.favorited desc,";
     const primarySort =
       options.sortBy === "created"
         ? "sessions.started_at desc"
@@ -170,7 +171,7 @@ export class PostgresSessionSearchRepository {
         join agent_recall.environments environments on environments.id = sessions.environment_id
         ${bestTurnJoin}
         where ${filters.join(" and ")}
-        order by ${primarySort}, sessions.session_key
+        order by ${favoriteOrder} ${primarySort}, sessions.session_key
         limit ${limitPlaceholder}
       `,
       values,

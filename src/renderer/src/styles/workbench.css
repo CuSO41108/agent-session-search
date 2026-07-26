@@ -21,6 +21,30 @@
   scrollbar-gutter: stable;
 }
 
+.workbench-page-head {
+  justify-content: space-between;
+}
+
+.workbench-layout-action {
+  display: inline-flex;
+  min-height: 30px;
+  align-items: center;
+  gap: 6px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel-bg);
+  color: var(--text-muted);
+  font-size: 10.5px;
+  font-weight: 650;
+}
+
+.workbench-layout-action:hover,
+.workbench-layout-action.active {
+  border-color: var(--accent-line);
+  color: var(--accent);
+}
+
 .workbench-overview {
   position: relative;
   z-index: 3;
@@ -576,6 +600,29 @@
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
+.workbench-quota-pair[data-count="1"],
+.workbench-quota-pair[data-count="0"] {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.workbench-quota-hidden {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 12px;
+  color: var(--text-muted);
+  flex-direction: column;
+  font-size: 9px;
+  text-align: center;
+}
+
+.workbench-quota-hidden button {
+  color: var(--accent);
+  font-size: 9px;
+}
+
 .workbench-quota {
   display: flex;
   min-width: 0;
@@ -723,11 +770,85 @@
 .workbench-primary-grid {
   position: relative;
   z-index: 1;
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  height: 330px;
+  display: flex;
+  flex-wrap: wrap;
   min-height: 0;
   gap: 14px;
+}
+
+.workbench-card-slot {
+  position: relative;
+  min-width: 0;
+  border-radius: var(--radius-md);
+  transition:
+    opacity var(--duration-fast) var(--ease-out),
+    transform var(--duration-fast) var(--ease-out);
+}
+
+.workbench-card-slot.is-primary {
+  height: 330px;
+  flex: 1 1 calc(50% - 7px);
+}
+
+.workbench-card-slot.is-compact {
+  min-height: 210px;
+  flex: 1 1 calc(33.333% - 10px);
+}
+
+.workbench-card-slot.is-dragging {
+  opacity: .46;
+  transform: scale(.99);
+}
+
+.workbench-primary-grid.is-editing .workbench-card-slot {
+  cursor: grab;
+  outline: 1px dashed color-mix(in srgb, var(--accent) 62%, var(--border));
+  outline-offset: 3px;
+}
+
+.workbench-primary-grid.is-editing .workbench-card-slot:active {
+  cursor: grabbing;
+}
+
+.workbench-primary-grid.is-editing .workbench-card-slot > .workbench-panel {
+  pointer-events: none;
+}
+
+.workbench-card-layout-controls {
+  position: absolute;
+  z-index: 4;
+  top: 8px;
+  right: 8px;
+  display: flex;
+  height: 26px;
+  align-items: center;
+  gap: 2px;
+  padding: 0 4px 0 6px;
+  border: 1px solid var(--accent-line);
+  border-radius: 7px;
+  background: var(--panel-bg);
+  color: var(--accent);
+  box-shadow: var(--shadow-sm);
+  pointer-events: auto;
+}
+
+.workbench-card-layout-controls > button {
+  display: grid;
+  width: 20px;
+  height: 20px;
+  place-items: center;
+  padding: 0;
+  border-radius: 5px;
+  color: var(--text-muted);
+}
+
+.workbench-card-layout-controls > button:hover:not(:disabled) {
+  background: var(--panel-hover);
+  color: var(--accent);
+}
+
+.workbench-card-layout-controls > button:disabled {
+  opacity: .28;
 }
 
 .workbench-panel {
@@ -735,7 +856,9 @@
   background: var(--panel-bg);
 }
 
-.workbench-primary-grid > .workbench-panel {
+.workbench-card-slot > .workbench-panel {
+  width: 100%;
+  height: 100%;
   min-height: 0;
   padding: 14px 16px;
   border-radius: var(--radius-md);
@@ -743,7 +866,7 @@
   transition: box-shadow var(--duration-normal) var(--ease-out), transform var(--duration-normal) var(--ease-out);
 }
 
-.workbench-primary-grid > .workbench-panel:hover {
+.workbench-card-slot > .workbench-panel:hover {
   box-shadow: var(--shadow-md);
 }
 
@@ -778,6 +901,139 @@
   display: flex;
   min-height: 0;
   flex-direction: column;
+}
+
+.workbench-feature-card {
+  display: flex;
+  min-height: 0;
+  flex-direction: column;
+}
+
+.workbench-feature-card-head {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: 34px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 9px;
+}
+
+.workbench-feature-card-head > span {
+  display: grid;
+  width: 34px;
+  height: 34px;
+  place-items: center;
+  border-radius: 9px;
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.workbench-feature-card-head > div {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.workbench-feature-card-head h2,
+.workbench-feature-card-head small {
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workbench-feature-card-head h2 {
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 690;
+}
+
+.workbench-feature-card-head small {
+  color: var(--text-faint);
+  font: 9px var(--mono);
+}
+
+.workbench-feature-card-head > button {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 0;
+  color: var(--text-muted);
+  font-size: 10px;
+}
+
+.workbench-feature-card-head > button:hover {
+  color: var(--accent);
+}
+
+.workbench-feature-card > p {
+  min-height: 30px;
+  margin: 10px 0 7px;
+  color: var(--text-muted);
+  font-size: 10px;
+  line-height: 1.45;
+}
+
+.workbench-feature-list {
+  display: grid;
+  min-height: 0;
+  align-content: start;
+  gap: 3px;
+  overflow-y: auto;
+}
+
+.workbench-feature-list > button {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 5px 6px;
+  border-radius: 7px;
+  text-align: left;
+}
+
+.workbench-feature-list > button:hover {
+  background: var(--panel-hover);
+}
+
+.workbench-feature-list > button > span {
+  display: grid;
+  min-width: 0;
+  gap: 1px;
+}
+
+.workbench-feature-list strong,
+.workbench-feature-list small {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workbench-feature-list strong {
+  color: var(--text-dim);
+  font-size: 10.5px;
+  font-weight: 650;
+}
+
+.workbench-feature-list small {
+  color: var(--text-faint);
+  font: 8.5px var(--mono);
+}
+
+.workbench-feature-list svg {
+  flex: 0 0 auto;
+  color: var(--text-faint);
+}
+
+.workbench-feature-empty {
+  display: grid;
+  min-height: 46px;
+  place-items: center;
+  color: var(--text-faint);
+  font-size: 9.5px;
+  text-align: center;
 }
 
 .workbench-workflow-list {
@@ -1109,12 +1365,22 @@
   }
 
   .workbench-primary-grid {
+    display: grid;
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  .workbench-card-slot.is-primary,
+  .workbench-card-slot.is-compact {
+    width: 100%;
     height: auto;
   }
 
-  .workbench-primary-grid > .workbench-panel {
+  .workbench-card-slot.is-primary {
     min-height: 330px;
+  }
+
+  .workbench-card-slot.is-compact {
+    min-height: 210px;
   }
 }
 
