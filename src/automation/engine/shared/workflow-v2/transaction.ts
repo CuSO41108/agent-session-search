@@ -163,6 +163,58 @@ export interface WorkflowOperationRecord {
   updatedAt: number;
 }
 
+export type WorkflowCommitPlanStepKind = "reversible_external" | "workspace" | "irreversible_external";
+
+export interface WorkflowCommitPlanStep {
+  stepId: string;
+  order: number;
+  kind: WorkflowCommitPlanStepKind;
+  operationId?: string;
+  prerequisites: string[];
+  compensationAdapter?: string;
+  evidenceDigest?: string;
+}
+
+export interface WorkflowCommitPlanApproval {
+  actor: string;
+  approvedAt: number;
+  evidenceDigest: string;
+}
+
+export interface WorkflowCommitPlan {
+  schemaVersion: 1;
+  commitPlanId: string;
+  transactionId: string;
+  workflowId: string;
+  runId: string;
+  planDigest: string;
+  createdAt: number;
+  steps: WorkflowCommitPlanStep[];
+  approval?: WorkflowCommitPlanApproval;
+}
+
+export function isWorkflowCommitPlan(value: unknown): value is WorkflowCommitPlan {
+  if (!isRecord(value)) return false;
+  if (value.schemaVersion !== 1 || ![value.commitPlanId, value.transactionId, value.workflowId, value.runId, value.planDigest].every(nonEmpty)) return false;
+  if (!timestamp(value.createdAt) || !Array.isArray(value.steps) || value.steps.length === 0) return false;
+  const stepIds = new Set<string>();
+  for (const [index, step] of value.steps.entries()) {
+    if (!isRecord(step) || !nonEmpty(step.stepId) || stepIds.has(step.stepId as string)) return false;
+    if (step.order !== index || !commitPlanStepKinds.has(step.kind as WorkflowCommitPlanStepKind)) return false;
+    if (step.operationId !== undefined && !nonEmpty(step.operationId)) return false;
+    if (step.kind !== "workspace" && !nonEmpty(step.operationId)) return false;
+    if (!Array.isArray(step.prerequisites) || !step.prerequisites.every((item) => nonEmpty(item) && stepIds.has(item))) return false;
+    if (step.compensationAdapter !== undefined && !nonEmpty(step.compensationAdapter)) return false;
+    if (step.evidenceDigest !== undefined && !nonEmpty(step.evidenceDigest)) return false;
+    stepIds.add(step.stepId as string);
+  }
+  if (value.approval !== undefined) {
+    if (!isRecord(value.approval) || !nonEmpty(value.approval.actor) || !timestamp(value.approval.approvedAt) || !nonEmpty(value.approval.evidenceDigest)) return false;
+    if (value.approval.evidenceDigest !== value.planDigest) return false;
+  }
+  return true;
+}
+
 export const WORKFLOW_TRANSACTION_EVENT_TYPES = [
   "transaction_started",
   "baseline_frozen",
@@ -240,6 +292,7 @@ const transactionModes = new Set<WorkflowTransactionMode>(["strict_atomic", "con
 const approvalModes = new Set<WorkflowTransactionPolicy["approvalMode"]>(["batch", "per_operation", "user_choice"]);
 const transactionStatuses = new Set<WorkflowTransactionStatus>(["active", "waiting_for_user", "committing", "committed", "rolling_back", "rolled_back", "partially_rolled_back", "recovery_required"]);
 const operationKinds = new Set<WorkflowOperationKind>(["file", "http", "message", "git", "database", "other"]);
+const commitPlanStepKinds = new Set<WorkflowCommitPlanStepKind>(["reversible_external", "workspace", "irreversible_external"]);
 const operationStates = new Set<WorkflowOperationState>(["planned", "applying", "applied", "compensating", "compensated", "unknown"]);
 const operationTransitions: Record<WorkflowOperationState, ReadonlySet<WorkflowOperationState>> = {
   planned: new Set(["applying"]),

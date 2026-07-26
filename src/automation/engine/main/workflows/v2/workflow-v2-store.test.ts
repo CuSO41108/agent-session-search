@@ -8,6 +8,7 @@ import { buildWorkflowV2Plan } from "./workflow-v2-planner";
 import { WorkflowV2FileStore } from "./workflow-v2-store";
 import { WorkflowV2RunPersistence } from "./workflow-v2-run-persistence";
 import type { WorkflowDraftState } from "../../../shared/workflow/draft";
+import type { WorkflowCommitPlan } from "../../../shared/workflow-v2/transaction";
 
 const temporaryDirectories: string[] = [];
 
@@ -168,6 +169,8 @@ describe("workflow-v2 file store", () => {
       idempotencyKey: "stable-key",
       state: "planned" as const,
       reversible: false,
+      adapterId: "http",
+      prepared: { plan: { headers: { Authorization: "Bearer visible" } }, value: { token: "visible" } },
       requestSummary: { Authorization: "Bearer visible" },
       createdAt: 2,
       updatedAt: 2,
@@ -204,6 +207,30 @@ describe("workflow-v2 file store", () => {
       nodeId: "node-1",
     }));
     expect((await store.readRunState("workflow-1", "run-1"))?.eventCount).toBe(1);
+  });
+
+  test("persists an immutable commit plan and rejects later mutation", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "workflow-v2-commit-plan-"));
+    temporaryDirectories.push(root);
+    const store = new WorkflowV2FileStore(root);
+    const state = await persistedState();
+    state.transaction = { transactionId: "transaction-1", mode: "controlled", status: "active", baselineId: "baseline-1", operationCount: 0, unknownOperationCount: 0, irreversibleOperationCount: 0, startedAt: 1, updatedAt: 1, retentionUntil: 10_000 };
+    await store.persistRunState(state);
+    const plan: WorkflowCommitPlan = {
+      schemaVersion: 1,
+      commitPlanId: "commit-plan-1",
+      transactionId: "transaction-1",
+      workflowId: "workflow-1",
+      runId: "run-1",
+      planDigest: "digest-1",
+      createdAt: 2,
+      steps: [{ stepId: "workspace", order: 0, kind: "workspace", prerequisites: [], evidenceDigest: "workspace-digest" }],
+    };
+
+    await expect(store.persistCommitPlan(plan)).resolves.toEqual(plan);
+    await expect(store.persistCommitPlan(structuredClone(plan))).resolves.toEqual(plan);
+    await expect(store.persistCommitPlan({ ...plan, planDigest: "mutated" })).rejects.toThrow("immutable");
+    await expect(store.readCommitPlan("workflow-1", "run-1")).resolves.toEqual(plan);
   });
 
   test("reloads authoritative transaction counters before persisting a later checkpoint", async () => {

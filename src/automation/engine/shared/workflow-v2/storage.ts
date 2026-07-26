@@ -19,6 +19,7 @@ export interface WorkflowV2StorageLayout {
   runStatePath: string;
   eventLogPath: string;
   operationLogPath: string;
+  commitPlanPath: string;
   cacheDir: string;
 }
 

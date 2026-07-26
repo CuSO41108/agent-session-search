@@ -28,8 +28,11 @@ import {
   WORKFLOW_TRANSACTION_EVENT_TYPES,
   WorkflowOperationTransitionError,
   canTransitionWorkflowOperation,
+  isWorkflowCommitPlan,
   isWorkflowOperationRecord,
   sanitizeWorkflowOperationRecord,
+  sanitizeWorkflowTransactionValue,
+  type WorkflowCommitPlan,
   type WorkflowOperationRecord,
   type WorkflowOperationState,
 } from "../../../shared/workflow-v2/transaction";
@@ -53,6 +56,7 @@ export class WorkflowV2FileStore {
       runStatePath: path.join(runDir, "state.json"),
       eventLogPath: path.join(runDir, "events.jsonl"),
       operationLogPath: path.join(runDir, "operations.json"),
+      commitPlanPath: path.join(runDir, "commit-plan.json"),
       cacheDir: path.join(runDir, "cache"),
     };
   }
@@ -125,6 +129,34 @@ export class WorkflowV2FileStore {
 
   inspectWorkspaceTransaction(input: { workflowId: string; runId: string }): Promise<WorkflowWorkspaceDiffResult> {
     return this.enqueueValue(() => this.workspaceTransaction(input.workflowId, input.runId).inspectDiff());
+  }
+
+  persistCommitPlan(plan: WorkflowCommitPlan): Promise<WorkflowCommitPlan> {
+    return this.enqueueValue(async () => {
+      if (!isWorkflowCommitPlan(plan)) throw new Error("Workflow commit plan is malformed.");
+      const layout = this.layout(plan.workflowId, plan.runId);
+      await this.assertOperationTransactionIdentity(plan.workflowId, plan.runId, plan.transactionId);
+      const sanitized = sanitizeWorkflowTransactionValue(plan);
+      if (!isWorkflowCommitPlan(sanitized)) throw new Error("Workflow commit plan became malformed after sanitization.");
+      const existingContent = await readOptionalFile(layout.commitPlanPath);
+      if (existingContent !== undefined) {
+        const existing = parseJson(existingContent, `Workflow commit plan ${plan.commitPlanId}`);
+        if (!isWorkflowCommitPlan(existing)) throw new Error("Stored workflow commit plan is malformed.");
+        if (canonicalJson(existing) !== canonicalJson(sanitized)) throw new Error("Workflow commit plan is immutable and conflicts with the stored plan.");
+        return structuredClone(existing);
+      }
+      await atomicWriteJson(layout.commitPlanPath, sanitized);
+      return structuredClone(sanitized);
+    });
+  }
+
+  async readCommitPlan(workflowId: string, runId: string): Promise<WorkflowCommitPlan | undefined> {
+    await this.writeChain;
+    const content = await readOptionalFile(this.layout(workflowId, runId).commitPlanPath);
+    if (content === undefined) return undefined;
+    const parsed = parseJson(content, `Workflow commit plan ${runId}`);
+    if (!isWorkflowCommitPlan(parsed)) throw new Error("Stored workflow commit plan is malformed.");
+    return structuredClone(parsed);
   }
 
   planOperation(input: { workflowId: string; record: WorkflowOperationRecord }): Promise<WorkflowOperationRecord> {
@@ -213,7 +245,6 @@ export class WorkflowV2FileStore {
       if (current.runId !== input.runId) throw new Error(`Workflow operation ${input.operationId} run identity does not match its storage location.`);
       await this.assertOperationTransactionIdentity(input.workflowId, input.runId, current.transactionId);
       if (current.state !== "unknown") throw new Error(`Workflow operation ${input.operationId} is not awaiting unknown-state resolution.`);
-      if (input.verifiedState === "compensated" && !current.reversible) throw new Error(`Workflow operation ${input.operationId} is irreversible and cannot be marked compensated.`);
       if (input.updatedAt < current.updatedAt) throw new Error(`Workflow operation ${input.operationId} updatedAt must not move backwards.`);
       const next = sanitizeWorkflowOperationRecord({
         ...current,

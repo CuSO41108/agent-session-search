@@ -55,6 +55,7 @@ export interface WorkflowOperationCompensationResult {
 
 export class WorkflowV2OperationBroker {
   private readonly adapters = new Map<string, WorkflowTransactionalOperationAdapter>();
+  private readonly volatilePrepared = new Map<string, WorkflowPreparedOperation>();
 
   constructor(private readonly store: WorkflowV2StorePort) {}
 
@@ -65,13 +66,22 @@ export class WorkflowV2OperationBroker {
   }
 
   async apply<TPlan, TReceipt>(input: WorkflowOperationBrokerApplyInput<TPlan>): Promise<TReceipt> {
+    const operation = await this.prepare(input);
+    if (operation.state === "applied") return operation.receipt as TReceipt;
+    return this.applyPrepared<TReceipt>({ workflowId: input.workflowId, runId: input.runId, operationId: operation.operationId, signal: input.signal });
+  }
+
+  async prepare<TPlan>(input: WorkflowOperationBrokerApplyInput<TPlan>): Promise<WorkflowOperationRecord> {
     this.assertDurableLedger();
-    const adapter = this.adapter<TPlan, TReceipt>(input.adapterId);
+    const adapter = this.adapter<TPlan, unknown>(input.adapterId);
     const digest = semanticDigest(input.plan);
     const idempotencyKey = `${input.transactionId}:${input.nodeId}:${input.attempt}:${input.adapterId}:${digest}`;
     const existing = (await this.store.readOperations?.(input.workflowId, input.runId) ?? [])
       .find((operation) => operation.idempotencyKey === idempotencyKey);
-    if (existing) return this.resolveExisting<TReceipt>(existing);
+    if (existing) {
+      if (existing.state === "compensated") throw new Error(`Workflow operation ${existing.operationId} was already compensated and cannot be prepared again.`);
+      return existing;
+    }
 
     const controller = new AbortController();
     const signal = input.signal ?? controller.signal;
@@ -107,16 +117,38 @@ export class WorkflowV2OperationBroker {
     };
     const planned = await this.store.planOperation?.({ workflowId: input.workflowId, record: operation });
     if (!planned) throw new Error("Workflow operation broker requires a durable operation ledger.");
-    await this.store.transitionOperation?.({ workflowId: input.workflowId, runId: input.runId, operationId: planned.operationId, state: "applying", updatedAt: Date.now() });
+    this.volatilePrepared.set(planned.operationId, prepared as WorkflowPreparedOperation);
+    return planned;
+  }
+
+  async applyPrepared<TReceipt>(input: { workflowId: string; runId: string; operationId: string; signal?: AbortSignal }): Promise<TReceipt> {
+    this.assertDurableLedger();
+    const operation = (await this.store.readOperations?.(input.workflowId, input.runId) ?? []).find((item) => item.operationId === input.operationId);
+    if (!operation) throw new Error(`Workflow operation ${input.operationId} was not found.`);
+    if (operation.state === "applied") return operation.receipt as TReceipt;
+    if (operation.state !== "planned") return this.resolveExisting<TReceipt>(operation);
+    if (!operation.adapterId || !operation.prepared) throw new Error(`Workflow operation ${operation.operationId} has no prepared adapter state.`);
+    const adapter = this.adapter<unknown, TReceipt>(operation.adapterId);
+    const persistedPrepared = operation.prepared as { plan?: unknown; value?: unknown };
+    const prepared = this.volatilePrepared.get(operation.operationId) ?? {
+      adapterId: operation.adapterId,
+      plan: persistedPrepared.plan,
+      prepared: persistedPrepared.value,
+      preparedAt: operation.createdAt,
+    };
+    const signal = input.signal ?? new AbortController().signal;
+    await this.store.transitionOperation?.({ workflowId: input.workflowId, runId: input.runId, operationId: operation.operationId, state: "applying", updatedAt: Date.now() });
+    let receipt: TReceipt;
     try {
-      const receipt = await adapter.apply({ prepared, signal });
-      await this.store.transitionOperation?.({ workflowId: input.workflowId, runId: input.runId, operationId: planned.operationId, state: "applied", updatedAt: Date.now(), receipt });
-      return receipt;
+      receipt = await adapter.apply({ prepared, signal });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      await this.store.transitionOperation?.({ workflowId: input.workflowId, runId: input.runId, operationId: planned.operationId, state: "unknown", updatedAt: Date.now(), error: message });
+      await this.store.transitionOperation?.({ workflowId: input.workflowId, runId: input.runId, operationId: operation.operationId, state: "unknown", updatedAt: Date.now(), error: message });
       throw error;
     }
+    await this.store.transitionOperation?.({ workflowId: input.workflowId, runId: input.runId, operationId: operation.operationId, state: "applied", updatedAt: Date.now(), receipt });
+    this.volatilePrepared.delete(operation.operationId);
+    return receipt;
   }
 
   async inspect(input: { workflowId: string; runId: string; operationId: string; signal?: AbortSignal }): Promise<WorkflowOperationInspection> {
@@ -132,7 +164,13 @@ export class WorkflowV2OperationBroker {
     const adapter = this.adapter(operation.adapterId);
     const persistedPrepared = operation.prepared as { plan?: unknown; value?: unknown };
     const prepared = { adapterId: operation.adapterId, plan: persistedPrepared.plan, prepared: persistedPrepared.value, preparedAt: operation.createdAt } as WorkflowPreparedOperation;
-    const result = await adapter.inspect({ prepared, ...(operation.receipt !== undefined ? { receipt: operation.receipt } : {}), signal: input.signal ?? new AbortController().signal });
+    let result: WorkflowOperationInspection;
+    try {
+      result = await adapter.inspect({ prepared, ...(operation.receipt !== undefined ? { receipt: operation.receipt } : {}), signal: input.signal ?? new AbortController().signal });
+    } catch (error) {
+      await this.markUnknown(input, operation, error instanceof Error ? error.message : String(error));
+      return "unknown";
+    }
     if (result === "applied") {
       const receipt = { ...(operation.receipt !== undefined ? { originalReceipt: operation.receipt } : {}), inspection: "applied" };
       if (operation.state === "unknown" && this.store.resolveUnknownOperation) {
@@ -158,10 +196,10 @@ export class WorkflowV2OperationBroker {
     return result;
   }
 
-  async compensateRun(input: { workflowId: string; runId: string; signal?: AbortSignal }): Promise<WorkflowOperationCompensationResult> {
+  async compensateRun(input: { workflowId: string; runId: string; operationIds?: readonly string[]; signal?: AbortSignal }): Promise<WorkflowOperationCompensationResult> {
     this.assertDurableLedger();
     const operations = (await this.store.readOperations?.(input.workflowId, input.runId) ?? [])
-      .filter((operation) => operation.state === "applied");
+      .filter((operation) => operation.state === "applied" && (!input.operationIds || input.operationIds.includes(operation.operationId)));
     const result: WorkflowOperationCompensationResult = { compensated: [], skipped: [] };
     for (const { operation, index } of operations.map((operation, index) => ({ operation, index })).sort((left, right) => right.operation.updatedAt - left.operation.updatedAt || right.operation.createdAt - left.operation.createdAt || right.index - left.index)) {
       const compensationAdapterId = operation.compensationAdapter;
