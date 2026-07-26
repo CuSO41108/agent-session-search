@@ -64,11 +64,16 @@ const DEFAULT_RULES_SYNC_TIMEOUT_MS = 15_000;
 export interface ScanLocalRulesOptions {
   homeDir?: string;
   projectDirs?: string[];
+  /** Max subdirectory depth for recursive CLAUDE.md scanning (default 3). */
+  maxScanDepth?: number;
 }
+
+const SKIP_DIRS = new Set(["node_modules", ".git", "dist", "out", ".next", "build", ".output", ".qoder"]);
 
 export function scanLocalRules(options: ScanLocalRulesOptions = {}): AgentRule[] {
   const homeDir = options.homeDir ?? os.homedir();
   const projectDirs = options.projectDirs ?? [];
+  const maxDepth = options.maxScanDepth ?? 3;
   const rules: AgentRule[] = [];
 
   // Claude global CLAUDE.md
@@ -80,10 +85,17 @@ export function scanLocalRules(options: ScanLocalRulesOptions = {}): AgentRule[]
   for (const projectDir of projectDirs) {
     const projectBasename = path.basename(projectDir);
 
-    // Project-level CLAUDE.md
+    // Root-level CLAUDE.md (name stays "CLAUDE.md" for backward compat)
     const claudeProjectPath = path.join(projectDir, "CLAUDE.md");
     const claudeProject = readRuleFile(claudeProjectPath, "claude", "project", "CLAUDE.md", projectBasename);
     if (claudeProject) rules.push(claudeProject);
+
+    // Nested CLAUDE.md files (name is relative path from project root)
+    for (const nested of findNestedClaudeMd(projectDir, maxDepth)) {
+      const relativePath = path.relative(projectDir, nested).replace(/\\/g, "/");
+      const rule = readRuleFile(nested, "claude", "project", relativePath, projectBasename);
+      if (rule) rules.push(rule);
+    }
 
     // Qoder project rules: .qoder/rules/*.md
     const qoderRulesDir = path.join(projectDir, ".qoder", "rules");
@@ -102,6 +114,35 @@ export function scanLocalRules(options: ScanLocalRulesOptions = {}): AgentRule[]
   }
 
   return rules;
+}
+
+/**
+ * Recursively finds CLAUDE.md files in subdirectories of projectDir,
+ * skipping the root (already handled) and common build/dependency dirs.
+ */
+function findNestedClaudeMd(projectDir: string, maxDepth: number): string[] {
+  const results: string[] = [];
+  function scan(dir: string, depth: number): void {
+    if (depth > maxDepth) return;
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      if (SKIP_DIRS.has(entry.name)) continue;
+      const subDir = path.join(dir, entry.name);
+      const claudeMd = path.join(subDir, "CLAUDE.md");
+      if (fs.existsSync(claudeMd)) {
+        results.push(claudeMd);
+      }
+      scan(subDir, depth + 1);
+    }
+  }
+  scan(projectDir, 1);
+  return results;
 }
 
 function readRuleFile(filePath: string, agent: RulesAgent, scope: RulesScope, name: string, projectPath: string): AgentRule | null {
@@ -296,17 +337,23 @@ export interface RestoreResult {
   backedUp: string[];
 }
 
+export interface RestoreRulesOptions {
+  homeDir?: string;
+  /** Local project directories, used to resolve project-scoped rules. */
+  projectDirs?: string[];
+}
+
 /**
- * Restores global-scope remote rules to their local filesystem paths.
+ * Restores remote rules (global and project scope) to their local filesystem paths.
  * Conflict policy: identical content is skipped; differing local files are
  * backed up to `<path>.bak` before being overwritten.
  */
-export function restoreGlobalRules(remoteRules: RemoteRule[], options: { homeDir?: string } = {}): RestoreResult {
+export function restoreRules(remoteRules: RemoteRule[], options: RestoreRulesOptions = {}): RestoreResult {
   const homeDir = options.homeDir ?? os.homedir();
+  const projectDirs = options.projectDirs ?? [];
   const result: RestoreResult = { restored: [], skipped: [], backedUp: [] };
   for (const rule of remoteRules) {
-    if (rule.scope !== "global") continue;
-    const targetPath = resolveGlobalRulePath(rule, homeDir);
+    const targetPath = resolveRulePath(rule, homeDir, projectDirs);
     if (!targetPath) continue;
     if (fs.existsSync(targetPath)) {
       const localContent = fs.readFileSync(targetPath, "utf8");
@@ -324,9 +371,16 @@ export function restoreGlobalRules(remoteRules: RemoteRule[], options: { homeDir
   return result;
 }
 
-function resolveGlobalRulePath(rule: RemoteRule, homeDir: string): string | null {
-  if (rule.agent === "claude" && rule.name === "CLAUDE.md") return path.join(homeDir, ".claude", "CLAUDE.md");
-  return null;
+function resolveRulePath(rule: RemoteRule, homeDir: string, projectDirs: string[]): string | null {
+  if (rule.scope === "global") {
+    if (rule.agent === "claude" && rule.name === "CLAUDE.md") return path.join(homeDir, ".claude", "CLAUDE.md");
+    return null;
+  }
+  // Project scope: match remote project_path (basename) to a local project dir
+  const match = projectDirs.find((dir) => path.basename(dir) === rule.project_path);
+  if (!match) return null;
+  // rule.name may be a relative path (e.g. "packages/core/CLAUDE.md") or just a filename
+  return path.join(match, rule.name);
 }
 
 // ---------------------------------------------------------------------------
