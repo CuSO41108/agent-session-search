@@ -151,6 +151,8 @@ export interface WorkflowOperationRecord {
   idempotencyKey: string;
   /** Digest of the unsanitized operation semantics; never contains the original request. */
   semanticDigest?: string;
+  adapterId?: string;
+  prepared?: unknown;
   state: WorkflowOperationState;
   reversible: boolean;
   compensationAdapter?: string;
@@ -206,6 +208,7 @@ export function isWorkflowOperationRecord(value: unknown): value is WorkflowOper
     && operationKinds.has(value.kind as WorkflowOperationKind)
     && operationStates.has(value.state as WorkflowOperationState)
     && (value.semanticDigest === undefined || nonEmpty(value.semanticDigest))
+    && (value.adapterId === undefined || nonEmpty(value.adapterId))
     && typeof value.reversible === "boolean"
     && (value.compensationAdapter === undefined || nonEmpty(value.compensationAdapter))
     && (value.error === undefined || typeof value.error === "string")
@@ -227,6 +230,7 @@ export function sanitizeWorkflowOperationRecord(record: WorkflowOperationRecord)
     ...structuredClone(record),
     target: sanitizeString(record.target),
     ...(record.requestSummary !== undefined ? { requestSummary: sanitizeWorkflowTransactionValue(record.requestSummary) } : {}),
+    ...(record.prepared !== undefined ? { prepared: sanitizeWorkflowTransactionValue(record.prepared) } : {}),
     ...(record.receipt !== undefined ? { receipt: sanitizeWorkflowTransactionValue(record.receipt) } : {}),
     ...(record.error !== undefined ? { error: sanitizeString(record.error) } : {}),
   };

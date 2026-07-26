@@ -581,6 +581,7 @@ function workflowOperationSemanticDigest(record: WorkflowOperationRecord): strin
     target: record.target,
     idempotencyKey: record.idempotencyKey,
     reversible: record.reversible,
+    adapterId: record.adapterId ?? null,
     compensationAdapter: record.compensationAdapter ?? null,
     requestSummary: record.requestSummary ?? null,
   })).digest("hex");
