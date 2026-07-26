@@ -865,9 +865,10 @@ async function ensureInstalledElectron(options = {}) {
     if (installedVersion !== expectedVersion) throw new Error(`Electron runtime version mismatch: expected ${expectedVersion}, got ${installedVersion || "unknown"}.`);
     if (!isElectronRuntimeReady(packagePath)) throw new Error("Electron runtime files are incomplete.");
   };
-  const cleanupBackups = async (distBackup, pathBackup) => {
-    await removeRuntimeDirectory(distBackup);
-    await fsp.rm(pathBackup, { force: true });
+  const cleanupBackups = async (distBackup, pathBackup, cleanupPath) => {
+    await fsp.rm(pathBackup, { force: true }).catch(() => undefined);
+    if (fs.existsSync(distBackup)) await fsp.rename(distBackup, cleanupPath);
+    await removeRuntimeDirectory(cleanupPath).catch(() => undefined);
   };
   const repairViaInstallScript = async (forceNoCache = false) => {
     await run(nodePath, [installScript], {
@@ -955,6 +956,7 @@ async function ensureInstalledElectron(options = {}) {
   const repairId = `${process.pid}-${randomUUID()}`;
   const distBackup = path.join(electronModulePath, `.agent-recall-dist-${repairId}.backup`);
   const pathBackup = path.join(electronModulePath, `.agent-recall-path-${repairId}.backup`);
+  const cleanupPath = path.join(path.dirname(packagePath), `.agent-recall-electron-cleanup-${repairId}`);
   if (fs.existsSync(distPath)) await fsp.rename(distPath, distBackup);
   if (fs.existsSync(pathFile)) await fsp.rename(pathFile, pathBackup);
   let repairError = null;
@@ -963,7 +965,7 @@ async function ensureInstalledElectron(options = {}) {
       const result = await operation();
       if (result === false) return false;
       await validate();
-      await cleanupBackups(distBackup, pathBackup);
+      await cleanupBackups(distBackup, pathBackup, cleanupPath);
       return true;
     } catch (error) {
       repairError = error;
