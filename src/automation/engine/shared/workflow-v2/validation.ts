@@ -16,6 +16,7 @@ import type { WorkflowV2TemplateRegistry } from "./templates";
 import { compileWorkflowV2Definition, WorkflowV2TemplateCompileError } from "./templates";
 import { workflowV2NodeHookValidationErrors } from "./hooks";
 import { listWorkflowV2TerminalNodeIds, normalizeWorkflowV2TerminalNode } from "./topology";
+import { workflowTransactionPolicyValidationErrors } from "./transaction";
 
 const VALID_SCRIPT_LANGUAGES = new Set(["python", "typescript", "bash"]);
 const VALID_SCRIPT_RISKS = new Set(["safe", "read", "write", "dangerous"]);
@@ -338,6 +339,14 @@ export function validateWorkflowV2Definition(definition: WorkflowV2Definition, o
     nodeIds.add(node.id);
     appendNodeValidationErrors(node, errors);
     if (node.role === undefined) warnings.push(`Workflow V2 node ${node.id} does not declare a role.`);
+  }
+
+  if (definition.transactionPolicy === undefined) {
+    warnings.push("Workflow V2 definition has no transaction policy and will run in compatibility direct mode.");
+  } else if (!isRecord(definition.transactionPolicy)) {
+    errors.push("Workflow V2 transaction policy must be an object.");
+  } else {
+    errors.push(...workflowTransactionPolicyValidationErrors(definition.transactionPolicy, nodeIds));
   }
 
   const topologicalNodeIds = topologicalOrder(definition, errors);

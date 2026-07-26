@@ -12,6 +12,7 @@ import {
   startWorkflowRunState,
   updateWorkflowRunState,
 } from "./agent-hub-workflow-run-state";
+import { workflowTransactionPreflightError } from "../../../shared/workflow-v2/transaction";
 
 export class WorkflowRunStateService {
   constructor(private readonly deps: {
@@ -32,6 +33,8 @@ export class WorkflowRunStateService {
     if (workflow.confirmedRevision !== workflow.revision) {
       return { ok: false, workflowId: workflow.workflowId, revision: workflow.revision, error: "Workflow must be confirmed before starting a run." };
     }
+    const transactionError = workflowTransactionPreflightError(workflow.workflowV2Plan.definition.transactionPolicy);
+    if (transactionError) return { ok: false, workflowId: workflow.workflowId, revision: workflow.revision, error: transactionError };
     this.deps.clearDraftRequest(workflow.workflowId);
     const runId = this.deps.createRunId();
     const next = startWorkflowRunState({ workflow, request: input, runId, cloneDraft: this.deps.cloneDraft });

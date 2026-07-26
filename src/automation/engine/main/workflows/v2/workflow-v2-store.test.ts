@@ -6,6 +6,8 @@ import { createWorkflowV2RunState } from "../../../shared/workflow-v2/state";
 import { WORKFLOW_V2_STORAGE_SCHEMA_VERSION, type WorkflowV2PersistedRunState } from "../../../shared/workflow-v2/storage";
 import { buildWorkflowV2Plan } from "./workflow-v2-planner";
 import { WorkflowV2FileStore } from "./workflow-v2-store";
+import { WorkflowV2RunPersistence } from "./workflow-v2-run-persistence";
+import type { WorkflowDraftState } from "../../../shared/workflow/draft";
 
 const temporaryDirectories: string[] = [];
 
@@ -86,6 +88,210 @@ describe("workflow-v2 file store", () => {
       { sequence: 0, workflowId: "workflow-1", runId: "run-1", type: "started", at: 1 },
       { sequence: 1, workflowId: "workflow-1", runId: "run-1", type: "paused", at: 2 },
     ]);
+  });
+
+  test("deduplicates exact event retries and rejects conflicting or non-monotonic history", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "workflow-v2-event-contract-"));
+    temporaryDirectories.push(root);
+    const store = new WorkflowV2FileStore(root);
+    const started = { sequence: 0, workflowId: "workflow-1", runId: "run-1", transactionId: "transaction-1", type: "transaction_started", at: 1 };
+
+    await store.appendEvents({ workflowId: "workflow-1", runId: "run-1", events: [started] });
+    await store.appendEvents({ workflowId: "workflow-1", runId: "run-1", events: [started] });
+    expect(await store.readEvents("workflow-1", "run-1")).toHaveLength(1);
+    await expect(store.appendEvents({ workflowId: "workflow-1", runId: "run-1", events: [{ ...started, at: 2 }] })).rejects.toThrow("conflicts");
+    await expect(store.appendEvents({ workflowId: "workflow-1", runId: "run-1", events: [{ ...started, sequence: 2, type: "commit_started" }] })).rejects.toThrow("monotonic");
+    const state = await persistedState();
+    state.eventCount = 0;
+    await store.persistRunState(state);
+    expect((await store.readRunState("workflow-1", "run-1"))?.eventCount).toBe(1);
+  });
+
+  test("serializes concurrent persistence events before assigning sequences", async () => {
+    const sequences: number[] = [];
+    let releaseFirst!: () => void;
+    const firstWrite = new Promise<void>((resolve) => { releaseFirst = resolve; });
+    const persistence = new WorkflowV2RunPersistence({
+      store: {
+        appendEvents: async ({ events }) => {
+          sequences.push(events[0]!.sequence);
+          if (sequences.length === 1) await firstWrite;
+        },
+        persistRunState: async () => undefined,
+      },
+      workflow: { workflowId: "workflow-1", workDir: "C:/workspace" } as WorkflowDraftState,
+      plan: (await persistedState()).plan,
+      runId: "run-1",
+      initialEventCount: 0,
+      nodeControl: {},
+      workDir: "C:/workspace",
+      configuredAgentId: "agent-1",
+      modelId: "model-1",
+      configuredAgents: [],
+    });
+
+    const first = persistence.appendEvents([{ type: "lease_started", nodeId: "node-1", at: 1 }]);
+    const second = persistence.appendEvents([{ type: "lease_started", nodeId: "node-2", at: 1 }]);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    releaseFirst();
+    await Promise.all([first, second]);
+
+    expect(sequences).toEqual([0, 1]);
+  });
+
+  test("persists a redacted idempotent operation ledger and enforces legal transitions", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "workflow-v2-operation-ledger-"));
+    temporaryDirectories.push(root);
+    const store = new WorkflowV2FileStore(root);
+    const state = await persistedState();
+    state.transaction = {
+      transactionId: "transaction-1",
+      mode: "controlled",
+      status: "active",
+      baselineId: "baseline-1",
+      operationCount: 0,
+      unknownOperationCount: 0,
+      irreversibleOperationCount: 0,
+      startedAt: 1,
+      updatedAt: 1,
+      retentionUntil: 10_000,
+    };
+    await store.persistRunState(state);
+    const operation = {
+      operationId: "operation-1",
+      transactionId: "transaction-1",
+      runId: "run-1",
+      nodeId: "node-1",
+      attempt: 1,
+      kind: "http" as const,
+      target: "https://example.test/resource?token=visible",
+      idempotencyKey: "stable-key",
+      state: "planned" as const,
+      reversible: false,
+      requestSummary: { Authorization: "Bearer visible" },
+      createdAt: 2,
+      updatedAt: 2,
+    };
+
+    await expect(store.planOperation({ workflowId: "workflow-1", record: { ...operation, transactionId: "wrong-transaction" } })).rejects.toThrow("identity does not match");
+    expect(await store.readOperations("workflow-1", "run-1")).toEqual([]);
+
+    const planned = await store.planOperation({ workflowId: "workflow-1", record: operation });
+    const duplicate = await store.planOperation({ workflowId: "workflow-1", record: { ...operation, operationId: "operation-retry", updatedAt: 3 } });
+    expect(duplicate.operationId).toBe(planned.operationId);
+    await expect(store.planOperation({ workflowId: "workflow-1", record: { ...operation, operationId: "operation-conflict", target: "https://example.test/different", updatedAt: 3 } })).rejects.toThrow("semantic identity");
+    await expect(store.planOperation({ workflowId: "workflow-1", record: { ...operation, operationId: "operation-secret-conflict", requestSummary: { Authorization: "Bearer different-secret" }, updatedAt: 3 } })).rejects.toThrow("semantic identity");
+    expect(JSON.stringify(await store.readOperations("workflow-1", "run-1"))).not.toContain("visible");
+    await expect(store.transitionOperation({ workflowId: "workflow-1", runId: "run-1", operationId: "operation-1", state: "applied", updatedAt: 3 })).rejects.toMatchObject({
+      code: "WORKFLOW_OPERATION_INVALID_TRANSITION",
+      operationId: "operation-1",
+      from: "planned",
+      to: "applied",
+    });
+    await expect(store.transitionOperation({ workflowId: "workflow-1", runId: "run-1", operationId: "operation-1", state: "applying", updatedAt: 1 })).rejects.toThrow("must not move backwards");
+    await store.transitionOperation({ workflowId: "workflow-1", runId: "run-1", operationId: "operation-1", state: "applying", updatedAt: 3 });
+    await store.transitionOperation({ workflowId: "workflow-1", runId: "run-1", operationId: "operation-1", state: "unknown", updatedAt: 4, error: "Bearer visible" });
+    await expect(store.transitionOperation({ workflowId: "workflow-1", runId: "run-1", operationId: "operation-1", state: "applied", updatedAt: 5 })).rejects.toThrow("cannot transition");
+    expect((await store.readRunState("workflow-1", "run-1"))?.transaction).toMatchObject({ status: "recovery_required", operationCount: 1, unknownOperationCount: 1, irreversibleOperationCount: 1 });
+    const resolved = await store.resolveUnknownOperation({ workflowId: "workflow-1", runId: "run-1", operationId: "operation-1", verifiedState: "applied", actor: "operator", reason: "Verified by remote receipt", evidence: { "X-Api-Key": "must-not-persist" }, updatedAt: 6 });
+    expect(resolved).toMatchObject({ state: "applied", receipt: { recoveryResolution: { actor: "operator", reason: "Verified by remote receipt" } } });
+    expect(JSON.stringify(resolved)).not.toContain("must-not-persist");
+    expect((await store.readRunState("workflow-1", "run-1"))?.transaction).toMatchObject({ status: "waiting_for_user", unknownOperationCount: 0 });
+    expect(await store.readEvents("workflow-1", "run-1")).toContainEqual(expect.objectContaining({
+      sequence: 0,
+      type: "operation_applied",
+      operationId: "operation-1",
+      nodeId: "node-1",
+    }));
+    expect((await store.readRunState("workflow-1", "run-1"))?.eventCount).toBe(1);
+  });
+
+  test("reloads authoritative transaction counters before persisting a later checkpoint", async () => {
+    const durable = await persistedState();
+    durable.eventCount = 3;
+    durable.transaction = {
+      transactionId: "transaction-1",
+      mode: "direct",
+      status: "active",
+      baselineId: "baseline-1",
+      operationCount: 2,
+      unknownOperationCount: 0,
+      irreversibleOperationCount: 1,
+      startedAt: 1,
+      updatedAt: 3,
+      retentionUntil: 10_000,
+    };
+    const writes: WorkflowV2PersistedRunState[] = [];
+    const events: string[] = [];
+    const persistence = new WorkflowV2RunPersistence({
+      store: {
+        readRunState: async () => structuredClone(durable),
+        appendEvents: async (input) => { events.push(...input.events.map((event) => event.type)); },
+        persistRunState: async (state) => { writes.push(structuredClone(state)); },
+      },
+      workflow: { workflowId: "workflow-1", workDir: "C:/workspace" } as WorkflowDraftState,
+      plan: durable.plan,
+      runId: "run-1",
+      initialEventCount: 0,
+      initialTransaction: { ...durable.transaction, operationCount: 0, irreversibleOperationCount: 0 },
+      nodeControl: durable.nodeControl,
+      workDir: "C:/workspace",
+      configuredAgentId: "agent-1",
+      modelId: "model-1",
+      configuredAgents: [],
+    });
+
+    await persistence.persistCheckpoint({ runState: durable.runState, workerOutputs: [] });
+
+    expect(writes.at(-1)?.transaction).toMatchObject({ operationCount: 2, irreversibleOperationCount: 1 });
+    expect(writes.at(-1)?.eventCount).toBe(4);
+    const failedRunState = structuredClone(durable.runState);
+    failedRunState.status = "failed";
+    await persistence.persistCheckpoint({ runState: failedRunState, workerOutputs: [] });
+    expect(writes.at(-1)?.transaction?.status).toBe("recovery_required");
+    expect(events).toContain("recovery_required");
+  });
+
+  test("does not commit a completed run while an operation remains unknown", async () => {
+    const durable = await persistedState();
+    durable.transaction = {
+      transactionId: "transaction-1",
+      mode: "direct",
+      status: "recovery_required",
+      baselineId: "baseline-1",
+      operationCount: 1,
+      unknownOperationCount: 1,
+      irreversibleOperationCount: 0,
+      startedAt: 1,
+      updatedAt: 2,
+      retentionUntil: 10_000,
+    };
+    let written!: WorkflowV2PersistedRunState;
+    const events: string[] = [];
+    const persistence = new WorkflowV2RunPersistence({
+      store: {
+        readRunState: async () => structuredClone(durable),
+        appendEvents: async ({ events: appended }) => { events.push(...appended.map((event) => event.type)); },
+        persistRunState: async (state) => { written = structuredClone(state); },
+      },
+      workflow: { workflowId: "workflow-1", workDir: "C:/workspace" } as WorkflowDraftState,
+      plan: durable.plan,
+      runId: "run-1",
+      initialEventCount: 0,
+      initialTransaction: durable.transaction,
+      nodeControl: durable.nodeControl,
+      workDir: "C:/workspace",
+      configuredAgentId: "agent-1",
+      modelId: "model-1",
+      configuredAgents: [],
+    });
+    const completed = structuredClone(durable.runState);
+    completed.status = "completed";
+
+    await persistence.persistCheckpoint({ runState: completed, workerOutputs: [] });
+
+    expect(written.transaction).toMatchObject({ status: "recovery_required", unknownOperationCount: 1 });
+    expect(events).not.toContain("commit_completed");
   });
 
   test("persists idempotent node completion submissions outside message history", async () => {

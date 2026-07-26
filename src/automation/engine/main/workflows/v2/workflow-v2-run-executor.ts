@@ -1,5 +1,5 @@
 import type { RunTaskRequest, TaskRun } from "../../../shared/types";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { RuntimeConversation } from "../../../shared/runtime/conversation";
 import { mergeRuntimeUsage } from "../../../../../shared/runtime/usage";
 import type { WorkflowEvent, WorkflowRunNodeTelemetry, WorkflowRunProgressItem } from "../../../shared/workflow/run";
@@ -11,6 +11,7 @@ import type {
   WorkflowV2ResultPacket,
   WorkflowV2TaskPacket,
 } from "../../../shared/workflow-v2/planning";
+import type { WorkflowOperationRecord } from "../../../shared/workflow-v2/transaction";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import {
@@ -174,12 +175,25 @@ export class WorkflowV2RunExecutor {
       runId,
       initialEventCount: input.initialDurableEventCount ?? 0,
       ...(input.initialCheckpoint ? { initialCheckpoint: input.initialCheckpoint } : {}),
+      ...(input.initialTransaction ? { initialTransaction: input.initialTransaction } : {}),
       nodeControl: durableNodeControl,
       workDir: workflowWorkDir,
       configuredAgentId,
       modelId, configuredAgents: latestSnapshot.configuredAgents,
       ...(input.recoveryOverrides ? { recoveryOverrides: input.recoveryOverrides } : {}),
     });
+    const operationLedgerEnabled = Boolean(durableStore?.planOperation && durableStore.transitionOperation && durableStore.readOperations);
+    const planNodeOperation = async (operation: WorkflowOperationRecord): Promise<void> => {
+      await persistence.planOperation(operation);
+      await persistence.transitionOperation({ operationId: operation.operationId, state: "applying", updatedAt: Date.now() });
+    };
+    const completeNodeOperation = async (operationId: string, receipt: unknown): Promise<void> => {
+      await persistence.transitionOperation({ operationId, state: "applied", updatedAt: Date.now(), receipt });
+    };
+    const markNodeOperationUnknown = async (operationId: string, error: unknown): Promise<void> => {
+      const message = error instanceof Error ? error.message : String(error);
+      await persistence.transitionOperation({ operationId, state: "unknown", updatedAt: Date.now(), error: message });
+    };
 
     const remainingWallClockMs = (): number => maxWallClockMs === undefined
       ? Number.POSITIVE_INFINITY
@@ -732,6 +746,22 @@ export class WorkflowV2RunExecutor {
           },
         });
       }
+      const llmOperation: WorkflowOperationRecord = {
+        operationId: `operation:${runId}:${request.node.id}:${attempt}:llm`,
+        transactionId: persistence.transactionState.transactionId,
+        runId,
+        nodeId: request.node.id,
+        attempt,
+        kind: "other",
+        target: workflowWorkDir,
+        idempotencyKey: `${persistence.transactionState.transactionId}:${request.node.id}:${attempt}:llm:${createHash("sha256").update(effectivePrompt).digest("hex")}`,
+        state: "planned",
+        reversible: false,
+        requestSummary: { executionMode: request.planNode.executionMode, modelProfile: effectiveTaskPacket.modelProfile },
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      };
+      if (operationLedgerEnabled) await planNodeOperation(llmOperation);
       const completionExecutionId = randomUUID();
       await durableStore?.beginNodeCompletionExecution?.({
         workflowId: workflow.workflowId,
@@ -760,18 +790,24 @@ export class WorkflowV2RunExecutor {
       };
       const previousTelemetry = latestProgress.find((item) => item.nodeId === request.node.id)?.telemetry;
       const telemetry = startNodeAttempt(previousTelemetry, nextTelemetry);
-      const task = await startModelTask(request.node.id, {
-        prompt: effectivePrompt,
-        developerInstructions: effectiveDeveloperInstructions,
-        contextDocument: effectiveContextDocument,
-        workflowNodeExecutionId: completionExecutionId,
-        configuredAgentId: agentRoute.configuredAgentId,
-        modelId: agentRoute.modelId,
-        workDir: workflowWorkDir,
-        ...(recoveryConversation
-          ? { continuationPolicy: "resume-required" as const, runtimeConversation: recoveryConversation }
-          : {}),
-      }, true);
+      let task: TaskRun;
+      try {
+        task = await startModelTask(request.node.id, {
+          prompt: effectivePrompt,
+          developerInstructions: effectiveDeveloperInstructions,
+          contextDocument: effectiveContextDocument,
+          workflowNodeExecutionId: completionExecutionId,
+          configuredAgentId: agentRoute.configuredAgentId,
+          modelId: agentRoute.modelId,
+          workDir: workflowWorkDir,
+          ...(recoveryConversation
+            ? { continuationPolicy: "resume-required" as const, runtimeConversation: recoveryConversation }
+            : {}),
+        }, true);
+      } catch (error) {
+        if (operationLedgerEnabled) await markNodeOperationUnknown(llmOperation.operationId, error);
+        throw error;
+      }
       consumedRecoveryNodeIds.add(request.node.id);
       updateNode(request.node.id, { status: "running", detail: "Task running", taskId: task.id, telemetry });
 
@@ -836,8 +872,10 @@ export class WorkflowV2RunExecutor {
           attempt,
           summary: output.summary,
         });
+        if (operationLedgerEnabled) await completeNodeOperation(llmOperation.operationId, { taskId: completedTask.id, summary: output.summary });
         return output;
       } catch (error) {
+        if (operationLedgerEnabled) await markNodeOperationUnknown(llmOperation.operationId, error);
         const taskForHistory = error instanceof WorkflowV2OneShotInputRequestSignal
           ? error.task
           : [...taskIds]
@@ -917,8 +955,26 @@ export class WorkflowV2RunExecutor {
         inputs: resolvedInput.values,
         ...(approvalGrant ? { approvalGrant } : {}),
       });
+      const attempt = (runtimeAttemptByNodeId.get(request.node.id) ?? 0) + 1;
+      runtimeAttemptByNodeId.set(request.node.id, attempt);
+      const scriptOperation: WorkflowOperationRecord = {
+        operationId: `operation:${runId}:${request.node.id}:${attempt}:script`,
+        transactionId: persistence.transactionState.transactionId,
+        runId,
+        nodeId: request.node.id,
+        attempt,
+        kind: "other",
+        target: workflowWorkDir,
+        idempotencyKey: `${persistence.transactionState.transactionId}:${request.node.id}:${attempt}:script:${operationDigest}`,
+        state: "planned",
+        reversible: false,
+        requestSummary: { operationDigest, capabilities: [...governance.capabilities], risk: permission.risk },
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      };
+      if (operationLedgerEnabled) await planNodeOperation(scriptOperation);
       this.runRegistry.get(runId)?.abortControllerByNodeId?.set(request.node.id, controller);
-      const telemetry: WorkflowRunNodeTelemetry = { attempt: 1, startedAt: Date.now() };
+      const telemetry: WorkflowRunNodeTelemetry = { attempt, startedAt: Date.now() };
       updateNode(request.node.id, { status: "running", detail: "Script running", telemetry });
       let output: WorkflowV2WorkerOutput;
       try {
@@ -943,7 +999,9 @@ export class WorkflowV2RunExecutor {
           node: request.node,
           output,
         });
+        if (operationLedgerEnabled) await completeNodeOperation(scriptOperation.operationId, { summary: output.summary, operationDigest });
       } catch (error) {
+        if (operationLedgerEnabled) await markNodeOperationUnknown(scriptOperation.operationId, error);
         await throwIfWorkflowV2ManuallyPaused(request.node.id);
         throw error;
       } finally {
@@ -952,7 +1010,7 @@ export class WorkflowV2RunExecutor {
       updateNode(request.node.id, { status: "running", detail: output.summary, telemetry: { ...telemetry, finishedAt: Date.now() } }, {
         type: "node_output",
         nodeId: request.node.id,
-        attempt: 1,
+        attempt,
         summary: output.summary,
       });
       return output;

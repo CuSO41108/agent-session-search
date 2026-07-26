@@ -20,6 +20,7 @@ import type { WorkflowNodeConversation } from "../../shared/workflow-v2/conversa
 import { createWorkflowV2RunState } from "../../shared/workflow-v2/state";
 import { WORKFLOW_V2_STORAGE_SCHEMA_VERSION, type WorkflowV2PersistedRunState } from "../../shared/workflow-v2/storage";
 import type { WorkflowV2CostBudget, WorkflowV2Plan, WorkflowV2ResultPacket } from "../../shared/workflow-v2/planning";
+import type { WorkflowOperationRecord } from "../../shared/workflow-v2/transaction";
 import { buildWorkflowV2Plan } from "./v2/workflow-v2-planner";
 import { freezeWorkflowV2ScriptGovernance } from "./v2/workflow-v2-script-governance";
 import { transitionWorkflowV2NodeState } from "./v2/workflow-v2-scheduler";
@@ -538,12 +539,24 @@ describe("WorkflowRuntime script permissions", () => {
     let persistedState!: WorkflowV2PersistedRunState;
     const durableEvents: import("../../shared/workflow-v2/storage").WorkflowV2DurableEvent[] = [];
     const authorizations: ExecuteWorkflowV2ScriptRequest["authorization"][] = [];
+    const operations: WorkflowOperationRecord[] = [];
     const fixture = await workflowV2RuntimeFixture({
       definition,
       store: {
         persistRunState: async (state) => { persistedState = structuredClone(state); },
         appendEvents: async ({ events }) => { durableEvents.push(...structuredClone(events)); },
         readRunState: async () => persistedState,
+        readOperations: async () => structuredClone(operations),
+        planOperation: async ({ record }) => {
+          operations.push(structuredClone(record));
+          return structuredClone(record);
+        },
+        transitionOperation: async ({ operationId, state, updatedAt, receipt, error }) => {
+          const index = operations.findIndex((operation) => operation.operationId === operationId);
+          if (index < 0) throw new Error(`Missing operation ${operationId}`);
+          operations[index] = { ...operations[index]!, state, updatedAt, ...(receipt !== undefined ? { receipt } : {}), ...(error !== undefined ? { error } : {}) };
+          return structuredClone(operations[index]!);
+        },
         readCacheEntry: async () => undefined,
       },
       executeScript: async (request) => {
@@ -565,6 +578,8 @@ describe("WorkflowRuntime script permissions", () => {
     expect(result.ok).toBe(true);
     expect(finished.status).toBe("completed");
     expect(authorizations).toHaveLength(1);
+    expect(operations).toHaveLength(1);
+    expect(operations[0]).toMatchObject({ nodeId: "command", state: "applied", kind: "other" });
     expect(authorizations[0]).toMatchObject({ decision: "allow_once", approvalRequestId: requestId, nodeId: "command", runId: "run-v2-runtime" });
     expect(authorizations[0]?.operationDigest).toBe(progress.intervention?.scriptApproval?.operationDigest);
     expect(durableEvents.some((event) => event.type === "intervention_approve_once")).toBe(true);
@@ -792,6 +807,7 @@ describe("WorkflowRuntime Workflow V2 bridge", () => {
     definition.edges = [];
     const persistedStates: import("../../shared/workflow-v2/storage").WorkflowV2PersistedRunState[] = [];
     const durableEvents: import("../../shared/workflow-v2/storage").WorkflowV2DurableEvent[] = [];
+    const operations: WorkflowOperationRecord[] = [];
     const fixture = await workflowV2RuntimeFixture({
       definition,
       store: {
@@ -800,6 +816,23 @@ describe("WorkflowRuntime Workflow V2 bridge", () => {
         },
         appendEvents: async ({ events }) => {
           durableEvents.push(...structuredClone(events));
+        },
+        readOperations: async () => structuredClone(operations),
+        planOperation: async ({ record }) => {
+          operations.push(structuredClone(record));
+          return structuredClone(record);
+        },
+        transitionOperation: async ({ operationId, state, updatedAt, receipt, error }) => {
+          const index = operations.findIndex((operation) => operation.operationId === operationId);
+          if (index < 0) throw new Error(`Missing operation ${operationId}`);
+          operations[index] = {
+            ...operations[index]!,
+            state,
+            updatedAt,
+            ...(receipt !== undefined ? { receipt } : {}),
+            ...(error !== undefined ? { error } : {}),
+          };
+          return structuredClone(operations[index]!);
         },
       },
       taskFactory: (request, index) => ({
@@ -841,11 +874,25 @@ describe("WorkflowRuntime Workflow V2 bridge", () => {
       risk: { severity: "low" },
       complete: true,
     });
+    expect(persistedStates.at(-1)?.transaction).toMatchObject({
+      mode: "direct",
+      status: "committed",
+      operationCount: 0,
+    });
+    expect(operations).toHaveLength(1);
+    expect(operations[0]).toMatchObject({ nodeId: "draft", state: "applied", kind: "other" });
     expect(durableEvents.map((event) => event.type)).toEqual(expect.arrayContaining([
+      "transaction_started",
+      "operation_planned",
+      "operation_started",
+      "operation_applied",
+      "commit_started",
+      "commit_completed",
       "hooks_beforeExecute",
       "hooks_afterOutput",
       "hooks_afterComplete",
     ]));
+    expect(durableEvents.find((event) => event.type === "transaction_started")?.detail).toContain("predates transaction governance");
   });
 
   test("probes, supervises, and resumes an llm task after its execution lease becomes inactive", async () => {

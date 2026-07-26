@@ -27,7 +27,7 @@ interface WorkflowTransactionPolicy {
 }
 ```
 
-新建 Coding Workflow 默认 `strict_atomic`；旧定义读取时映射为 `direct` 并产生兼容警告。
+完整能力发布后，新建 Coding Workflow 默认 `strict_atomic`；旧定义读取时映射为 `direct` 并产生兼容警告。按照阶段六的灰度顺序，在工作区隔离、外部操作代理和恢复审批尚未就绪时，新建 Workflow 暂时显式使用 `direct`；用户主动配置 `strict_atomic` 或 `controlled` 时必须在运行前失败关闭，不能降级为直接执行。只有阶段六灰度第 7 步完成后才切换新建默认值。
 
 ### 2. Run 事务状态
 

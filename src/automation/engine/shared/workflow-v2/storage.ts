@@ -8,6 +8,7 @@ import type { WorkflowV2RunState } from "./state";
 import type { WorkflowV2ExecutionLeaseState, WorkflowV2ProgressReport } from "./supervision";
 import { isWorkflowV2ProgressReport } from "./supervision";
 import { isWorkflowV2HookJsonValue } from "./hooks";
+import { isWorkflowTransactionState, type WorkflowTransactionState } from "./transaction";
 
 export const WORKFLOW_V2_STORAGE_SCHEMA_VERSION = 1;
 
@@ -17,6 +18,7 @@ export interface WorkflowV2StorageLayout {
   runDir: string;
   runStatePath: string;
   eventLogPath: string;
+  operationLogPath: string;
   cacheDir: string;
 }
 
@@ -77,13 +79,17 @@ export interface WorkflowV2PersistedRunState {
   runState: WorkflowV2RunState;
   workerOutputs: WorkflowV2WorkerOutput[];
   nodeControl: Record<string, WorkflowV2DurableNodeControlState>;
+  /** Optional only for compatibility with runs persisted before transaction governance. */
+  transaction?: WorkflowTransactionState;
 }
 
 export interface WorkflowV2DurableEvent {
   sequence: number;
   workflowId: string;
   runId: string;
+  transactionId?: string;
   nodeId?: string;
+  operationId?: string;
   type: string;
   at: number;
   detail?: string;
@@ -143,6 +149,10 @@ export function isWorkflowV2PersistedRunState(value: unknown): value is Workflow
   if (!isPersistedExecutionState(value.runState, value.workflowId, value.graphVersion)) return false;
   if (!Array.isArray(value.workerOutputs) || !value.workerOutputs.every(isWorkerOutput)) return false;
   if (!isRecord(value.nodeControl)) return false;
+  if (value.transaction !== undefined) {
+    if (!isWorkflowTransactionState(value.transaction)) return false;
+    if (value.transaction.transactionId.trim().length === 0) return false;
+  }
   const nodeIds = new Set(value.runState.nodeOrder);
   return Object.entries(value.nodeControl)
     .every(([nodeId, control]) => nodeIds.has(nodeId) && isDurableNodeControlState(control));

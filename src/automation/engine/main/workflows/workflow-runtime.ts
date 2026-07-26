@@ -64,6 +64,7 @@ import {
 } from "./v2/workflow-v2-recovery";
 import { transitionWorkflowV2NodeState } from "./v2/workflow-v2-scheduler";
 import { createWorkflowV2ScriptApprovalOverride, rejectWorkflowV2ScriptApproval, WorkflowV2ScriptApprovalCoordinator } from "./v2/workflow-v2-script-approval";
+import { workflowTransactionPreflightError } from "../../shared/workflow-v2/transaction";
 
 
 export class WorkflowRuntime {
@@ -369,6 +370,8 @@ export class WorkflowRuntime {
     if (!workflow?.workflowV2Plan || !run || !store?.readRunState) {
       return { ok: false, workflowId: input.workflowId, runId: input.runId, error: "Workflow V2 interactive run state is unavailable." };
     }
+    const transactionError = workflowTransactionPreflightError(workflow.workflowV2Plan.definition.transactionPolicy);
+    if (transactionError) return { ok: false, workflowId: input.workflowId, runId: input.runId, error: transactionError };
     const persisted = await store.readRunState(input.workflowId, input.runId);
     if (!persisted) return { ok: false, workflowId: input.workflowId, runId: input.runId, error: "Workflow V2 durable run state was not found." };
     const nodeState = persisted.runState.nodes[input.nodeId];
@@ -421,6 +424,7 @@ export class WorkflowRuntime {
       initialCheckpoint: checkpoint,
       initialNodeControl: persisted.nodeControl,
       initialDurableEventCount: persisted.eventCount,
+      ...(persisted.transaction ? { initialTransaction: persisted.transaction } : {}),
     }).finally(() => this.runRegistry.release(input.runId));
     return { ok: true, workflowId: input.workflowId, runId: input.runId };
   }
@@ -488,6 +492,8 @@ export class WorkflowRuntime {
     if (!plan) {
       return { ok: false, workflowId: input.workflow.workflowId, runId: input.run.runId, error: "Workflow V2 plan was not found." };
     }
+    const transactionError = workflowTransactionPreflightError(plan.definition.transactionPolicy);
+    if (transactionError) return { ok: false, workflowId: input.workflow.workflowId, runId: input.run.runId, error: transactionError };
     const targetNode = plan.definition.nodes.find((node) => node.id === input.nodeId);
     if (!targetNode) {
       return {
@@ -717,6 +723,7 @@ export class WorkflowRuntime {
       initialCheckpoint: materialized.checkpoint,
       initialNodeControl,
       initialDurableEventCount,
+      ...(persisted.transaction ? { initialTransaction: persisted.transaction } : {}),
       recoveryCheckpoints: materialized.recoveryCheckpoints,
       resumeConversations: materialized.resumeConversations,
       recoveryOverrides,
@@ -757,6 +764,8 @@ export class WorkflowRuntime {
     const run = snapshot.workflowStore.runs.find((item) => item.workflowId === input.workflowId && item.runId === input.runId);
     const store = this.deps.createWorkflowV2Store?.();
     if (!workflow?.workflowV2Plan || !run || !store?.readRunState) return { ok: false, workflowId: input.workflowId, runId: input.runId, error: "Workflow V2 script input state is unavailable." };
+    const transactionError = workflowTransactionPreflightError(workflow.workflowV2Plan.definition.transactionPolicy);
+    if (transactionError) return { ok: false, workflowId: input.workflowId, runId: input.runId, error: transactionError };
     if (run.status !== "waiting_for_user") return { ok: false, workflowId: input.workflowId, runId: input.runId, error: "Workflow run is not waiting for script input." };
     if (this.runRegistry.has(input.runId)) return { ok: false, workflowId: input.workflowId, runId: input.runId, error: "Workflow run is already active." };
     const persisted = await store.readRunState(input.workflowId, input.runId);
@@ -781,7 +790,7 @@ export class WorkflowRuntime {
       return next;
     }), appendEvents: [{ type: "gate_answered", nodeId: input.nodeId, at: submittedAt, answer: JSON.stringify(resolved.auditValues) }], contextDocument: run.contextDocument });
     const storagePlan = workflowStoragePlanFor(input.workflowId, input.runId);
-    void this.runExecutor.execute({ workflow, plan: workflow.workflowV2Plan, runId: input.runId, baseWorkflowContextDocument: run.contextDocument, storagePlanDocument: workflowStoragePlanDocument(storagePlan), initialCheckpoint: { runState, workerOutputs: persisted.workerOutputs }, initialNodeControl: nodeControl, initialDurableEventCount: persisted.eventCount }).finally(() => this.runRegistry.release(input.runId));
+    void this.runExecutor.execute({ workflow, plan: workflow.workflowV2Plan, runId: input.runId, baseWorkflowContextDocument: run.contextDocument, storagePlanDocument: workflowStoragePlanDocument(storagePlan), initialCheckpoint: { runState, workerOutputs: persisted.workerOutputs }, initialNodeControl: nodeControl, initialDurableEventCount: persisted.eventCount, ...(persisted.transaction ? { initialTransaction: persisted.transaction } : {}) }).finally(() => this.runRegistry.release(input.runId));
     return { ok: true, workflowId: input.workflowId, runId: input.runId };
   }
 

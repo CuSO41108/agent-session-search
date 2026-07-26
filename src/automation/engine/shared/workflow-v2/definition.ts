@@ -1,5 +1,7 @@
 import type { WorkflowV2ExecutionLeasePolicy } from "./supervision";
 import type { WorkflowV2HookActionDef, WorkflowV2NodeHooks } from "./hooks";
+import type { WorkflowTransactionPolicy } from "./transaction";
+export type { WorkflowTransactionPolicy } from "./transaction";
 export type {
   WorkflowV2HookActionDef,
   WorkflowV2HookActionKind,
@@ -213,6 +215,8 @@ export interface WorkflowV2Definition {
   objective: string;
   nodes: WorkflowV2Node[];
   edges: WorkflowV2Edge[];
+  /** Missing on legacy definitions, which are normalized to direct mode. */
+  transactionPolicy?: WorkflowTransactionPolicy;
 }
 
 export interface WorkflowV2AuthoredDefinition {
@@ -221,6 +225,7 @@ export interface WorkflowV2AuthoredDefinition {
   objective: string;
   nodes: WorkflowV2AuthoredNode[];
   edges: WorkflowV2Edge[];
+  transactionPolicy?: WorkflowTransactionPolicy;
 }
 
 export interface WorkflowV2ValidationResult {

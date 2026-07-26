@@ -1,6 +1,7 @@
 import { describe, expect, test } from "vitest";
 import { AgentHub } from "./agent-hub";
 import { createWorkflowV2InlineScriptSpec } from "../../shared/workflow-v2/definition";
+import { createStrictWorkflowTransactionPolicy } from "../../shared/workflow-v2/transaction";
 
 describe("AgentHub workflow materialization", () => {
   test("seeds bundled workflows as locked official workflows", () => {
@@ -211,6 +212,27 @@ describe("AgentHub workflow materialization", () => {
     expect(hub.snapshot().workflowStore.workflows.find((item) => item.workflowId === workflowId)?.confirmedRevision).toBeUndefined();
     expect(hub.snapshot().workflowStore.workflows.find((item) => item.workflowId === workflowId)?.workflowV2Plan).toBeUndefined();
     expect(confirmed.confirmedRevision).toBe(confirmed.revision);
+  });
+
+  test("fails closed before creating a run when strict transaction capabilities are unavailable", () => {
+    const hub = new AgentHub();
+    const workflowId = hub.createWorkflowDraft().workflowDraft!.workflowId;
+    const materialized = hub.materializeWorkflowDraft(workflowId, {
+      title: "Strict answer",
+      objective: "Answer safely",
+      definition: {
+        workflowId,
+        graphVersion: 1,
+        objective: "Answer safely",
+        nodes: [{ id: "answer", kind: "answer", title: "Answer", execModel: "llm", executionMode: "one-shot", prompt: "Answer.", outputFields: [{ key: "answer", required: true }] }],
+        edges: [],
+        transactionPolicy: createStrictWorkflowTransactionPolicy(),
+      },
+    });
+    expect(hub.confirmWorkflow({ workflowId, expectedRevision: materialized.revision! })).toMatchObject({ ok: true });
+
+    expect(hub.runWorkflow({ workflowId })).toMatchObject({ ok: false, error: expect.stringContaining("strict_atomic mode is unavailable") });
+    expect(hub.snapshot().workflowStore.runs).toHaveLength(0);
   });
 
   test("derives a new editable revision from a completed frozen workflow", () => {

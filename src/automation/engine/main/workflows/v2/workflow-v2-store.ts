@@ -17,6 +17,15 @@ import {
   type WorkflowV2NodeCompletionSubmissionStatus,
 } from "../../../shared/workflow-v2/completion";
 import type { WorkflowV2WorkerOutput } from "../../../shared/workflow-v2/packets";
+import {
+  WORKFLOW_TRANSACTION_EVENT_TYPES,
+  WorkflowOperationTransitionError,
+  canTransitionWorkflowOperation,
+  isWorkflowOperationRecord,
+  sanitizeWorkflowOperationRecord,
+  type WorkflowOperationRecord,
+  type WorkflowOperationState,
+} from "../../../shared/workflow-v2/transaction";
 
 export class WorkflowV2FileStore {
   private writeChain: Promise<void> = Promise.resolve();
@@ -36,6 +45,7 @@ export class WorkflowV2FileStore {
       runDir,
       runStatePath: path.join(runDir, "state.json"),
       eventLogPath: path.join(runDir, "events.jsonl"),
+      operationLogPath: path.join(runDir, "operations.json"),
       cacheDir: path.join(runDir, "cache"),
     };
   }
@@ -44,7 +54,12 @@ export class WorkflowV2FileStore {
     return this.enqueue(async () => {
       if (!isWorkflowV2PersistedRunState(state)) throw new Error("Workflow V2 persisted run state is malformed.");
       const layout = this.layout(state.workflowId, state.runId);
-      await atomicWriteJson(layout.runStatePath, state);
+      const next = structuredClone(state);
+      if (next.transaction) {
+        const operations = await readOperationRecordsFile(layout.operationLogPath);
+        applyTransactionLedgerState(next.transaction, operations, next.savedAt);
+      }
+      await atomicWriteJson(layout.runStatePath, next);
     });
   }
 
@@ -57,8 +72,135 @@ export class WorkflowV2FileStore {
       if (input.events.length === 0) return;
       const layout = this.layout(input.workflowId, input.runId);
       await mkdir(layout.runDir, { recursive: true });
-      const content = input.events.map((event) => `${stringifyJson(event)}\n`).join("");
-      await appendFile(layout.eventLogPath, content, "utf8");
+      const existing = await readDurableEventsFile(layout.eventLogPath);
+      const bySequence = new Map(existing.map((event) => [event.sequence, event]));
+      let lastSequence = existing.at(-1)?.sequence ?? -1;
+      const pending: WorkflowV2DurableEvent[] = [];
+      for (const event of input.events) {
+        assertDurableEvent(event, input.workflowId, input.runId);
+        const duplicate = bySequence.get(event.sequence);
+        if (duplicate) {
+          if (canonicalJson(duplicate) !== canonicalJson(event)) throw new Error(`Workflow V2 event sequence ${event.sequence} conflicts with durable history.`);
+          continue;
+        }
+        if (event.sequence !== lastSequence + 1) throw new Error(`Workflow V2 event sequence must be monotonic; expected ${lastSequence + 1}, received ${event.sequence}.`);
+        pending.push(structuredClone(event));
+        bySequence.set(event.sequence, event);
+        lastSequence = event.sequence;
+      }
+      if (pending.length > 0) await appendFile(layout.eventLogPath, pending.map((event) => `${stringifyJson(event)}\n`).join(""), "utf8");
+    });
+  }
+
+  planOperation(input: { workflowId: string; record: WorkflowOperationRecord }): Promise<WorkflowOperationRecord> {
+    return this.enqueueValue(async () => {
+      const sanitized = {
+        ...sanitizeWorkflowOperationRecord(input.record),
+        semanticDigest: workflowOperationSemanticDigest(input.record),
+      };
+      if (!isWorkflowOperationRecord(sanitized) || sanitized.state !== "planned") throw new Error("Workflow operation plan is malformed.");
+      await this.assertOperationTransactionIdentity(input.workflowId, sanitized.runId, sanitized.transactionId);
+      const operationPath = this.layout(input.workflowId, sanitized.runId).operationLogPath;
+      const operations = await readOperationRecordsFile(operationPath);
+      const sameId = operations.find((item) => item.operationId === sanitized.operationId);
+      const sameKey = operations.find((item) => item.idempotencyKey === sanitized.idempotencyKey);
+      const existing = sameId ?? sameKey;
+      if (existing) {
+        if (!sameWorkflowOperationPlan(existing, sanitized)) throw new Error(`Workflow operation ${sanitized.operationId} conflicts with its durable semantic identity.`);
+        return structuredClone(existing);
+      }
+      operations.push(sanitized);
+      await atomicWriteJson(operationPath, operations);
+      await this.syncTransactionCounters(input.workflowId, sanitized.runId, operations, sanitized.updatedAt);
+      return structuredClone(sanitized);
+    });
+  }
+
+  transitionOperation(input: {
+    workflowId: string;
+    runId: string;
+    operationId: string;
+    state: WorkflowOperationState;
+    updatedAt: number;
+    receipt?: unknown;
+    error?: string;
+  }): Promise<WorkflowOperationRecord> {
+    return this.enqueueValue(async () => {
+      const layout = this.layout(input.workflowId, input.runId);
+      const operations = await readOperationRecordsFile(layout.operationLogPath);
+      const index = operations.findIndex((item) => item.operationId === input.operationId);
+      if (index < 0) throw new Error(`Workflow operation ${input.operationId} was not found.`);
+      const current = operations[index]!;
+      if (current.runId !== input.runId) throw new Error(`Workflow operation ${input.operationId} run identity does not match its storage location.`);
+      await this.assertOperationTransactionIdentity(input.workflowId, input.runId, current.transactionId);
+      if (input.updatedAt < current.updatedAt) throw new Error(`Workflow operation ${input.operationId} updatedAt must not move backwards.`);
+      if (!canTransitionWorkflowOperation(current.state, input.state)) {
+        throw new WorkflowOperationTransitionError(input.operationId, current.state, input.state);
+      }
+      if (current.state === input.state) return structuredClone(current);
+      const next = sanitizeWorkflowOperationRecord({
+        ...current,
+        state: input.state,
+        updatedAt: input.updatedAt,
+        ...(input.receipt !== undefined ? { receipt: input.receipt } : {}),
+        ...(input.error !== undefined ? { error: input.error } : {}),
+      });
+      if (!isWorkflowOperationRecord(next)) throw new Error(`Workflow operation ${input.operationId} transition is malformed.`);
+      operations[index] = next;
+      await atomicWriteJson(layout.operationLogPath, operations);
+      await this.syncTransactionCounters(input.workflowId, input.runId, operations, input.updatedAt);
+      return structuredClone(next);
+    });
+  }
+
+  async readOperations(workflowId: string, runId: string): Promise<WorkflowOperationRecord[]> {
+    await this.writeChain;
+    return structuredClone(await readOperationRecordsFile(this.layout(workflowId, runId).operationLogPath));
+  }
+
+  resolveUnknownOperation(input: {
+    workflowId: string;
+    runId: string;
+    operationId: string;
+    verifiedState: "applied" | "compensated";
+    actor: string;
+    reason: string;
+    updatedAt: number;
+    evidence?: unknown;
+  }): Promise<WorkflowOperationRecord> {
+    return this.enqueueValue(async () => {
+      if (!input.actor.trim() || !input.reason.trim()) throw new Error("Workflow unknown operation resolution requires actor and reason.");
+      const layout = this.layout(input.workflowId, input.runId);
+      const operations = await readOperationRecordsFile(layout.operationLogPath);
+      const index = operations.findIndex((item) => item.operationId === input.operationId);
+      if (index < 0) throw new Error(`Workflow operation ${input.operationId} was not found.`);
+      const current = operations[index]!;
+      if (current.runId !== input.runId) throw new Error(`Workflow operation ${input.operationId} run identity does not match its storage location.`);
+      await this.assertOperationTransactionIdentity(input.workflowId, input.runId, current.transactionId);
+      if (current.state !== "unknown") throw new Error(`Workflow operation ${input.operationId} is not awaiting unknown-state resolution.`);
+      if (input.verifiedState === "compensated" && !current.reversible) throw new Error(`Workflow operation ${input.operationId} is irreversible and cannot be marked compensated.`);
+      if (input.updatedAt < current.updatedAt) throw new Error(`Workflow operation ${input.operationId} updatedAt must not move backwards.`);
+      const next = sanitizeWorkflowOperationRecord({
+        ...current,
+        state: input.verifiedState,
+        updatedAt: input.updatedAt,
+        receipt: {
+          ...(current.receipt !== undefined ? { originalReceipt: current.receipt } : {}),
+          recoveryResolution: {
+            actor: input.actor,
+            reason: input.reason,
+            verifiedState: input.verifiedState,
+            resolvedAt: input.updatedAt,
+            ...(input.evidence !== undefined ? { evidence: input.evidence } : {}),
+          },
+        },
+      });
+      if (!isWorkflowOperationRecord(next)) throw new Error(`Workflow operation ${input.operationId} resolution is malformed.`);
+      operations[index] = next;
+      await atomicWriteJson(layout.operationLogPath, operations);
+      await this.syncTransactionCounters(input.workflowId, input.runId, operations, input.updatedAt, true);
+      await this.appendResolvedOperationEvent(input.workflowId, input.runId, next);
+      return structuredClone(next);
     });
   }
 
@@ -74,6 +216,7 @@ export class WorkflowV2FileStore {
   }
 
   async readRunState(workflowId: string, runId: string): Promise<WorkflowV2PersistedRunState | undefined> {
+    await this.writeChain;
     const layout = this.layout(workflowId, runId);
     const content = await readOptionalFile(layout.runStatePath);
     if (content === undefined) return undefined;
@@ -81,17 +224,15 @@ export class WorkflowV2FileStore {
     if (!isWorkflowV2PersistedRunState(parsed)) {
       throw new Error(`Workflow V2 run state ${runId} is malformed or uses an unsupported schema.`);
     }
+    const durableEventCount = (await readDurableEventsFile(layout.eventLogPath)).length;
+    parsed.eventCount = Math.max(parsed.eventCount, durableEventCount);
     return structuredClone(parsed);
   }
 
   async readEvents(workflowId: string, runId: string): Promise<WorkflowV2DurableEvent[]> {
+    await this.writeChain;
     const layout = this.layout(workflowId, runId);
-    const content = await readOptionalFile(layout.eventLogPath);
-    if (content === undefined || !content.trim()) return [];
-    return content
-      .split("\n")
-      .filter((line) => line.trim())
-      .map((line, index) => parseDurableEvent(line, index + 1));
+    return readDurableEventsFile(layout.eventLogPath);
   }
 
   async readCacheEntry(
@@ -233,6 +374,67 @@ export class WorkflowV2FileStore {
     return structuredClone(parsed);
   }
 
+  private async syncTransactionCounters(
+    workflowId: string,
+    runId: string,
+    operations: readonly WorkflowOperationRecord[],
+    updatedAt: number,
+    clearResolvedRecovery = false,
+  ): Promise<void> {
+    const statePath = this.layout(workflowId, runId).runStatePath;
+    const content = await readOptionalFile(statePath);
+    if (content === undefined) return;
+    const parsed = parseJson(content, `Workflow V2 run state ${runId}`);
+    if (!isWorkflowV2PersistedRunState(parsed)) throw new Error(`Workflow V2 run state ${runId} is malformed or uses an unsupported schema.`);
+    if (!parsed.transaction) return;
+    if (operations.some((operation) => operation.transactionId !== parsed.transaction!.transactionId)) {
+      throw new Error("Workflow operation ledger transaction identity does not match the persisted run.");
+    }
+    const previousStatus = parsed.transaction.status;
+    applyTransactionLedgerState(parsed.transaction, operations, updatedAt);
+    if (clearResolvedRecovery && previousStatus === "recovery_required" && parsed.transaction.unknownOperationCount === 0) {
+      parsed.transaction.status = "waiting_for_user";
+    }
+    parsed.savedAt = Math.max(parsed.savedAt, updatedAt);
+    await atomicWriteJson(statePath, parsed);
+  }
+
+  private async assertOperationTransactionIdentity(workflowId: string, runId: string, transactionId: string): Promise<void> {
+    const statePath = this.layout(workflowId, runId).runStatePath;
+    const content = await readOptionalFile(statePath);
+    if (content === undefined) throw new Error(`Workflow V2 run state ${runId} must be persisted before planning operations.`);
+    const parsed = parseJson(content, `Workflow V2 run state ${runId}`);
+    if (!isWorkflowV2PersistedRunState(parsed)) throw new Error(`Workflow V2 run state ${runId} is malformed or uses an unsupported schema.`);
+    if (!parsed.transaction || parsed.transaction.transactionId !== transactionId) {
+      throw new Error("Workflow operation transaction identity does not match the persisted run.");
+    }
+  }
+
+  private async appendResolvedOperationEvent(workflowId: string, runId: string, operation: WorkflowOperationRecord): Promise<void> {
+    const layout = this.layout(workflowId, runId);
+    const existing = await readDurableEventsFile(layout.eventLogPath);
+    const event: WorkflowV2DurableEvent = {
+      sequence: existing.length,
+      workflowId,
+      runId,
+      transactionId: operation.transactionId,
+      nodeId: operation.nodeId,
+      operationId: operation.operationId,
+      type: operation.state === "compensated" ? "compensation_completed" : "operation_applied",
+      at: operation.updatedAt,
+      detail: `Unknown operation manually resolved as ${operation.state}.`,
+    };
+    assertDurableEvent(event, workflowId, runId);
+    await mkdir(layout.runDir, { recursive: true });
+    await appendFile(layout.eventLogPath, `${stringifyJson(event)}\n`, "utf8");
+    const stateContent = await readOptionalFile(layout.runStatePath);
+    if (stateContent === undefined) return;
+    const state = parseJson(stateContent, `Workflow V2 run state ${runId}`);
+    if (!isWorkflowV2PersistedRunState(state)) throw new Error(`Workflow V2 run state ${runId} is malformed or uses an unsupported schema.`);
+    state.eventCount = Math.max(state.eventCount, event.sequence + 1);
+    await atomicWriteJson(layout.runStatePath, state);
+  }
+
   private enqueue(operation: () => Promise<void>): Promise<void> {
     return this.enqueueValue(operation);
   }
@@ -324,6 +526,80 @@ function parseDurableEvent(line: string, lineNumber: number): WorkflowV2DurableE
     throw new Error(`Workflow V2 event line ${lineNumber} has an invalid timestamp.`);
   }
   return structuredClone(value) as unknown as WorkflowV2DurableEvent;
+}
+
+function sameWorkflowOperationPlan(left: WorkflowOperationRecord, right: WorkflowOperationRecord): boolean {
+  return left.semanticDigest === right.semanticDigest;
+}
+
+function workflowOperationSemanticDigest(record: WorkflowOperationRecord): string {
+  return createHash("sha256").update(canonicalJson({
+    transactionId: record.transactionId,
+    runId: record.runId,
+    nodeId: record.nodeId,
+    attempt: record.attempt,
+    kind: record.kind,
+    target: record.target,
+    idempotencyKey: record.idempotencyKey,
+    reversible: record.reversible,
+    compensationAdapter: record.compensationAdapter ?? null,
+    requestSummary: record.requestSummary ?? null,
+  })).digest("hex");
+}
+
+function applyTransactionLedgerState(
+  transaction: NonNullable<WorkflowV2PersistedRunState["transaction"]>,
+  operations: readonly WorkflowOperationRecord[],
+  updatedAt: number,
+): void {
+  if (operations.some((operation) => operation.transactionId !== transaction.transactionId)) {
+    throw new Error("Workflow operation ledger transaction identity does not match the persisted run.");
+  }
+  transaction.operationCount = operations.length;
+  transaction.unknownOperationCount = operations.filter((operation) => operation.state === "unknown").length;
+  transaction.irreversibleOperationCount = operations.filter((operation) => !operation.reversible && operation.state !== "compensated").length;
+  transaction.updatedAt = Math.max(transaction.updatedAt, updatedAt);
+  if (transaction.unknownOperationCount > 0) transaction.status = "recovery_required";
+  transaction.retentionUntil = Math.max(transaction.retentionUntil, transaction.updatedAt);
+}
+
+async function readDurableEventsFile(filePath: string): Promise<WorkflowV2DurableEvent[]> {
+  const content = await readOptionalFile(filePath);
+  if (content === undefined || !content.trim()) return [];
+  const events = content.split("\n").filter((line) => line.trim()).map((line, index) => parseDurableEvent(line, index + 1));
+  for (let index = 0; index < events.length; index += 1) {
+    if (events[index]!.sequence !== index) throw new Error(`Workflow V2 durable event history is not monotonic at sequence ${events[index]!.sequence}.`);
+  }
+
+  return events;
+}
+
+async function readOperationRecordsFile(filePath: string): Promise<WorkflowOperationRecord[]> {
+  const content = await readOptionalFile(filePath);
+  if (content === undefined || !content.trim()) return [];
+  const parsed = parseJson(content, "Workflow operation ledger");
+  if (!Array.isArray(parsed) || !parsed.every(isWorkflowOperationRecord)) throw new Error("Workflow operation ledger is malformed.");
+  const operationIds = new Set<string>();
+  const idempotencyKeys = new Set<string>();
+  for (const operation of parsed) {
+    if (operationIds.has(operation.operationId) || idempotencyKeys.has(operation.idempotencyKey)) throw new Error("Workflow operation ledger contains duplicate identities.");
+    operationIds.add(operation.operationId);
+    idempotencyKeys.add(operation.idempotencyKey);
+  }
+  return structuredClone(parsed);
+}
+
+function assertDurableEvent(event: WorkflowV2DurableEvent, workflowId: string, runId: string): void {
+  if (event.workflowId !== workflowId || event.runId !== runId) throw new Error("Workflow V2 event identity does not match its storage location.");
+  if (!Number.isSafeInteger(event.sequence) || event.sequence < 0 || !event.type.trim() || !Number.isFinite(event.at) || event.at < 0) {
+    throw new Error("Workflow V2 durable event is malformed.");
+  }
+  if ((WORKFLOW_TRANSACTION_EVENT_TYPES as readonly string[]).includes(event.type)) {
+    if (!event.transactionId?.trim()) throw new Error(`Workflow transaction event ${event.type} requires transactionId.`);
+    if (event.type.startsWith("operation_") && (!event.operationId?.trim() || !event.nodeId?.trim())) {
+      throw new Error(`Workflow transaction event ${event.type} requires operationId and nodeId.`);
+    }
+  }
 }
 
 function assertSafeSegment(value: string, label: string): void {

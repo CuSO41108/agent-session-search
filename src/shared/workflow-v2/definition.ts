@@ -57,6 +57,21 @@ export type WorkflowV2ValidationOutcome = "pass" | "retry" | "fail" | "ask_human
 export type WorkflowV2TemplateParamValue = string | number | boolean | string[] | number[] | boolean[];
 export type WorkflowV2OutputArtifactFormat = "markdown" | "text" | "json" | "html" | "csv";
 
+export interface WorkflowTransactionPolicy {
+  defaultMode: "strict_atomic" | "controlled" | "direct";
+  approvalMode: "batch" | "per_operation" | "user_choice";
+  checkpoints: Array<{
+    id: string;
+    title: string;
+    afterNodeIds: string[];
+    kind: "savepoint" | "commit";
+    approval: "automatic" | "required";
+  }>;
+  retentionDays: number;
+  onUnknown: "pause";
+  onConflict: "user_or_manager";
+}
+
 export interface WorkflowV2OutputArtifactDef {
   format: WorkflowV2OutputArtifactFormat;
   fileName?: string;
@@ -217,6 +232,8 @@ export interface WorkflowV2Definition {
   objective: string;
   nodes: WorkflowV2Node[];
   edges: WorkflowV2Edge[];
+  /** Missing on legacy definitions, which are normalized to direct mode. */
+  transactionPolicy?: WorkflowTransactionPolicy;
 }
 
 export interface WorkflowV2AuthoredDefinition {
@@ -225,6 +242,7 @@ export interface WorkflowV2AuthoredDefinition {
   objective: string;
   nodes: WorkflowV2AuthoredNode[];
   edges: WorkflowV2Edge[];
+  transactionPolicy?: WorkflowTransactionPolicy;
 }
 
 export interface WorkflowV2ValidationResult {

@@ -18,6 +18,7 @@ import type {
   WorkflowV2DurableEvent,
   WorkflowV2PersistedRunState,
 } from "../../shared/workflow-v2/storage";
+import type { WorkflowOperationRecord, WorkflowOperationState } from "../../shared/workflow-v2/transaction";
 
 export interface WorkflowRunStateUpdate {
   workflowId: string;
@@ -47,6 +48,27 @@ export interface WorkflowV2StorePort {
     runId: string;
     events: readonly WorkflowV2DurableEvent[];
   }) => Promise<void>;
+  planOperation?: (input: { workflowId: string; record: WorkflowOperationRecord }) => Promise<WorkflowOperationRecord>;
+  transitionOperation?: (input: {
+    workflowId: string;
+    runId: string;
+    operationId: string;
+    state: WorkflowOperationState;
+    updatedAt: number;
+    receipt?: unknown;
+    error?: string;
+  }) => Promise<WorkflowOperationRecord>;
+  readOperations?: (workflowId: string, runId: string) => Promise<WorkflowOperationRecord[]>;
+  resolveUnknownOperation?: (input: {
+    workflowId: string;
+    runId: string;
+    operationId: string;
+    verifiedState: "applied" | "compensated";
+    actor: string;
+    reason: string;
+    updatedAt: number;
+    evidence?: unknown;
+  }) => Promise<WorkflowOperationRecord>;
   persistCacheEntry?: (entry: WorkflowV2CacheEntryMetadata) => Promise<void>;
   readRunState?: (workflowId: string, runId: string) => Promise<WorkflowV2PersistedRunState | undefined>;
   readCacheEntry?: (
