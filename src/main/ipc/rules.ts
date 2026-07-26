@@ -8,7 +8,7 @@ export interface RulesIpcService {
   uploadAll(): Promise<{ uploaded: number; skipped: number }>;
   deleteRemote(remoteId: string): Promise<boolean>;
   copySetupSql(): void;
-  restoreGlobal(): Promise<RestoreResult>;
+  restore(): Promise<RestoreResult>;
 }
 
 export function registerRulesIpc(ipc: IpcMainRegistrar, service: RulesIpcService): () => void {
@@ -18,6 +18,6 @@ export function registerRulesIpc(ipc: IpcMainRegistrar, service: RulesIpcService
     registerIpcHandler(ipc, RULES_IPC.uploadAll, () => service.uploadAll()),
     registerIpcHandler(ipc, RULES_IPC.deleteRemote, (_event, id) => service.deleteRemote(id)),
     registerIpcHandler(ipc, RULES_IPC.copySetupSql, () => service.copySetupSql()),
-    registerIpcHandler(ipc, RULES_IPC.restoreGlobal, () => service.restoreGlobal()),
+    registerIpcHandler(ipc, RULES_IPC.restore, () => service.restore()),
   ]);
 }

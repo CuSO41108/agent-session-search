@@ -121,7 +121,7 @@ import {
   type SessionSyncHookSetup,
 } from "./services/remote-session-service";
 import { buildMemoriesSyncSetupSql, memoryIdentity, scanLocalMemories, SupabaseMemoriesSyncClient } from "../core/memories-sync";
-import { buildRulesSyncSetupSql, restoreGlobalRules, ruleIdentity, scanLocalRules, SupabaseRulesSyncClient } from "../core/rules-sync";
+import { buildRulesSyncSetupSql, restoreRules, ruleIdentity, scanLocalRules, SupabaseRulesSyncClient } from "../core/rules-sync";
 import { SkillService, type SkillUsageHookSetup } from "./services/skill-service";
 import type {
   EnvironmentUpsertInput,
@@ -388,10 +388,10 @@ function createRulesSyncService(): RulesIpcService {
     copySetupSql() {
       clipboard.writeText(buildRulesSyncSetupSql());
     },
-    async restoreGlobal() {
+    async restore() {
       const client = createClient();
       const remoteRules = await client.listRemoteRules();
-      return restoreGlobalRules(remoteRules);
+      return restoreRules(remoteRules, { projectDirs: projectDirs() });
     },
   };
 }
