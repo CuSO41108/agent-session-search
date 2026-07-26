@@ -1790,20 +1790,10 @@ export class SessionsStore {
       const rows = this.db
         .prepare(
           `
-          WITH matching AS (
-            SELECT session_key, message_index, role, content, timestamp
-            FROM messages
-            WHERE session_key IN (${keyPlaceholders})
-              AND (${termPredicates})
-          ), ranked AS (
-            SELECT *,
-              COUNT(*) OVER (PARTITION BY session_key) AS match_count,
-              ROW_NUMBER() OVER (PARTITION BY session_key ORDER BY message_index) AS match_rank
-            FROM matching
-          )
-          SELECT session_key, message_index, role, content, timestamp, match_count
-          FROM ranked
-          WHERE match_rank <= 2
+          SELECT session_key, message_index, role, content, timestamp
+          FROM messages
+          WHERE session_key IN (${keyPlaceholders})
+            AND (${termPredicates})
           ORDER BY session_key, message_index
         `,
         )
@@ -1813,22 +1803,41 @@ export class SessionsStore {
         role: SessionMessage["role"];
         content: string;
         timestamp: string;
-        match_count: number;
       }>;
       const sessionsByKey = new Map(sessions.map((session) => [session.sessionKey, session]));
+      const rowsBySession = new Map<string, Array<(typeof rows)[number] & { matchedTerms: string[]; rank: number; snippet: string }>>();
+      const phrase = normalizedSearchPhrase(query);
       for (const row of rows) {
         const session = sessionsByKey.get(row.session_key);
         if (!session) continue;
         const matchedTerms = terms.filter((term) => row.content.toLocaleLowerCase().includes(term));
-        const hit: SessionMatchHit = {
-          messageIndex: row.message_index,
-          role: row.role,
-          timestamp: row.timestamp,
-          snippet: messageMatchSnippet(row.content, matchedTerms),
-          matchedTerms,
+        if (matchedTerms.length === 0) continue;
+        const ranked = {
+          ...row,
+          matchedTerms: phraseMatched(row.content, phrase) ? [phrase, ...matchedTerms.filter((term) => term !== phrase)] : matchedTerms,
+          rank: messageMatchRank(row.content, terms, phrase),
+          snippet: messageMatchSnippet(row.content, terms, phrase),
         };
-        session.matchHits?.push(hit);
-        session.messageMatchCount = row.match_count;
+        const group = rowsBySession.get(row.session_key);
+        if (group) group.push(ranked);
+        else rowsBySession.set(row.session_key, [ranked]);
+      }
+
+      for (const [sessionKey, sessionRows] of rowsBySession) {
+        const session = sessionsByKey.get(sessionKey);
+        if (!session) continue;
+        session.messageMatchCount = sessionRows.length;
+        sessionRows.sort((a, b) => b.rank - a.rank || b.matchedTerms.length - a.matchedTerms.length || a.message_index - b.message_index);
+        for (const row of sessionRows.slice(0, 2)) {
+          const hit: SessionMatchHit = {
+            messageIndex: row.message_index,
+            role: row.role,
+            timestamp: row.timestamp,
+            snippet: row.snippet,
+            matchedTerms: row.matchedTerms,
+          };
+          session.matchHits?.push(hit);
+        }
       }
     } catch {
       // Structured context is supplementary; never fail the primary search.
@@ -2167,10 +2176,29 @@ function allTermsIn(value: string, terms: string[]): boolean {
   return terms.every((term) => normalized.includes(term));
 }
 
-function messageMatchSnippet(content: string, terms: string[]): string {
+function normalizedSearchPhrase(query: string): string {
+  return query.replace(/\s+/gu, " ").trim().toLocaleLowerCase();
+}
+
+function normalizedSearchContent(content: string): string {
+  return content.replace(/\s+/gu, " ").trim().toLocaleLowerCase();
+}
+
+function phraseMatched(content: string, phrase: string): boolean {
+  return phrase.length > 0 && normalizedSearchContent(content).includes(phrase);
+}
+
+function messageMatchRank(content: string, terms: string[], phrase: string): number {
+  if (phraseMatched(content, phrase)) return 3;
+  const lower = content.toLocaleLowerCase();
+  if (terms.length > 0 && terms.every((term) => lower.includes(term))) return 2;
+  return 1;
+}
+
+function messageMatchSnippet(content: string, terms: string[], phrase = ""): string {
   const normalized = content.replace(/\s+/g, " ").trim();
   const lower = normalized.toLocaleLowerCase();
-  const positions = terms.map((term) => lower.indexOf(term)).filter((index) => index >= 0);
+  const positions = [phrase, ...terms].map((term) => term ? lower.indexOf(term) : -1).filter((index) => index >= 0);
   const firstMatch = positions.length > 0 ? Math.min(...positions) : 0;
   const start = Math.max(0, firstMatch - 70);
   const end = Math.min(normalized.length, firstMatch + 170);
