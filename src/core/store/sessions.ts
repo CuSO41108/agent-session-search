@@ -1787,57 +1787,71 @@ export class SessionsStore {
       const sessionKeys = sessions.map((session) => session.sessionKey);
       const keyPlaceholders = sessionKeys.map(() => "?").join(", ");
       const termPredicates = terms.map(() => "lower(messages.content) LIKE ? ESCAPE '\\'").join(" OR ");
+      const phrase = normalizedSearchPhrase(query);
+      const termPatterns = terms.map((term) => `%${escapeLike(term)}%`);
+      const phrasePattern = `%${escapeLike(phrase)}%`;
+      const normalizedSqlContent = "lower(replace(replace(replace(messages.content, char(13), ' '), char(10), ' '), char(9), ' '))";
+      const phrasePredicate = `${normalizedSqlContent} LIKE ? ESCAPE '\\'`;
+      const allTermsPredicate = terms.map(() => "lower(messages.content) LIKE ? ESCAPE '\\'").join(" AND ");
+      const matchedTermCount = terms
+        .map(() => "CASE WHEN lower(messages.content) LIKE ? ESCAPE '\\' THEN 1 ELSE 0 END")
+        .join(" + ");
+      const matchRank = `CASE WHEN ${phrasePredicate} THEN 3 WHEN ${allTermsPredicate} THEN 2 ELSE 1 END`;
       const rows = this.db
         .prepare(
           `
-          SELECT session_key, message_index, role, content, timestamp
-          FROM messages
-          WHERE session_key IN (${keyPlaceholders})
-            AND (${termPredicates})
-          ORDER BY session_key, message_index
+          WITH matching AS (
+            SELECT session_key, message_index, role, content, timestamp,
+              ${matchRank} AS match_rank,
+              ${matchedTermCount} AS matched_term_count
+            FROM messages
+            WHERE session_key IN (${keyPlaceholders})
+              AND (${termPredicates})
+          ), ranked AS (
+            SELECT *,
+              COUNT(*) OVER (PARTITION BY session_key) AS match_count,
+              ROW_NUMBER() OVER (
+                PARTITION BY session_key
+                ORDER BY match_rank DESC, matched_term_count DESC, message_index ASC
+              ) AS match_order
+            FROM matching
+          )
+          SELECT session_key, message_index, role, content, timestamp, match_count
+          FROM ranked
+          WHERE match_order <= 2
+          ORDER BY session_key, match_order
         `,
         )
-        .all(...sessionKeys, ...terms.map((term) => `%${escapeLike(term)}%`)) as Array<{
+        .all(
+          phrasePattern,
+          ...termPatterns,
+          ...termPatterns,
+          ...sessionKeys,
+          ...termPatterns,
+        ) as Array<{
         session_key: string;
         message_index: number;
         role: SessionMessage["role"];
         content: string;
         timestamp: string;
+        match_count: number;
       }>;
       const sessionsByKey = new Map(sessions.map((session) => [session.sessionKey, session]));
-      const rowsBySession = new Map<string, Array<(typeof rows)[number] & { matchedTerms: string[]; rank: number; snippet: string }>>();
-      const phrase = normalizedSearchPhrase(query);
       for (const row of rows) {
         const session = sessionsByKey.get(row.session_key);
         if (!session) continue;
         const matchedTerms = terms.filter((term) => row.content.toLocaleLowerCase().includes(term));
         if (matchedTerms.length === 0) continue;
-        const ranked = {
-          ...row,
-          matchedTerms: phraseMatched(row.content, phrase) ? [phrase, ...matchedTerms.filter((term) => term !== phrase)] : matchedTerms,
-          rank: messageMatchRank(row.content, terms, phrase),
+        const hasPhraseMatch = phraseMatched(row.content, phrase);
+        const hit: SessionMatchHit = {
+          messageIndex: row.message_index,
+          role: row.role,
+          timestamp: row.timestamp,
           snippet: messageMatchSnippet(row.content, terms, phrase),
+          matchedTerms: hasPhraseMatch ? [phrase, ...matchedTerms.filter((term) => term !== phrase)] : matchedTerms,
         };
-        const group = rowsBySession.get(row.session_key);
-        if (group) group.push(ranked);
-        else rowsBySession.set(row.session_key, [ranked]);
-      }
-
-      for (const [sessionKey, sessionRows] of rowsBySession) {
-        const session = sessionsByKey.get(sessionKey);
-        if (!session) continue;
-        session.messageMatchCount = sessionRows.length;
-        sessionRows.sort((a, b) => b.rank - a.rank || b.matchedTerms.length - a.matchedTerms.length || a.message_index - b.message_index);
-        for (const row of sessionRows.slice(0, 2)) {
-          const hit: SessionMatchHit = {
-            messageIndex: row.message_index,
-            role: row.role,
-            timestamp: row.timestamp,
-            snippet: row.snippet,
-            matchedTerms: row.matchedTerms,
-          };
-          session.matchHits?.push(hit);
-        }
+        session.matchHits?.push(hit);
+        session.messageMatchCount = row.match_count;
       }
     } catch {
       // Structured context is supplementary; never fail the primary search.
@@ -2186,13 +2200,6 @@ function normalizedSearchContent(content: string): string {
 
 function phraseMatched(content: string, phrase: string): boolean {
   return phrase.length > 0 && normalizedSearchContent(content).includes(phrase);
-}
-
-function messageMatchRank(content: string, terms: string[], phrase: string): number {
-  if (phraseMatched(content, phrase)) return 3;
-  const lower = content.toLocaleLowerCase();
-  if (terms.length > 0 && terms.every((term) => lower.includes(term))) return 2;
-  return 1;
 }
 
 function messageMatchSnippet(content: string, terms: string[], phrase = ""): string {

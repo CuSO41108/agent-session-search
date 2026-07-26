@@ -29,6 +29,11 @@ function sessionPayload(mtimeMs: number, size: number): RemoteSessionFilePayload
         timestamp: "2026-07-26T10:01:00Z",
         payload: { type: "message", role: "user", content: [{ type: "input_text", text: "background WSL indexing" }] },
       }),
+      JSON.stringify({
+        type: "response_item",
+        timestamp: "2026-07-26T10:02:00Z",
+        payload: { type: "function_call", name: "shell", arguments: JSON.stringify({ command: "pwd" }), call_id: "call-1" },
+      }),
     ].join("\n"),
   };
 }
@@ -59,13 +64,17 @@ describe("WslSessionIndexer", () => {
     const indexer = new WslSessionIndexer({
       store,
       fetchSessionFile,
-      loadSession: loadWslSessionDetailPayload,
+      loadSession: (currentEnvironment, payload, summary) =>
+        loadWslSessionDetailPayload(currentEnvironment, payload, summary, { includeTraceEvents: true }),
     });
 
     try {
       await indexer.request(environment);
       expect(fetchSessionFile).toHaveBeenCalledTimes(1);
       expect(store.searchSessions({ query: "background WSL" })).toHaveLength(1);
+      expect(store.getTraceEvents(session.sessionKey)).toEqual([
+        expect.objectContaining({ kind: "tool_call", title: "shell · pwd", callId: "call-1" }),
+      ]);
 
       await indexer.request(environment);
       expect(fetchSessionFile).toHaveBeenCalledTimes(1);
