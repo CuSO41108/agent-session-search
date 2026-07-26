@@ -13,6 +13,7 @@ import {
   updateWorkflowRunState,
 } from "./agent-hub-workflow-run-state";
 import { workflowTransactionPreflightError } from "../../../shared/workflow-v2/transaction";
+import { workflowV2WorkspaceIsolationPlanError } from "../../workflows/v2/workflow-v2-workspace-transaction";
 
 export class WorkflowRunStateService {
   constructor(private readonly deps: {
@@ -21,6 +22,7 @@ export class WorkflowRunStateService {
     cloneDraft: (draft: WorkflowDraftState) => WorkflowDraftState;
     clearDraftRequest: (workflowId: string) => void;
     changed: () => void;
+    transactionCapabilities?: () => { workspaceIsolation?: boolean; externalOperationBroker?: boolean };
   }) {}
 
   start(input: StartWorkflowRunRequest): WorkflowOperationResult {
@@ -33,8 +35,10 @@ export class WorkflowRunStateService {
     if (workflow.confirmedRevision !== workflow.revision) {
       return { ok: false, workflowId: workflow.workflowId, revision: workflow.revision, error: "Workflow must be confirmed before starting a run." };
     }
-    const transactionError = workflowTransactionPreflightError(workflow.workflowV2Plan.definition.transactionPolicy);
+    const transactionError = workflowTransactionPreflightError(workflow.workflowV2Plan.definition.transactionPolicy, this.deps.transactionCapabilities?.());
     if (transactionError) return { ok: false, workflowId: workflow.workflowId, revision: workflow.revision, error: transactionError };
+    const workspaceError = workflowV2WorkspaceIsolationPlanError(workflow.workflowV2Plan);
+    if (workspaceError) return { ok: false, workflowId: workflow.workflowId, revision: workflow.revision, error: workspaceError };
     this.deps.clearDraftRequest(workflow.workflowId);
     const runId = this.deps.createRunId();
     const next = startWorkflowRunState({ workflow, request: input, runId, cloneDraft: this.deps.cloneDraft });

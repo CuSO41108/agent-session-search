@@ -43,6 +43,7 @@ export class WorkflowV2RunPersistence {
     configuredAgents: Array<{ id: string; modelId: string }>;
     recoveryOverrides?: ReadonlyMap<string, WorkflowV2RecoveryOverride>;
     initialTransaction?: WorkflowTransactionState;
+    baselineId?: string;
   }) {
     this.eventCount = input.initialEventCount;
     this.previousRunState = input.initialCheckpoint ? structuredClone(input.initialCheckpoint.runState) : undefined;
@@ -55,7 +56,7 @@ export class WorkflowV2RunPersistence {
       transactionId: `transaction:${input.workflow.workflowId}:${input.runId}`,
       mode: policy.defaultMode,
       status: "active",
-      baselineId: `baseline-pending:${input.runId}`,
+      baselineId: input.baselineId ?? `baseline-pending:${input.runId}`,
       operationCount: 0,
       unknownOperationCount: 0,
       irreversibleOperationCount: 0,
@@ -75,6 +76,33 @@ export class WorkflowV2RunPersistence {
 
   appendEvents(events: Array<Omit<WorkflowV2DurableEvent, "sequence" | "workflowId" | "runId">>): Promise<void> {
     return this.enqueueWrite(() => this.appendEventsUnlocked(events));
+  }
+
+  initializeWorkspaceTransaction(baselineId: string): Promise<void> {
+    return this.enqueueWrite(async () => {
+      this.transaction.baselineId = baselineId;
+      await this.ensureTransactionStartedUnlocked();
+      const now = Date.now();
+      await this.appendEventsUnlocked([
+        { type: "baseline_frozen", transactionId: this.transaction.transactionId, at: now, detail: `baselineId=${baselineId}` },
+        { type: "preflight_passed", transactionId: this.transaction.transactionId, at: now, detail: "Isolated workspace is ready." },
+      ]);
+    });
+  }
+
+  recordSavepoint(savepointId: string, nodeId: string, attempt: number): Promise<void> {
+    return this.enqueueWrite(async () => {
+      this.transaction.currentSavepointId = savepointId;
+      this.transaction.updatedAt = Date.now();
+      await this.appendEventsUnlocked([{
+        type: "savepoint_created",
+        transactionId: this.transaction.transactionId,
+        nodeId,
+        at: this.transaction.updatedAt,
+        detail: `savepointId=${savepointId}; attempt=${attempt}`,
+      }]);
+      if (this.latest) await this.persistCheckpointUnlocked(this.latest, false);
+    });
   }
 
   private async appendEventsUnlocked(events: Array<Omit<WorkflowV2DurableEvent, "sequence" | "workflowId" | "runId">>): Promise<void> {
@@ -98,25 +126,38 @@ export class WorkflowV2RunPersistence {
     return this.enqueueWrite(() => this.persistCheckpointUnlocked(snapshot));
   }
 
-  private async persistCheckpointUnlocked(checkpoint: ExecuteWorkflowV2Checkpoint): Promise<void> {
+  transitionTransaction(
+    status: WorkflowTransactionState["status"],
+    event?: { type: string; detail?: string },
+  ): Promise<void> {
+    return this.enqueueWrite(async () => {
+      await this.reloadTransactionState();
+      const now = Date.now();
+      this.transaction.status = status;
+      this.transaction.updatedAt = now;
+      if (event) {
+        await this.appendEventsUnlocked([{
+          type: event.type,
+          transactionId: this.transaction.transactionId,
+          at: now,
+          ...(event.detail ? { detail: event.detail } : {}),
+        }]);
+      }
+      if (this.latest) await this.persistCheckpointUnlocked(this.latest, false);
+    });
+  }
+
+  private async persistCheckpointUnlocked(checkpoint: ExecuteWorkflowV2Checkpoint, reloadTransaction = true): Promise<void> {
     this.latest = structuredClone(checkpoint);
     if (!this.input.store) return;
-    if (this.input.store.readRunState) {
+    if (reloadTransaction && this.input.store.readRunState) {
       const durable = await this.input.store.readRunState(this.input.workflow.workflowId, this.input.runId);
       if (durable?.transaction?.transactionId === this.transaction.transactionId) {
         this.transaction = structuredClone(durable.transaction);
         this.eventCount = Math.max(this.eventCount, durable.eventCount);
       }
     }
-    if (!this.transactionStartRecorded) {
-      await this.appendEventsUnlocked([{
-        type: "transaction_started",
-        transactionId: this.transaction.transactionId,
-        at: this.transaction.startedAt,
-        detail: [`mode=${this.transaction.mode}`, this.compatibilityWarning].filter(Boolean).join("; "),
-      }]);
-      this.transactionStartRecorded = true;
-    }
+    await this.ensureTransactionStartedUnlocked();
     const transitionEvents = checkpoint.runState.nodeOrder.flatMap((nodeId) => {
       const current = checkpoint.runState.nodes[nodeId];
       const previous = this.previousRunState?.nodes[nodeId];
@@ -280,6 +321,17 @@ export class WorkflowV2RunPersistence {
       this.transaction = structuredClone(durable.transaction);
       this.eventCount = Math.max(this.eventCount, durable.eventCount);
     }
+  }
+
+  private async ensureTransactionStartedUnlocked(): Promise<void> {
+    if (this.transactionStartRecorded) return;
+    await this.appendEventsUnlocked([{
+      type: "transaction_started",
+      transactionId: this.transaction.transactionId,
+      at: this.transaction.startedAt,
+      detail: [`mode=${this.transaction.mode}`, this.compatibilityWarning].filter(Boolean).join("; "),
+    }]);
+    this.transactionStartRecorded = true;
   }
 
   private enqueueWrite<T>(operation: () => Promise<T>): Promise<T> {

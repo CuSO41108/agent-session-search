@@ -370,7 +370,7 @@ export class WorkflowRuntime {
     if (!workflow?.workflowV2Plan || !run || !store?.readRunState) {
       return { ok: false, workflowId: input.workflowId, runId: input.runId, error: "Workflow V2 interactive run state is unavailable." };
     }
-    const transactionError = workflowTransactionPreflightError(workflow.workflowV2Plan.definition.transactionPolicy);
+    const transactionError = workflowTransactionPreflightError(workflow.workflowV2Plan.definition.transactionPolicy, { workspaceIsolation: Boolean(store.prepareWorkspaceTransaction) });
     if (transactionError) return { ok: false, workflowId: input.workflowId, runId: input.runId, error: transactionError };
     const persisted = await store.readRunState(input.workflowId, input.runId);
     if (!persisted) return { ok: false, workflowId: input.workflowId, runId: input.runId, error: "Workflow V2 durable run state was not found." };
@@ -492,7 +492,7 @@ export class WorkflowRuntime {
     if (!plan) {
       return { ok: false, workflowId: input.workflow.workflowId, runId: input.run.runId, error: "Workflow V2 plan was not found." };
     }
-    const transactionError = workflowTransactionPreflightError(plan.definition.transactionPolicy);
+    const transactionError = workflowTransactionPreflightError(plan.definition.transactionPolicy, { workspaceIsolation: Boolean(store?.prepareWorkspaceTransaction) });
     if (transactionError) return { ok: false, workflowId: input.workflow.workflowId, runId: input.run.runId, error: transactionError };
     const targetNode = plan.definition.nodes.find((node) => node.id === input.nodeId);
     if (!targetNode) {
@@ -764,7 +764,7 @@ export class WorkflowRuntime {
     const run = snapshot.workflowStore.runs.find((item) => item.workflowId === input.workflowId && item.runId === input.runId);
     const store = this.deps.createWorkflowV2Store?.();
     if (!workflow?.workflowV2Plan || !run || !store?.readRunState) return { ok: false, workflowId: input.workflowId, runId: input.runId, error: "Workflow V2 script input state is unavailable." };
-    const transactionError = workflowTransactionPreflightError(workflow.workflowV2Plan.definition.transactionPolicy);
+    const transactionError = workflowTransactionPreflightError(workflow.workflowV2Plan.definition.transactionPolicy, { workspaceIsolation: Boolean(store.prepareWorkspaceTransaction) });
     if (transactionError) return { ok: false, workflowId: input.workflowId, runId: input.runId, error: transactionError };
     if (run.status !== "waiting_for_user") return { ok: false, workflowId: input.workflowId, runId: input.runId, error: "Workflow run is not waiting for script input." };
     if (this.runRegistry.has(input.runId)) return { ok: false, workflowId: input.workflowId, runId: input.runId, error: "Workflow run is already active." };

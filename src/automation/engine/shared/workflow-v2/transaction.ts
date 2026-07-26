@@ -57,13 +57,20 @@ export function resolveWorkflowTransactionPolicy(policy: WorkflowTransactionPoli
   };
 }
 
-export function workflowTransactionPreflightError(policy: WorkflowTransactionPolicy | undefined): string | undefined {
+export function workflowTransactionPreflightError(
+  policy: WorkflowTransactionPolicy | undefined,
+  capabilities: { workspaceIsolation?: boolean; externalOperationBroker?: boolean } = {},
+): string | undefined {
   const mode = resolveWorkflowTransactionPolicy(policy).policy.defaultMode;
   if (mode === "direct") return undefined;
   if (mode === "strict_atomic") {
-    return "Workflow strict_atomic mode is unavailable until workspace isolation and transactional preflight are installed. Choose direct mode or complete the transaction runtime setup.";
+    return capabilities.workspaceIsolation
+      ? undefined
+      : "Workflow strict_atomic mode is unavailable until workspace isolation and transactional preflight are installed. Choose direct mode or complete the transaction runtime setup.";
   }
-  return "Workflow controlled mode is unavailable until the external operation broker and recovery approval flow are installed. Choose direct mode or complete the transaction runtime setup.";
+  return capabilities.externalOperationBroker
+    ? undefined
+    : "Workflow controlled mode is unavailable until the external operation broker and recovery approval flow are installed. Choose direct mode or complete the transaction runtime setup.";
 }
 
 export function workflowTransactionPolicyValidationErrors(

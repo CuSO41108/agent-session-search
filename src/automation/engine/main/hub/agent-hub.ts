@@ -492,6 +492,7 @@ export class AgentHub {
       cloneDraft: (draft) => this.cloneWorkflowDraft(draft),
       clearDraftRequest: (workflowId) => this.activeWorkflowDraftRequests.delete(workflowId),
       changed: () => this.emitWorkflow(),
+      transactionCapabilities: () => ({ workspaceIsolation: Boolean(this.storagePath) }),
     });
     this.workflowContextService = new WorkflowContextService({
       store: this.workflowStore,

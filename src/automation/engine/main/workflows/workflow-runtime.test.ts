@@ -1,4 +1,5 @@
 import { describe, expect, test, vi } from "vitest";
+import path from "node:path";
 import type {
   AppSnapshot,
   FinishWorkflowRunRequest,
@@ -20,7 +21,7 @@ import type { WorkflowNodeConversation } from "../../shared/workflow-v2/conversa
 import { createWorkflowV2RunState } from "../../shared/workflow-v2/state";
 import { WORKFLOW_V2_STORAGE_SCHEMA_VERSION, type WorkflowV2PersistedRunState } from "../../shared/workflow-v2/storage";
 import type { WorkflowV2CostBudget, WorkflowV2Plan, WorkflowV2ResultPacket } from "../../shared/workflow-v2/planning";
-import type { WorkflowOperationRecord } from "../../shared/workflow-v2/transaction";
+import { createStrictWorkflowTransactionPolicy, type WorkflowOperationRecord } from "../../shared/workflow-v2/transaction";
 import { buildWorkflowV2Plan } from "./v2/workflow-v2-planner";
 import { freezeWorkflowV2ScriptGovernance } from "./v2/workflow-v2-script-governance";
 import { transitionWorkflowV2NodeState } from "./v2/workflow-v2-scheduler";
@@ -263,6 +264,7 @@ async function workflowV2RuntimeFixture(input: {
   runtime: WorkflowRuntime;
   workflow: WorkflowDraftState;
   taskRequests: RunTaskRequest[];
+  approvalPolicies: Array<{ allowedFileWriteRoot: string } | undefined>;
   updates: Array<{ status?: "running" | "waiting_for_user"; progress?: WorkflowRunProgressItem[]; appendEvents?: WorkflowEvent[] }>;
   startRequests: string[];
   stopTaskIds: string[];
@@ -307,6 +309,7 @@ async function workflowV2RuntimeFixture(input: {
     updatedAt: 1,
   } satisfies WorkflowDraftState;
   const taskRequests: RunTaskRequest[] = [];
+  const approvalPolicies: Array<{ allowedFileWriteRoot: string } | undefined> = [];
   const updates: Array<{ status?: "running" | "waiting_for_user"; progress?: WorkflowRunProgressItem[]; appendEvents?: WorkflowEvent[] }> = [];
   const startRequests: string[] = [];
   const stopTaskIds: string[] = [];
@@ -341,8 +344,9 @@ async function workflowV2RuntimeFixture(input: {
         ...(request.appendEvents ? { appendEvents: structuredClone(request.appendEvents) } : {}),
       });
     },
-    runTask: async (request) => {
+    runTask: async (request, approvalPolicy) => {
       taskRequests.push(request);
+      approvalPolicies.push(approvalPolicy);
       const task = input.taskFactory?.(request, taskRequests.length) ?? ({
         id: `task-${taskRequests.length}`,
         title: "Workflow V2 LLM node",
@@ -387,6 +391,7 @@ async function workflowV2RuntimeFixture(input: {
     runtime,
     workflow,
     taskRequests,
+    approvalPolicies,
     updates,
     startRequests,
     stopTaskIds,
@@ -893,6 +898,66 @@ describe("WorkflowRuntime Workflow V2 bridge", () => {
       "hooks_afterComplete",
     ]));
     expect(durableEvents.find((event) => event.type === "transaction_started")?.detail).toContain("predates transaction governance");
+  });
+
+  test("runs strict atomic nodes in an isolated workspace and commits only after completion", async () => {
+    const definition = workflowV2Definition();
+    definition.nodes = [definition.nodes[0]!];
+    if (definition.nodes[0]?.execModel !== "llm") throw new Error("test requires an llm node");
+    definition.nodes[0].maxRetry = 1;
+    definition.edges = [];
+    definition.transactionPolicy = createStrictWorkflowTransactionPolicy();
+    const persistedStates: WorkflowV2PersistedRunState[] = [];
+    const durableEvents: import("../../shared/workflow-v2/storage").WorkflowV2DurableEvent[] = [];
+    const calls: string[] = [];
+    const isolatedDir = "C:/transaction/run-v2-runtime/workspace";
+    const fixture = await workflowV2RuntimeFixture({
+      definition,
+      store: {
+        persistRunState: async (state) => { persistedStates.push(structuredClone(state)); },
+        appendEvents: async ({ events }) => { durableEvents.push(...structuredClone(events)); },
+        prepareWorkspaceTransaction: async ({ workflowId, runId, sourceDir, baselineId }) => {
+          calls.push("prepare");
+          return {
+            baselineId,
+            workspaceDir: isolatedDir,
+            reused: false,
+            manifest: { schemaVersion: 1, workflowId, runId, sourceDir, baselineId, createdAt: 1, files: [], excluded: [] },
+          };
+        },
+        createWorkspaceSavepoint: async () => { calls.push("savepoint"); },
+        restoreWorkspaceSavepoint: async () => { calls.push("restore"); },
+        commitWorkspaceTransaction: async () => { calls.push("commit"); return { applied: ["result.txt"], conflicts: [] }; },
+      },
+      taskFactory: (request, index) => ({
+        id: `task-${index}`,
+        title: "Strict workspace worker",
+        status: "completed",
+        prompt: request.prompt,
+        configuredAgentId: request.configuredAgentId,
+        messages: [{ role: "assistant", content: JSON.stringify({
+          nodeId: "draft",
+          summary: index === 1 ? "Incomplete attempt" : "Retry completed",
+          outputs: index === 1 ? {} : { draft: "done" },
+          evidence: [],
+          proposals: [],
+        }) }],
+        createdAt: index,
+        updatedAt: index,
+      } as TaskRun),
+      executeScript: async () => { throw new Error("script runner should not be called"); },
+    });
+
+    fixture.runtime.runWorkflow({ workflowId: fixture.workflow.workflowId });
+    const finished = await fixture.finished;
+
+    expect(finished.status).toBe("completed");
+    expect(fixture.taskRequests[0]?.workDir).toBe(isolatedDir);
+    expect(fixture.approvalPolicies[0]?.allowedFileWriteRoot).toBe(path.resolve(isolatedDir));
+    expect(fixture.taskRequests).toHaveLength(2);
+    expect(calls).toEqual(["prepare", "savepoint", "restore", "savepoint", "commit"]);
+    expect(persistedStates.at(-1)?.transaction).toMatchObject({ mode: "strict_atomic", status: "committed", baselineId: `baseline:${definition.workflowId}:run-v2-runtime` });
+    expect(durableEvents.map((event) => event.type)).toEqual(expect.arrayContaining(["transaction_started", "commit_started", "commit_completed"]));
   });
 
   test("probes, supervises, and resumes an llm task after its execution lease becomes inactive", async () => {

@@ -9,12 +9,16 @@ export function runWorkflowV2TaskWithOutputPolicy(input: {
   workDir: string;
   request: RunTaskRequest;
   allowOutputWrite: boolean;
+  allowedFileWriteRoot?: string;
   runTask: (request: RunTaskRequest, approvalPolicy?: { allowedFileWriteRoot: string }) => Promise<AppSnapshot>;
 }): Promise<AppSnapshot> {
-  const allowedFileWriteRoot = path.resolve(
-    input.workDir,
-    workflowStoragePlanFor(input.workflowId, input.runId).outputDir,
-  );
+  const allowedFileWriteRoot = input.allowedFileWriteRoot
+    ? path.resolve(input.allowedFileWriteRoot)
+    : path.resolve(input.workDir, workflowStoragePlanFor(input.workflowId, input.runId).outputDir);
+  const relativeToWorkDir = path.relative(path.resolve(input.workDir), allowedFileWriteRoot);
+  if (relativeToWorkDir.startsWith("..") || path.isAbsolute(relativeToWorkDir)) {
+    throw new Error("Workflow V2 file-write approval root escapes its governed work directory.");
+  }
   if (input.allowOutputWrite) mkdirSync(allowedFileWriteRoot, { recursive: true });
   return input.runTask(
     input.request,

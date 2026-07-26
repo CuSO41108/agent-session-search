@@ -19,6 +19,7 @@ describe("workflow transaction contracts", () => {
     expect(createDirectWorkflowTransactionPolicy().defaultMode).toBe("direct");
     expect(workflowTransactionPreflightError(undefined)).toBeUndefined();
     expect(workflowTransactionPreflightError(createStrictWorkflowTransactionPolicy())).toContain("workspace isolation");
+    expect(workflowTransactionPreflightError(createStrictWorkflowTransactionPolicy(), { workspaceIsolation: true })).toBeUndefined();
     expect(workflowTransactionPreflightError({ ...createDirectWorkflowTransactionPolicy(), defaultMode: "controlled" })).toContain("operation broker");
     expect(isWorkflowTransactionState({
       transactionId: "transaction-1",

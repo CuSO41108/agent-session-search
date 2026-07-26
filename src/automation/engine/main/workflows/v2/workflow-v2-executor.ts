@@ -62,6 +62,7 @@ export interface ExecuteWorkflowV2PlanInput {
     node: WorkflowV2Node;
     output?: WorkflowV2WorkerOutput;
   }) => Promise<void>;
+  beforeNodeExecute?: (input: { node: WorkflowV2Node; attempt: number }) => Promise<void>;
   onNodeStateTransition?: (input: WorkflowV2NodeStateTransitionEvent) => void;
   onRunCheckpoint?: (input: ExecuteWorkflowV2Checkpoint) => Promise<void>;
   now?: () => number;
@@ -156,13 +157,15 @@ export async function executeWorkflowV2Plan(input: ExecuteWorkflowV2PlanInput): 
     if (input.onRunCheckpoint) await checkpoint();
 
     const settledBatch = await Promise.allSettled(
-      batch.map(({ node, planNode, upstreamOutputs }) => executeWorkflowV2Node({
+      batch.map(({ nodeId, node, planNode, upstreamOutputs }) => executeWorkflowV2Node({
         node,
         planNode,
         upstreamOutputs,
+        attempt: runState.nodes[nodeId]!.attempt,
         runLlmNode: input.runLlmNode,
         executeScript: input.executeScript,
         runNodeHooks: input.runNodeHooks,
+        beforeNodeExecute: input.beforeNodeExecute,
       })),
     );
 
@@ -510,10 +513,13 @@ async function executeWorkflowV2Node(input: {
   node: WorkflowV2Node;
   planNode: WorkflowV2PlanNode;
   upstreamOutputs: readonly WorkflowV2ResultPacket[];
+  attempt: number;
   runLlmNode: ExecuteWorkflowV2PlanInput["runLlmNode"];
   executeScript: ExecuteWorkflowV2PlanInput["executeScript"];
   runNodeHooks: ExecuteWorkflowV2PlanInput["runNodeHooks"];
+  beforeNodeExecute: ExecuteWorkflowV2PlanInput["beforeNodeExecute"];
 }): Promise<WorkflowV2WorkerOutput> {
+  if (input.beforeNodeExecute) await input.beforeNodeExecute({ node: input.node, attempt: input.attempt });
   await input.runNodeHooks?.({ lifecycle: "beforeExecute", node: input.node });
   let output: WorkflowV2WorkerOutput;
   if (input.node.execModel === "llm") {

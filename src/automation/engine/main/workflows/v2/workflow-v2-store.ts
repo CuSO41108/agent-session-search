@@ -18,6 +18,11 @@ import {
 } from "../../../shared/workflow-v2/completion";
 import type { WorkflowV2WorkerOutput } from "../../../shared/workflow-v2/packets";
 import {
+  WorkflowV2WorkspaceTransaction,
+  type WorkflowWorkspaceCommitResult,
+  type WorkflowWorkspacePreparation,
+} from "./workflow-v2-workspace-transaction";
+import {
   WORKFLOW_TRANSACTION_EVENT_TYPES,
   WorkflowOperationTransitionError,
   canTransitionWorkflowOperation,
@@ -90,6 +95,26 @@ export class WorkflowV2FileStore {
       }
       if (pending.length > 0) await appendFile(layout.eventLogPath, pending.map((event) => `${stringifyJson(event)}\n`).join(""), "utf8");
     });
+  }
+
+  prepareWorkspaceTransaction(input: { workflowId: string; runId: string; sourceDir: string; baselineId: string; now?: number }): Promise<WorkflowWorkspacePreparation> {
+    return this.enqueueValue(() => this.workspaceTransaction(input.workflowId, input.runId).prepare(input));
+  }
+
+  createWorkspaceSavepoint(input: { workflowId: string; runId: string; savepointId: string; nodeId: string; attempt: number; now?: number }): Promise<void> {
+    return this.enqueueValue(() => this.workspaceTransaction(input.workflowId, input.runId).createSavepoint(input));
+  }
+
+  restoreWorkspaceSavepoint(input: { workflowId: string; runId: string; savepointId: string }): Promise<void> {
+    return this.enqueueValue(() => this.workspaceTransaction(input.workflowId, input.runId).restoreSavepoint(input.savepointId));
+  }
+
+  commitWorkspaceTransaction(input: { workflowId: string; runId: string }): Promise<WorkflowWorkspaceCommitResult> {
+    return this.enqueueValue(() => this.workspaceTransaction(input.workflowId, input.runId).commit());
+  }
+
+  discardWorkspaceTransaction(input: { workflowId: string; runId: string }): Promise<void> {
+    return this.enqueueValue(() => this.workspaceTransaction(input.workflowId, input.runId).discard());
   }
 
   planOperation(input: { workflowId: string; record: WorkflowOperationRecord }): Promise<WorkflowOperationRecord> {
@@ -444,6 +469,10 @@ export class WorkflowV2FileStore {
     this.writeChain = pending.then(() => undefined, () => undefined);
     return pending;
   }
+
+  private workspaceTransaction(workflowId: string, runId: string): WorkflowV2WorkspaceTransaction {
+    return new WorkflowV2WorkspaceTransaction(path.join(this.layout(workflowId, runId).runDir, "transaction-workspace"));
+  }
 }
 
 function completionDigest(output: WorkflowV2WorkerOutput): string {
@@ -555,6 +584,7 @@ function applyTransactionLedgerState(
   if (operations.some((operation) => operation.transactionId !== transaction.transactionId)) {
     throw new Error("Workflow operation ledger transaction identity does not match the persisted run.");
   }
+
   transaction.operationCount = operations.length;
   transaction.unknownOperationCount = operations.filter((operation) => operation.state === "unknown").length;
   transaction.irreversibleOperationCount = operations.filter((operation) => !operation.reversible && operation.state !== "compensated").length;
