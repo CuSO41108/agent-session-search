@@ -174,6 +174,7 @@ export async function executeWorkflowV2Plan(input: ExecuteWorkflowV2PlanInput): 
       const settledNode = settledBatch[index]!;
 
       if (settledNode.status === "rejected") {
+        const attempt = runState.nodes[nodeId]!.attempt;
         if (settledNode.reason instanceof WorkflowV2HookSignal) {
           if (settledNode.reason.action === "skip") {
             recordSkippedOutput(settledNode.reason.reason);
@@ -192,8 +193,7 @@ export async function executeWorkflowV2Plan(input: ExecuteWorkflowV2PlanInput): 
         }
         if (settledNode.reason instanceof WorkflowV2SupervisionSignal) {
           const signal = settledNode.reason;
-          const attempt = runState.nodes[nodeId]!.attempt;
-          if (signal.resolution.action === "retry" && attempt <= (node.execModel === "llm" ? node.maxRetry ?? 0 : 0)) {
+          if (signal.resolution.action === "retry" && attempt <= (node.maxRetry ?? 0)) {
             runState = transitionWorkflowV2NodeState(runState, {
               nodeId,
               status: "ready",
@@ -232,6 +232,34 @@ export async function executeWorkflowV2Plan(input: ExecuteWorkflowV2PlanInput): 
               error: signal.resolution.reason,
               intervention,
             });
+            input.onNodeStateTransition?.({ nodeId, status: "paused", intervention });
+            continue;
+          }
+        }
+        if (node.execModel === "script") {
+          const errorMessage = settledNode.reason instanceof Error ? settledNode.reason.message : String(settledNode.reason);
+          if (node.onError === "retry" && node.script?.idempotency === "non_idempotent") {
+            const intervention = createIntervention(
+              nodeId,
+              "validation",
+              `${errorMessage} Automatic retry is disabled for non-idempotent script effects.`,
+              now(),
+            );
+            runState = transitionWorkflowV2NodeState(runState, { nodeId, status: "paused", now: now(), error: errorMessage, intervention });
+            input.onNodeStateTransition?.({ nodeId, status: "paused", intervention });
+            continue;
+          }
+          if (node.onError === "retry" && attempt <= (node.maxRetry ?? 0)) {
+            runState = transitionWorkflowV2NodeState(runState, { nodeId, status: "ready", now: now(), error: errorMessage });
+            continue;
+          }
+          if (node.onError === "skip") {
+            recordSkippedOutput(errorMessage);
+            continue;
+          }
+          if (node.onError === "ask_human") {
+            const intervention = createIntervention(nodeId, "validation", errorMessage, now());
+            runState = transitionWorkflowV2NodeState(runState, { nodeId, status: "paused", now: now(), error: errorMessage, intervention });
             input.onNodeStateTransition?.({ nodeId, status: "paused", intervention });
             continue;
           }
@@ -632,7 +660,7 @@ function requiresSemanticReview(node: WorkflowV2Node, forced = false): boolean {
 }
 
 function exhaustedPolicyFor(node: WorkflowV2Node): "fail" | "skip" | "ask_human" {
-  return node.execModel === "llm" ? node.onExhausted ?? "fail" : node.onError ?? "fail";
+  return node.execModel === "llm" ? node.onExhausted ?? "fail" : node.onError === "retry" ? "fail" : node.onError ?? "fail";
 }
 
 function reviewRetryPolicyFor(node: WorkflowV2Node, attempt: number): WorkflowV2ReviewRetryPolicy {

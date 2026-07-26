@@ -974,6 +974,8 @@ describe("WorkflowRuntime Workflow V2 bridge", () => {
   test("probes, supervises, and resumes an llm task after its execution lease becomes inactive", async () => {
     const definition = workflowV2Definition();
     const draftNode = definition.nodes[0]!;
+    if (draftNode.execModel !== "llm") throw new Error("test requires an llm node");
+    draftNode.requiredTools = ["publish"];
     draftNode.executionLease = {
       inactivityTimeoutMs: 5,
       softTimeoutMs: 50,
@@ -1046,12 +1048,21 @@ describe("WorkflowRuntime Workflow V2 bridge", () => {
             status: "completed",
             running: false,
             runtimeConversation: conversation("progress-thread"),
-            messages: [{ role: "assistant", content: JSON.stringify({
-              nodeId: "draft",
-              summary: "Draft completed after supervised continuation",
-              outputs: { draft: "const resumed = true;" },
-              proposals: [],
-            }) }],
+            messages: [{
+              id: "continued-message",
+              role: "assistant",
+              timestamp: Date.now(),
+              content: JSON.stringify({
+                nodeId: "draft",
+                summary: "Draft completed after supervised continuation",
+                outputs: { draft: "const resumed = true;" },
+                proposals: [],
+              }),
+              events: [
+                { id: "publish-call-2", type: "tool_call", name: "publish", content: "{}", timestamp: Date.now(), metadata: { id: "publish-2" } },
+                { id: "publish-result-2", type: "tool_result", name: "publish", content: "published", timestamp: Date.now(), metadata: { id: "publish-2", status: "completed" } },
+              ],
+            }],
           } as TaskRun;
         }
         return {
@@ -1059,7 +1070,16 @@ describe("WorkflowRuntime Workflow V2 bridge", () => {
           status: "running",
           running: true,
           runtimeConversation: conversation("initial-thread"),
-          messages: [{ role: "assistant", content: "partial implementation" }],
+          messages: [{
+            id: "initial-message",
+            role: "assistant",
+            content: "partial implementation",
+            timestamp: Date.now(),
+            events: [
+              { id: "publish-call-1", type: "tool_call", name: "publish", content: "{}", timestamp: Date.now(), metadata: { id: "publish-1" } },
+              { id: "publish-result-1", type: "tool_result", name: "publish", content: "failed", timestamp: Date.now(), metadata: { id: "publish-1", status: "failed" } },
+            ],
+          }],
         } as TaskRun;
       },
       executeScript: async () => {
@@ -1089,6 +1109,15 @@ describe("WorkflowRuntime Workflow V2 bridge", () => {
       { taskId: "task-3", preserveRuntimeConversation: false },
       { taskId: "task-4", preserveRuntimeConversation: false },
     ]);
+    const completed = fixture.updates.flatMap((update) => update.appendEvents ?? []).find((event) => event.type === "node_completed");
+    expect((completed as WorkflowEvent & { acceptance?: unknown })?.acceptance).toMatchObject({
+      outcome: "degraded",
+      issues: [expect.objectContaining({ code: "tool_retry_recovered" })],
+    });
+    const progressUpdates = fixture.updates.flatMap((update) => update.progress ?? []);
+    const archivedProgress = [...progressUpdates].reverse().find((item: WorkflowRunProgressItem) => item.nodeId === "draft");
+    const archivedMessages = archivedProgress?.messages ?? [];
+    expect(archivedMessages.filter((message) => message.eventType === "tool_result").map((message) => message.content)).toEqual(expect.arrayContaining(["failed", "published"]));
   });
 
   test("pauses with durable recovery context when a progress probe does not respond", async () => {
@@ -1417,6 +1446,7 @@ describe("WorkflowRuntime Workflow V2 bridge", () => {
           idempotencyKey: "already-applied",
           state: "applied",
           reversible: false,
+          receipt: { status: "applied" },
           createdAt: 1_150,
           updatedAt: 1_160,
         }],

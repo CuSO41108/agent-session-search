@@ -105,6 +105,16 @@ describe("workflow-v2 validation", () => {
     expect(validateWorkflowV2Definition(definition).errors).not.toEqual(expect.arrayContaining([expect.stringContaining("must declare")]));
   });
 
+  test("requires a bounded retry budget for script retry policy", () => {
+    const definition = validDefinition();
+    const script = definition.nodes[1];
+    if (script?.execModel !== "script") throw new Error("expected script fixture");
+    script.onError = "retry";
+    expect(validateWorkflowV2Definition(definition).errors).toContain("Workflow V2 script node apply must declare maxRetry when onError is retry.");
+    script.maxRetry = 1;
+    expect(validateWorkflowV2Definition(definition).errors).not.toContain("Workflow V2 script node apply must declare maxRetry when onError is retry.");
+  });
+
   test("rejects definitions with multiple terminal nodes", () => {
     const invalid = validDefinition();
     invalid.edges = [];

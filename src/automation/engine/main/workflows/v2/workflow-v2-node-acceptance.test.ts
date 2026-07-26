@@ -58,4 +58,34 @@ describe("inspectWorkflowV2AgentCompletion", () => {
       issues: expect.arrayContaining([expect.objectContaining({ code: "tool_result_status_unknown" })]),
     });
   });
+
+  test("accepts a stable runtime-specific tool-call ID alias", () => {
+    const aliasedMessages = messages([
+      { id: "call-1", type: "tool_call", name: "publish" },
+      { id: "call-1", type: "tool_result", name: "publish", status: "completed" },
+    ]).map((message) => ({ ...message, events: message.events.map((event) => ({ ...event, metadata: { toolCallId: event.id, ...(event.metadata.status ? { status: event.metadata.status } : {}) } })) }));
+    expect(inspectWorkflowV2AgentCompletion({ node, messages: aliasedMessages })).toMatchObject({ outcome: "clean" });
+  });
+
+  test("rejects non-terminal operations and applied operations without receipts", () => {
+    const base = {
+      transactionId: "transaction", runId: "run", nodeId: "agent", attempt: 1, kind: "http" as const,
+      target: "service", reversible: false, createdAt: 1, updatedAt: 1,
+    };
+    const report = inspectWorkflowV2AgentCompletion({
+      node: { ...node, requiredTools: [] },
+      messages: [],
+      operations: [
+        { ...base, operationId: "planned", idempotencyKey: "planned", state: "planned" },
+        { ...base, operationId: "missing-receipt", idempotencyKey: "missing-receipt", state: "applied" },
+      ],
+    });
+    expect(report).toMatchObject({
+      outcome: "rejected",
+      issues: expect.arrayContaining([
+        expect.objectContaining({ code: "operation_not_applied" }),
+        expect.objectContaining({ code: "operation_receipt_missing" }),
+      ]),
+    });
+  });
 });

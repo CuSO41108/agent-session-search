@@ -23,6 +23,8 @@ const VALID_SCRIPT_RISKS = new Set(["safe", "read", "write", "dangerous"]);
 const VALID_SCRIPT_EFFECT_MODES = new Set(["pure", "workspace_only", "brokered_external"]);
 const VALID_SCRIPT_IDEMPOTENCY = new Set(["safe_retry", "keyed", "non_idempotent"]);
 const VALID_SCRIPT_STDERR_POLICIES = new Set(["ignore", "warn", "fail"]);
+const VALID_SCRIPT_ERROR_POLICIES = new Set(["fail", "skip", "ask_human", "retry"]);
+const VALID_EXHAUSTED_POLICIES = new Set(["fail", "skip", "ask_human"]);
 const VALID_SUMMARY_FALLBACK_POLICIES = new Set(["truncate", "summarize", "ask_human"]);
 const VALID_MODEL_PROFILES = new Set(["fast", "balanced", "expert"]);
 const VALID_NODE_ROLES = new Set(["orchestrator", "executor", "reviewer"]);
@@ -182,6 +184,7 @@ function appendNodeValidationErrors(node: WorkflowV2Node, errors: string[]): voi
     if (node.maxRetry !== undefined && !isNonNegativeSafeInteger(node.maxRetry)) {
       errors.push(`Workflow V2 llm node ${node.id} must have a non-negative safe-integer maxRetry.`);
     }
+    if (node.onExhausted !== undefined && !VALID_EXHAUSTED_POLICIES.has(node.onExhausted)) errors.push(`Workflow V2 llm node ${node.id} has an invalid onExhausted policy.`);
     if (node.contextBudget && !isValidWorkflowV2ContextBudget(node.contextBudget)) {
       errors.push(`Workflow V2 llm node ${node.id} has an invalid context budget.`);
     }
@@ -216,6 +219,9 @@ function appendNodeValidationErrors(node: WorkflowV2Node, errors: string[]): voi
     if (node.script.effectMode !== undefined && !VALID_SCRIPT_EFFECT_MODES.has(node.script.effectMode)) errors.push(`Workflow V2 script node ${node.id} has an invalid effectMode.`);
     if (node.script.idempotency !== undefined && !VALID_SCRIPT_IDEMPOTENCY.has(node.script.idempotency)) errors.push(`Workflow V2 script node ${node.id} has an invalid idempotency contract.`);
     if (node.script.stderrPolicy !== undefined && !VALID_SCRIPT_STDERR_POLICIES.has(node.script.stderrPolicy)) errors.push(`Workflow V2 script node ${node.id} has an invalid stderrPolicy.`);
+    if (node.maxRetry !== undefined && !isNonNegativeSafeInteger(node.maxRetry)) errors.push(`Workflow V2 script node ${node.id} must have a non-negative safe-integer maxRetry.`);
+    if (node.onError !== undefined && !VALID_SCRIPT_ERROR_POLICIES.has(node.onError)) errors.push(`Workflow V2 script node ${node.id} has an invalid onError policy.`);
+    if (node.onError === "retry" && node.maxRetry === undefined) errors.push(`Workflow V2 script node ${node.id} must declare maxRetry when onError is retry.`);
     if (node.script.compensationAdapter !== undefined && !node.script.compensationAdapter.trim()) errors.push(`Workflow V2 script node ${node.id} compensationAdapter must not be empty.`);
     if (node.script.timeoutMs !== undefined && !isPositiveSafeInteger(node.script.timeoutMs)) {
       errors.push(`Workflow V2 script node ${node.id} must have a positive safe-integer timeoutMs.`);

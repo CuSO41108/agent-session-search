@@ -67,8 +67,10 @@ export function inspectWorkflowV2AgentCompletion(input: {
 
   const operations = input.operations ?? [];
   for (const operation of operations) {
-    if (operation.state === "unknown" || operation.state === "applying" || operation.state === "compensating") {
-      issues.push({ code: "operation_state_unknown", severity: "error", detail: `Operation ${operation.operationId} is ${operation.state}.` });
+    if (operation.state !== "applied") {
+      issues.push({ code: "operation_not_applied", severity: "error", detail: `Operation ${operation.operationId} is ${operation.state}, not applied.` });
+    } else if (operation.receipt === undefined) {
+      issues.push({ code: "operation_receipt_missing", severity: "error", detail: `Applied operation ${operation.operationId} has no receipt.` });
     }
   }
   return {
@@ -80,7 +82,7 @@ export function inspectWorkflowV2AgentCompletion(input: {
 }
 
 function stableToolCallId(metadata: Record<string, unknown> | undefined): string | undefined {
-  const value = metadata?.id;
+  const value = metadata?.id ?? metadata?.toolCallId ?? metadata?.callId ?? metadata?.call_id;
   return typeof value === "string" && value.trim() ? value : undefined;
 }
 

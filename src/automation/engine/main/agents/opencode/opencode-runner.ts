@@ -52,7 +52,7 @@ export function agentEventsFromOpenCodeJson(record: OpenCodeJsonEvent): AgentEve
       ...(name ? { name } : {}),
       content: stringify(state?.output ?? state?.error ?? state?.input ?? state ?? part),
       metadata: {
-        ...(typeof part.callID === "string" ? { toolCallId: part.callID } : {}),
+        ...(typeof part.callID === "string" ? { id: part.callID, toolCallId: part.callID } : {}),
         ...(typeof state?.status === "string" ? { status: state.status } : {}),
       },
     }];

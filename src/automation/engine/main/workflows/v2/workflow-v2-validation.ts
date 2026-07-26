@@ -22,7 +22,7 @@ export function validateWorkflowV2NodeOutput(
   if (input.node.execModel === "llm") {
     return validateLlmNodeOutput(input.node, input.output, input.attempt);
   }
-  return validateScriptNodeOutput(input.node, input.output);
+  return validateScriptNodeOutput(input.node, input.output, input.attempt);
 }
 
 function validateLlmNodeOutput(
@@ -49,9 +49,13 @@ function validateLlmNodeOutput(
 function validateScriptNodeOutput(
   node: WorkflowV2ScriptNode,
   output: WorkflowV2WorkerOutput,
+  attempt: number,
 ): WorkflowV2NodeValidationResult {
   const failures = collectStructuralFailures(node, output);
   if (failures.reasons.length === 0) return passResult();
+  if (node.onError === "retry" && attempt <= (node.maxRetry ?? 0)) {
+    return { outcome: "retry", ...failures };
+  }
   return {
     outcome: node.onError === "ask_human" ? "ask_human" : "fail",
     ...failures,

@@ -109,15 +109,50 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function workflowNodeHistoryMessages(task: TaskRun): WorkflowNodeMessage[] {
-  return task.messages.flatMap((message, messageIndex) => {
+function workflowNodeAuditMessages(tasks: readonly TaskRun[]): TaskRun["messages"] {
+  const messagesById = new Map<string, TaskRun["messages"][number]>();
+  for (const task of tasks) {
+    for (const [messageIndex, message] of task.messages.entries()) {
+      const messageId = message.id?.trim() ? message.id : `${task.id}:message:${messageIndex}`;
+      const existing = messagesById.get(messageId);
+      if (!existing) {
+        messagesById.set(messageId, {
+          ...structuredClone(message),
+          id: messageId,
+          ...(message.events ? {
+            events: message.events.map((event, eventIndex) => ({
+              ...structuredClone(event),
+              id: event.id?.trim() ? event.id : `${messageId}:event:${eventIndex}`,
+            })),
+          } : {}),
+        });
+        continue;
+      }
+      const eventsById = new Map((existing.events ?? []).map((event, eventIndex) => [event.id?.trim() ? event.id : `${messageId}:existing-event:${eventIndex}`, event]));
+      for (const [eventIndex, event] of (message.events ?? []).entries()) {
+        const eventId = event.id?.trim() ? event.id : `${messageId}:event:${eventIndex}`;
+        eventsById.set(eventId, { ...structuredClone(event), id: eventId });
+      }
+      messagesById.set(messageId, {
+        ...structuredClone(message),
+        id: messageId,
+        events: [...eventsById.values()],
+      });
+    }
+  }
+  return [...messagesById.values()];
+}
+
+function workflowNodeHistoryMessages(taskOrTasks: TaskRun | readonly TaskRun[]): WorkflowNodeMessage[] {
+  const tasks = Array.isArray(taskOrTasks) ? taskOrTasks : [taskOrTasks];
+  return workflowNodeAuditMessages(tasks).flatMap((message, messageIndex) => {
     const messages: WorkflowNodeMessage[] = [];
     if (message.content.trim()) {
       messages.push({
-        id: `${message.id || `${task.id}:message:${messageIndex}`}:content`,
+        id: `${message.id || `workflow-message:${messageIndex}`}:content`,
         role: message.role === "user" ? "user" : message.role === "assistant" ? "assistant" : "system",
         content: message.content,
-        at: Number.isFinite(message.timestamp) ? message.timestamp : task.updatedAt,
+        at: message.timestamp,
       });
     }
     for (const event of message.events ?? []) {
@@ -446,6 +481,7 @@ export class WorkflowV2RunExecutor {
       modelId: string;
       workDir: string;
       taskIds: string[];
+      auditTaskIds: string[];
       supervisorTaskIds: string[];
       completionExecutionId?: string;
     }): Promise<TaskRun> => {
@@ -719,6 +755,7 @@ export class WorkflowV2RunExecutor {
           ...(input.completionExecutionId ? { workflowNodeExecutionId: input.completionExecutionId } : {}),
         }, true);
         input.taskIds.push(currentTask.id);
+        input.auditTaskIds.push(currentTask.id);
       }
     };
 
@@ -885,9 +922,11 @@ export class WorkflowV2RunExecutor {
       consumedRecoveryNodeIds.add(request.node.id);
       updateNode(request.node.id, { status: "running", detail: "Task running", taskId: task.id, telemetry });
 
-      let taskIds = [task.id];
+      const taskIds = [task.id];
+      const auditTaskIds = [task.id];
       const supervisorTaskIds: string[] = [];
       let archiveTaskId: string | undefined = task.id;
+      let auditHistoryTasks: TaskRun[] = [];
       try {
         const completedTask = await waitForLeasedLlmTask({
           node: request.node,
@@ -897,6 +936,7 @@ export class WorkflowV2RunExecutor {
           modelId: agentRoute.modelId,
           workDir: workflowWorkDir,
           taskIds,
+          auditTaskIds,
           supervisorTaskIds,
           completionExecutionId,
         });
@@ -904,7 +944,13 @@ export class WorkflowV2RunExecutor {
         // Message history is an execution artifact, independent from whether the
         // worker output passes structured validation. Archive it before parsing so
         // failed or malformed one-shot responses remain inspectable in run history.
-        const historyMessages = workflowNodeHistoryMessages(completedTask);
+        const auditTasks = auditTaskIds
+          .map((taskId) => latestSnapshot.tasks.find((item) => item.id === taskId))
+          .filter((item): item is TaskRun => Boolean(item));
+        if (!auditTasks.some((item) => item.id === completedTask.id)) auditTasks.push(completedTask);
+        auditHistoryTasks = auditTasks;
+        const auditMessages = workflowNodeAuditMessages(auditTasks);
+        const historyMessages = workflowNodeHistoryMessages(auditTasks);
         const completedTelemetry = { ...addNodeUsage(telemetry, completedTask.usage), finishedAt: Date.now() };
         updateNode(request.node.id, {
           status: "running",
@@ -927,7 +973,7 @@ export class WorkflowV2RunExecutor {
         const workspaceDiff = await inspectNodeWorkspaceDiff(request.node.id, attempt);
         const acceptance = inspectWorkflowV2AgentCompletion({
           node: request.node,
-          messages: completedTask.messages,
+          messages: auditMessages,
           operations: nodeOperations,
           changedPaths: workspaceDiff ? [...workspaceDiff.created, ...workspaceDiff.modified, ...workspaceDiff.deleted] : [],
         });
@@ -955,13 +1001,14 @@ export class WorkflowV2RunExecutor {
         });
         return output;
       } catch (error) {
-        const taskForHistory = error instanceof WorkflowV2OneShotInputRequestSignal
-          ? error.task
-          : [...taskIds]
+        const tasksForHistory = error instanceof WorkflowV2OneShotInputRequestSignal
+          ? [error.task]
+          : [...auditHistoryTasks, ...auditTaskIds
               .map((taskId) => latestSnapshot.tasks.find((item) => item.id === taskId))
-              .find((item): item is TaskRun => Boolean(item));
-        if (taskForHistory) {
-          const historyMessages = workflowNodeHistoryMessages(taskForHistory);
+              .filter((item): item is TaskRun => Boolean(item))];
+        if (tasksForHistory.length > 0) {
+          const taskForHistory = tasksForHistory[tasksForHistory.length - 1]!;
+          const historyMessages = workflowNodeHistoryMessages(tasksForHistory);
           updateNode(request.node.id, {
             status: "running",
             detail: "Task history archived",
@@ -1059,9 +1106,7 @@ export class WorkflowV2RunExecutor {
         createdAt: Date.now(),
         updatedAt: Date.now(),
       };
-      const scriptOperationTracked = operationLedgerEnabled
-        && request.node.script.effectMode !== "pure"
-        && request.node.script.effectMode !== "workspace_only";
+      const scriptOperationTracked = operationLedgerEnabled;
       if (scriptOperationTracked) await planNodeOperation(scriptOperation);
       this.runRegistry.get(runId)?.abortControllerByNodeId?.set(request.node.id, controller);
       const telemetry: WorkflowRunNodeTelemetry = { attempt, startedAt: Date.now() };
@@ -1085,22 +1130,38 @@ export class WorkflowV2RunExecutor {
         if (!output.scriptReceipt || output.scriptReceipt.operationDigest !== operationDigest) {
           throw new Error(`Workflow V2 script node ${request.node.id} did not return a matching execution receipt.`);
         }
-        if (output.scriptReceipt.effectState === "unknown") {
-          throw new WorkflowV2ScriptExecutionError(`Workflow V2 script node ${request.node.id} has unknown side effects.`, output.scriptReceipt);
+        const receipt = output.scriptReceipt;
+        if (receipt.timedOut || receipt.signal) {
+          throw new WorkflowV2ScriptExecutionError(
+            `Workflow V2 script node ${request.node.id} did not terminate cleanly.`,
+            { ...receipt, effectState: "unknown" },
+          );
+        }
+        if (receipt.effectState === "unknown") {
+          throw new WorkflowV2ScriptExecutionError(`Workflow V2 script node ${request.node.id} has unknown side effects.`, receipt);
+        }
+        if (receipt.stderrSummary && (request.node.script.stderrPolicy ?? "warn") === "fail") {
+          throw new WorkflowV2ScriptExecutionError(`Workflow V2 script node ${request.node.id} produced stderr under a fail policy.`, receipt);
         }
         if (output.acceptance.outcome === "rejected") {
-          throw new WorkflowV2ScriptExecutionError(`Workflow V2 script node ${request.node.id} was rejected: ${output.acceptance.issues.map((issue) => issue.detail).join(" ")}`, output.scriptReceipt);
+          throw new WorkflowV2ScriptExecutionError(`Workflow V2 script node ${request.node.id} was rejected: ${output.acceptance.issues.map((issue) => issue.detail).join(" ")}`, receipt);
         }
         const workspaceDiff = await inspectNodeWorkspaceDiff(request.node.id, attempt);
+        const stderrWarning = receipt.stderrSummary && (request.node.script.stderrPolicy ?? "warn") === "warn";
         output.acceptance = {
           ...(output.acceptance ?? { outcome: "clean", issues: [] }),
+          ...(stderrWarning && !output.acceptance.issues.some((issue) => issue.code === "script_stderr")
+            ? { outcome: "degraded", issues: [...output.acceptance.issues, { code: "script_stderr", severity: "warning" as const, detail: receipt.stderrSummary }] }
+            : {}),
           changedPaths: workspaceDiff ? [...workspaceDiff.created, ...workspaceDiff.modified, ...workspaceDiff.deleted].sort() : [],
           operationIds: scriptOperationTracked ? [scriptOperation.operationId] : [],
         };
         if (scriptOperationTracked) await completeNodeOperation(scriptOperation.operationId, output.scriptReceipt);
       } catch (error) {
         const receipt = error instanceof WorkflowV2ScriptExecutionError ? error.receipt : undefined;
-        const effectUnknown = !receipt || receipt.effectState === "unknown";
+        const effectUnknown = !receipt
+          || receipt.effectState === "unknown"
+          || request.node.script.effectMode === "brokered_external";
         if (scriptOperationTracked) {
           if (receipt && !effectUnknown) await completeNodeOperation(scriptOperation.operationId, receipt);
           else await markNodeOperationUnknown(scriptOperation.operationId, error, receipt);

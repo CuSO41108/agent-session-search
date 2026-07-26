@@ -20,6 +20,7 @@ export type WorkflowV2ScriptRiskLevel = "safe" | "read" | "write" | "dangerous";
 export type WorkflowV2ScriptEffectMode = "pure" | "workspace_only" | "brokered_external";
 export type WorkflowV2ScriptIdempotency = "safe_retry" | "keyed" | "non_idempotent";
 export type WorkflowV2ScriptStderrPolicy = "ignore" | "warn" | "fail";
+export type WorkflowV2ScriptErrorPolicy = "fail" | "skip" | "ask_human" | "retry";
 export type WorkflowV2ScriptCapability = "workspace_read" | "workspace_write" | "workspace_delete" | "external_read" | "external_write" | "external_delete" | "network_read" | "network_write" | "process_spawn" | "shell_execute" | "environment_read" | "credential_read" | "system_config_write";
 export type WorkflowV2ScriptPermissionDecision = "auto_allow" | "allow_once" | "require_confirmation" | "deny";
 export type WorkflowV2ScriptParameterLocation = "argument" | "environment" | "header" | "query" | "body" | "stdin";
@@ -175,7 +176,8 @@ export interface WorkflowV2ScriptNode extends WorkflowV2BaseNode {
   execModel: "script";
   script: WorkflowV2ScriptSpec;
   expectedExitCode?: number;
-  onError?: WorkflowV2ExhaustedPolicy;
+  maxRetry?: number;
+  onError?: WorkflowV2ScriptErrorPolicy;
 }
 
 export type WorkflowV2Node = WorkflowV2LLMNode | WorkflowV2ScriptNode;
@@ -218,7 +220,7 @@ export interface WorkflowV2TemplateNodeOverrides {
   contextBudget?: WorkflowV2ContextBudget;
   script?: WorkflowV2ScriptSpec;
   expectedExitCode?: number;
-  onError?: WorkflowV2ExhaustedPolicy;
+  onError?: WorkflowV2ScriptErrorPolicy;
 }
 
 export interface WorkflowV2TemplateNodeDraft {

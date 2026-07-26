@@ -771,6 +771,39 @@ describe("workflow-v2 executor", () => {
     }));
   });
 
+  test("retries a known script failure only under an explicit bounded retry policy", async () => {
+    const retryDefinition = definition();
+    retryDefinition.nodes = [
+      {
+        id: "script",
+        kind: "verify",
+        title: "Retryable script",
+        execModel: "script",
+        executionMode: "script",
+        script: createWorkflowV2InlineScriptSpec({ language: "typescript", code: "return { verification: true };" }),
+        outputFields: [{ key: "verification", required: true }],
+        onError: "retry",
+        maxRetry: 1,
+      },
+    ];
+    retryDefinition.edges = [];
+    const plan = await buildWorkflowV2Plan({ definition: retryDefinition, approvedBy: "tester", now: 2_100 });
+    let attempts = 0;
+    const result = await executeWorkflowV2Plan({
+      plan,
+      runLlmNode: async () => { throw new Error("llm runner should not be called"); },
+      executeScript: async ({ node }) => {
+        attempts += 1;
+        if (attempts === 1) throw new Error("transient script failure");
+        return { nodeId: node.id, summary: "script recovered", outputs: { verification: true }, proposals: [] };
+      },
+    });
+
+    expect(attempts).toBe(2);
+    expect(result.runState.status).toBe("completed");
+    expect(result.workerOutputs[0]?.summary).toBe("script recovered");
+  });
+
   test("fails fast when the frozen plan cannot make progress", async () => {
     const validPlan = await buildWorkflowV2Plan({
       definition: definition(),

@@ -169,7 +169,7 @@ describe("normalizeClaudeStreamEvent", () => {
         state,
       ),
     ).toEqual([
-      { type: "tool_result", name: "mcp__multi_agent_chat__workflow_create", content: "Workflow created", metadata: { id: "toolu_2" } },
+      { type: "tool_result", name: "mcp__multi_agent_chat__workflow_create", content: "Workflow created", metadata: { id: "toolu_2", status: "completed" } },
     ]);
 
     expect(normalizeClaudeStreamEvent({
@@ -196,6 +196,6 @@ describe("normalizeClaudeStreamEvent", () => {
         },
         state,
       ),
-    ).toEqual([{ type: "tool_result", name: "Read", content: "App.tsx", metadata: { id: "toolu_1" } }]);
+    ).toEqual([{ type: "tool_result", name: "Read", content: "App.tsx", metadata: { id: "toolu_1", status: "completed" } }]);
   });
 });
