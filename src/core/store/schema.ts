@@ -38,6 +38,8 @@ export function migrateSessionStore(db: SessionStoreDatabase): void {
       reasoning_output_tokens INTEGER NOT NULL DEFAULT 0,
       total_tokens INTEGER NOT NULL DEFAULT 0,
       indexed_at INTEGER NOT NULL DEFAULT 0,
+      content_indexed_mtime_ms REAL NOT NULL DEFAULT 0,
+      content_indexed_size INTEGER NOT NULL DEFAULT 0,
       is_subagent INTEGER NOT NULL DEFAULT 0,
       parent_session_id TEXT
     );
@@ -271,6 +273,8 @@ export function migrateSessionStore(db: SessionStoreDatabase): void {
   addColumnIfMissing(db, "sessions", "ai_summary_at", "INTEGER");
   addColumnIfMissing(db, "sessions", "ai_summary_basis", "INTEGER");
   addColumnIfMissing(db, "sessions", "indexed_at", "INTEGER NOT NULL DEFAULT 0");
+  addColumnIfMissing(db, "sessions", "content_indexed_mtime_ms", "REAL NOT NULL DEFAULT 0");
+  addColumnIfMissing(db, "sessions", "content_indexed_size", "INTEGER NOT NULL DEFAULT 0");
   const addedSubagentColumn = addColumnIfMissing(db, "sessions", "is_subagent", "INTEGER NOT NULL DEFAULT 0");
   addColumnIfMissing(db, "sessions", "parent_session_id", "TEXT");
   addColumnIfMissing(db, "environments", "wsl_distribution", "TEXT");

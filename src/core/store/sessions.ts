@@ -103,6 +103,8 @@ interface SessionRow {
   ai_summary_basis: number | null;
   is_subagent: 0 | 1;
   parent_session_id: string | null;
+  content_indexed_mtime_ms: number;
+  content_indexed_size: number;
 }
 
 type ProjectAggregateRow = {
@@ -181,9 +183,9 @@ export class SessionsStore {
             session_key, raw_id, source, environment_id, storage_environment_id, project_path, file_path, original_title, first_question,
             timestamp, file_mtime_ms, file_size, pr_url, pr_number, message_count,
             input_tokens, output_tokens, cached_input_tokens, reasoning_output_tokens, total_tokens, indexed_at,
-            is_subagent, parent_session_id
+            content_indexed_mtime_ms, content_indexed_size, is_subagent, parent_session_id
           )
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           ON CONFLICT(session_key) DO UPDATE SET
             raw_id = excluded.raw_id,
             source = excluded.source,
@@ -205,6 +207,8 @@ export class SessionsStore {
             reasoning_output_tokens = excluded.reasoning_output_tokens,
             total_tokens = excluded.total_tokens,
             indexed_at = excluded.indexed_at,
+            content_indexed_mtime_ms = excluded.content_indexed_mtime_ms,
+            content_indexed_size = excluded.content_indexed_size,
             is_subagent = excluded.is_subagent,
             parent_session_id = excluded.parent_session_id
         `,
@@ -231,6 +235,8 @@ export class SessionsStore {
           tokenUsage.reasoningOutputTokens,
           tokenUsage.totalTokens,
           indexedAt,
+          session.fileMtimeMs,
+          session.fileSize,
           session.isSubagent ? 1 : 0,
           session.parentSessionId ?? null,
         );
@@ -397,6 +403,14 @@ export class SessionsStore {
     );
   }
 
+  isSessionContentFresh(sessionKey: string, fileMtimeMs: number, fileSize: number): boolean {
+    if (fileMtimeMs <= 0 && fileSize <= 0) return false;
+    const row = this.db
+      .prepare("SELECT content_indexed_mtime_ms, content_indexed_size FROM sessions WHERE session_key = ?")
+      .get(sessionKey) as { content_indexed_mtime_ms: number; content_indexed_size: number } | undefined;
+    return row !== undefined && row.content_indexed_mtime_ms === fileMtimeMs && row.content_indexed_size === fileSize;
+  }
+
   touchIndexedAtIfMissing(sessionKey: string): void {
     this.db.prepare("UPDATE sessions SET indexed_at = ? WHERE session_key = ? AND indexed_at <= 0").run(Date.now(), sessionKey);
   }
@@ -434,9 +448,9 @@ export class SessionsStore {
             session_key, raw_id, source, environment_id, storage_environment_id, project_path, file_path, original_title, first_question,
             timestamp, file_mtime_ms, file_size, pr_url, pr_number, message_count,
             input_tokens, output_tokens, cached_input_tokens, reasoning_output_tokens, total_tokens, indexed_at,
-            is_subagent, parent_session_id
+            content_indexed_mtime_ms, content_indexed_size, is_subagent, parent_session_id
           )
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           ON CONFLICT(session_key) DO UPDATE SET
             raw_id = excluded.raw_id,
             source = excluded.source,
@@ -484,6 +498,8 @@ export class SessionsStore {
           tokenUsage.reasoningOutputTokens,
           tokenUsage.totalTokens,
           indexedAt,
+          0,
+          0,
           session.isSubagent ? 1 : 0,
           session.parentSessionId ?? null,
         );

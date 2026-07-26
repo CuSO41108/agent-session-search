@@ -109,6 +109,10 @@ export class SessionStore {
     return this.sessions.isIndexedSessionFresh(session);
   }
 
+  isSessionContentFresh(sessionKey: string, fileMtimeMs: number, fileSize: number): boolean {
+    return this.sessions.isSessionContentFresh(sessionKey, fileMtimeMs, fileSize);
+  }
+
   touchIndexedAtIfMissing(sessionKey: string): void {
     this.sessions.touchIndexedAtIfMissing(sessionKey);
   }
