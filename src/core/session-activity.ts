@@ -10,6 +10,7 @@ import type { LiveSession, LiveSessionFamily, LiveSessionSnapshot } from "./type
 const require = createRequire(import.meta.url);
 const { DatabaseSync } = require("node:sqlite") as { DatabaseSync: new (path: string, options?: { readOnly?: boolean }) => import("node:sqlite").DatabaseSync };
 const CLAUDE_SESSION_START_SKEW_MS = 2 * 60 * 1000;
+const CODEX_LIFECYCLE_READ_CHUNK_SIZE = 64 * 1024;
 
 type ProcessListRunner = (command: string, args: string[]) => Promise<string>;
 type LiveSessionSnapshotLoader = (options?: LoadLiveSessionOptions) => Promise<LiveSessionSnapshot>;
@@ -85,6 +86,7 @@ export function detectLiveSessionsFromProcessLines(
   cursorSessionFilesByPid: Map<number, string> = new Map(),
   codebuddySessionFilesByPid: Map<number, string> = new Map(),
   dbSessionIdsByPid: Map<number, string> = new Map(),
+  codexAppSessionFilesByPid: Map<number, string[]> = new Map(),
 ): LiveSession[] {
   const sessions: LiveSession[] = [];
   const seen = new Set<string>();
@@ -94,22 +96,32 @@ export function detectLiveSessionsFromProcessLines(
     if (!entry) continue;
 
     const tokens = splitCommandLine(entry.command);
-    const command =
-      detectResumeCommand(tokens) ??
-      detectPlainCodexCommand(tokens, codexSessionFilesByPid.get(entry.pid)) ??
-      detectPlainClaudeCommand(tokens, claudeSessionFilesByPid.get(entry.pid)) ??
-      detectPlainOpenClawCommand(tokens, openclawSessionFilesByPid.get(entry.pid)) ??
-      detectPlainCursorCommand(tokens, cursorSessionFilesByPid.get(entry.pid)) ??
-      detectPlainCodeBuddyCommand(tokens, codebuddySessionFilesByPid.get(entry.pid)) ??
-      detectDbBackedCommand(tokens, dbSessionIdsByPid.get(entry.pid)) ??
-      detectTraeAppSession(entry.command, traeSessionIdsByPid.get(entry.pid)) ??
-      detectQoderAppSession(entry.command, qoderSessionIdsByPid.get(entry.pid));
-    if (!command) continue;
+    const commands: Array<{ family: LiveSessionFamily; rawId: string }> = [];
+    if (isCodexAppServerCommand(tokens)) {
+      for (const sessionFile of codexAppSessionFilesByPid.get(entry.pid) ?? []) {
+        const rawId = extractCodexSessionId(sessionFile);
+        if (rawId) commands.push({ family: "codex", rawId });
+      }
+    } else {
+      const command =
+        detectResumeCommand(tokens) ??
+        detectPlainCodexCommand(tokens, codexSessionFilesByPid.get(entry.pid)) ??
+        detectPlainClaudeCommand(tokens, claudeSessionFilesByPid.get(entry.pid)) ??
+        detectPlainOpenClawCommand(tokens, openclawSessionFilesByPid.get(entry.pid)) ??
+        detectPlainCursorCommand(tokens, cursorSessionFilesByPid.get(entry.pid)) ??
+        detectPlainCodeBuddyCommand(tokens, codebuddySessionFilesByPid.get(entry.pid)) ??
+        detectDbBackedCommand(tokens, dbSessionIdsByPid.get(entry.pid)) ??
+        detectTraeAppSession(entry.command, traeSessionIdsByPid.get(entry.pid)) ??
+        detectQoderAppSession(entry.command, qoderSessionIdsByPid.get(entry.pid));
+      if (command) commands.push(command);
+    }
 
-    const key = `${command.family}:${command.rawId}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    sessions.push({ ...command, pid: entry.pid });
+    for (const command of commands) {
+      const key = `${command.family}:${command.rawId}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      sessions.push({ ...command, pid: entry.pid });
+    }
   }
 
   return sessions;
@@ -146,11 +158,12 @@ export async function loadLiveSessionSnapshot(options: LoadLiveSessionOptions = 
           ])
         : await runner("/bin/ps", ["-axo", "pid=,command="]);
     const lines = output.split(/\r?\n/);
-    const [codexSessionFilesByPid, claudeSessionFilesByPid] =
+    const [codexSessionFilesByPid, codexAppSessionFilesByPid, claudeSessionFilesByPid] =
       platform === "win32"
-        ? [new Map<number, string>(), new Map<number, string>()]
+        ? [new Map<number, string>(), new Map<number, string[]>(), new Map<number, string>()]
         : await Promise.all([
             loadPlainCodexSessionFiles(lines, runner, options.homeDir ?? os.homedir()),
+            loadCodexAppSessionFiles(lines, runner),
             loadPlainClaudeSessionFiles(lines, runner, options.homeDir ?? os.homedir()),
           ]);
     const traeSessionIdsByPid =
@@ -193,6 +206,7 @@ export async function loadLiveSessionSnapshot(options: LoadLiveSessionOptions = 
         cursorSessionFilesByPid,
         codebuddySessionFilesByPid,
         dbSessionIdsByPid,
+        codexAppSessionFilesByPid,
       ),
     };
   } catch (error) {
@@ -213,6 +227,25 @@ async function loadPlainCodexSessionFiles(lines: string[], runner: ProcessListRu
     homeDir,
     (home, cwd) => findMostRecentCodexSessionByCwd(home, cwd),
   );
+}
+
+async function loadCodexAppSessionFiles(lines: string[], runner: ProcessListRunner): Promise<Map<number, string[]>> {
+  const entries = lines.map(parseProcessLine).filter((entry): entry is ProcessEntry => Boolean(entry));
+  const pids = entries.filter((entry) => isCodexAppServerCommand(splitCommandLine(entry.command))).map((entry) => entry.pid);
+  const sessionFiles = new Map<number, string[]>();
+
+  await Promise.all(
+    pids.map(async (pid) => {
+      try {
+        const files = extractCodexSessionFiles(await runner("lsof", ["-p", String(pid)])).filter(isCodexAgentWorking);
+        if (files.length > 0) sessionFiles.set(pid, files);
+      } catch {
+        return;
+      }
+    }),
+  );
+
+  return sessionFiles;
 }
 
 /**
@@ -500,6 +533,7 @@ function detectTraeAppSession(command: string, rawId: string | undefined): { fam
 
 function isPlainCodexCommand(tokens: string[]): boolean {
   if (isNodeExecutable(tokens[0])) return false;
+  if (isCodexAppServerCommand(tokens)) return false;
   const commandStartIndexes = [0];
 
   for (const index of commandStartIndexes) {
@@ -508,8 +542,18 @@ function isPlainCodexCommand(tokens: string[]): boolean {
     if (isCodexDesktopProcess(tokens[index])) return false;
     const args = tokens.slice(index + 1);
     if (args.includes("resume")) return false;
-    if (args[0] === "app-server") return false;
     return true;
+  }
+
+  return false;
+}
+
+function isCodexAppServerCommand(tokens: string[]): boolean {
+  const commandStartIndexes = isNodeExecutable(tokens[0]) ? [1] : [0];
+
+  for (const index of commandStartIndexes) {
+    if (executableFamily(tokens[index]) !== "codex") continue;
+    return tokens.slice(index + 1).includes("app-server");
   }
 
   return false;
@@ -662,9 +706,60 @@ function extractCodexSessionId(sessionFile: string): string | null {
 }
 
 function extractCodexSessionFile(lsofOutput: string): string | null {
+  return extractCodexSessionFiles(lsofOutput)[0] ?? null;
+}
+
+function extractCodexSessionFiles(lsofOutput: string): string[] {
+  const sessionFiles = new Set<string>();
   for (const line of lsofOutput.split(/\r?\n/)) {
-    const match = line.match(/(\S*\.codex\/sessions\/\S+?\.jsonl)\b/);
-    if (match?.[1]) return match[1];
+    const match = line.match(/((?:[A-Za-z]:)?[\\/].*[\\/]\.codex[\\/]sessions[\\/].+?\.jsonl)\b/);
+    if (match?.[1]) sessionFiles.add(match[1]);
+  }
+  return [...sessionFiles];
+}
+
+function isCodexAgentWorking(sessionFile: string): boolean {
+  let fileDescriptor: number | null = null;
+  try {
+    fileDescriptor = fs.openSync(sessionFile, "r");
+    let position = fs.fstatSync(fileDescriptor).size;
+    let partialLine = Buffer.alloc(0);
+
+    while (position > 0) {
+      const bytesToRead = Math.min(CODEX_LIFECYCLE_READ_CHUNK_SIZE, position);
+      position -= bytesToRead;
+      const chunk = Buffer.allocUnsafe(bytesToRead);
+      fs.readSync(fileDescriptor, chunk, 0, bytesToRead, position);
+      const content = Buffer.concat([chunk, partialLine]);
+      let lineEnd = content.length;
+
+      for (let index = content.length - 1; index >= 0; index--) {
+        if (content[index] !== 0x0a) continue;
+        const state = codexAgentWorkingStateFromLine(content.subarray(index + 1, lineEnd).toString("utf8"));
+        if (state !== null) return state;
+        lineEnd = index;
+      }
+
+      partialLine = Buffer.from(content.subarray(0, lineEnd));
+    }
+
+    return codexAgentWorkingStateFromLine(partialLine.toString("utf8")) ?? false;
+  } catch {
+    return false;
+  } finally {
+    if (fileDescriptor !== null) fs.closeSync(fileDescriptor);
+  }
+}
+
+function codexAgentWorkingStateFromLine(line: string): boolean | null {
+  if (!line.includes("task_started") && !line.includes("task_complete")) return null;
+  try {
+    const row = JSON.parse(line) as { type?: unknown; payload?: { type?: unknown } };
+    if (row.type !== "event_msg") return null;
+    if (row.payload?.type === "task_started") return true;
+    if (row.payload?.type === "task_complete") return false;
+  } catch {
+    return null;
   }
   return null;
 }
