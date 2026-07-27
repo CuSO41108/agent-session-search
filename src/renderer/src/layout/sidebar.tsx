@@ -141,7 +141,7 @@ export function Sidebar(props: SidebarProps): ReactElement {
         <img className="brand-mark" src={appIconUrl} alt="" />
         <div>
           <h1>AgentRecall</h1>
-          <p>{t("Codex and Claude Code", "Codex 和 Claude Code")}</p>
+          <p>{t("Search & manage agent assets", "搜索与管理 Agent 资产")}</p>
         </div>
       </div>
 
