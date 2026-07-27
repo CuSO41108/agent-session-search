@@ -124,6 +124,16 @@ describe("WorkflowRunCenter", () => {
     expect(html).toContain("Finished");
   });
 
+  test("offers report download and safe cleanup only for finalized transaction materials", () => {
+    const finalized = run({ runId: "finalized", status: "completed", startedAt: 1_000, finishedAt: 2_000 });
+    finalized.finalReport = "# Final report";
+    finalized.transaction = { transactionId: "transaction-final", mode: "strict_atomic", status: "committed", baselineId: "baseline", operationCount: 0, unknownOperationCount: 0, irreversibleOperationCount: 0, startedAt: 1_000, updatedAt: 2_000, retentionUntil: 3_000 };
+    const html = renderToStaticMarkup(<WorkflowRunCenter runs={[finalized]} open selectedRunId={finalized.runId} language="zh" onSelectRun={() => undefined} onClose={() => undefined} onCleanupRunMaterials={() => undefined} />);
+
+    expect(html).toContain("下载最终报告");
+    expect(html).toContain("安全清理材料");
+  });
+
   test("shows transaction recovery facts, receipts, and node acceptance", () => {
     const recoveryRun = run({ runId: "recovery-run", status: "failed", startedAt: 2_000, finishedAt: 4_000 });
     recoveryRun.transaction = {
@@ -173,6 +183,17 @@ describe("WorkflowRunCenter", () => {
       cancellingNodeIds: ["research"],
       notStartedNodeIds: [],
       availableActions: ["rollback_savepoint", "keep_state", "abandon"],
+      managerRecommendation: {
+        generatedAt: 4_000,
+        transactionId: "transaction-1",
+        recommendedAction: "keep_state",
+        rationale: "Preserve evidence until the conflict is reviewed.",
+        rollbackTarget: "savepoint-1",
+        compensationOperationIds: [],
+        manualSteps: ["Manually merge result.txt."],
+        riskComparison: [{ action: "keep_state", risk: "low", detail: "Leaves evidence unchanged." }],
+        conflictCandidates: [{ path: "result.txt", resolution: "manual", rationale: "Both sides changed." }],
+      },
     };
     recoveryRun.recoveryDecisions = [{
       decisionId: "decision-1",
@@ -189,15 +210,22 @@ describe("WorkflowRunCenter", () => {
       changedPaths: ["result.txt"],
       operationIds: ["operation-1"],
     };
+    recoveryRun.progress[0]!.scriptReceipt = { exitCode: 1, signal: null, timedOut: false, stderrSummary: "warning", stdoutDigest: "digest", operationDigest: "operation-digest", effectState: "unknown" };
+    recoveryRun.progress[0]!.intervention = { nodeId: "research", source: "supervision_pause", reason: "Review evidence", allowedActions: ["continue", "replan"], requestedAt: 3_900 };
 
-    const html = renderToStaticMarkup(<WorkflowRunCenter runs={[recoveryRun]} open selectedRunId={recoveryRun.runId} language="zh" onSelectRun={() => undefined} onClose={() => undefined} onResolveRecovery={() => undefined} />);
+    const html = renderToStaticMarkup(<WorkflowRunCenter runs={[recoveryRun]} open selectedRunId={recoveryRun.runId} writableRunId={recoveryRun.runId} language="zh" onSelectRun={() => undefined} onClose={() => undefined} onResolveRecovery={() => undefined} onResolveIntervention={() => undefined} />);
 
     expect(html).toContain("事务与恢复");
     expect(html).toContain("recovery_required");
     expect(html).toContain("operation-1: unknown");
     expect(html).toContain("回滚到保存点");
+    expect(html).toContain("查看 Manager Agent 候选结果");
+    expect(html).toContain("候选结果只读");
     expect(html).toContain("safe-preview");
     expect(html).toContain("节点验收 · degraded");
+    expect(html).toContain("脚本执行凭据 · unknown");
+    expect(html).toContain("stderr · warning");
+    expect(html).toContain("继续/重试");
     expect(html).toContain("tool_retry_recovered");
     expect(html).toContain("决定依据");
     expect(html).toContain("说明核验依据和预期结果");

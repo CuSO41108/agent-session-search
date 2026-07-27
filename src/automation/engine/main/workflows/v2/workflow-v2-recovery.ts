@@ -189,6 +189,7 @@ export function buildWorkflowV2RecoveryPreview(input: {
   nodeControl?: WorkflowV2PersistedRunState["nodeControl"];
   workspaceDiff?: { created: readonly string[]; modified: readonly string[]; deleted: readonly string[]; conflicts?: readonly string[] };
   canCompensate?: boolean;
+  compensableOperationIds?: readonly string[];
   canRollbackSavepoint?: boolean;
   conflictDetails?: readonly WorkflowConflictPreview[];
   now?: number;
@@ -220,8 +221,34 @@ export function buildWorkflowV2RecoveryPreview(input: {
     blockers.push("The transaction requires recovery review before execution can continue.");
   }
   const hasReversibleAppliedOperation = input.operations.some((operation) => operation.state === "applied" && operation.reversible);
+  const generatedAt = input.now ?? Date.now();
+  const availableActions = [
+    ...(uncertainOperations.length === 0 && conflicts.length === 0 ? ["continue" as const] : []),
+    ...(input.transaction.currentSavepointId && input.canRollbackSavepoint ? ["rollback_savepoint" as const] : []),
+    ...(hasReversibleAppliedOperation && input.canCompensate ? ["compensate_all" as const] : []),
+    "keep_state" as const,
+    "abandon" as const,
+  ];
+  const reversibleAppliedOperations = input.operations.filter((operation) => operation.state === "applied" && operation.reversible);
+  const compensationOperationIds = reversibleAppliedOperations
+    .filter((operation) => !input.compensableOperationIds || input.compensableOperationIds.includes(operation.operationId))
+    .sort((left, right) => right.updatedAt - left.updatedAt || right.createdAt - left.createdAt)
+    .map((operation) => operation.operationId);
+  const recommendedAction = uncertainOperations.length > 0 || conflicts.length > 0
+    ? "keep_state" as const
+    : availableActions.includes("compensate_all")
+      ? "compensate_all" as const
+      : availableActions.includes("rollback_savepoint")
+        ? "rollback_savepoint" as const
+        : "continue" as const;
+  const conflictCandidates = (input.conflictDetails ?? []).map((conflict) => {
+    if (conflict.isolated.sha256 === conflict.current.sha256) return { path: conflict.path, resolution: "isolated" as const, rationale: "Both sides already contain the same content." };
+    if (conflict.current.sha256 === conflict.baseline.sha256) return { path: conflict.path, resolution: "isolated" as const, rationale: "Only the isolated workflow result changed from the baseline." };
+    if (conflict.isolated.sha256 === conflict.baseline.sha256) return { path: conflict.path, resolution: "current" as const, rationale: "Only the user's current workspace changed from the baseline." };
+    return { path: conflict.path, resolution: "manual" as const, rationale: "Both sides changed; review the three-way preview before applying a merge." };
+  });
   return {
-    generatedAt: input.now ?? Date.now(),
+    generatedAt,
     transactionId: input.transaction.transactionId,
     status: input.transaction.status,
     blockers,
@@ -233,13 +260,36 @@ export function buildWorkflowV2RecoveryPreview(input: {
     cancelledNodeIds,
     cancellingNodeIds,
     notStartedNodeIds,
-    availableActions: [
-      ...(uncertainOperations.length === 0 && conflicts.length === 0 ? ["continue" as const] : []),
-      ...(input.transaction.currentSavepointId && input.canRollbackSavepoint ? ["rollback_savepoint" as const] : []),
-      ...(hasReversibleAppliedOperation && input.canCompensate ? ["compensate_all" as const] : []),
-      "keep_state",
-      "abandon",
-    ],
+    availableActions,
+    managerRecommendation: {
+      generatedAt,
+      transactionId: input.transaction.transactionId,
+      recommendedAction,
+      rationale: recommendedAction === "keep_state"
+        ? "Preserve the current evidence until unknown operations or workspace conflicts are resolved."
+        : recommendedAction === "compensate_all"
+          ? "Reverse the verified reversible external operations before deciding how to handle workspace changes."
+          : recommendedAction === "rollback_savepoint"
+            ? "A verified savepoint is available and no unresolved external state blocks a rollback preview."
+            : "No unknown external operation or workspace conflict currently blocks continuation.",
+      ...(input.transaction.currentSavepointId ? { rollbackTarget: input.transaction.currentSavepointId } : {}),
+      compensationOperationIds,
+      manualSteps: [
+        ...uncertainOperations.map((operation) => `Verify ${operation.operationId} with its provider receipt before retrying or compensating.`),
+        ...reversibleAppliedOperations.filter((operation) => !compensationOperationIds.includes(operation.operationId)).map((operation) => `Re-authorize or manually reverse ${operation.operationId}; its persisted adapter state cannot execute compensation safely.`),
+        ...conflictCandidates.filter((candidate) => candidate.resolution === "manual").map((candidate) => `Manually merge ${candidate.path} from the three-way conflict preview and confirm the resulting diff.`),
+      ],
+      riskComparison: availableActions.map((action) => ({
+        action,
+        risk: action === "abandon" || action === "compensate_all" ? "high" as const : action === "continue" || action === "rollback_savepoint" ? "medium" as const : "low" as const,
+        detail: action === "continue" ? "May resume node execution and create new effects."
+          : action === "rollback_savepoint" ? "Changes isolated workspace state and may discard later node work."
+            : action === "compensate_all" ? "Calls external compensation adapters in reverse operation order."
+              : action === "abandon" ? "Stops active handling while preserving unresolved evidence."
+                : "Leaves all current state and evidence unchanged.",
+      })),
+      conflictCandidates,
+    },
   };
 }
 

@@ -93,6 +93,7 @@ export interface WorkflowController {
   onSubmitScriptInput?: (nodeId: string, values: Record<string, unknown>) => MaybePromise;
   onResolveIntervention?: (nodeId: string, action: WorkflowV2InterventionAction, reason?: string) => MaybePromise;
   onResolveRecovery?: (runId: string, action: WorkflowRecoveryAction, reason: string) => MaybePromise;
+  onCleanupRunMaterials?: (runId: string) => MaybePromise;
   onSendNodeMessage?: (conversationId: string, message: string) => MaybePromise;
   onCompleteNodeConversation?: (conversationId: string) => MaybePromise;
   onRejectNodeCompletion?: (conversationId: string, instruction: string) => MaybePromise;
@@ -109,7 +110,7 @@ export interface WorkflowController {
   onSendReply: (value?: string) => void;
   onUpdateNode: (nodeId: string, update: Partial<WorkflowV2Node>) => MaybePromise;
   onUpdateDefinition?: (definition: WorkflowV2Definition) => MaybePromise;
-  onRunWorkflow: () => MaybePromise;
+  onRunWorkflow: (transactionApprovalMode?: "batch" | "per_operation") => MaybePromise;
   onConfirmWorkflow?: () => MaybePromise;
   onResetSession: () => MaybePromise;
   onStopGrill?: () => void;

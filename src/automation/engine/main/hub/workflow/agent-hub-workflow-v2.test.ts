@@ -27,6 +27,17 @@ describe("workflow-v2 planner boundary", () => {
     const finished = finishWorkflowRunState({ workflow: started.nextWorkflow, run: started.nextRun, request: { workflowId: workflow.workflowId, runId: "run-1", status: "completed" }, cloneDraft: structuredClone, now: 4 });
     expect(finished.nextRun.finishedAt).toBe(4);
   });
+  test("freezes the user's approval mode choice into the run plan", () => {
+    const workflow = workflowForRunState();
+    const policy = { defaultMode: "controlled" as const, approvalMode: "user_choice" as const, checkpoints: [], externalEffects: "broker_only" as const, onConflict: "user_or_manager" as const, onUnknown: "pause" as const, retentionDays: 7 };
+    workflow.definition.transactionPolicy = policy;
+    workflow.workflowV2Plan!.definition.transactionPolicy = structuredClone(policy);
+
+    const started = startWorkflowRunState({ workflow, request: { workflowId: workflow.workflowId, transactionApprovalMode: "per_operation" }, runId: "run-approval", cloneDraft: structuredClone, now: 2 });
+
+    expect(started.nextRun.workflowV2Plan.definition.transactionPolicy?.approvalMode).toBe("per_operation");
+    expect(workflow.workflowV2Plan!.definition.transactionPolicy?.approvalMode).toBe("user_choice");
+  });
   test("builds a frozen workflow-v2 plan through the hub boundary", async () => {
     const hub = new AgentHub({ codex: "missing-codex-for-test", claude: "missing-claude-for-test" });
 

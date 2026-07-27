@@ -120,6 +120,33 @@ describe("workflow-v2 recovery", () => {
       expect.stringContaining("operation-1: unknown"),
       expect.stringContaining("Workspace conflicts"),
     ]));
+    expect(preview.managerRecommendation).toMatchObject({
+      recommendedAction: "keep_state",
+      rollbackTarget: "savepoint-1",
+      manualSteps: [expect.stringContaining("operation-1")],
+    });
+    expect(preview.managerRecommendation.riskComparison.map((item) => item.action)).toEqual(preview.availableActions);
+  });
+
+  test("creates read-only three-way conflict candidates without applying a merge", async () => {
+    const state = await persisted();
+    const preview = buildWorkflowV2RecoveryPreview({
+      transaction: { transactionId: "transaction-1", mode: "strict_atomic", status: "recovery_required", baselineId: "baseline-1", operationCount: 0, unknownOperationCount: 0, irreversibleOperationCount: 0, startedAt: 1_000, updatedAt: 1_500, retentionUntil: 2_000 },
+      operations: [],
+      runState: state.runState,
+      workspaceDiff: { created: [], modified: ["workflow-only.txt", "both.txt"], deleted: [], conflicts: ["workflow-only.txt", "both.txt"] },
+      conflictDetails: [
+        { path: "workflow-only.txt", baseline: { exists: true, sha256: "baseline" }, isolated: { exists: true, sha256: "isolated" }, current: { exists: true, sha256: "baseline" } },
+        { path: "both.txt", baseline: { exists: true, sha256: "baseline" }, isolated: { exists: true, sha256: "isolated" }, current: { exists: true, sha256: "current" } },
+      ],
+      now: 1_600,
+    });
+
+    expect(preview.managerRecommendation.conflictCandidates).toEqual([
+      expect.objectContaining({ path: "workflow-only.txt", resolution: "isolated" }),
+      expect.objectContaining({ path: "both.txt", resolution: "manual" }),
+    ]);
+    expect(preview.managerRecommendation.manualSteps).toEqual([expect.stringContaining("both.txt")]);
   });
 
   test("uses the terminal node Markdown output as the completed user report", async () => {

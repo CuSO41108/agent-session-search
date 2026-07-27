@@ -174,6 +174,11 @@ export function useWorkflowFeatureController({
         }
         await onRefresh();
       },
+      onCleanupRunMaterials: async (runId) => {
+        if (!draft.workflowId) return;
+        const result = await workflows.cleanupRunMaterials({ workflowId: draft.workflowId, runId });
+        if (!result.ok) throw new Error(result.error ?? "Workflow run materials could not be cleaned.");
+      },
       onRejectNodeCompletion: async (conversationId, instruction) => setSnapshot(await workflows.rejectNodeCompletion({ conversationId, instruction })),
       onInterruptNodeConversation: async (conversationId) => setSnapshot(await workflows.interruptNodeConversation({ conversationId })),
       ...(onResolveRuntimeApproval ? { onResolveRuntimeApproval } : {}),
@@ -208,8 +213,8 @@ export function useWorkflowFeatureController({
         return draft.updateWorkflowNode(nodeId, update);
       },
       onUpdateDefinition: (definition) => draft.updateWorkflowDefinition(definition),
-      onRunWorkflow: async () => {
-        const result = await runner.runWorkflowInternal();
+      onRunWorkflow: async (transactionApprovalMode) => {
+        const result = await runner.runWorkflowInternal(undefined, transactionApprovalMode);
         if (!result.ok && result.error && draft.workflowId) {
           const next = await workflows.patchDraft({ workflowId: draft.workflowId, error: result.error });
           setSnapshot(next);

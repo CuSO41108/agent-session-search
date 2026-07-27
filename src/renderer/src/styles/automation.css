@@ -1303,6 +1303,14 @@
 .workflow-run-center-recovery-actions label span { font-size:.72rem; color:var(--text-muted); }
 .workflow-run-center-recovery-actions input { width:100%; }
 .workflow-run-center-recovery-actions > div { display:flex; flex-wrap:wrap; gap:.45rem; }
+.workflow-approval-mode { display:flex; align-items:center; gap:.45rem; color:var(--text-muted); font-size:.75rem; }
+.workflow-approval-mode select { min-height:2rem; border:1px solid var(--border-subtle); border-radius:.45rem; background:var(--surface-muted); color:var(--text-primary); padding:0 .5rem; }
+.workflow-run-center-manager-candidate { padding:.7rem; border:1px solid var(--border-subtle); border-radius:.6rem; }
+.workflow-run-center-manager-candidate > div { display:grid; gap:.3rem; margin:.5rem 0; }
+.workflow-run-center-manager-candidate > div span { color:var(--text-muted); font-size:.75rem; }
+.workflow-run-center-material-actions { display:flex; flex-wrap:wrap; gap:.45rem; align-items:center; }
+.workflow-run-center-node-actions { display:grid; gap:.4rem; margin-top:.5rem; }
+.workflow-run-center-node-actions > div { display:flex; flex-wrap:wrap; gap:.35rem; }
 .workflow-run-center-conflicts { display:grid; gap:.75rem; }
 .workflow-run-center-conflicts > article { display:grid; gap:.5rem; padding:.75rem; border:1px solid var(--border-subtle); border-radius:.65rem; }
 .workflow-run-center-conflict-columns { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:.55rem; }

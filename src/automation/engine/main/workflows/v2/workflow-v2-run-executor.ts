@@ -1397,7 +1397,7 @@ export class WorkflowV2RunExecutor {
               detail: "Starting",
             });
           } else if (transition.status === "completed") {
-            updateNode(transition.nodeId, { status: "completed", detail: transition.output.summary, outputs: structuredClone(transition.output.outputs) }, {
+            updateNode(transition.nodeId, { status: "completed", detail: transition.output.summary, outputs: structuredClone(transition.output.outputs), ...(transition.output.acceptance ? { acceptance: structuredClone(transition.output.acceptance) } : {}), ...(transition.output.scriptReceipt ? { scriptReceipt: structuredClone(transition.output.scriptReceipt) } : {}) }, {
               type: "node_completed",
               nodeId: transition.nodeId,
               detail: transition.output.summary,

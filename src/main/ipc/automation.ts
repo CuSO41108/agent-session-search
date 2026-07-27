@@ -17,6 +17,7 @@ import type {
   RejectWorkflowNodeCompletionRequest,
   ResolveWorkflowV2InterventionRequest,
   ResolveWorkflowV2RecoveryRequest,
+  CleanupWorkflowV2RunRequest,
   ResolveRuntimeApprovalRequest,
   ReviewWorkflowRequest,
   ReviseWorkflowV2RunRequest,
@@ -328,6 +329,7 @@ export function registerAutomationIpc({
   ready(AUTOMATION_CHANNELS.workflowStopRun, (value: unknown) => service.workflows.stopWorkflowRun(workflowStopSchema.parse(value) as StopWorkflowRunRequest));
   ready(AUTOMATION_CHANNELS.workflowResolveIntervention, (value: unknown) => service.workflows.resolveWorkflowV2Intervention(workflowInterventionSchema.parse(value) as ResolveWorkflowV2InterventionRequest));
   ready(AUTOMATION_CHANNELS.workflowResolveRecovery, (value: unknown) => service.workflows.resolveWorkflowV2Recovery(workflowRecoverySchema.parse(value) as ResolveWorkflowV2RecoveryRequest));
+  ready(AUTOMATION_CHANNELS.workflowCleanupRunMaterials, (value: unknown) => service.workflows.cleanupWorkflowV2RunMaterials(workflowStopSchema.parse(value) as CleanupWorkflowV2RunRequest));
   ready(AUTOMATION_CHANNELS.workflowSendNodeMessage, (value: unknown) => {
     const request = z.object({ conversationId: idSchema, message: z.string().trim().min(1).max(200_000) }).parse(value);
     return service.workflows.sendWorkflowNodeMessage(request as SendWorkflowNodeMessageRequest);

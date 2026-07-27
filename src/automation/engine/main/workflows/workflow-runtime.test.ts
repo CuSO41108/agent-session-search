@@ -34,6 +34,7 @@ import {
   type WorkflowRunStateUpdate,
   workflowV2LlmNodePrompt,
 } from "./workflow-runtime";
+import type { WorkflowV2RecoveryOperationBroker } from "./workflow-runtime-ports";
 
 const AGENTS = [
   { id: "agent-a", modelId: "model-a" },
@@ -260,6 +261,7 @@ async function workflowV2RuntimeFixture(input: {
   }) => Promise<WorkflowNodeConversation>;
   markWorkflowNodeConversationWaiting?: (conversationId: string, question: string) => WorkflowNodeConversation;
   store?: WorkflowV2StorePort;
+  recoveryBroker?: WorkflowV2RecoveryOperationBroker;
   executeScript: (request: ExecuteWorkflowV2ScriptRequest) => Promise<WorkflowV2WorkerOutput>;
 }): Promise<{
   runtime: WorkflowRuntime;
@@ -398,6 +400,7 @@ async function workflowV2RuntimeFixture(input: {
     markWorkflowNodeConversationWaiting: input.markWorkflowNodeConversationWaiting ?? (() => { throw new Error("Unexpected interactive workflow node wait state in test."); }),
     stopWorkflowNodeConversations: async () => undefined,
     ...(input.store ? { createWorkflowV2Store: () => input.store! } : {}),
+    ...(input.recoveryBroker ? { createWorkflowV2RecoveryOperationBroker: () => input.recoveryBroker! } : {}),
   });
 
   return {
@@ -957,7 +960,7 @@ describe("WorkflowRuntime Workflow V2 bridge", () => {
       executeScript: async () => { throw new Error("script runner should not be called"); },
     });
 
-    fixture.runtime.runWorkflow({ workflowId: fixture.workflow.workflowId });
+    fixture.runtime.runWorkflow({ workflowId: fixture.workflow.workflowId, transactionApprovalMode: "batch" });
     const finished = await fixture.finished;
 
     expect(finished.status).toBe("completed");
@@ -967,6 +970,17 @@ describe("WorkflowRuntime Workflow V2 bridge", () => {
     expect(calls).toEqual(["prepare", "savepoint", "restore", "savepoint", "commit"]);
     expect(persistedStates.at(-1)?.transaction).toMatchObject({ mode: "strict_atomic", status: "committed", baselineId: `baseline:${definition.workflowId}:run-v2-runtime` });
     expect(durableEvents.map((event) => event.type)).toEqual(expect.arrayContaining(["transaction_started", "commit_started", "commit_completed"]));
+  });
+
+  test("requires an explicit approval mode when the confirmed policy delegates the choice to the user", async () => {
+    const definition = workflowV2Definition();
+    definition.transactionPolicy = createStrictWorkflowTransactionPolicy();
+    const fixture = await workflowV2RuntimeFixture({ definition, executeScript: async () => { throw new Error("not reached"); } });
+
+    const result = fixture.runtime.runWorkflow({ workflowId: fixture.workflow.workflowId });
+
+    expect(result).toMatchObject({ ok: false, error: expect.stringContaining("batch or per-operation") });
+    expect(fixture.startRequests).toEqual([]);
   });
 
   test("probes, supervises, and resumes an llm task after its execution lease becomes inactive", async () => {
@@ -2176,6 +2190,58 @@ describe("WorkflowRuntime Workflow V2 bridge", () => {
       recoveryDecisions: [expect.objectContaining({ action: "keep_state", actor: "desktop-user", operationIds: [] })],
     });
     expect(fixture.updates.find((update) => update.recovery)).toMatchObject({ recovery: { availableActions: expect.arrayContaining(["keep_state", "abandon"]) } });
+  });
+
+  test("runs reversible external compensation only after a confirmed recovery decision", async () => {
+    const definition = workflowV2Definition();
+    let durable!: WorkflowV2PersistedRunState;
+    const operations: WorkflowOperationRecord[] = [{
+      operationId: "operation-reversible", transactionId: "transaction-recovery", runId: "run-v2-intervention", nodeId: "draft", attempt: 1,
+      kind: "http", target: "https://example.test/resource", idempotencyKey: "key", adapterId: "http", prepared: { plan: {}, value: {} },
+      state: "applied", reversible: true, compensationAdapter: "http", receipt: { status: 200 }, createdAt: 1_100, updatedAt: 1_200,
+    }];
+    let compensationCalls = 0;
+    const recoveryBroker: WorkflowV2RecoveryOperationBroker = {
+      canInspectOperation: () => false,
+      canCompensateOperation: (operation) => operation.state === "applied" && operation.reversible,
+      inspect: async () => "applied",
+      compensateRun: async () => {
+        compensationCalls += 1;
+        operations[0]!.state = "compensated";
+        durable.transaction = { ...durable.transaction!, operationCount: 1, unknownOperationCount: 0, updatedAt: 1_300 };
+        return { compensated: [operations[0]!.operationId], skipped: [] };
+      },
+    };
+    const fixture = await workflowV2RuntimeFixture({
+      definition,
+      store: {
+        persistRunState: async (state) => { durable = structuredClone(state); },
+        appendEvents: async () => undefined,
+        readRunState: async () => structuredClone(durable),
+        readOperations: async () => structuredClone(operations),
+        inspectWorkspaceTransaction: async () => ({ created: ["result.txt"], modified: [], deleted: [], conflicts: [] }),
+      },
+      recoveryBroker,
+      executeScript: async () => { throw new Error("compensation must not execute workflow scripts"); },
+    });
+    let runState = createWorkflowV2RunState({ definition });
+    runState = transitionWorkflowV2NodeState(runState, { nodeId: "draft", status: "running", now: 1_100 });
+    runState = transitionWorkflowV2NodeState(runState, { nodeId: "draft", status: "paused", now: 1_200, error: "Needs recovery" });
+    durable = {
+      schemaVersion: WORKFLOW_V2_STORAGE_SCHEMA_VERSION, workflowId: definition.workflowId, runId: "run-v2-intervention", graphVersion: definition.graphVersion,
+      savedAt: 1_200, eventCount: 0, plan: fixture.workflow.workflowV2Plan!, runState, workerOutputs: [],
+      nodeControl: Object.fromEntries(definition.nodes.map((node) => [node.id, { extensionCount: 0 }])),
+      transaction: { transactionId: "transaction-recovery", mode: "controlled", status: "recovery_required", baselineId: "baseline", operationCount: 1, unknownOperationCount: 0, irreversibleOperationCount: 0, startedAt: 1_000, updatedAt: 1_200, retentionUntil: 604_801_200 },
+    };
+    fixture.setRuns([workflowV2InterventionRun(fixture.workflow, "stopped", "paused")]);
+
+    const result = await fixture.runtime.resolveWorkflowV2Recovery({ workflowId: definition.workflowId, runId: "run-v2-intervention", action: "compensate_all", actor: "desktop-user", reason: "Reverse the verified external write." });
+
+    expect(result.ok).toBe(true);
+    expect(compensationCalls).toBe(1);
+    expect(operations[0]?.state).toBe("compensated");
+    expect(durable.recoveryDecisions).toEqual([expect.objectContaining({ action: "compensate_all", actor: "desktop-user" })]);
+    expect(fixture.updates.at(-1)).toMatchObject({ transaction: { status: "waiting_for_user" }, operations: [{ state: "compensated" }] });
   });
 
   test("bounds an oversized script timeout to the platform timer range", async () => {

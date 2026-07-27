@@ -65,6 +65,24 @@ describe("WorkflowPage input ownership", () => {
     expect(html).toContain("workflow-review-trigger");
     expect(html).not.toContain("workflow-review-panel");
   });
+  test("requires a visible batch or per-operation choice for user-choice transaction policy", () => {
+    const value = controller(true);
+    value.status = "draft";
+    value.running = false;
+    value.activeRunId = undefined;
+    value.runProgress = [];
+    value.revision = 1;
+    value.confirmedRevision = 1;
+    const policy = { defaultMode: "controlled" as const, approvalMode: "user_choice" as const, checkpoints: [], externalEffects: "broker_only" as const, onConflict: "user_or_manager" as const, onUnknown: "pause" as const, retentionDays: 7 };
+    value.definition.transactionPolicy = policy;
+    value.workflowV2Plan = { workflowId: "workflow", graphVersion: 1, objective: "Answer", approvedBy: "test", frozenAt: 1, definition: { ...value.definition, transactionPolicy: policy }, nodes: [], acceptanceCriteria: [], roleDefaults: { orchestrator: { role: "orchestrator", modelProfile: "expert" }, executor: { role: "executor", modelProfile: "fast" }, reviewer: { role: "reviewer", modelProfile: "expert" } }, budget: { context: { maxContextTokens: 1_000, maxEvidenceItems: 10 } } };
+
+    const html = renderToStaticMarkup(<WorkflowPage controller={value} />);
+
+    expect(html).toContain("External approvals");
+    expect(html).toContain("Batch approval");
+    expect(html).toContain("Per-operation approval");
+  });
   test("does not render the legacy inline gate input for an awaiting node", () => {
     const value = controller(true);
     value.runProgress = [{ nodeId: "answer", title: "Answer", status: "awaiting_input", detail: "Provide more context" }];

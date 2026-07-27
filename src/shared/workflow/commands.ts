@@ -133,6 +133,7 @@ export interface StartWorkflowRunRequest {
   contextDocument?: string;
   triggerSource?: WorkflowRunTriggerSource;
   configurationSnapshot?: WorkflowRunConfigurationSnapshot;
+  transactionApprovalMode?: "batch" | "per_operation";
 }
 
 export interface ListWorkflowOutputsRequest {
@@ -143,6 +144,7 @@ export interface RunWorkflowRequest {
   workflowId: string;
   contextDocument?: string;
   triggerSource?: WorkflowRunTriggerSource;
+  transactionApprovalMode?: "batch" | "per_operation";
 }
 
 export interface ConfirmWorkflowRequest {
@@ -215,6 +217,11 @@ export interface ResolveWorkflowV2RecoveryRequest {
   action: WorkflowRecoveryAction;
   actor: string;
   reason: string;
+}
+
+export interface CleanupWorkflowV2RunRequest {
+  workflowId: string;
+  runId: string;
 }
 
 export interface ReviseWorkflowV2RunRequest extends PauseWorkflowNodeRequest {

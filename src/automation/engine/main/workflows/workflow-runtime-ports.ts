@@ -86,6 +86,7 @@ export interface WorkflowV2StorePort {
   inspectWorkspaceSavepointDiff?: (input: { workflowId: string; runId: string; savepointId: string }) => Promise<WorkflowWorkspaceDiffResult>;
   persistCommitPlan?: (plan: WorkflowCommitPlan) => Promise<WorkflowCommitPlan>;
   readCommitPlan?: (workflowId: string, runId: string) => Promise<WorkflowCommitPlan | undefined>;
+  cleanupRunMaterials?: (workflowId: string, runId: string) => Promise<void>;
   persistCacheEntry?: (entry: WorkflowV2CacheEntryMetadata) => Promise<void>;
   readRunState?: (workflowId: string, runId: string) => Promise<WorkflowV2PersistedRunState | undefined>;
   readCacheEntry?: (
@@ -127,6 +128,13 @@ export interface WorkflowV2StorePort {
   }) => Promise<WorkflowV2NodeCompletionSubmission>;
 }
 
+export interface WorkflowV2RecoveryOperationBroker {
+  canInspectOperation: (operation: WorkflowOperationRecord) => boolean;
+  canCompensateOperation: (operation: WorkflowOperationRecord) => boolean;
+  inspect: (input: { workflowId: string; runId: string; operationId: string; signal?: AbortSignal }) => Promise<"applied" | "not_applied" | "unknown">;
+  compensateRun: (input: { workflowId: string; runId: string; operationIds?: readonly string[]; signal?: AbortSignal }) => Promise<{ compensated: string[]; skipped: string[]; failed?: { operationId: string; error: string } }>;
+}
+
 export interface WorkflowRuntimeDependencies {
   snapshot: () => AppSnapshot;
   startWorkflowRun: (input: StartWorkflowRunRequest) => WorkflowOperationResult;
@@ -153,4 +161,5 @@ export interface WorkflowRuntimeDependencies {
   markWorkflowNodeConversationWaiting: (conversationId: string, question: string) => WorkflowNodeConversation;
   stopWorkflowNodeConversations: (workflowId: string, runId: string) => Promise<void>;
   createWorkflowV2Store?: () => WorkflowV2StorePort | undefined;
+  createWorkflowV2RecoveryOperationBroker?: (store: WorkflowV2StorePort) => WorkflowV2RecoveryOperationBroker | undefined;
 }

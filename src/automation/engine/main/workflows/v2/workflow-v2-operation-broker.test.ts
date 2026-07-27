@@ -144,6 +144,33 @@ describe("WorkflowV2OperationBroker", () => {
     expect(testAdapter.calls.filter((call) => call === "compensate")).toHaveLength(2);
   });
 
+  test("inspects an interrupted compensation before offering another recovery action", async () => {
+    const store = fakeStore();
+    const testAdapter = adapter({ inspect: async () => "not_applied" });
+    const broker = new WorkflowV2OperationBroker(store as never);
+    broker.register(testAdapter.value);
+    const input = { workflowId: "workflow-1", transactionId: "transaction-1", runId: "run-1", nodeId: "node-1", attempt: 1, kind: "http" as const, target: "https://example.test", plan: { url: "https://example.test" }, adapterId: "http-test", reversible: true, compensationAdapter: "http-test" };
+    await broker.apply(input);
+    await store.transitionOperation({ workflowId: "workflow-1", runId: "run-1", operationId: store.operations[0]!.operationId, state: "compensating", updatedAt: Date.now() });
+
+    await expect(broker.inspect({ workflowId: "workflow-1", runId: "run-1", operationId: store.operations[0]!.operationId })).resolves.toBe("not_applied");
+
+    expect(store.operations[0]?.state).toBe("compensated");
+    expect(broker.canCompensateOperation(store.operations[0]!)).toBe(false);
+  });
+
+  test("does not offer compensation when persisted credentials were redacted", async () => {
+    const store = fakeStore();
+    const testAdapter = adapter({});
+    const broker = new WorkflowV2OperationBroker(store as never);
+    broker.register(testAdapter.value);
+    const input = { workflowId: "workflow-1", transactionId: "transaction-1", runId: "run-1", nodeId: "node-1", attempt: 1, kind: "http" as const, target: "https://example.test", plan: { url: "https://example.test" }, adapterId: "http-test", reversible: true, compensationAdapter: "http-test" };
+    await broker.apply(input);
+    store.operations[0]!.prepared = { plan: {}, value: { authorization: "[REDACTED:SENSITIVE]" } };
+
+    expect(broker.canCompensateOperation(store.operations[0]!)).toBe(false);
+  });
+
   test("stops reverse compensation immediately after the first failure", async () => {
     const store = fakeStore();
     let compensationCalls = 0;

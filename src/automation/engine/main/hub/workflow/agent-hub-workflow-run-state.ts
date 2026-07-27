@@ -19,6 +19,10 @@ export function startWorkflowRunState(input: {
   if (!input.workflow.workflowV2Plan) throw new Error("Workflow V2 plan is required before starting a run.");
   if (input.workflow.confirmedRevision !== input.workflow.revision) throw new Error("Workflow must be confirmed before starting a run.");
   const { finalReport: _workflowFinalReport, ...workflowWithoutFinalReport } = input.workflow;
+  const workflowV2Plan = cloneWorkflowV2Plan(input.workflow.workflowV2Plan);
+  if (input.request.transactionApprovalMode && workflowV2Plan.definition.transactionPolicy) {
+    workflowV2Plan.definition.transactionPolicy.approvalMode = input.request.transactionApprovalMode;
+  }
 
   return {
     nextRun: {
@@ -27,7 +31,7 @@ export function startWorkflowRunState(input: {
       status: "running",
       triggerSource: input.request.triggerSource ?? "manual",
       ...(input.request.configurationSnapshot ? { configurationSnapshot: structuredClone(input.request.configurationSnapshot) } : {}),
-      workflowV2Plan: cloneWorkflowV2Plan(input.workflow.workflowV2Plan),
+      workflowV2Plan,
       progress: [],
       events: [],
       contextDocument,

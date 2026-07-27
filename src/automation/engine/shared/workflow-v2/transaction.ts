@@ -179,6 +179,19 @@ export interface WorkflowRecoveryPreview {
   cancellingNodeIds: string[];
   notStartedNodeIds: string[];
   availableActions: WorkflowRecoveryAction[];
+  managerRecommendation: WorkflowRecoveryManagerRecommendation;
+}
+
+export interface WorkflowRecoveryManagerRecommendation {
+  generatedAt: number;
+  transactionId: string;
+  recommendedAction: WorkflowRecoveryAction;
+  rationale: string;
+  rollbackTarget?: string;
+  compensationOperationIds: string[];
+  manualSteps: string[];
+  riskComparison: Array<{ action: WorkflowRecoveryAction; risk: "low" | "medium" | "high"; detail: string }>;
+  conflictCandidates: Array<{ path: string; resolution: "isolated" | "current" | "manual"; rationale: string }>;
 }
 
 export interface WorkflowConflictPreviewVersion {

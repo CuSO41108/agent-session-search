@@ -65,6 +65,17 @@ export class WorkflowV2OperationBroker {
     this.adapters.set(adapter.adapterId, adapter as WorkflowTransactionalOperationAdapter);
   }
 
+  canInspectOperation(operation: WorkflowOperationRecord): boolean {
+    return Boolean(operation.adapterId && operation.prepared && this.adapters.has(operation.adapterId));
+  }
+
+  canCompensateOperation(operation: WorkflowOperationRecord): boolean {
+    return operation.state === "applied"
+      && operation.reversible
+      && operation.receipt !== undefined
+      && Boolean(operation.prepared && !containsRedactedValue(operation.prepared) && operation.compensationAdapter && this.adapters.has(operation.compensationAdapter));
+  }
+
   async apply<TPlan, TReceipt>(input: WorkflowOperationBrokerApplyInput<TPlan>): Promise<TReceipt> {
     const operation = await this.prepare(input);
     if (operation.state === "applied") return operation.receipt as TReceipt;
@@ -156,7 +167,7 @@ export class WorkflowV2OperationBroker {
     const operations = await this.store.readOperations?.(input.workflowId, input.runId) ?? [];
     const operation = operations.find((item) => item.operationId === input.operationId);
     if (!operation) throw new Error(`Workflow operation ${input.operationId} was not found.`);
-    if (operation.state !== "applying" && operation.state !== "unknown") return operation.state === "applied" ? "applied" : "not_applied";
+    if (operation.state !== "applying" && operation.state !== "unknown" && operation.state !== "compensating") return operation.state === "applied" ? "applied" : "not_applied";
     if (!operation.prepared || !operation.adapterId) {
       await this.markUnknown(input, operation, "Prepared operation data is unavailable for inspection.");
       return "unknown";
@@ -175,7 +186,7 @@ export class WorkflowV2OperationBroker {
       const receipt = { ...(operation.receipt !== undefined ? { originalReceipt: operation.receipt } : {}), inspection: "applied" };
       if (operation.state === "unknown" && this.store.resolveUnknownOperation) {
         await this.store.resolveUnknownOperation({ workflowId: input.workflowId, runId: input.runId, operationId: operation.operationId, verifiedState: "applied", actor: "operation-broker", reason: "Adapter inspection verified the remote operation was applied.", updatedAt: Date.now(), evidence: receipt });
-      } else if (operation.state === "applying") {
+      } else if (operation.state === "applying" || operation.state === "compensating") {
         await this.store.transitionOperation?.({ workflowId: input.workflowId, runId: input.runId, operationId: operation.operationId, state: "applied", updatedAt: Date.now(), receipt });
       } else if (operation.state === "unknown") {
         throw new Error(`Workflow operation ${operation.operationId} inspection proved applied but no durable unknown-state resolver is available.`);
@@ -186,6 +197,8 @@ export class WorkflowV2OperationBroker {
         await this.store.resolveUnknownOperation({ workflowId: input.workflowId, runId: input.runId, operationId: operation.operationId, verifiedState: "compensated", actor: "operation-broker", reason: "Adapter inspection verified the remote operation was not applied.", updatedAt: Date.now(), evidence: receipt });
       } else if (operation.state === "applying") {
         await this.store.transitionOperation?.({ workflowId: input.workflowId, runId: input.runId, operationId: operation.operationId, state: "compensating", updatedAt: Date.now(), receipt });
+        await this.store.transitionOperation?.({ workflowId: input.workflowId, runId: input.runId, operationId: operation.operationId, state: "compensated", updatedAt: Date.now(), receipt });
+      } else if (operation.state === "compensating") {
         await this.store.transitionOperation?.({ workflowId: input.workflowId, runId: input.runId, operationId: operation.operationId, state: "compensated", updatedAt: Date.now(), receipt });
       } else if (operation.state === "unknown") {
         throw new Error(`Workflow operation ${operation.operationId} inspection proved not applied but no durable unknown-state resolver is available.`);
@@ -247,6 +260,15 @@ export class WorkflowV2OperationBroker {
     if (operation.state === "unknown") throw new Error(`Workflow operation ${operation.operationId} has unknown remote state and must be inspected before retry.`);
     throw new Error(`Workflow operation ${operation.operationId} is already ${operation.state}; duplicate apply is blocked.`);
   }
+}
+
+function containsRedactedValue(value: unknown, seen = new WeakSet<object>()): boolean {
+  if (typeof value === "string") return value.includes("[REDACTED");
+  if (!value || typeof value !== "object") return false;
+  if (seen.has(value)) return false;
+  seen.add(value);
+  const values = Array.isArray(value) ? value : Object.values(value as Record<string, unknown>);
+  return values.some((item) => containsRedactedValue(item, seen));
 }
 
 function semanticDigest(value: unknown): string {

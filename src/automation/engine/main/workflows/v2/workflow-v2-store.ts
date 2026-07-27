@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { appendFile, mkdir, open, readFile, readdir, rename, rm } from "node:fs/promises";
+import { appendFile, lstat, mkdir, open, readFile, readdir, rename, rm } from "node:fs/promises";
 import path from "node:path";
 import {
   isWorkflowV2CacheEntryMetadata,
@@ -546,6 +546,25 @@ export class WorkflowV2FileStore {
         }
       }
       return removed;
+    });
+  }
+
+  cleanupRunMaterials(workflowId: string, runId: string): Promise<void> {
+    return this.enqueueValue(async () => {
+      const workflowsRoot = path.resolve(this.rootDir, "workflows");
+      const layout = this.layout(workflowId, runId);
+      const runDirectory = await lstat(layout.runDir).catch((error) => isNodeError(error) && error.code === "ENOENT" ? undefined : Promise.reject(error));
+      if (!runDirectory || !runDirectory.isDirectory() || runDirectory.isSymbolicLink()) throw new Error("Workflow V2 run materials were not found in a safe directory.");
+      const stateContent = await readOptionalFile(layout.runStatePath);
+      if (!stateContent) throw new Error("Workflow V2 run materials were not found.");
+      const parsed = parseJson(stateContent, "Workflow V2 persisted run state");
+      if (!isWorkflowV2PersistedRunState(parsed) || !parsed.transaction) throw new Error("Workflow V2 run materials are not safe to clean.");
+      if (parsed.transaction.status !== "committed" && parsed.transaction.status !== "rolled_back") {
+        throw new Error("Only committed or fully rolled back Workflow V2 materials can be cleaned.");
+      }
+      const resolvedRunDir = path.resolve(layout.runDir);
+      if (!resolvedRunDir.startsWith(`${workflowsRoot}${path.sep}`)) throw new Error("Workflow V2 cleanup target escaped the storage root.");
+      await rm(resolvedRunDir, { recursive: true, force: true });
     });
   }
 }

@@ -14,7 +14,25 @@ export function startWorkflowRun(input: { request: RunWorkflowRequest; deps: Wor
   const hasRunningRun = snapshot.workflowStore.runs.some((run) => run.workflowId === workflow.workflowId && !isWorkflowRunTerminalStatus(run.status));
   if ((!isWorkflowRunTerminalStatus(workflow.status) && workflow.status !== "draft") || hasRunningRun) return { ok: false, workflowId: workflow.workflowId, error: "Workflow is already running." };
   if (!workflow.workflowV2Plan) return { ok: false, workflowId: workflow.workflowId, error: "Workflow V2 plan is required. Legacy workflow execution is no longer supported." };
-  const planError = workflowV2PlanValidationError(workflow, workflow.workflowV2Plan);
+  const configuredApprovalMode = workflow.workflowV2Plan.definition.transactionPolicy?.approvalMode;
+  const requestedApprovalMode = input.request.transactionApprovalMode;
+  if (configuredApprovalMode === "user_choice" && requestedApprovalMode !== "batch" && requestedApprovalMode !== "per_operation") {
+    return { ok: false, workflowId: workflow.workflowId, error: "Choose batch or per-operation approval before starting this workflow." };
+  }
+  if (configuredApprovalMode !== "user_choice" && requestedApprovalMode && requestedApprovalMode !== configuredApprovalMode) {
+    return { ok: false, workflowId: workflow.workflowId, error: "The requested approval mode does not match the confirmed workflow policy." };
+  }
+  const effectiveApprovalMode = configuredApprovalMode === "user_choice" ? requestedApprovalMode : configuredApprovalMode;
+  const runPlan = effectiveApprovalMode && workflow.workflowV2Plan.definition.transactionPolicy
+    ? {
+        ...workflow.workflowV2Plan,
+        definition: {
+          ...workflow.workflowV2Plan.definition,
+          transactionPolicy: { ...workflow.workflowV2Plan.definition.transactionPolicy, approvalMode: effectiveApprovalMode },
+        },
+      }
+    : workflow.workflowV2Plan;
+  const planError = workflowV2PlanValidationError({ ...workflow, workflowV2Plan: runPlan }, runPlan);
   if (planError) return { ok: false, workflowId: workflow.workflowId, error: planError };
   const initialContextDocument = input.request.contextDocument ?? workflow.contextDocument;
   const configuredAgent = snapshot.configuredAgents.find((agent) => agent.id === workflow.configuredAgentId);
@@ -24,6 +42,7 @@ export function startWorkflowRun(input: { request: RunWorkflowRequest; deps: Wor
     contextDocument: initialContextDocument,
     ...(input.request.triggerSource ? { triggerSource: input.request.triggerSource } : {}),
     ...(configurationSnapshot ? { configurationSnapshot } : {}),
+    ...(effectiveApprovalMode ? { transactionApprovalMode: effectiveApprovalMode } : {}),
   };
   const started = input.deps.startWorkflowRun(startRequest);
   if (!started.ok || !started.runId) return started;
@@ -31,7 +50,7 @@ export function startWorkflowRun(input: { request: RunWorkflowRequest; deps: Wor
   const baseWorkflowContextDocument = [initialContextDocument, storageDocument].map((item) => item.trim()).filter(Boolean).join("\n\n");
   input.deps.updateWorkflowRunState({ workflowId: workflow.workflowId, runId: started.runId, status: "running", contextDocument: baseWorkflowContextDocument });
   input.registry.register({ workflowId: workflow.workflowId, runId: started.runId, pausedNodeIds: new Set(), pausedTaskIds: new Set(), gatedNodeIds: new Set(), taskIdByNodeId: new Map(), manualPauseReasonByNodeId: new Map(), abortControllerByNodeId: new Map() });
-  void input.executor.execute({ workflow, plan: workflow.workflowV2Plan, runId: started.runId, baseWorkflowContextDocument, storagePlanDocument: storageDocument }).finally(() => input.registry.release(started.runId!));
+  void input.executor.execute({ workflow: { ...workflow, workflowV2Plan: runPlan }, plan: runPlan, runId: started.runId, baseWorkflowContextDocument, storagePlanDocument: storageDocument }).finally(() => input.registry.release(started.runId!));
   return started;
 }
 
