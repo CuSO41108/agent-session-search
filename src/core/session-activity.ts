@@ -10,6 +10,7 @@ import type { LiveSession, LiveSessionFamily, LiveSessionSnapshot } from "./type
 const require = createRequire(import.meta.url);
 const { DatabaseSync } = require("node:sqlite") as { DatabaseSync: new (path: string, options?: { readOnly?: boolean }) => import("node:sqlite").DatabaseSync };
 const CLAUDE_SESSION_START_SKEW_MS = 2 * 60 * 1000;
+const CODEX_APP_STALE_SESSION_MS = 24 * 60 * 60 * 1000;
 const CODEX_LIFECYCLE_READ_CHUNK_SIZE = 64 * 1024;
 
 type ProcessListRunner = (command: string, args: string[]) => Promise<string>;
@@ -144,7 +145,8 @@ function liveSessionSnapshotCacheKey(options: LoadLiveSessionOptions): string {
 }
 
 export async function loadLiveSessionSnapshot(options: LoadLiveSessionOptions = {}): Promise<LiveSessionSnapshot> {
-  const generatedAt = (options.now ?? new Date()).toISOString();
+  const now = options.now ?? new Date();
+  const generatedAt = now.toISOString();
   const platform = options.platform ?? process.platform;
   const runner = options.runner ?? execText;
 
@@ -163,7 +165,7 @@ export async function loadLiveSessionSnapshot(options: LoadLiveSessionOptions = 
         ? [new Map<number, string>(), new Map<number, string[]>(), new Map<number, string>()]
         : await Promise.all([
             loadPlainCodexSessionFiles(lines, runner, options.homeDir ?? os.homedir()),
-            loadCodexAppSessionFiles(lines, runner),
+            loadCodexAppSessionFiles(lines, runner, now.getTime()),
             loadPlainClaudeSessionFiles(lines, runner, options.homeDir ?? os.homedir()),
           ]);
     const traeSessionIdsByPid =
@@ -229,7 +231,7 @@ async function loadPlainCodexSessionFiles(lines: string[], runner: ProcessListRu
   );
 }
 
-async function loadCodexAppSessionFiles(lines: string[], runner: ProcessListRunner): Promise<Map<number, string[]>> {
+async function loadCodexAppSessionFiles(lines: string[], runner: ProcessListRunner, nowMs: number): Promise<Map<number, string[]>> {
   const entries = lines.map(parseProcessLine).filter((entry): entry is ProcessEntry => Boolean(entry));
   const pids = entries.filter((entry) => isCodexAppServerCommand(splitCommandLine(entry.command))).map((entry) => entry.pid);
   const sessionFiles = new Map<number, string[]>();
@@ -237,7 +239,7 @@ async function loadCodexAppSessionFiles(lines: string[], runner: ProcessListRunn
   await Promise.all(
     pids.map(async (pid) => {
       try {
-        const files = extractCodexSessionFiles(await runner("lsof", ["-p", String(pid)])).filter(isCodexAgentWorking);
+        const files = extractCodexSessionFiles(await runner("lsof", ["-p", String(pid)])).filter((file) => isCodexAgentWorking(file, nowMs));
         if (files.length > 0) sessionFiles.set(pid, files);
       } catch {
         return;
@@ -718,11 +720,13 @@ function extractCodexSessionFiles(lsofOutput: string): string[] {
   return [...sessionFiles];
 }
 
-function isCodexAgentWorking(sessionFile: string): boolean {
+function isCodexAgentWorking(sessionFile: string, nowMs: number): boolean {
   let fileDescriptor: number | null = null;
   try {
     fileDescriptor = fs.openSync(sessionFile, "r");
-    let position = fs.fstatSync(fileDescriptor).size;
+    const fileStat = fs.fstatSync(fileDescriptor);
+    if (nowMs - fileStat.mtimeMs >= CODEX_APP_STALE_SESSION_MS) return false;
+    let position = fileStat.size;
     let partialLine = Buffer.alloc(0);
 
     while (position > 0) {
