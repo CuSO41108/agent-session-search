@@ -179,18 +179,16 @@ export function Sidebar(props: SidebarProps): ReactElement {
             </span>
             {t("Messages", "消息")}
           </span>
-          {hasTokenUsage(stats.total) ? (
-            <UsageTokenMetric
-              totalTokens={stats.total.totalTokens}
-              previousTotalTokens={stats.previousTotal?.totalTokens ?? null}
-              period={statsPeriod}
-              language={language}
-              trend={statsTrend}
-              trendLoading={statsTrendLoading}
-              onEnsureTrend={onEnsureStatsTrend}
-              tokensLabel={t("Tokens", "Token")}
-            />
-          ) : null}
+          <UsageTokenMetric
+            totalTokens={stats.total.totalTokens}
+            previousTotalTokens={stats.previousTotal?.totalTokens ?? null}
+            period={statsPeriod}
+            language={language}
+            trend={statsTrend}
+            trendLoading={statsTrendLoading}
+            onEnsureTrend={onEnsureStatsTrend}
+            tokensLabel={t("Tokens", "Token")}
+          />
         </div>
         <div className="stats-breakdown">
           {usageStatsDisplayRows(stats.bySource).map((item) => (
