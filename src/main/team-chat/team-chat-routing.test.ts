@@ -69,14 +69,14 @@ describe("resolveTeamChatTargets", () => {
 });
 
 describe("studio Prompt contract", () => {
-  it("keeps the delivered message verbatim and includes only explicit context", () => {
+  it("delivers bounded room updates once through the immutable trigger snapshot", () => {
     const trigger = message({
       id: "message-current",
       sequence: 9,
       recipientMemberId: "member-2",
       content: "check auth",
     });
-    const explicitContext = [
+    const roomUpdates = [
       message({
         id: "message-parent",
         sequence: 8,
@@ -86,23 +86,27 @@ describe("studio Prompt contract", () => {
         recipientMemberId: "member-2",
         content: "I changed src/auth.ts",
       }),
+      trigger,
     ];
 
     const prompt = buildTeamChatPrompt({
       room,
       target: members[1]!,
-      explicitContext,
+      roomUpdates,
       triggerMessage: trigger,
-      unreadCount: 3,
-      unreadSequenceRange: { from: 7, to: 9 },
+      previousContextSequence: 7,
+      snapshotSequence: 9,
       continuing: false,
       contextTruncated: false,
     });
 
     expect(prompt).toContain("[AgentRecall Studio Delivery]");
-    expect(prompt).toContain("To: Codex2 (member-2)");
+    expect(prompt).toContain("Runtime: Codex2 (member-2)");
+    expect(prompt).toContain("Room snapshot: sequence 9");
+    expect(prompt).toContain("Previous snapshot: sequence 7");
+    expect(prompt).toContain("Room updates:");
     expect(prompt).toContain("I changed src/auth.ts");
-    expect(prompt).toContain("Other unread studio messages: 3 (sequence 7-9)");
+    expect(prompt).toContain("Trigger:");
     expect(prompt.match(/check auth/g)).toHaveLength(1);
   });
 
@@ -112,7 +116,9 @@ describe("studio Prompt contract", () => {
     expect(instructions).toContain("Codex2");
     expect(instructions).toContain("member-2");
     expect(instructions).toContain("/synthetic/repo");
-    expect(instructions).toContain("studio_send_message");
+    expect(instructions).toContain("Every public message");
+    expect(instructions).toContain("cannot activate another studio Runtime");
+    expect(instructions).not.toContain("studio_send_message");
     expect(instructions).not.toContain("check auth");
   });
 });

@@ -4,6 +4,10 @@ import { PostgresDatabase } from "../../core/postgres/database";
 import { POSTGRES_MIGRATIONS } from "../../core/postgres/schema";
 import { PGliteTestPool } from "../../core/postgres/test-pglite";
 import { PostgresTeamChatStore } from "./postgres-team-chat-store";
+import type {
+  TeamChatExecutionAttempt,
+  TeamChatPendingActivation,
+} from "./team-chat-store";
 
 const ROOM_ID = "019c0000-0000-7000-8000-000000000001";
 const MESSAGE_ONE_ID = "019c0000-0000-7000-8000-000000000011";
@@ -153,6 +157,257 @@ describe("PostgresTeamChatStore", () => {
     });
   });
 
+  it("atomically persists a mention Task and queued Turn at the trigger snapshot", async () => {
+    await store.createRoom(roomFixture());
+    const createdAt = "2026-07-23T08:01:00.000Z";
+    const activation: TeamChatPendingActivation = {
+      mention: {
+        id: "019c0000-0000-7000-8000-000000000021",
+        roomId: ROOM_ID,
+        messageId: MESSAGE_ONE_ID,
+        memberId: "builder",
+        createdAt,
+      },
+      task: {
+        id: "019c0000-0000-7000-8000-000000000022",
+        roomId: ROOM_ID,
+        memberId: "builder",
+        rootMessageId: MESSAGE_ONE_ID,
+        status: "in_progress",
+        evidence: [],
+        createdAt,
+        updatedAt: createdAt,
+      },
+      dispatch: {
+        id: "019c0000-0000-7000-8000-000000000023",
+        roomId: ROOM_ID,
+        mentionId: "019c0000-0000-7000-8000-000000000021",
+        taskId: "019c0000-0000-7000-8000-000000000022",
+        rootMessageId: MESSAGE_ONE_ID,
+        sourceMessageId: MESSAGE_ONE_ID,
+        targetAgentId: "builder",
+        roomSnapshotSequence: 0,
+        hop: 0,
+        status: "queued",
+        createdAt,
+        updatedAt: createdAt,
+      },
+    };
+
+    const persisted = await store.insertMessageWithActivations(
+      messageFixture(MESSAGE_ONE_ID, "@Builder inspect auth", createdAt),
+      [activation],
+    );
+
+    expect(persisted.message.sequence).toBe(1);
+    expect(persisted.activations[0]?.dispatch).toMatchObject({
+      id: activation.dispatch.id,
+      roomSnapshotSequence: 1,
+      status: "queued",
+    });
+    await expect(store.listQueuedDispatches()).resolves.toEqual([
+      expect.objectContaining({
+        id: activation.dispatch.id,
+        mentionId: activation.mention.id,
+        taskId: activation.task.id,
+        roomSnapshotSequence: 1,
+      }),
+    ]);
+    await expect(store.listInbox(ROOM_ID, "builder", undefined, 20)).resolves.toEqual([
+      expect.objectContaining({
+        mentionId: activation.mention.id,
+        messageId: MESSAGE_ONE_ID,
+        taskId: activation.task.id,
+        turnId: activation.dispatch.id,
+        status: "queued",
+      }),
+    ]);
+  });
+
+  it("persists ordered native Attempt events under one Studio Turn", async () => {
+    await store.createRoom(roomFixture());
+    const createdAt = "2026-07-23T08:01:00.000Z";
+    const activation: TeamChatPendingActivation = {
+      mention: {
+        id: "019c0000-0000-7000-8000-000000000031",
+        roomId: ROOM_ID,
+        messageId: MESSAGE_ONE_ID,
+        memberId: "builder",
+        createdAt,
+      },
+      task: {
+        id: "019c0000-0000-7000-8000-000000000032",
+        roomId: ROOM_ID,
+        memberId: "builder",
+        rootMessageId: MESSAGE_ONE_ID,
+        status: "in_progress",
+        evidence: [],
+        createdAt,
+        updatedAt: createdAt,
+      },
+      dispatch: {
+        id: "019c0000-0000-7000-8000-000000000033",
+        roomId: ROOM_ID,
+        mentionId: "019c0000-0000-7000-8000-000000000031",
+        taskId: "019c0000-0000-7000-8000-000000000032",
+        rootMessageId: MESSAGE_ONE_ID,
+        sourceMessageId: MESSAGE_ONE_ID,
+        targetAgentId: "builder",
+        roomSnapshotSequence: 0,
+        hop: 0,
+        status: "queued",
+        createdAt,
+        updatedAt: createdAt,
+      },
+    };
+    await store.insertMessageWithActivations(
+      messageFixture(MESSAGE_ONE_ID, "@Builder inspect auth", createdAt),
+      [activation],
+    );
+    const attempt: TeamChatExecutionAttempt = {
+      id: "019c0000-0000-7000-8000-000000000034",
+      dispatchId: activation.dispatch.id,
+      attemptNumber: 1,
+      runtimeId: "codex",
+      runtimeSessionRef: "thread-private",
+      nativeTurnId: "turn-native-1",
+      roomSnapshotSequence: 1,
+      status: "running",
+      startedAt: "2026-07-23T08:02:00.000Z",
+    };
+
+    await store.insertExecutionAttempt(attempt);
+    await store.insertAttemptEvent({
+      id: "019c0000-0000-7000-8000-000000000035",
+      attemptId: attempt.id,
+      sequence: 1,
+      type: "tool_call",
+      name: "shell_command",
+      content: "npm test",
+      createdAt: "2026-07-23T08:02:01.000Z",
+    });
+    await store.insertAttemptEvent({
+      id: "019c0000-0000-7000-8000-000000000036",
+      attemptId: attempt.id,
+      sequence: 2,
+      type: "tool_result",
+      name: "shell_command",
+      content: "passed",
+      createdAt: "2026-07-23T08:02:02.000Z",
+    });
+
+    await expect(store.listExecutionAttempts(activation.dispatch.id)).resolves.toEqual([
+      expect.objectContaining({
+        id: attempt.id,
+        runtimeSessionRef: "thread-private",
+        nativeTurnId: "turn-native-1",
+        roomSnapshotSequence: 1,
+      }),
+    ]);
+    await expect(store.listTurnEvents(ROOM_ID, activation.dispatch.id, 20)).resolves.toEqual([
+      expect.objectContaining({ sequence: 1, type: "tool_call", content: "npm test" }),
+      expect.objectContaining({ sequence: 2, type: "tool_result", content: "passed" }),
+    ]);
+
+    await expect(store.listRoomTurns(ROOM_ID, 20)).resolves.toEqual([
+      expect.objectContaining({
+        dispatch: expect.objectContaining({ id: activation.dispatch.id }),
+        task: expect.objectContaining({
+          id: activation.task.id,
+          status: "in_progress",
+        }),
+        triggerMessage: expect.objectContaining({ id: MESSAGE_ONE_ID }),
+      }),
+    ]);
+    await expect(store.getRoomTurn(ROOM_ID, activation.dispatch.id)).resolves.toEqual(
+      expect.objectContaining({
+        dispatch: expect.objectContaining({ id: activation.dispatch.id }),
+        task: expect.objectContaining({ id: activation.task.id }),
+      }),
+    );
+
+    const completed = await store.finishTask(
+      ROOM_ID,
+      "builder",
+      activation.task.id,
+      {
+        status: "completed",
+        summary: "Auth inspection passed",
+        evidence: ["npm test"],
+        finishedAt: "2026-07-23T08:03:00.000Z",
+      },
+    );
+    await expect(store.finishTask(
+      ROOM_ID,
+      "builder",
+      activation.task.id,
+      {
+        status: "completed",
+        summary: "Auth inspection passed",
+        evidence: ["npm test"],
+        finishedAt: "2026-07-23T08:04:00.000Z",
+      },
+    )).resolves.toEqual(completed);
+    await expect(store.finishTask(
+      ROOM_ID,
+      "reviewer",
+      activation.task.id,
+      {
+        status: "blocked",
+        summary: "wrong owner",
+        evidence: [],
+        finishedAt: "2026-07-23T08:05:00.000Z",
+      },
+    )).resolves.toBeUndefined();
+    await expect(store.listRoomTurns(ROOM_ID, 20)).resolves.toEqual([
+      expect.objectContaining({
+        task: expect.objectContaining({
+          status: "completed",
+          summary: "Auth inspection passed",
+          evidence: ["npm test"],
+        }),
+      }),
+    ]);
+    await expect(store.listThreadMessages(ROOM_ID, MESSAGE_ONE_ID, 20)).resolves.toEqual([
+      expect.objectContaining({ id: MESSAGE_ONE_ID }),
+    ]);
+  });
+
+  it("reads public room updates only through the immutable Turn snapshot", async () => {
+    await store.createRoom(roomFixture());
+    await store.insertMessage(messageFixture(
+      MESSAGE_ONE_ID,
+      "@Builder first task",
+      "2026-07-23T08:01:00.000Z",
+    ));
+    await store.insertMessage(messageFixture(
+      MESSAGE_TWO_ID,
+      "background for the next task",
+      "2026-07-23T08:02:00.000Z",
+    ));
+    await store.insertMessage(messageFixture(
+      "019c0000-0000-7000-8000-000000000013",
+      "@Builder second task",
+      "2026-07-23T08:03:00.000Z",
+    ));
+
+    await expect(store.getLatestMessageSequence(ROOM_ID)).resolves.toBe(3);
+    await expect(store.listRoomContext(ROOM_ID, 0, 2, 10)).resolves.toEqual({
+      messages: [
+        expect.objectContaining({ id: MESSAGE_ONE_ID }),
+        expect.objectContaining({ id: MESSAGE_TWO_ID }),
+      ],
+      truncated: false,
+      snapshotSequence: 2,
+    });
+    await expect(store.listRoomContext(ROOM_ID, 0, 2, 1)).resolves.toEqual({
+      messages: [expect.objectContaining({ id: MESSAGE_TWO_ID })],
+      truncated: true,
+      snapshotSequence: 2,
+      omittedSequenceRange: { from: 1, to: 1 },
+    });
+  });
+
   it("persists Agent continuation state and interrupts stale dispatches", async () => {
     await store.createRoom(roomFixture());
     await store.insertMessage(messageFixture(
@@ -172,6 +427,7 @@ describe("PostgresTeamChatStore", () => {
         payload: { threadId: "thread-1" },
       },
       lastContextMessageId: MESSAGE_ONE_ID,
+      roomContextSequence: 1,
       updatedAt: "2026-07-23T08:02:00.000Z",
     });
     const dispatch: TeamChatDispatch = {
@@ -193,6 +449,7 @@ describe("PostgresTeamChatStore", () => {
       expect.objectContaining({
         agentId: "builder",
         lastContextMessageId: MESSAGE_ONE_ID,
+        roomContextSequence: 1,
         runtimeConversation: expect.objectContaining({ runtimeId: "codex" }),
       }),
     ]);
@@ -203,7 +460,7 @@ describe("PostgresTeamChatStore", () => {
     expect(result.rows[0]?.status).toBe("interrupted");
   });
 
-  it("provides scoped message lookup, causal counts, and workspace reservations", async () => {
+  it("provides scoped message lookup and workspace reservations", async () => {
     await store.createRoom(roomFixture());
     await store.insertMessage({
       ...messageFixture(MESSAGE_ONE_ID, "authentication changed", "2026-07-23T08:01:00.000Z"),
@@ -228,19 +485,12 @@ describe("PostgresTeamChatStore", () => {
       updatedAt: "2026-07-23T08:01:00.000Z",
     });
 
-    await expect(store.listDirectedContext(ROOM_ID, "reviewer", undefined, 10))
-      .resolves.toMatchObject({
-        messages: [expect.objectContaining({ id: MESSAGE_TWO_ID })],
-        truncated: false,
-      });
     await expect(store.getMessages(ROOM_ID, [MESSAGE_TWO_ID]))
       .resolves.toEqual([expect.objectContaining({ id: MESSAGE_TWO_ID })]);
     await expect(store.readMessageRange(ROOM_ID, { after: 1, limit: 10 }))
       .resolves.toEqual([expect.objectContaining({ id: MESSAGE_TWO_ID })]);
     await expect(store.searchMessages(ROOM_ID, "authentication", 10))
       .resolves.toHaveLength(2);
-    await expect(store.countRootDispatches(MESSAGE_ONE_ID)).resolves.toBe(1);
-
     const reservation = {
       roomId: ROOM_ID,
       memberId: "builder",

@@ -142,7 +142,7 @@ describe("registerTeamChatIpc", () => {
       roomId: "room-1",
       content: "hello",
       targetMemberIds: [],
-    })).rejects.toThrow(/too small|at least/i);
+    })).resolves.toMatchObject({ rootMessageId: "message-1" });
     await expect(invoke(TEAM_CHAT_CHANNELS.messagesSend, {
       roomId: "room-1",
       content: "hello",

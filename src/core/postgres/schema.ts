@@ -979,4 +979,101 @@ export const POSTGRES_MIGRATIONS: readonly PostgresMigration[] = [{
         ADD COLUMN IF NOT EXISTS content_indexed_size bigint NOT NULL DEFAULT 0;
     `,
   ],
+}, {
+  version: 10,
+  name: "persist Studio room Runtime Turns",
+  statements: [
+    `
+      ALTER TABLE agent_recall.chat_agent_sessions
+        ADD COLUMN IF NOT EXISTS room_context_sequence bigint NOT NULL DEFAULT 0;
+
+      UPDATE agent_recall.chat_agent_sessions AS sessions
+      SET room_context_sequence = messages.sequence
+      FROM agent_recall.chat_messages AS messages
+      WHERE sessions.last_context_message_id = messages.id
+        AND sessions.room_id = messages.room_id
+        AND sessions.room_context_sequence = 0;
+
+      ALTER TABLE agent_recall.chat_messages
+        ADD COLUMN IF NOT EXISTS based_on_sequence bigint;
+
+      CREATE TABLE IF NOT EXISTS agent_recall.chat_message_mentions (
+        id uuid PRIMARY KEY,
+        room_id uuid NOT NULL REFERENCES agent_recall.chat_rooms(id) ON DELETE CASCADE,
+        message_id uuid NOT NULL REFERENCES agent_recall.chat_messages(id) ON DELETE CASCADE,
+        member_id text NOT NULL,
+        created_at timestamptz NOT NULL,
+        UNIQUE (message_id, member_id)
+      );
+
+      CREATE TABLE IF NOT EXISTS agent_recall.chat_tasks (
+        id uuid PRIMARY KEY,
+        room_id uuid NOT NULL REFERENCES agent_recall.chat_rooms(id) ON DELETE CASCADE,
+        member_id text NOT NULL,
+        root_message_id uuid NOT NULL REFERENCES agent_recall.chat_messages(id) ON DELETE CASCADE,
+        status varchar(24) NOT NULL
+          CHECK (status IN ('in_progress', 'completed', 'blocked', 'waiting_input')),
+        summary text,
+        evidence jsonb NOT NULL DEFAULT '[]'::jsonb,
+        created_at timestamptz NOT NULL,
+        updated_at timestamptz NOT NULL,
+        finished_at timestamptz
+      );
+
+      ALTER TABLE agent_recall.chat_dispatches
+        ADD COLUMN IF NOT EXISTS mention_id uuid
+          REFERENCES agent_recall.chat_message_mentions(id) ON DELETE SET NULL,
+        ADD COLUMN IF NOT EXISTS task_id uuid
+          REFERENCES agent_recall.chat_tasks(id) ON DELETE SET NULL,
+        ADD COLUMN IF NOT EXISTS room_snapshot_sequence bigint;
+
+      CREATE UNIQUE INDEX IF NOT EXISTS chat_dispatches_mention_idx
+        ON agent_recall.chat_dispatches (mention_id)
+        WHERE mention_id IS NOT NULL;
+
+      CREATE INDEX IF NOT EXISTS chat_dispatches_member_queue_idx
+        ON agent_recall.chat_dispatches
+          (room_id, target_agent_id, status, room_snapshot_sequence, created_at);
+
+      CREATE INDEX IF NOT EXISTS chat_tasks_room_member_idx
+        ON agent_recall.chat_tasks (room_id, member_id, updated_at DESC);
+
+      CREATE TABLE IF NOT EXISTS agent_recall.chat_dispatch_attempts (
+        id uuid PRIMARY KEY,
+        dispatch_id uuid NOT NULL
+          REFERENCES agent_recall.chat_dispatches(id) ON DELETE CASCADE,
+        attempt_number integer NOT NULL CHECK (attempt_number > 0),
+        runtime_id varchar(80) NOT NULL,
+        runtime_session_ref text,
+        native_turn_id text,
+        room_snapshot_sequence bigint NOT NULL CHECK (room_snapshot_sequence >= 0),
+        room_sequence_at_finish bigint,
+        status varchar(16) NOT NULL
+          CHECK (status IN ('running', 'completed', 'failed', 'interrupted')),
+        error text,
+        started_at timestamptz NOT NULL,
+        finished_at timestamptz,
+        UNIQUE (dispatch_id, attempt_number)
+      );
+
+      CREATE TABLE IF NOT EXISTS agent_recall.chat_attempt_events (
+        id uuid PRIMARY KEY,
+        attempt_id uuid NOT NULL
+          REFERENCES agent_recall.chat_dispatch_attempts(id) ON DELETE CASCADE,
+        sequence integer NOT NULL CHECK (sequence > 0),
+        type varchar(24) NOT NULL
+          CHECK (type IN (
+            'delta', 'tool_call', 'tool_result', 'approval_request',
+            'approval_response', 'completed', 'error'
+          )),
+        name text,
+        content text NOT NULL,
+        created_at timestamptz NOT NULL,
+        UNIQUE (attempt_id, sequence)
+      );
+
+      CREATE INDEX IF NOT EXISTS chat_attempt_events_attempt_idx
+        ON agent_recall.chat_attempt_events (attempt_id, sequence);
+    `,
+  ],
 }];

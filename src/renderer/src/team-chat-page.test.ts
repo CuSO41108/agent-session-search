@@ -1,3 +1,4 @@
+import { readFile } from "node:fs/promises";
 import { createElement, type ComponentType } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
@@ -41,5 +42,20 @@ describe("Studio employee names", () => {
     expect(teamChatPage.nextStudioEmployeeName("Codex", [])).toBe("Codex");
     expect(teamChatPage.nextStudioEmployeeName("Codex", ["Codex"])).toBe("Codex2");
     expect(teamChatPage.nextStudioEmployeeName("Codex", ["codex", "Codex2"])).toBe("Codex3");
+  });
+});
+
+describe("Studio room composer", () => {
+  it("allows public room messages without selecting a Runtime", async () => {
+    const source = await readFile(
+      new URL("./features/team-chat/team-chat-page.tsx", import.meta.url),
+      "utf8",
+    );
+
+    expect(source).not.toContain("return availableMembers[0] ? [availableMembers[0].agentId] : [];");
+    expect(source).not.toContain("if (targetMemberIds.length === 0)");
+    expect(source).not.toContain("sending || targetMemberIds.length === 0");
+    expect(source).toContain("输入 @名称才会唤醒对应 Runtime");
+    expect(source).toMatch(/setComposer\(""\);\s+setTargetMemberIds\(\[\]\);/u);
   });
 });

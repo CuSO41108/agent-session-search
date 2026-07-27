@@ -95,6 +95,29 @@ describe("ClaudeAgentSdkAdapter", () => {
 });
 
 describe("createClaudeSdkPermissionHandler", () => {
+  test("allows only current Studio MCP tools for a scoped employee", async () => {
+    const handler = createClaudeSdkPermissionHandler(
+      vi.fn(),
+      "workflow-draft:studio-turn",
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      true,
+    );
+
+    await expect(handler(
+      "mcp__agent_recall__studio_task_finish",
+      { status: "completed", summary: "done" },
+      { toolUseID: "tool-1" } as never,
+    )).resolves.toEqual({ behavior: "allow", toolUseID: "tool-1" });
+    await expect(handler(
+      "mcp__agent_recall__studio_send_message",
+      {},
+      { toolUseID: "tool-2" } as never,
+    )).resolves.toEqual(expect.objectContaining({ behavior: "deny" }));
+  });
+
   test("fails closed without an approval broker", async () => {
     const handler = createClaudeSdkPermissionHandler(vi.fn());
     await expect(handler("Bash", {}, { signal: new AbortController().signal, toolUseID: "tool-1" } as never))

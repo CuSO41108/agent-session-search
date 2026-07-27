@@ -117,7 +117,11 @@ describe("ConfiguredAgentExecutionService", () => {
     };
     const onEvent = vi.fn();
     const controller = new AbortController();
-    const execute = vi.fn(async () => ({ content: "continued", runtimeConversation: nextConversation }));
+    const execute = vi.fn(async () => ({
+      content: "continued",
+      runtimeConversation: nextConversation,
+      executionReference: { sessionId: "thread-after", turnId: "turn-after" },
+    }));
     const service = new ConfiguredAgentExecutionService({
       agents: () => [agent],
       channels: () => [channel],
@@ -135,6 +139,7 @@ describe("ConfiguredAgentExecutionService", () => {
       output: "continued",
       durationMs: expect.any(Number),
       runtimeConversation: nextConversation,
+      executionReference: { sessionId: "thread-after", turnId: "turn-after" },
     });
     expect(execute).toHaveBeenCalledWith({
       configuredAgentId: "builder",

@@ -53,7 +53,12 @@ export class ConfiguredAgentExecutionService {
     },
     onEvent?: (event: WorkflowAgentEvent) => void,
     signal?: AbortSignal,
-  ): Promise<{ output: string; durationMs: number; runtimeConversation?: RuntimeConversation }> {
+  ): Promise<{
+    output: string;
+    durationMs: number;
+    runtimeConversation?: RuntimeConversation;
+    executionReference?: WorkflowAgentResponse["executionReference"];
+  }> {
     return this.executeConfiguredAgent(input, true, onEvent, signal);
   }
 
@@ -69,7 +74,12 @@ export class ConfiguredAgentExecutionService {
     allowContinuation: boolean,
     onEvent?: (event: WorkflowAgentEvent) => void,
     signal?: AbortSignal,
-  ): Promise<{ output: string; durationMs: number; runtimeConversation?: RuntimeConversation }> {
+  ): Promise<{
+    output: string;
+    durationMs: number;
+    runtimeConversation?: RuntimeConversation;
+    executionReference?: WorkflowAgentResponse["executionReference"];
+  }> {
     const target = this.resolve(input.configuredAgentId);
     if (!target) throw new Error(`Configured agent not found: ${input.configuredAgentId}`);
     const startedAt = Date.now();
@@ -101,6 +111,9 @@ export class ConfiguredAgentExecutionService {
       durationMs: Date.now() - startedAt,
       ...(allowContinuation && response.runtimeConversation
         ? { runtimeConversation: structuredClone(response.runtimeConversation) }
+        : {}),
+      ...(response.executionReference
+        ? { executionReference: { ...response.executionReference } }
         : {}),
     };
   }

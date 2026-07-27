@@ -212,10 +212,8 @@ export function TeamChatPage({
     const availableMembers = activeRoom.agents.filter((member) =>
       member.enabled && availableConfiguredAgents.has(member.configuredAgentId));
     setTargetMemberIds((current) => {
-      const retained = current.filter((memberId) =>
+      return current.filter((memberId) =>
         availableMembers.some((member) => member.agentId === memberId));
-      if (retained.length > 0) return retained;
-      return availableMembers[0] ? [availableMembers[0].agentId] : [];
     });
   }, [activeRoom, snapshot.configuredAgents]);
 
@@ -352,10 +350,6 @@ export function TeamChatPage({
   const sendMessage = useCallback(async (): Promise<void> => {
     const content = composer.trim();
     if (!selectedRoomId || !content || sending) return;
-    if (targetMemberIds.length === 0) {
-      setFeedback(l("Select at least one employee.", "请至少选择一名员工。"));
-      return;
-    }
     setSending(true);
     setFeedback(undefined);
     try {
@@ -366,8 +360,15 @@ export function TeamChatPage({
       });
       setMessages((current) => mergeMessages(current, [result.message]));
       setComposer("");
+      setTargetMemberIds([]);
       setComposerCursor(0);
       setMentionMenuOpen(false);
+      if (result.rejectedTargetMemberIds.length > 0) {
+        setFeedback(l(
+          "The room message was saved, but an unavailable Runtime was not started.",
+          "房间消息已保存，但有一个不可用的 Runtime 未被唤醒。",
+        ));
+      }
     } catch (error) {
       setFeedback(errorMessage(error));
     } finally {
@@ -614,7 +615,7 @@ export function TeamChatPage({
                     <div className="team-chat-transcript-empty">
                       <UsersRound size={26} />
                       <strong>{l("Start the room", "开始房间对话")}</strong>
-                      <span>{l("Choose an employee below, then send the first task.", "先在下方选择员工，再发送第一项任务。")}</span>
+                      <span>{l("Send a room message, or mention a Runtime when it should act.", "发送房间消息；需要 Runtime 行动时再 @它。")}</span>
                     </div>
                   ) : null}
                   {messages.map((message) => (
@@ -696,7 +697,7 @@ export function TeamChatPage({
                         setMentionMenuOpen(Boolean(activeMentionContext(event.currentTarget.value, cursor)));
                       }}
                       onKeyDown={onComposerKeyDown}
-                      placeholder={l("Message selected employees · @name also selects", "发送给已选员工 · 输入 @名称也会选中")}
+                      placeholder={l("Room message · @name wakes that Runtime", "房间消息 · 输入 @名称才会唤醒对应 Runtime")}
                       rows={2}
                     />
                     {activeRootMessageId ? (
@@ -704,11 +705,11 @@ export function TeamChatPage({
                         <CircleStop size={17} />
                       </button>
                     ) : null}
-                    <button className="team-chat-send" type="button" onClick={() => void sendMessage()} disabled={!composer.trim() || sending || targetMemberIds.length === 0} title={l("Send", "发送")}>
+                    <button className="team-chat-send" type="button" onClick={() => void sendMessage()} disabled={!composer.trim() || sending} title={l("Send", "发送")}>
                       {sending ? <LoaderCircle className="spin" size={17} /> : <Send size={17} />}
                     </button>
                   </div>
-                  <span className="team-chat-compose-hint">{l("Enter to send · Shift+Enter for a new line", "Enter 发送 · Shift+Enter 换行")}</span>
+                  <span className="team-chat-compose-hint">{l("No mention: room message only · Enter to send", "未 @：只发房间消息 · Enter 发送")}</span>
                 </footer>
               </>
             ) : (

@@ -33,6 +33,7 @@ export async function runCodexWorkflow(
   let settled = false;
   let content = "";
   let runtimeConversation = input.runtimeConversation ? cloneCodexRuntimeConversation(input.runtimeConversation) : undefined;
+  let executionReference: WorkflowAgentResponse["executionReference"];
   let timeout: ReturnType<typeof createWorkflowAgentTimeout> | undefined;
   let client: CodexRpcClient | undefined;
   const mcp = codexMcpLaunchConfig(input.configuredAgentId
@@ -90,6 +91,16 @@ export async function runCodexWorkflow(
           input.onEvent?.({ requestId: input.requestId, type: "delta", content: event.content });
           return;
         }
+        if (event.type === "tool_call" || event.type === "tool_result") {
+          input.onEvent?.({
+            requestId: input.requestId,
+            type: event.type,
+            content: event.content,
+            ...(event.name ? { name: event.name } : {}),
+            ...(event.metadata ? { metadata: event.metadata } : {}),
+          });
+          return;
+        }
         if (event.type === "completed") {
           if (!content && event.content) content = event.content;
           input.onEvent?.({
@@ -98,7 +109,11 @@ export async function runCodexWorkflow(
             content: content.trim(),
             ...(runtimeConversation ? { runtimeConversation } : {}),
           });
-          settle(() => resolve({ content: content.trim(), ...(runtimeConversation ? { runtimeConversation } : {}) }));
+          settle(() => resolve({
+            content: content.trim(),
+            ...(runtimeConversation ? { runtimeConversation } : {}),
+            ...(executionReference ? { executionReference } : {}),
+          }));
           return;
         }
         if (event.type === "error") {
@@ -162,10 +177,15 @@ export async function runCodexWorkflow(
             native: { threadId },
           });
         }
-        await client.request("turn/start", {
+        const turnResult = await client.request("turn/start", {
           threadId,
           input: [{ type: "text", text: input.prompt, text_elements: [] }],
         });
+        const turnId = (turnResult as { turn?: { id?: string } }).turn?.id;
+        executionReference = {
+          ...(threadId ? { sessionId: threadId } : {}),
+          ...(turnId ? { turnId } : {}),
+        };
       } catch (error) {
         settle(() => reject(error instanceof Error ? error : new Error(String(error))));
       }

@@ -47,12 +47,16 @@ describe("AgentRecall PostgreSQL schema", () => {
       "evaluation_results",
       "chat_rooms",
       "chat_messages",
+      "chat_message_mentions",
+      "chat_tasks",
+      "chat_dispatch_attempts",
+      "chat_attempt_events",
       "chat_workspace_reservations",
       "openviking_workspaces",
       "openviking_import_jobs",
       "openviking_imported_turns",
     ]));
-    expect(names).toHaveLength(55);
+    expect(names).toHaveLength(59);
     await database.close();
   });
 
@@ -79,7 +83,16 @@ describe("AgentRecall PostgreSQL schema", () => {
       "recipient_member_id",
       "delivery_type",
       "sequence",
+      "based_on_sequence",
     ]));
+
+    const sessionColumns = await database.query<{ column_name: string }>(`
+      select column_name
+      from information_schema.columns
+      where table_schema = 'agent_recall' and table_name = 'chat_agent_sessions'
+    `);
+    expect(sessionColumns.rows.map((row) => row.column_name))
+      .toContain("room_context_sequence");
 
     await database.close();
   });

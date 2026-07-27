@@ -57,6 +57,7 @@ export async function runClaudeWorkflow(
       approvalOwnerId: `workflow-draft:${input.planningWorkflowId ?? input.requestId}`,
       ...(options.requestApproval ? { requestApproval: options.requestApproval } : {}),
       ...(workflowMcpScopeForContext(input) ? { workflowMcpScope: workflowMcpScopeForContext(input) } : {}),
+      ...(input.agentRecallMcp?.studioToken ? { studioMcpEnabled: true } : {}),
       ...(resumeSessionId ? { resumeSessionId } : {}),
       onEvent: (event) => {
         if (emitWorkflowAgentApprovalEvent(input, event)) return;
@@ -72,6 +73,16 @@ export async function runClaudeWorkflow(
         }
         if (event.type === "runtime_conversation") {
           runtimeConversation = cloneClaudeRuntimeConversation(event.runtimeConversation);
+          return;
+        }
+        if (event.type === "tool_call" || event.type === "tool_result") {
+          input.onEvent?.({
+            requestId: input.requestId,
+            type: event.type,
+            content: event.content,
+            ...(event.name ? { name: event.name } : {}),
+            ...(event.metadata ? { metadata: event.metadata } : {}),
+          });
           return;
         }
         if (event.type === "error") {
@@ -98,5 +109,10 @@ export async function runClaudeWorkflow(
     content: finalContent,
     ...(runtimeConversation ? { runtimeConversation } : {}),
   });
-  return { content: finalContent, ...(runtimeConversation ? { runtimeConversation } : {}) };
+  const sessionId = claudeSessionIdFromConversation(runtimeConversation);
+  return {
+    content: finalContent,
+    ...(runtimeConversation ? { runtimeConversation } : {}),
+    ...(sessionId ? { executionReference: { sessionId } } : {}),
+  };
 }

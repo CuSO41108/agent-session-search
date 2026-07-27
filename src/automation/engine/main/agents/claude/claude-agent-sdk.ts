@@ -11,6 +11,7 @@ import type { AgentEvent } from "../../../shared/types";
 import type { RuntimeApprovalOperation, RuntimeApprovalRequester } from "../../approvals/runtime-approval-broker";
 import { createClaudeStreamState, normalizeClaudeStreamEvent } from "./claude-stream";
 import {
+  studioMcpToolNameFromIdentifier,
   workflowMcpToolDecision,
   workflowMcpToolNameFromIdentifier,
   type WorkflowMcpScope,
@@ -29,6 +30,7 @@ export interface ClaudeAgentSdkRunInput {
   approvalOwnerId?: string;
   requestApproval?: RuntimeApprovalRequester;
   workflowMcpScope?: WorkflowMcpScope;
+  studioMcpEnabled?: boolean;
 }
 
 export class ClaudeAgentSdkAdapter {
@@ -65,6 +67,7 @@ export function createClaudeSdkQueryOptions(input: {
   approvalOwnerId?: string;
   requestApproval?: RuntimeApprovalRequester;
   workflowMcpScope?: WorkflowMcpScope;
+  studioMcpEnabled?: boolean;
 }): Options {
   const systemPrompt =
     input.developerInstructions?.trim()
@@ -85,7 +88,7 @@ export function createClaudeSdkQueryOptions(input: {
     ...(input.mcpServers ? { mcpServers: input.mcpServers } : {}),
     systemPrompt,
     permissionMode: "default",
-    canUseTool: createClaudeSdkPermissionHandler(input.onEvent, input.approvalOwnerId, input.requestApproval, input.abortController?.signal, input.cwd, input.workflowMcpScope),
+    canUseTool: createClaudeSdkPermissionHandler(input.onEvent, input.approvalOwnerId, input.requestApproval, input.abortController?.signal, input.cwd, input.workflowMcpScope, input.studioMcpEnabled),
     onElicitation: createClaudeSdkElicitationHandler(input.onEvent),
     ...(input.abortController ? { abortController: input.abortController } : {}),
     ...(input.env ? { env: input.env } : {}),
@@ -99,8 +102,15 @@ export function createClaudeSdkPermissionHandler(
   signal?: AbortSignal,
   cwd?: string,
   workflowMcpScope?: WorkflowMcpScope,
+  studioMcpEnabled = false,
 ): CanUseTool {
   return async (toolName, toolInput, options) => {
+    const studioToolName = studioMcpEnabled && toolName.toLowerCase().startsWith("mcp__")
+      ? studioMcpToolNameFromIdentifier(toolName)
+      : undefined;
+    if (studioToolName) {
+      return { behavior: "allow", toolUseID: options.toolUseID };
+    }
     const workflowToolName = workflowMcpScope && toolName.toLowerCase().startsWith("mcp__")
       ? workflowMcpToolNameFromIdentifier(toolName)
       : undefined;
@@ -111,7 +121,7 @@ export function createClaudeSdkPermissionHandler(
         return { behavior: "deny", message: "This Workflow MCP tool is unavailable on the current surface.", toolUseID: options.toolUseID };
       }
     }
-    if (approvalOwnerId?.startsWith("workflow-") && !workflowToolName) {
+    if (approvalOwnerId?.startsWith("workflow-") && !workflowToolName && !studioToolName) {
       return { behavior: "deny", message: "Runtime tool permissions are unavailable on this workflow surface.", toolUseID: options.toolUseID };
     }
     const decision = approvalOwnerId && requestApproval

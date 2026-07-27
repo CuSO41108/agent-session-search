@@ -477,6 +477,12 @@ export interface WorkflowAgentRequest extends RuntimeRequest {
 export interface WorkflowAgentResponse {
   content: string;
   runtimeConversation?: RuntimeConversation;
+  executionReference?: RuntimeExecutionReference;
+}
+
+export interface RuntimeExecutionReference {
+  sessionId?: string;
+  turnId?: string;
 }
 
 export type WorkflowAgentEvent =

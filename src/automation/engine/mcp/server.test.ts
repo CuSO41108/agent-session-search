@@ -134,9 +134,18 @@ describe("MCP server tools", () => {
     expect(mcpToolDefinitions().map((tool) => tool.name)).not.toContain("studio_send_message");
 
     process.env.AGENT_RECALL_STUDIO_TOKEN = "studio-scope";
-    expect(mcpToolDefinitions().map((tool) => tool.name)).toEqual(expect.arrayContaining([
+    const names = mcpToolDefinitions().map((tool) => tool.name);
+    expect(names).not.toContain("studio_send_message");
+    expect(names).toEqual(expect.arrayContaining([
       "studio_list_members",
-      "studio_send_message",
+      "studio_get_context",
+      "studio_get_room_state",
+      "studio_inbox_list",
+      "studio_task_finish",
+      "studio_turn_list",
+      "studio_turn_get",
+      "studio_turn_events",
+      "studio_read_thread",
       "studio_post",
       "studio_read_messages",
       "studio_read_range",
@@ -214,13 +223,12 @@ describe("MCP server tools", () => {
       json: async () => ({ ok: true }),
     } as Response);
 
-    await callMcpTool("studio_send_message", {
-      toMemberId: "member-2",
-      content: "Please review",
+    await callMcpTool("studio_turn_get", {
+      turnId: "turn-1",
     });
 
     expect(fetchMock).toHaveBeenCalledWith(
-      "http://127.0.0.1:48125/mcp/studio/send-message",
+      "http://127.0.0.1:48125/mcp/studio/turn/get",
       expect.objectContaining({
         headers: expect.objectContaining({
           authorization: "Bearer bridge-secret",

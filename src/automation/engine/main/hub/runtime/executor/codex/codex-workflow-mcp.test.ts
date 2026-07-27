@@ -58,7 +58,8 @@ describe("codexWorkflowMcpArgs", () => {
     expect(text.match(/mcp_servers\.agent_recall\.command/g)).toHaveLength(1);
     expect(text).toContain("AGENT_RECALL_WORKFLOW_ID");
     expect(text).toContain("AGENT_RECALL_STUDIO_TOKEN");
-    expect(text).toContain("studio_send_message");
+    expect(text).toContain("studio_task_finish");
+    expect(text).not.toContain("studio_send_message");
     expect(text).toContain("workspace_reserve");
   });
 });

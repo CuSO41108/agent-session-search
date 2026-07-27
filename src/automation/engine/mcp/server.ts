@@ -48,7 +48,14 @@ const TOOL_ROUTES: Record<string, string> = {
   workflow_run_context_append: "/mcp/workflow/run-context/append",
   workflow_node_complete: "/mcp/workflow/node/complete",
   studio_list_members: "/mcp/studio/list-members",
-  studio_send_message: "/mcp/studio/send-message",
+  studio_get_context: "/mcp/studio/get-context",
+  studio_get_room_state: "/mcp/studio/get-room-state",
+  studio_inbox_list: "/mcp/studio/inbox/list",
+  studio_task_finish: "/mcp/studio/task/finish",
+  studio_turn_list: "/mcp/studio/turn/list",
+  studio_turn_get: "/mcp/studio/turn/get",
+  studio_turn_events: "/mcp/studio/turn/events",
+  studio_read_thread: "/mcp/studio/read-thread",
   studio_post: "/mcp/studio/post",
   studio_read_messages: "/mcp/studio/read-messages",
   studio_read_range: "/mcp/studio/read-range",
@@ -381,13 +388,74 @@ export function mcpToolDefinitions(): McpToolDefinition[] {
         inputSchema: objectSchema({}),
       },
       {
-        name: "studio_send_message",
-        description: "Send a visible directed message to another studio employee and asynchronously activate that employee.",
+        name: "studio_get_context",
+        description: "Read the bounded room delta for the current Turn through its immutable trigger snapshot.",
         inputSchema: objectSchema({
-          toMemberId: { type: "string" },
-          content: { type: "string", minLength: 1 },
-          replyTo: { type: "string" },
-        }, ["toMemberId", "content"]),
+          limit: { type: "integer", minimum: 1, maximum: 100 },
+        }),
+      },
+      {
+        name: "studio_get_room_state",
+        description: "Read current-room metadata, the current Task, and latest room sequence.",
+        inputSchema: objectSchema({}),
+      },
+      {
+        name: "studio_inbox_list",
+        description: "List mentions and Turn delivery states for the current studio employee.",
+        inputSchema: objectSchema({
+          status: {
+            type: "string",
+            enum: ["queued", "running", "completed", "failed", "interrupted", "skipped"],
+          },
+          limit: { type: "integer", minimum: 1, maximum: 100 },
+        }),
+      },
+      {
+        name: "studio_task_finish",
+        description: "Declare the current Task completed, blocked, or waiting for user input. Repeating the identical result is safe.",
+        inputSchema: objectSchema({
+          taskId: { type: "string" },
+          status: {
+            type: "string",
+            enum: ["completed", "blocked", "waiting_input"],
+          },
+          summary: { type: "string", minLength: 1 },
+          evidence: {
+            type: "array",
+            maxItems: 20,
+            items: { type: "string" },
+          },
+        }, ["status", "summary"]),
+      },
+      {
+        name: "studio_turn_list",
+        description: "List logical Turns and sanitized Attempt summaries in the current room.",
+        inputSchema: objectSchema({
+          limit: { type: "integer", minimum: 1, maximum: 50 },
+        }),
+      },
+      {
+        name: "studio_turn_get",
+        description: "Read one logical Turn and sanitized Attempt summaries in the current room.",
+        inputSchema: objectSchema({
+          turnId: { type: "string", minLength: 1 },
+        }, ["turnId"]),
+      },
+      {
+        name: "studio_turn_events",
+        description: "Read bounded sanitized execution events for one Turn in the current room.",
+        inputSchema: objectSchema({
+          turnId: { type: "string", minLength: 1 },
+          limit: { type: "integer", minimum: 1, maximum: 200 },
+        }, ["turnId"]),
+      },
+      {
+        name: "studio_read_thread",
+        description: "Read public messages belonging to one root message thread in the current room.",
+        inputSchema: objectSchema({
+          rootMessageId: { type: "string", minLength: 1 },
+          limit: { type: "integer", minimum: 1, maximum: 200 },
+        }, ["rootMessageId"]),
       },
       {
         name: "studio_post",

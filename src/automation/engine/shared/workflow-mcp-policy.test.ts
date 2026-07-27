@@ -1,5 +1,6 @@
 import { describe, expect, test } from "vitest";
 import {
+  studioMcpToolNameFromIdentifier,
   workflowMcpToolDecision,
   workflowMcpToolsForScope,
   workflowMcpToolNameFromIdentifier,
@@ -29,5 +30,9 @@ describe("workflow MCP policy", () => {
     expect(workflowMcpToolNameFromIdentifier("mcp__agent_recall__workflow_update")).toBe("workflow_update");
     expect(workflowMcpToolNameFromIdentifier("agent_recall_workflow/workflow_node_complete")).toBe("workflow_node_complete");
     expect(workflowMcpToolNameFromIdentifier("Run workflow_update later")).toBeUndefined();
+    expect(studioMcpToolNameFromIdentifier("mcp__agent_recall__studio_task_finish"))
+      .toBe("studio_task_finish");
+    expect(studioMcpToolNameFromIdentifier("mcp__agent_recall__studio_send_message"))
+      .toBeUndefined();
   });
 });

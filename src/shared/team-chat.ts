@@ -69,6 +69,7 @@ export interface TeamChatMessage {
   sourceMessageId?: string;
   hop: number;
   status: TeamChatMessageStatus;
+  basedOnSequence?: number;
   createdAt: string;
   updatedAt: string;
 }
@@ -76,9 +77,12 @@ export interface TeamChatMessage {
 export interface TeamChatDispatch {
   id: string;
   roomId: string;
+  mentionId?: string;
+  taskId?: string;
   rootMessageId: string;
   sourceMessageId: string;
   targetAgentId: string;
+  roomSnapshotSequence?: number;
   hop: number;
   status: TeamChatDispatchStatus;
   error?: string;
@@ -143,6 +147,7 @@ export interface ResetTeamChatAgentSessionRequest {
 export interface SendTeamChatMessageResult {
   message: TeamChatMessage;
   rootMessageId: string;
+  rejectedTargetMemberIds: string[];
 }
 
 export type TeamChatEvent =

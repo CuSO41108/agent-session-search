@@ -4,7 +4,14 @@ export type WorkflowMcpToolDecision = "allow" | "approval_required" | "deny";
 export const WORKFLOW_MCP_SERVER_NAMES = ["agent_recall", "agent_recall_workflow"] as const;
 export const STUDIO_MCP_TOOL_NAMES = [
   "studio_list_members",
-  "studio_send_message",
+  "studio_get_context",
+  "studio_get_room_state",
+  "studio_inbox_list",
+  "studio_task_finish",
+  "studio_turn_list",
+  "studio_turn_get",
+  "studio_turn_events",
+  "studio_read_thread",
   "studio_post",
   "studio_read_messages",
   "studio_read_range",
@@ -57,6 +64,7 @@ const KNOWN_TOOLS = new Set([
   ...PLANNING_APPROVAL_REQUIRED,
   ...NODE_EXECUTION_ALLOWED,
 ]);
+const STUDIO_TOOLS = new Set<string>(STUDIO_MCP_TOOL_NAMES);
 
 export function workflowMcpToolDecision(
   scope: WorkflowMcpScope,
@@ -76,12 +84,27 @@ export function isWorkflowMcpServerName(value: string): boolean {
 }
 
 export function workflowMcpToolNameFromIdentifier(identifier: string): string | undefined {
+  return scopedMcpToolNameFromIdentifier(identifier, KNOWN_TOOLS);
+}
+
+export function studioMcpToolNameFromIdentifier(identifier: string): string | undefined {
+  return scopedMcpToolNameFromIdentifier(identifier, STUDIO_TOOLS);
+}
+
+function scopedMcpToolNameFromIdentifier(
+  identifier: string,
+  knownTools: ReadonlySet<string>,
+): string | undefined {
   const normalized = identifier.trim().toLowerCase();
   const claude = normalized.match(/^mcp__(agent_recall(?:_workflow)?)__([a-z0-9_]+)$/);
-  if (claude && isWorkflowMcpServerName(claude[1]!)) return KNOWN_TOOLS.has(claude[2]!) ? claude[2] : undefined;
+  if (claude && isWorkflowMcpServerName(claude[1]!)) {
+    return knownTools.has(claude[2]!) ? claude[2] : undefined;
+  }
   const qualified = normalized.match(/^(agent_recall(?:_workflow)?)[/:]([a-z0-9_]+)$/);
-  if (qualified && isWorkflowMcpServerName(qualified[1]!)) return KNOWN_TOOLS.has(qualified[2]!) ? qualified[2] : undefined;
-  return KNOWN_TOOLS.has(normalized) ? normalized : undefined;
+  if (qualified && isWorkflowMcpServerName(qualified[1]!)) {
+    return knownTools.has(qualified[2]!) ? qualified[2] : undefined;
+  }
+  return knownTools.has(normalized) ? normalized : undefined;
 }
 
 export function workflowMcpScopeFromEnvironment(environment: NodeJS.ProcessEnv): WorkflowMcpScope {

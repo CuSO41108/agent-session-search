@@ -51,7 +51,7 @@ const messageListSchema = z.object({
 const messageSendSchema = z.object({
   roomId: idSchema,
   content: z.string().trim().min(1).max(100_000),
-  targetMemberIds: z.array(idSchema).min(1).max(8).superRefine((memberIds, context) => {
+  targetMemberIds: z.array(idSchema).max(8).superRefine((memberIds, context) => {
     if (new Set(memberIds).size !== memberIds.length) {
       context.addIssue({ code: "custom", message: "Message recipients must be unique." });
     }

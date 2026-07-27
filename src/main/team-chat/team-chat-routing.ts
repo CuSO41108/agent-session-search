@@ -47,9 +47,11 @@ export function buildStudioDeveloperInstructions(
     `Your employee identity: ${target.displayName} (${target.agentId}).`,
     `Studio employees: ${members || "none"}.`,
     `The shared project directory is ${room.workDir || "(not selected)"}.`,
+    "Every public message in this studio is readable by every studio Runtime.",
     "Your normal final response is visible to the user but does not activate another employee.",
-    "When another employee must act, call studio_send_message with that employee's member ID.",
+    "You cannot activate another studio Runtime. Ask the user to mention that Runtime when it must act.",
     "Use studio_post for visible status or shared information that must not activate another employee.",
+    "Before your final response, call studio_task_finish with completed, blocked, or waiting_input and a truthful summary. A normal Runtime response does not finish the Task.",
     "Do not invent another employee's messages, progress, or results.",
   ].join(" ");
 }
@@ -57,46 +59,42 @@ export function buildStudioDeveloperInstructions(
 export function buildTeamChatPrompt(input: {
   room: TeamChatRoom;
   target: TeamChatRoomAgent;
-  explicitContext: TeamChatMessage[];
+  roomUpdates: TeamChatMessage[];
   triggerMessage: TeamChatMessage;
-  unreadCount: number;
-  unreadSequenceRange?: { from: number; to: number };
+  previousContextSequence: number;
+  snapshotSequence: number;
   continuing: boolean;
   contextTruncated: boolean;
+  omittedSequenceRange?: { from: number; to: number };
 }): string {
   const context = contextWithinBudget(
-    input.explicitContext.filter((message) => message.id !== input.triggerMessage.id),
+    input.roomUpdates.filter((message) => message.id !== input.triggerMessage.id),
   );
-  const from = input.triggerMessage.senderType === "human"
-    ? input.triggerMessage.senderName
-    : `${input.triggerMessage.senderName} (${input.triggerMessage.senderAgentId ?? "unknown"})`;
-  const replyTo = input.triggerMessage.sourceMessageId
-    ? `Reply to: ${input.triggerMessage.sourceMessageId}`
-    : undefined;
-  const unreadRange = input.unreadSequenceRange
-    ? ` (sequence ${input.unreadSequenceRange.from}-${input.unreadSequenceRange.to})`
-    : "";
   return [
     "[AgentRecall Studio Delivery]",
     `Studio: ${input.room.name}`,
-    `To: ${input.target.displayName} (${input.target.agentId})`,
-    `From: ${from}`,
-    `Message: ${input.triggerMessage.id}`,
-    ...(replyTo ? [replyTo] : []),
-    `Root: ${input.triggerMessage.rootMessageId}`,
+    `Runtime: ${input.target.displayName} (${input.target.agentId})`,
     `Session: ${input.continuing ? "resumed" : "new"}`,
+    `Room snapshot: sequence ${input.snapshotSequence}`,
+    `Previous snapshot: sequence ${input.previousContextSequence}`,
     "",
     ...(context.length > 0
       ? [
-          "Explicit context:",
-          ...(input.contextTruncated ? ["Some earlier directed context was omitted."] : []),
+          "Room updates:",
           ...context.map(formatContextMessage),
           "",
         ]
       : []),
-    input.triggerMessage.content,
+    ...(input.contextTruncated && input.omittedSequenceRange
+      ? [
+          `Earlier room updates omitted: sequence ${input.omittedSequenceRange.from}-${input.omittedSequenceRange.to}`,
+          "",
+        ]
+      : []),
+    "Trigger:",
+    formatContextMessage(input.triggerMessage),
     "",
-    `Other unread studio messages: ${input.unreadCount}${unreadRange}`,
-    "Use studio_read_messages or studio_read_range only when needed.",
+    "Treat only Trigger as the task for this Turn. Room updates are background information.",
+    "Older room history remains queryable through Studio MCP.",
   ].join("\n");
 }

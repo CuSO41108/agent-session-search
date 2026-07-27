@@ -2933,6 +2933,7 @@ fs.writeFileSync(${JSON.stringify(argsPath)}, process.argv.slice(2).join("\\n") 
     expect(response).toEqual({
       content: "artifact-1",
       runtimeConversation: runtimeConversation("codex", { native: { threadId: "thread-1" } }),
+      executionReference: { sessionId: "thread-1", turnId: "turn-1" },
     });
     expect(events).toEqual([
       { requestId: "workflow-test", type: "delta", content: "artifact-1" },
@@ -3057,6 +3058,7 @@ fs.writeFileSync(${JSON.stringify(argsPath)}, process.argv.slice(2).join("\\n") 
     expect(response).toEqual({
       content: "workflow-sdk",
       runtimeConversation: runtimeConversation("claude", { native: { sessionId: "claude-session-7" } }),
+      executionReference: { sessionId: "claude-session-7" },
     });
     expect(events).toEqual([
       { requestId: "claude-workflow-test", type: "delta", content: "workflow-sdk" },
@@ -3178,6 +3180,7 @@ fs.writeFileSync(${JSON.stringify(argsPath)}, process.argv.slice(2).join("\\n") 
     expect(response).toEqual({
       content: "workflow-resumed",
       runtimeConversation: priorConversation,
+      executionReference: { sessionId: "claude-session-9" },
     });
     const oneShotInput = runOneShot.mock.calls[0]?.[0];
     expect(oneShotInput).toMatchObject({
@@ -3215,6 +3218,7 @@ fs.writeFileSync(${JSON.stringify(argsPath)}, process.argv.slice(2).join("\\n") 
     expect(response).toEqual({
       content: "artifact-1",
       runtimeConversation: runtimeConversation("codex", { native: { threadId: "thread-1" } }),
+      executionReference: { sessionId: "thread-1", turnId: "turn-1" },
     });
 
     const calls = (await readFile(fake.callsPath, "utf8")).trim().split("\n").map((line) => JSON.parse(line) as any);
@@ -3249,6 +3253,7 @@ fs.writeFileSync(${JSON.stringify(argsPath)}, process.argv.slice(2).join("\\n") 
     expect(response).toEqual({
       content: "artifact-1",
       runtimeConversation: runtimeConversation("codex", { native: { threadId: "thread-7" } }),
+      executionReference: { sessionId: "thread-7", turnId: "turn-1" },
     });
 
     const calls = (await readFile(fake.callsPath, "utf8")).trim().split("\n").map((line) => JSON.parse(line) as any);
