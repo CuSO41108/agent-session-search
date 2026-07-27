@@ -1298,6 +1298,17 @@
 .workflow-runs-fab:disabled { cursor:not-allowed; opacity:.46; }
 .workflow-runs-fab em { display:grid; min-width:1.25rem; aspect-ratio:1; place-items:center; padding-inline:.24rem; border-radius:999px; background:var(--panel-subtle); color:var(--text-muted); font:.58rem/1 var(--mono); font-style:normal; }
 .workflow-run-center-backdrop { position:fixed; z-index:125; inset:0; display:flex; justify-content:flex-end; background:color-mix(in srgb,var(--dialog-overlay) 55%,transparent); backdrop-filter:blur(.18rem); }
+.workflow-run-center-recovery-actions { display:grid; gap:.6rem; padding:.75rem; border:1px solid var(--border-subtle); border-radius:.65rem; background:var(--surface-muted); }
+.workflow-run-center-recovery-actions label { display:grid; gap:.35rem; }
+.workflow-run-center-recovery-actions label span { font-size:.72rem; color:var(--text-muted); }
+.workflow-run-center-recovery-actions input { width:100%; }
+.workflow-run-center-recovery-actions > div { display:flex; flex-wrap:wrap; gap:.45rem; }
+.workflow-run-center-conflicts { display:grid; gap:.75rem; }
+.workflow-run-center-conflicts > article { display:grid; gap:.5rem; padding:.75rem; border:1px solid var(--border-subtle); border-radius:.65rem; }
+.workflow-run-center-conflict-columns { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:.55rem; }
+.workflow-run-center-conflict-columns section { min-width:0; display:grid; align-content:start; gap:.35rem; padding:.55rem; border-radius:.5rem; background:var(--surface-muted); }
+.workflow-run-center-conflict-columns pre { max-height:14rem; overflow:auto; white-space:pre-wrap; overflow-wrap:anywhere; }
+@media (max-width: 900px) { .workflow-run-center-conflict-columns { grid-template-columns:1fr; } }
 .workflow-run-center { display:grid; width:clamp(22rem,46vw,48rem); max-width:94vw; height:100dvh; grid-template-rows:auto minmax(0,1fr); overflow:hidden; border-left:1px solid var(--border); background:var(--panel-bg); box-shadow:-1.5rem 0 4rem color-mix(in srgb,var(--text) 20%,transparent); animation:workflow-run-drawer-in .18s ease-out; }
 @keyframes workflow-run-drawer-in { from { transform:translateX(100%); } to { transform:translateX(0); } }
 .workflow-run-center-header { display:flex; align-items:center; justify-content:space-between; gap:1rem; padding:.85rem 1rem; border-bottom:1px solid var(--border); }

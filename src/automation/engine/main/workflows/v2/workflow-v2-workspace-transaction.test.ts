@@ -174,6 +174,26 @@ describe("WorkflowV2WorkspaceTransaction", () => {
     expect(await readFile(path.join(sourceDir, "delete.txt"), "utf8")).toBe("baseline");
     await expect(readFile(path.join(sourceDir, "created.txt"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
   });
+
+  test("builds a bounded redacted three-way conflict preview", async () => {
+    const root = await temporaryRoot("workflow-workspace-conflict-preview-");
+    const sourceDir = path.join(root, "source");
+    await mkdir(sourceDir, { recursive: true });
+    await writeFile(path.join(sourceDir, "config.txt"), "token=baseline-secret\nvalue=baseline", "utf8");
+    const transaction = new WorkflowV2WorkspaceTransaction(path.join(root, "transaction"));
+    const prepared = await transaction.prepare({ workflowId: "workflow-1", runId: "run-1", sourceDir, baselineId: "baseline-1" });
+    await writeFile(path.join(prepared.workspaceDir, "config.txt"), "token=workflow-secret\nvalue=workflow", "utf8");
+    await writeFile(path.join(sourceDir, "config.txt"), "token=user-secret\nvalue=user", "utf8");
+
+    const preview = await transaction.inspectConflictPreview(["config.txt"]);
+
+    expect(preview).toEqual([expect.objectContaining({
+      path: "config.txt",
+      baseline: expect.objectContaining({ preview: "token=[REDACTED]\nvalue=baseline" }),
+      isolated: expect.objectContaining({ preview: "token=[REDACTED]\nvalue=workflow" }),
+      current: expect.objectContaining({ preview: "token=[REDACTED]\nvalue=user" }),
+    })]);
+  });
 });
 
 async function temporaryRoot(prefix: string): Promise<string> {

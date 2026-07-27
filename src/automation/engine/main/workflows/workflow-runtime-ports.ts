@@ -20,7 +20,7 @@ import type {
 } from "../../shared/workflow-v2/storage";
 import type { WorkflowCommitPlan, WorkflowOperationRecord, WorkflowOperationState } from "../../shared/workflow-v2/transaction";
 import type { WorkflowRecoveryDecisionRecord, WorkflowRecoveryPreview, WorkflowTransactionState } from "../../shared/workflow-v2/transaction";
-import type { WorkflowWorkspaceCommitResult, WorkflowWorkspaceDiffResult, WorkflowWorkspacePreparation, WorkflowWorkspaceRollbackResult } from "./v2/workflow-v2-workspace-transaction";
+import type { WorkflowWorkspaceCommitResult, WorkflowWorkspaceConflictPreview, WorkflowWorkspaceDiffResult, WorkflowWorkspacePreparation, WorkflowWorkspaceRollbackResult } from "./v2/workflow-v2-workspace-transaction";
 
 export interface WorkflowRunStateUpdate {
   workflowId: string;
@@ -82,6 +82,7 @@ export interface WorkflowV2StorePort {
   discardWorkspaceTransaction?: (input: { workflowId: string; runId: string }) => Promise<void>;
   rollbackWorkspaceTransaction?: (input: { workflowId: string; runId: string }) => Promise<WorkflowWorkspaceRollbackResult>;
   inspectWorkspaceTransaction?: (input: { workflowId: string; runId: string }) => Promise<WorkflowWorkspaceDiffResult>;
+  inspectWorkspaceConflicts?: (input: { workflowId: string; runId: string; paths: readonly string[] }) => Promise<WorkflowWorkspaceConflictPreview[]>;
   inspectWorkspaceSavepointDiff?: (input: { workflowId: string; runId: string; savepointId: string }) => Promise<WorkflowWorkspaceDiffResult>;
   persistCommitPlan?: (plan: WorkflowCommitPlan) => Promise<WorkflowCommitPlan>;
   readCommitPlan?: (workflowId: string, runId: string) => Promise<WorkflowCommitPlan | undefined>;

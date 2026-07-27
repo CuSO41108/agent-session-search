@@ -256,7 +256,7 @@ export class WorkflowV2RunExecutor {
         operations,
         recoveryDecisions: structuredClone(persisted?.recoveryDecisions ?? []),
         recovery: recoveryVisible && persisted
-          ? buildWorkflowV2RecoveryPreview({ transaction, operations, runState: persisted.runState, ...(workspaceDiff ? { workspaceDiff } : {}), canRollbackSavepoint: Boolean(durableStore?.restoreWorkspaceSavepoint) })
+          ? buildWorkflowV2RecoveryPreview({ transaction, operations, runState: persisted.runState, nodeControl: persisted.nodeControl, ...(workspaceDiff ? { workspaceDiff } : {}), canRollbackSavepoint: Boolean(durableStore?.restoreWorkspaceSavepoint) })
           : null,
       });
     };
@@ -1431,7 +1431,8 @@ export class WorkflowV2RunExecutor {
       });
 
       const finalDurableState = await durableStore?.readRunState?.(workflow.workflowId, runId);
-      const finalReport = buildWorkflowV2FinalReport(plan, result.workerOutputs, result.runState.status, finalDurableState?.recoveryDecisions);
+      const finalOperations = await durableStore?.readOperations?.(workflow.workflowId, runId) ?? [];
+      const finalReport = buildWorkflowV2FinalReport(plan, result.workerOutputs, result.runState.status, finalDurableState?.recoveryDecisions, finalOperations.map(sanitizeWorkflowOperationRecord));
       if (this.runRegistry.isStopRequested(runId)) return;
       if (result.runState.status === "completed") {
         if (workspaceIsolated) {
@@ -1443,6 +1444,23 @@ export class WorkflowV2RunExecutor {
               type: "conflict_detected",
               detail: `Workspace conflicts require review: ${commit.conflicts.join(", ")}`,
             });
+            const conflictDurableState = await durableStore.readRunState?.(workflow.workflowId, runId);
+            const conflictWorkspaceDiff = await durableStore.inspectWorkspaceTransaction?.({ workflowId: workflow.workflowId, runId });
+            const conflictDetails = await durableStore.inspectWorkspaceConflicts?.({ workflowId: workflow.workflowId, runId, paths: commit.conflicts }) ?? [];
+            const conflictRecovery = conflictDurableState ? buildWorkflowV2RecoveryPreview({
+              transaction: persistence.transactionState,
+              operations: finalOperations.map(sanitizeWorkflowOperationRecord),
+              runState: conflictDurableState.runState,
+              nodeControl: conflictDurableState.nodeControl,
+              workspaceDiff: {
+                created: conflictWorkspaceDiff?.created ?? [],
+                modified: conflictWorkspaceDiff?.modified ?? [],
+                deleted: conflictWorkspaceDiff?.deleted ?? [],
+                conflicts: commit.conflicts,
+              },
+              canRollbackSavepoint: Boolean(durableStore.restoreWorkspaceSavepoint),
+              conflictDetails,
+            }) : undefined;
             this.deps.updateWorkflowRunState({
               workflowId: workflow.workflowId,
               runId,
@@ -1450,6 +1468,7 @@ export class WorkflowV2RunExecutor {
               progress: latestProgress,
               contextDocument: baseWorkflowContextDocument,
               finalReport: `${finalReport}\n\nWorkspace commit is waiting for conflict resolution: ${commit.conflicts.join(", ")}`,
+              ...(conflictRecovery ? { recovery: conflictRecovery } : {}),
             });
             return;
           }

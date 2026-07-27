@@ -143,6 +143,39 @@ describe("workflow-v2 recovery", () => {
     expect(report).toBe("原样内容");
   });
 
+  test("includes recovery decisions, external operation states, and manual steps in reports", async () => {
+    const workflow = definition();
+    const plan = await buildWorkflowV2Plan({ definition: workflow, approvedBy: "tester", now: 1_000 });
+    const report = buildWorkflowV2FinalReport(plan, [], "failed", [{
+      decisionId: "decision-1",
+      transactionId: "transaction-1",
+      action: "keep_state",
+      actor: "operator",
+      reason: "Waiting for verification.",
+      operationIds: ["operation-1"],
+      decidedAt: 1_500,
+    }], [{
+      operationId: "operation-1",
+      transactionId: "transaction-1",
+      runId: "run-1",
+      nodeId: "second",
+      attempt: 1,
+      kind: "http",
+      target: "https://example.test/resource",
+      idempotencyKey: "key-1",
+      state: "unknown",
+      reversible: true,
+      createdAt: 1_200,
+      updatedAt: 1_400,
+    }]);
+
+    expect(report).toContain("## External operations");
+    expect(report).toContain("operation-1: http unknown");
+    expect(report).toContain("## Recovery decisions");
+    expect(report).toContain("keep_state by operator");
+    expect(report).toContain("## Manual steps");
+  });
+
   test("appends transactional acceptance evidence to the completed user report", async () => {
     const workflow = definition();
     const plan = await buildWorkflowV2Plan({ definition: workflow, approvedBy: "tester", now: 1_000 });

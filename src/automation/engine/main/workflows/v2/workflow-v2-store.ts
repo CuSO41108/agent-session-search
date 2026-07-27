@@ -20,6 +20,7 @@ import type { WorkflowV2WorkerOutput } from "../../../shared/workflow-v2/packets
 import {
   WorkflowV2WorkspaceTransaction,
   type WorkflowWorkspaceCommitResult,
+  type WorkflowWorkspaceConflictPreview,
   type WorkflowWorkspaceDiffResult,
   type WorkflowWorkspacePreparation,
   type WorkflowWorkspaceRollbackResult,
@@ -129,6 +130,10 @@ export class WorkflowV2FileStore {
 
   inspectWorkspaceTransaction(input: { workflowId: string; runId: string }): Promise<WorkflowWorkspaceDiffResult> {
     return this.enqueueValue(() => this.workspaceTransaction(input.workflowId, input.runId).inspectDiff());
+  }
+
+  inspectWorkspaceConflicts(input: { workflowId: string; runId: string; paths: readonly string[] }): Promise<WorkflowWorkspaceConflictPreview[]> {
+    return this.enqueueValue(() => this.workspaceTransaction(input.workflowId, input.runId).inspectConflictPreview(input.paths));
   }
 
   inspectWorkspaceSavepointDiff(input: { workflowId: string; runId: string; savepointId: string }): Promise<WorkflowWorkspaceDiffResult> {

@@ -160,9 +160,18 @@ describe("WorkflowRunCenter", () => {
       status: "recovery_required",
       blockers: ["operation-1: unknown"],
       conflicts: ["result.txt"],
+      conflictDetails: [{
+        path: "result.txt",
+        baseline: { exists: true, preview: "baseline" },
+        isolated: { exists: true, preview: "workflow result" },
+        current: { exists: true, preview: "user edit" },
+      }],
       changedPaths: ["result.txt"],
       pendingNodeIds: [],
       uncertainNodeIds: ["research"],
+      cancelledNodeIds: [],
+      cancellingNodeIds: ["research"],
+      notStartedNodeIds: [],
       availableActions: ["rollback_savepoint", "keep_state", "abandon"],
     };
     recoveryRun.recoveryDecisions = [{
@@ -194,6 +203,11 @@ describe("WorkflowRunCenter", () => {
     expect(html).toContain("说明核验依据和预期结果");
     expect(html).toContain("用户恢复决定 · 1");
     expect(html).toContain("Waiting for external verification.");
+    expect(html).toContain("Workflow 基线");
+    expect(html).toContain("Workflow 隔离结果");
+    expect(html).toContain("用户当前工作区");
+    expect(html).toContain("workflow result");
+    expect(html).toContain("user edit");
   });
 
   test("renders node execution telemetry for runtime, channel, model, attempts, tokens, cost, and duration", () => {

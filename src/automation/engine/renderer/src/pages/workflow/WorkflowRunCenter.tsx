@@ -281,6 +281,9 @@ function WorkflowRunCenterOpen({ runs, conversations = [], artifacts = [], loadi
                   {selectedRun.recovery ? <div className="workflow-run-center-events">
                     {selectedRun.recovery.blockers.map((blocker) => <span key={blocker}>{language === "zh" ? "阻塞" : "Blocker"} · {blocker}</span>)}
                     {selectedRun.recovery.conflicts.map((conflict) => <span key={`conflict:${conflict}`}>{language === "zh" ? "冲突" : "Conflict"} · {conflict}</span>)}
+                    {selectedRun.recovery.cancelledNodeIds.length > 0 ? <span>{language === "zh" ? "已取消节点" : "Cancelled nodes"} · {selectedRun.recovery.cancelledNodeIds.join(", ")}</span> : null}
+                    {selectedRun.recovery.cancellingNodeIds.length > 0 ? <span>{language === "zh" ? "正在取消或停止状态未知" : "Cancelling or stop unconfirmed"} · {selectedRun.recovery.cancellingNodeIds.join(", ")}</span> : null}
+                    {selectedRun.recovery.notStartedNodeIds.length > 0 ? <span>{language === "zh" ? "fail-fast 后未启动" : "Not started after fail-fast"} · {selectedRun.recovery.notStartedNodeIds.join(", ")}</span> : null}
                     <span>{language === "zh" ? "可用处理动作" : "Available actions"} · {selectedRun.recovery.availableActions.map((action) => recoveryActionLabel(action, language)).join(" / ")}</span>
                   </div> : null}
                   {selectedRun.recovery && onResolveRecovery ? <div className="workflow-run-center-recovery-actions">
@@ -296,6 +299,18 @@ function WorkflowRunCenterOpen({ runs, conversations = [], artifacts = [], loadi
                         .finally(() => setRecoveryBusy(false));
                     }}>{recoveryActionLabel(action, language)}</button>)}</div>
                     {recoveryActionError ? <p className="is-error">{recoveryActionError}</p> : null}
+                  </div> : null}
+                  {(selectedRun.recovery?.conflictDetails.length ?? 0) > 0 ? <div className="workflow-run-center-conflicts">
+                    {selectedRun.recovery!.conflictDetails.map((conflict) => <article key={conflict.path}>
+                      <strong>{conflict.path}</strong>
+                      <div className="workflow-run-center-conflict-columns">
+                        {([
+                          [language === "zh" ? "Workflow 基线" : "Workflow baseline", conflict.baseline],
+                          [language === "zh" ? "Workflow 隔离结果" : "Workflow isolated result", conflict.isolated],
+                          [language === "zh" ? "用户当前工作区" : "Current user workspace", conflict.current],
+                        ] as const).map(([title, version]) => <section key={title}><b>{title}</b><small>{version.exists ? `${version.sha256?.slice(0, 12) ?? "no digest"} · ${version.size ?? 0} B` : (language === "zh" ? "文件不存在" : "File absent")}</small>{version.preview !== undefined ? <pre>{version.preview}</pre> : version.binary ? <p>{language === "zh" ? "二进制文件，仅显示摘要" : "Binary file; digest only"}</p> : null}</section>)}
+                      </div>
+                    </article>)}
                   </div> : null}
                   {(selectedRun.operations?.length ?? 0) > 0 ? <div className="workflow-run-center-artifact-list">
                     {selectedRun.operations!.map((operation) => <article key={operation.operationId}>

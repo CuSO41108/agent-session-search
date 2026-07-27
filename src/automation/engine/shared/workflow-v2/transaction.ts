@@ -171,10 +171,29 @@ export interface WorkflowRecoveryPreview {
   status: WorkflowTransactionStatus;
   blockers: string[];
   conflicts: string[];
+  conflictDetails: WorkflowConflictPreview[];
   changedPaths: string[];
   pendingNodeIds: string[];
   uncertainNodeIds: string[];
+  cancelledNodeIds: string[];
+  cancellingNodeIds: string[];
+  notStartedNodeIds: string[];
   availableActions: WorkflowRecoveryAction[];
+}
+
+export interface WorkflowConflictPreviewVersion {
+  exists: boolean;
+  size?: number;
+  sha256?: string;
+  binary?: boolean;
+  preview?: string;
+}
+
+export interface WorkflowConflictPreview {
+  path: string;
+  baseline: WorkflowConflictPreviewVersion;
+  isolated: WorkflowConflictPreviewVersion;
+  current: WorkflowConflictPreviewVersion;
 }
 
 export interface WorkflowRecoveryDecisionRecord {

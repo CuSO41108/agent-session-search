@@ -92,6 +92,21 @@ export interface WorkflowWorkspaceDiffResult {
   deleted: string[];
 }
 
+export interface WorkflowWorkspaceConflictVersion {
+  exists: boolean;
+  size?: number;
+  sha256?: string;
+  binary?: boolean;
+  preview?: string;
+}
+
+export interface WorkflowWorkspaceConflictPreview {
+  path: string;
+  baseline: WorkflowWorkspaceConflictVersion;
+  isolated: WorkflowWorkspaceConflictVersion;
+  current: WorkflowWorkspaceConflictVersion;
+}
+
 export class WorkflowV2WorkspaceTransaction {
   constructor(private readonly transactionRoot: string) {}
 
@@ -288,6 +303,28 @@ export class WorkflowV2WorkspaceTransaction {
     return diffDirectories(await existingDirectory(path.join(snapshotDir, "contents")), paths.workspaceDir);
   }
 
+  async inspectConflictPreview(relativePaths: readonly string[]): Promise<WorkflowWorkspaceConflictPreview[]> {
+    const paths = this.paths();
+    const manifest = await readManifest(paths.manifestPath);
+    if (!manifest) throw new Error("Workflow workspace baseline manifest was not found.");
+    const sourceDir = await existingDirectory(manifest.sourceDir);
+    const baseline = await scanDirectory(paths.baselineDir, new Set());
+    const isolated = await scanDirectory(paths.workspaceDir, new Set());
+    const current = await scanDirectory(sourceDir, new Set());
+    const baselineByPath = new Map(baseline.files.map((file) => [file.relativePath, file]));
+    const isolatedByPath = new Map(isolated.files.map((file) => [file.relativePath, file]));
+    const currentByPath = new Map(current.files.map((file) => [file.relativePath, file]));
+    return Promise.all([...new Set(relativePaths)].sort().map(async (relativePath) => {
+      if (!relativePath.trim() || path.isAbsolute(relativePath) || relativePath.split(/[\\/]/).includes("..")) throw new Error("Workflow conflict preview path is unsafe.");
+      return {
+        path: relativePath,
+        baseline: await conflictVersion(paths.baselineDir, baselineByPath.get(relativePath)),
+        isolated: await conflictVersion(paths.workspaceDir, isolatedByPath.get(relativePath)),
+        current: await conflictVersion(sourceDir, currentByPath.get(relativePath)),
+      };
+    }));
+  }
+
   async rollbackCommitted(): Promise<WorkflowWorkspaceRollbackResult> {
     const paths = this.paths();
     const manifest = await readManifest(paths.manifestPath);
@@ -381,6 +418,21 @@ async function diffDirectories(beforeDir: string, afterDir: string): Promise<Wor
     else if (!sameFile(before, after)) result.modified.push(relativePath);
   }
   return result;
+}
+
+async function conflictVersion(rootDir: string, entry: WorkflowWorkspaceFileEntry | undefined): Promise<WorkflowWorkspaceConflictVersion> {
+  if (!entry) return { exists: false };
+  const result: WorkflowWorkspaceConflictVersion = { exists: true, size: entry.size, sha256: entry.sha256 };
+  if (entry.size > 64 * 1_024) return result;
+  const filePath = path.resolve(rootDir, entry.relativePath);
+  await assertInside(rootDir, filePath);
+  const content = await readFile(filePath);
+  if (content.includes(0)) return { ...result, binary: true };
+  return { ...result, binary: false, preview: redactConflictPreview(content.toString("utf8")) };
+}
+
+function redactConflictPreview(value: string): string {
+  return value.replace(/(^|\n)(\s*[^\n:=]*(?:authorization|password|passwd|secret|token|api[_-]?key)[^\n:=]*\s*[:=]\s*)[^\n]*/gi, "$1$2[REDACTED]");
 }
 
 function workspacePaths(rootDir: string): WorkflowWorkspaceTransactionPaths {

@@ -374,7 +374,7 @@ export class WorkflowRuntime {
     }
     const operations = (await store.readOperations(input.workflowId, input.runId)).map(sanitizeWorkflowOperationRecord);
     const workspaceDiff = await store.inspectWorkspaceTransaction?.({ workflowId: input.workflowId, runId: input.runId });
-    const preview = buildWorkflowV2RecoveryPreview({ transaction: persisted.transaction, operations, runState: persisted.runState, ...(workspaceDiff ? { workspaceDiff } : {}), canRollbackSavepoint: Boolean(store.restoreWorkspaceSavepoint) });
+    const preview = buildWorkflowV2RecoveryPreview({ transaction: persisted.transaction, operations, runState: persisted.runState, nodeControl: persisted.nodeControl, ...(workspaceDiff ? { workspaceDiff } : {}), canRollbackSavepoint: Boolean(store.restoreWorkspaceSavepoint) });
     if (!preview.availableActions.includes(input.action)) {
       return { ok: false, workflowId: input.workflowId, runId: input.runId, error: `Workflow recovery action ${input.action} is not safe for the current transaction facts.` };
     }
@@ -425,7 +425,7 @@ export class WorkflowRuntime {
       transaction.status = "active";
     }
     await store.persistRunState({ ...persisted, eventCount: persisted.eventCount + 1, savedAt: now, transaction, recoveryDecisions });
-    const nextPreview = buildWorkflowV2RecoveryPreview({ transaction, operations, runState: persisted.runState, ...(workspaceDiff ? { workspaceDiff } : {}), canRollbackSavepoint: Boolean(store.restoreWorkspaceSavepoint) });
+    const nextPreview = buildWorkflowV2RecoveryPreview({ transaction, operations, runState: persisted.runState, nodeControl: persisted.nodeControl, ...(workspaceDiff ? { workspaceDiff } : {}), canRollbackSavepoint: Boolean(store.restoreWorkspaceSavepoint) });
     this.deps.updateWorkflowRunState({
       workflowId: input.workflowId,
       runId: input.runId,
