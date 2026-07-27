@@ -134,4 +134,34 @@ describe("SkillsShClient", () => {
     expect(fallback.stale).toBe(true);
     expect(fallback.skills[0]?.name).toBe("Review");
   });
+
+  it("preserves every cached detail when multiple candidates load concurrently", async () => {
+    const file = cachePath();
+    const entries = ["first", "second"].map((skillId) => ({
+      id: `acme/tools/${skillId}`,
+      source: "acme/tools",
+      owner: "acme",
+      repo: "tools",
+      skillId,
+      name: skillId,
+      installs: 1,
+      url: `https://skills.sh/acme/tools/${skillId}`,
+    }));
+    const online = vi.fn<typeof fetch>(async (url) => {
+      const skillId = String(url).split("/").at(-1);
+      return jsonResponse({
+        hash: `hash-${skillId}`,
+        files: [{ path: "SKILL.md", contents: `# ${skillId}\n` }],
+      });
+    });
+    const onlineClient = new SkillsShClient({ cachePath: file, fetchImpl: online });
+
+    await Promise.all(entries.map((entry) => onlineClient.getDetail(entry)));
+
+    const offline = vi.fn<typeof fetch>().mockRejectedValue(new Error("offline"));
+    const cachedClient = new SkillsShClient({ cachePath: file, fetchImpl: offline });
+    await expect(Promise.all(entries.map((entry) => cachedClient.getDetail(entry))))
+      .resolves.toHaveLength(2);
+    expect(offline).not.toHaveBeenCalled();
+  });
 });

@@ -113,8 +113,9 @@ export class SkillsShClient {
       if (!response.ok) throw new Error(`skills.sh request failed (${response.status}).`);
       const payload: unknown = await response.json();
       const parsed = parse(payload);
-      cache.entries[cacheKey] = { savedAt: this.now(), value: payload };
-      this.writeCache(cache);
+      const latestCache = this.readCache();
+      latestCache.entries[cacheKey] = { savedAt: this.now(), value: payload };
+      this.writeCache(latestCache);
       return { ...parsed, stale: false };
     } catch (error) {
       if (cached) return { ...parse(cached.value), stale: true };
