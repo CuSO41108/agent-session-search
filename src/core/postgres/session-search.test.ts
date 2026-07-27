@@ -189,6 +189,27 @@ describe("PostgreSQL Turn search", () => {
     expect(limited.hasMore).toBe(true);
   });
 
+  it("prioritizes exact phrase hits over messages that only contain all terms", async () => {
+    await repository.upsertIndexedSession(
+      session("codex:phrase", "Exact phrase ranking", "2026-07-24T08:00:00.000Z"),
+      [
+        message("user", "UPSERT is how the latest state is maintained", "2026-07-24T08:00:00.000Z", 0),
+        message("assistant", "The latest state uses UPSERT and a unique device id", "2026-07-24T08:00:01.000Z", 1),
+        message("user", "UPSERT is how the latest state is maintained", "2026-07-24T08:01:00.000Z", 2),
+      ],
+    );
+
+    const page = await searchRepository.searchSessionPage({
+      query: "UPSERT is how the latest state is maintained",
+      excludeSubagents: true,
+    });
+    const result = page.sessions.find((item) => item.sessionKey === "codex:phrase");
+
+    expect(result?.messageMatchCount).toBe(3);
+    expect(result?.matchHits?.map((hit) => hit.messageIndex)).toEqual([0, 2]);
+    expect(result?.matchHits?.[0]?.matchedTerms[0]).toBe("upsert is how the latest state is maintained");
+  });
+
   it("prioritizes favorites while ignoring legacy pin state", async () => {
     await repository.setFavorited("codex:one", true);
     await database.query(

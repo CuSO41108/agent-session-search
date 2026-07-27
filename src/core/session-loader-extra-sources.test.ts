@@ -37,6 +37,7 @@ function writeCursorStateDb(
     parentComposerId?: string;
     uriScheme?: string;
     uriAuthority?: string;
+    visibleBubbleIds?: string[];
   }>,
   bubbles: Array<{
     composerId: string;
@@ -107,6 +108,16 @@ function writeCursorStateDb(
         text: bubble.text ?? "",
         ...(bubble.richText === undefined ? {} : { richText: JSON.stringify(bubble.richText) }),
         createdAt: bubble.createdAt,
+      }),
+    );
+  }
+  for (const header of headers) {
+    if (!header.visibleBubbleIds) continue;
+    insertBubble.run(
+      `composerData:${header.composerId}`,
+      JSON.stringify({
+        composerId: header.composerId,
+        fullConversationHeadersOnly: header.visibleBubbleIds.map((bubbleId) => ({ bubbleId })),
       }),
     );
   }
@@ -800,6 +811,201 @@ describe("extra session sources", () => {
     fs.rmSync(root, { recursive: true, force: true });
   });
 
+  it("shows only the current Cursor conversation branch in Cursor's visible order", () => {
+    const root = tmpDir("cursor-visible-branch");
+    const stateDbPath = path.join(root, "cursor-state.vscdb");
+    const composerId = "cursor-visible-branch-1";
+    writeCursorStateDb(
+      stateDbPath,
+      [
+        {
+          composerId,
+          name: "Visible Cursor branch",
+          projectPath: "/Users/me/cursor-app",
+          visibleBubbleIds: ["current-user", "current-assistant"],
+        },
+      ],
+      [
+        {
+          composerId,
+          bubbleId: "current-assistant",
+          type: 2,
+          text: "This is the answer Cursor still shows.",
+          createdAt: "2026-07-22T10:04:00Z",
+        },
+        {
+          composerId,
+          bubbleId: "discarded-user",
+          type: 1,
+          text: "This prompt was replaced after rewinding.",
+          createdAt: "2026-07-22T10:02:00Z",
+        },
+        {
+          composerId,
+          bubbleId: "current-user",
+          type: 1,
+          text: "This is the replacement prompt.",
+          createdAt: "2026-07-22T10:03:00Z",
+        },
+        {
+          composerId,
+          bubbleId: "discarded-assistant",
+          type: 2,
+          text: "This old branch must stay hidden.",
+          createdAt: "2026-07-22T10:01:00Z",
+        },
+      ],
+    );
+
+    const loaded = loadCursorAgentSessions(root, { cursorStateDbPath: stateDbPath });
+
+    expect(loaded).toHaveLength(1);
+    expect(loaded[0].messages.map((message) => `${message.role}:${message.content}`)).toEqual([
+      "user:This is the replacement prompt.",
+      "assistant:This is the answer Cursor still shows.",
+    ]);
+
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  it("filters Cursor transcript messages and tools to the current database branch", () => {
+    const root = tmpDir("cursor-transcript-visible-branch");
+    const stateDbPath = path.join(root, "cursor-state.vscdb");
+    const workspaceSlug = "Users-me-cursor-app";
+    const composerId = "cursor-transcript-visible-branch-1";
+    const transcript = path.join(root, "projects", workspaceSlug, "agent-transcripts", composerId, `${composerId}.jsonl`);
+    writeJsonl(transcript, [
+      {
+        role: "user",
+        message: { content: [{ type: "text", text: "<user_query>Keep this shared prompt</user_query>" }] },
+      },
+      {
+        role: "assistant",
+        message: { content: [{ type: "text", text: "Shared answer" }] },
+      },
+      {
+        role: "user",
+        message: { content: [{ type: "text", text: "<user_query>Discard this branch</user_query>" }] },
+      },
+      {
+        role: "assistant",
+        message: {
+          content: [
+            { type: "text", text: "Discarded answer" },
+            { type: "tool_use", name: "Read", input: { path: "old.ts" } },
+          ],
+        },
+      },
+      {
+        role: "user",
+        message: { content: [{ type: "text", text: "<user_query>Use this replacement prompt</user_query>" }] },
+      },
+      {
+        role: "assistant",
+        message: {
+          content: [
+            { type: "text", text: "Replacement answer" },
+            { type: "tool_use", name: "Read", input: { path: "current.ts" } },
+          ],
+        },
+      },
+    ]);
+    writeCursorStateDb(
+      stateDbPath,
+      [
+        {
+          composerId,
+          name: "Current transcript branch",
+          projectPath: "/Users/me/cursor-app",
+          visibleBubbleIds: ["shared-user", "shared-assistant", "current-user", "current-assistant"],
+        },
+      ],
+      [
+        {
+          composerId,
+          bubbleId: "shared-user",
+          type: 1,
+          text: "Keep this shared prompt",
+          createdAt: "2026-07-22T10:01:00Z",
+        },
+        {
+          composerId,
+          bubbleId: "shared-assistant",
+          type: 2,
+          text: "Shared answer",
+          createdAt: "2026-07-22T10:02:00Z",
+        },
+        {
+          composerId,
+          bubbleId: "discarded-user",
+          type: 1,
+          text: "Discard this branch",
+          createdAt: "2026-07-22T10:03:00Z",
+        },
+        {
+          composerId,
+          bubbleId: "current-user",
+          type: 1,
+          text: "Use this replacement prompt",
+          createdAt: "2026-07-22T10:05:00Z",
+        },
+        {
+          composerId,
+          bubbleId: "current-assistant",
+          type: 2,
+          text: "Replacement answer",
+          createdAt: "2026-07-22T10:06:00Z",
+        },
+      ],
+    );
+
+    const loaded = loadCursorAgentSessions(root, {
+      cursorStateDbPath: stateDbPath,
+      cursorWorkspacePathMap: new Map([[workspaceSlug, "/Users/me/cursor-app"]]),
+    });
+
+    expect(loaded).toHaveLength(1);
+    expect(loaded[0].messages.map((message) => `${message.role}:${message.content}`)).toEqual([
+      "user:Keep this shared prompt",
+      "assistant:Shared answer",
+      "user:Use this replacement prompt",
+      "assistant:Replacement answer",
+    ]);
+    expect(loaded[0].traceEvents?.map((event) => event.title)).toEqual(["Read · current.ts"]);
+
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  it("does not revive discarded Cursor bubbles when the visible branch is empty", () => {
+    const root = tmpDir("cursor-empty-visible-branch");
+    const stateDbPath = path.join(root, "cursor-state.vscdb");
+    const composerId = "cursor-empty-visible-branch-1";
+    writeCursorStateDb(
+      stateDbPath,
+      [
+        {
+          composerId,
+          name: "Discarded Cursor draft",
+          projectPath: "/Users/me/cursor-app",
+          visibleBubbleIds: [],
+        },
+      ],
+      [
+        {
+          composerId,
+          bubbleId: "discarded-user",
+          type: 1,
+          text: "This prompt is no longer visible in Cursor.",
+          createdAt: "2026-07-22T10:01:00Z",
+        },
+      ],
+    );
+
+    expect(loadCursorAgentSessions(root, { cursorStateDbPath: stateDbPath })).toEqual([]);
+
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
   it("omits empty Cursor composer headers even when Cursor does not mark them as drafts", () => {
     const root = tmpDir("cursor-empty-header");
     const stateDbPath = path.join(root, "cursor-state.vscdb");
@@ -818,23 +1024,80 @@ describe("extra session sources", () => {
     fs.rmSync(root, { recursive: true, force: true });
   });
 
-  it("describes Cursor Remote SSH execution separately from local storage", () => {
-    const root = tmpDir("cursor-remote-ssh");
+  it("omits Cursor composer headers that have no readable messages", () => {
+    const root = tmpDir("cursor-empty-project-shell");
     const stateDbPath = path.join(root, "cursor-state.vscdb");
     writeCursorStateDb(stateDbPath, [
       {
-        composerId: "cursor-remote-1",
-        name: "Remote Cursor session",
-        projectPath: "/home/me/project",
-        uriScheme: "vscode-remote",
-        uriAuthority: "ssh-remote+dev",
+        composerId: "2c975d5b-073b-4757-9901-0b85fceb58e9",
+        name: "",
+        projectPath: "/Users/mac/PycharmProjects/learn-claude-code",
+        createdAt: Date.parse("2026-04-28T07:07:50Z"),
       },
       {
-        composerId: "cursor-local-1",
-        name: "Local Cursor session",
-        projectPath: "/Users/me/project",
+        composerId: "named-empty-draft",
+        name: "Saved empty draft",
+        projectPath: "/Users/mac/PycharmProjects/learn-claude-code",
+      },
+      {
+        composerId: "with-messages",
+        name: "",
+        projectPath: "/Users/mac/IdeaProjects/sky-take-out",
+      },
+    ], [
+      {
+        composerId: "with-messages",
+        bubbleId: "bubble-user",
+        type: 1,
+        text: "Explain the takeout order flow",
+        createdAt: "2026-07-26T02:00:00Z",
       },
     ]);
+
+    const loaded = loadCursorAgentSessions(root, { cursorStateDbPath: stateDbPath });
+
+    expect(loaded.map((item) => item.session.rawId)).toEqual(["with-messages"]);
+    expect(loaded.find((item) => item.session.rawId === "with-messages")?.session.firstQuestion).toBe("Explain the takeout order flow");
+
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  it("describes Cursor Remote SSH execution separately from local storage", () => {
+    const root = tmpDir("cursor-remote-ssh");
+    const stateDbPath = path.join(root, "cursor-state.vscdb");
+    writeCursorStateDb(
+      stateDbPath,
+      [
+        {
+          composerId: "cursor-remote-1",
+          name: "Remote Cursor session",
+          projectPath: "/home/me/project",
+          uriScheme: "vscode-remote",
+          uriAuthority: "ssh-remote+dev",
+        },
+        {
+          composerId: "cursor-local-1",
+          name: "Local Cursor session",
+          projectPath: "/Users/me/project",
+        },
+      ],
+      [
+        {
+          composerId: "cursor-remote-1",
+          bubbleId: "remote-user",
+          type: 1,
+          text: "Inspect the remote project",
+          createdAt: "2026-07-22T10:01:00Z",
+        },
+        {
+          composerId: "cursor-local-1",
+          bubbleId: "local-user",
+          type: 1,
+          text: "Inspect the local project",
+          createdAt: "2026-07-22T10:02:00Z",
+        },
+      ],
+    );
 
     const loaded = loadCursorAgentSessions(root, { cursorStateDbPath: stateDbPath });
     const remote = loaded.find((item) => item.session.rawId === "cursor-remote-1");

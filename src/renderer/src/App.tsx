@@ -75,6 +75,7 @@ import { SESSION_PAGE_SIZE, useSessionCatalog } from "./features/sessions/use-se
 import { useSessionDetail } from "./features/sessions/use-session-detail";
 import { SettingsDialog, type SettingsSection } from "./features/settings/settings-dialog";
 import { SshEnvironmentDialog } from "./features/settings/ssh-environment-dialog";
+import { WslEnvironmentDialog } from "./features/settings/wsl-environment-dialog";
 import { WorkbenchPage } from "./features/workbench/workbench-page";
 import { useWorkbenchOverview } from "./features/workbench/use-workbench-overview";
 import { useAutomation } from "./features/automation/automation-provider";
@@ -320,14 +321,13 @@ export function App(): ReactElement {
   const [appUpdateError, setAppUpdateError] = useState<string | null>(null);
   const shouldSignalAppUpdate = Boolean(appUpdateStatus?.updateAvailable && !appUpdateStatus.updateSkipped && !appUpdateStatus.promptSnoozed);
   const [sshDialogOpen, setSshDialogOpen] = useState(false);
+  const [wslDialogOpen, setWslDialogOpen] = useState(false);
   const [aiAssistantOpen, setAiAssistantOpen] = useState(false);
   const [remoteSessionsOpen, setRemoteSessionsOpen] = useState(false);
   const [appSettings, setAppSettings] = useState<AppSettings | null>(null);
   const [settingsFeedback, setSettingsFeedback] = useState<SettingsFeedback>(null);
   const [environmentHealthReports, setEnvironmentHealthReports] = useState<Record<string, RemoteHealthReport>>({});
   const [diagnosingEnvironmentId, setDiagnosingEnvironmentId] = useState<string | null>(null);
-  const [skillHookInstalled, setSkillHookInstalled] = useState<boolean | null>(null);
-  const [skillHookBusy, setSkillHookBusy] = useState(false);
   const [sessionHookStatus, setSessionHookStatus] = useState<SessionSyncHookStatus | null>(null);
   const [sessionHookBusy, setSessionHookBusy] = useState(false);
   const [pendingPersonalSources, setPendingPersonalSources] = useState<Record<PendingSourceKey, boolean>>(
@@ -381,27 +381,8 @@ export function App(): ReactElement {
 
   useEffect(() => {
     if (!settingsOpen) return;
-    void window.sessionSearch.getSkillUsageHookStatus().then(setSkillHookInstalled).catch(() => setSkillHookInstalled(false));
     void window.sessionSearch.getSessionSyncHookStatus().then(setSessionHookStatus).catch(() => setSessionHookStatus(null));
   }, [settingsOpen]);
-
-  const toggleSkillUsageHook = useCallback(async (enabled: boolean) => {
-    setSkillHookBusy(true);
-    setSettingsFeedback({ kind: "running", message: enabled ? t("Enabling skill usage tracking...", "正在开启 Skill 使用统计...") : t("Disabling skill usage tracking...", "正在关闭 Skill 使用统计...") });
-    try {
-      if (enabled) await window.sessionSearch.installSkillUsageHook();
-      else await window.sessionSearch.uninstallSkillUsageHook();
-      setSkillHookInstalled(await window.sessionSearch.getSkillUsageHookStatus());
-      if (activePage === "skills") void skills.load({ refreshUsage: true, silent: true });
-      const message = enabled ? t("Skill usage tracking on.", "已开启 Skill 使用统计。") : t("Skill usage tracking off.", "已关闭 Skill 使用统计。");
-      setSettingsFeedback({ kind: "success", message });
-      window.setTimeout(() => setSettingsFeedback((current) => (current?.kind === "success" && current.message === message ? null : current)), 1600);
-    } catch (error) {
-      setSettingsFeedback({ kind: "error", message: error instanceof Error ? error.message : String(error) });
-    } finally {
-      setSkillHookBusy(false);
-    }
-  }, [activePage, skills.load, t]);
 
   const toggleSessionSyncHook = useCallback(async (enabled: boolean) => {
     setSessionHookBusy(true);
@@ -543,6 +524,7 @@ export function App(): ReactElement {
       // Esc backs out of the frontmost layer, one at a time.
       if (event.key === "Escape") {
         if (sshDialogOpen) setSshDialogOpen(false);
+        else if (wslDialogOpen) setWslDialogOpen(false);
         else if (migrationDialog) setMigrationDialog(null);
         else if (dialog) setDialog(null);
         else if (deleteSessionCandidate && !deletingSession) setDeleteSessionCandidate(null);
@@ -559,7 +541,7 @@ export function App(): ReactElement {
       }
 
       // Leave list navigation alone while an overlay or menu is in front.
-      if (detail || remoteDetail || dialog || migrationDialog || deleteSessionCandidate || deleteTagName || contextMenu || aiAssistantOpen || settingsOpen || sshDialogOpen || remoteSessionsOpen) return;
+      if (detail || remoteDetail || dialog || migrationDialog || deleteSessionCandidate || deleteTagName || contextMenu || aiAssistantOpen || settingsOpen || sshDialogOpen || wslDialogOpen || remoteSessionsOpen) return;
 
       if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
         event.preventDefault();
@@ -599,7 +581,7 @@ export function App(): ReactElement {
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [displayedResults, selectedKey, detail, remoteDetail, dialog, migrationDialog, deleteSessionCandidate, deletingSession, deleteTagName, contextMenu, aiAssistantOpen, settingsOpen, sshDialogOpen, remoteSessionsOpen, actionStatus, navigateToPage, t]);
+  }, [displayedResults, selectedKey, detail, remoteDetail, dialog, migrationDialog, deleteSessionCandidate, deletingSession, deleteTagName, contextMenu, aiAssistantOpen, settingsOpen, sshDialogOpen, wslDialogOpen, remoteSessionsOpen, actionStatus, navigateToPage, t]);
 
   useEffect(() => {
     if (!selectedKey) return;
@@ -607,9 +589,9 @@ export function App(): ReactElement {
   }, [selectedKey]);
 
   useEffect(() => {
-    document.body.classList.toggle("overlay-open", Boolean(detail || remoteDetail || aiAssistantOpen || settingsOpen || sshDialogOpen || remoteSessionsOpen));
+    document.body.classList.toggle("overlay-open", Boolean(detail || remoteDetail || aiAssistantOpen || settingsOpen || sshDialogOpen || wslDialogOpen || remoteSessionsOpen));
     return () => document.body.classList.remove("overlay-open");
-  }, [detail, remoteDetail, aiAssistantOpen, settingsOpen, sshDialogOpen, remoteSessionsOpen]);
+  }, [detail, remoteDetail, aiAssistantOpen, settingsOpen, sshDialogOpen, wslDialogOpen, remoteSessionsOpen]);
 
   const visibleSourceFilters = useMemo(() => {
     if (!appSettings) return sourceFilters(null);
@@ -1073,7 +1055,7 @@ export function App(): ReactElement {
   }
 
   async function diagnoseEnvironment(environment: SessionEnvironment): Promise<void> {
-    if (environment.kind !== "ssh") return;
+    if (environment.kind !== "ssh" && environment.kind !== "wsl") return;
     setDiagnosingEnvironmentId(environment.id);
     setSettingsFeedback({ kind: "running", message: t(`Checking ${environment.label}...`, `正在检查 ${environment.label}...`) });
     try {
@@ -1115,6 +1097,22 @@ export function App(): ReactElement {
       await window.sessionSearch.saveEnvironment(input);
       await reloadEnvironmentData();
       const message = t("SSH environment saved.", "SSH 环境已保存。");
+      setSettingsFeedback({ kind: "success", message });
+      window.setTimeout(() => {
+        setSettingsFeedback((current) => (current?.kind === "success" && current.message === message ? null : current));
+      }, 1800);
+    } catch (error) {
+      setSettingsFeedback({ kind: "error", message: error instanceof Error ? error.message : String(error) });
+      throw error;
+    }
+  }
+
+  async function saveWslEnvironment(input: EnvironmentUpsertInput): Promise<void> {
+    setSettingsFeedback({ kind: "running", message: t("Saving WSL environment...", "正在保存 WSL 环境...") });
+    try {
+      await window.sessionSearch.saveEnvironment(input);
+      await reloadEnvironmentData();
+      const message = t("WSL environment saved.", "WSL 环境已保存。");
       setSettingsFeedback({ kind: "success", message });
       window.setTimeout(() => {
         setSettingsFeedback((current) => (current?.kind === "success" && current.message === message ? null : current));
@@ -1642,9 +1640,6 @@ export function App(): ReactElement {
           onLanguageChange={setLanguage}
           onDefaultTerminalChange={(terminal) => void updateDefaultTerminal(terminal)}
           onGlobalShortcutChange={(shortcut) => void updateGlobalShortcut(shortcut)}
-          skillHookInstalled={skillHookInstalled}
-          skillHookBusy={skillHookBusy}
-          onSkillHookChange={(enabled) => void toggleSkillUsageHook(enabled)}
           sessionHookStatus={sessionHookStatus}
           sessionHookBusy={sessionHookBusy}
           onSessionHookChange={(enabled) => void toggleSessionSyncHook(enabled)}
@@ -1652,6 +1647,7 @@ export function App(): ReactElement {
           onDiagnoseEnvironment={(environment) => void diagnoseEnvironment(environment)}
           onDeleteEnvironment={(environment) => void deleteEnvironment(environment)}
           onAddSsh={() => setSshDialogOpen(true)}
+          onAddWsl={() => setWslDialogOpen(true)}
           onOpenApiConfig={() => {
             setSettingsOpen(false);
             void navigateToPage("providers");
@@ -1671,6 +1667,16 @@ export function App(): ReactElement {
           feedback={settingsFeedback}
           onSaveEnvironment={(input) => saveSshEnvironment(input)}
           onClose={() => setSshDialogOpen(false)}
+        />
+      ) : null}
+
+      {wslDialogOpen ? (
+        <WslEnvironmentDialog
+          environments={environments}
+          language={language}
+          feedback={settingsFeedback}
+          onSaveEnvironment={(input) => saveWslEnvironment(input)}
+          onClose={() => setWslDialogOpen(false)}
         />
       ) : null}
 

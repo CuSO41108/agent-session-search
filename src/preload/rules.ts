@@ -11,7 +11,7 @@ export function createRulesApi(ipc: RulesIpcRenderer) {
     uploadAllRulesToSync: (): Promise<{ uploaded: number; skipped: number }> => ipc.invoke(RULES_IPC.uploadAll.channel),
     deleteRemoteRule: (remoteId: string): Promise<boolean> => ipc.invoke(RULES_IPC.deleteRemote.channel, remoteId),
     copyRulesSyncSetupSql: (): Promise<void> => ipc.invoke(RULES_IPC.copySetupSql.channel),
-    restoreGlobalRules: (): Promise<RestoreResult> => ipc.invoke(RULES_IPC.restoreGlobal.channel),
+    restoreRules: (): Promise<RestoreResult> => ipc.invoke(RULES_IPC.restore.channel),
   };
 }
 

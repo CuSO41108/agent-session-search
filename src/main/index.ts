@@ -75,11 +75,18 @@ import { writeDatabaseUrlPointer } from "../core/app-paths";
 import { PostgresDatabase } from "../core/postgres/database";
 import { POSTGRES_MIGRATIONS } from "../core/postgres/schema";
 import { diagnoseRemoteEnvironment } from "../core/remote-health";
-import { buildRemoteSyncSshArgs, fetchRemoteSessionMessagePage, syncRemoteEnvironment } from "../core/remote-sync";
+import {
+  buildRemoteSyncSshArgs,
+  fetchRemoteSessionFilePayload,
+  fetchRemoteSessionMessagePage,
+  syncRemoteEnvironment,
+} from "../core/remote-sync";
 import { REMOTE_PROCESS_EXEC_OPTIONS, runRemoteCommand, runRemoteCommandWithInput } from "../core/remote-process";
+import { loadWslSessionDetailPayload } from "../core/remote-session-loader";
 import { restoreRemotePortableSession, type RemoteSessionRestoreDependencies } from "../core/remote-session-restore";
 import { RemoteEnvironmentLifecycle } from "../core/remote-environment-lifecycle";
 import { RemoteWatchManager } from "../core/remote-watch";
+import { WslSessionIndexer } from "../core/wsl-session-indexer";
 import { SessionStore } from "../core/session-store";
 import { buildCombinedSupabaseSetupSql, supabaseSqlEditorUrl } from "../core/supabase-setup";
 import { readUserSshConfig } from "../core/ssh-config";
@@ -108,6 +115,7 @@ import { registerSessionCatalogIpc } from "./ipc/session-catalog";
 import { registerSessionCommandIpc } from "./ipc/session-commands";
 import {
   AppUpdateService,
+  InstalledRuntimeMonitor,
   launchDetachedAppUpdateInstaller,
   type AppUpdateClient,
 } from "./services/app-update-service";
@@ -146,7 +154,7 @@ import {
   type SessionSyncHookSetup,
 } from "./services/remote-session-service";
 import { buildMemoriesSyncSetupSql, memoryIdentity, scanLocalMemories, SupabaseMemoriesSyncClient } from "../core/memories-sync";
-import { buildRulesSyncSetupSql, restoreGlobalRules, ruleIdentity, scanLocalRules, SupabaseRulesSyncClient } from "../core/rules-sync";
+import { buildRulesSyncSetupSql, restoreRules, ruleIdentity, scanLocalRules, SupabaseRulesSyncClient } from "../core/rules-sync";
 import { SkillService, type SkillUsageHookSetup } from "./services/skill-service";
 import { SessionCatalogService } from "./services/session-catalog-service";
 import { SessionCommandService } from "./services/session-command-service";
@@ -250,6 +258,8 @@ function loadMcpSetup(): McpSetup {
 
 const UPDATE_CLIENT_PATH = path.join(__dirname, "../../bin/update-client.cjs");
 const APPLY_UPDATE_PATH = path.join(__dirname, "../../bin/apply-update.cjs");
+const APP_ENTRY_PATH = fileURLToPath(import.meta.url);
+const NPM_LAUNCHER_PATH = path.join(__dirname, "../../bin/agent-recall.cjs");
 function loadUpdateClient(): AppUpdateClient {
   return requireCjs(UPDATE_CLIENT_PATH) as AppUpdateClient;
 }
@@ -297,6 +307,7 @@ let autoIndexTimer: ReturnType<typeof setInterval> | null = null;
 let registeredGlobalShortcut: string | null = null;
 let remoteWatchManager: RemoteWatchManager | null = null;
 let remoteEnvironmentLifecycle: RemoteEnvironmentLifecycle | null = null;
+let wslSessionIndexer: WslSessionIndexer | null = null;
 let quotaService: QuotaService;
 
 const settingsStore = new Store<AppSettings>({
@@ -400,6 +411,16 @@ const appUpdateService = new AppUpdateService({
   processId: process.pid,
   logError: (message) => console.error(message),
 });
+const installedRuntimeMonitor = releaseUpdateRuntime && process.env.AGENT_RECALL_NODE_PATH
+  ? new InstalledRuntimeMonitor({
+      appEntryPath: APP_ENTRY_PATH,
+      electronPath: process.execPath,
+      launcherPath: NPM_LAUNCHER_PATH,
+      nodePath: process.env.AGENT_RECALL_NODE_PATH,
+      requestQuit: () => app.quit(),
+      logError: (message) => console.error(message),
+    })
+  : null;
 
 const providerService = new ProviderService({
   getSettings,
@@ -503,10 +524,10 @@ function createRulesSyncService(): RulesIpcService {
     copySetupSql() {
       clipboard.writeText(buildRulesSyncSetupSql());
     },
-    async restoreGlobal() {
+    async restore() {
       const client = createClient();
       const remoteRules = await client.listRemoteRules();
-      return restoreGlobalRules(remoteRules);
+      return restoreRules(remoteRules, { projectDirs: await projectDirs() });
     },
   };
 }
@@ -1026,9 +1047,9 @@ function createWindow(): void {
     console.error("[renderer] did-fail-load", { errorCode, errorDescription, validatedURL });
   });
 
-  mainWindow.webContents.on("console-message", (_event, level, message, line, sourceId) => {
-    if (level >= 2) console.error("[renderer]", message, `${sourceId}:${line}`);
-    else console.log("[renderer]", message);
+  mainWindow.webContents.on("console-message", (details) => {
+    if (details.level === "error") console.error("[renderer]", details.message, `${details.sourceId}:${details.lineNumber}`);
+    else console.log("[renderer]", details.message);
   });
 
   mainWindow.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
@@ -1285,14 +1306,42 @@ function ensureRemoteWatchManager(): RemoteWatchManager {
   return remoteWatchManager;
 }
 
+function ensureWslSessionIndexer(): WslSessionIndexer {
+  if (!wslSessionIndexer) {
+    wslSessionIndexer = new WslSessionIndexer({
+      store,
+      fetchSessionFile: (environment, session) => fetchRemoteSessionFilePayload(environment, session),
+      loadSession: (environment, payload, summary) =>
+        loadWslSessionDetailPayload(environment, payload, summary, { includeTraceEvents: false }),
+      onComplete: (environment, result) => {
+        if (result.indexed > 0) emitEnvironmentsUpdated();
+      },
+      onSessionError: (session, error) => {
+        const cause = error instanceof Error && error.cause instanceof Error ? error.cause : error;
+        console.warn(
+          `Could not build the WSL search index for ${session.sessionKey}: ${error instanceof Error ? error.message : String(error)}`,
+          cause instanceof Error ? cause.stack : undefined,
+        );
+      },
+    });
+  }
+  return wslSessionIndexer;
+}
+
 function ensureRemoteEnvironmentLifecycle(): RemoteEnvironmentLifecycle {
   if (!remoteEnvironmentLifecycle) {
     remoteEnvironmentLifecycle = new RemoteEnvironmentLifecycle({
       store,
-      syncEnvironment: (environment) =>
-        syncRemoteEnvironment(store, environment, {
+      syncEnvironment: async (environment) => {
+        await syncRemoteEnvironment(store, environment, {
           enabledOptionalSources: enabledRemoteOptionalSources(getSettings()),
-        }).then(() => undefined),
+        });
+        if (environment.kind === "wsl") {
+          void ensureWslSessionIndexer().request(environment).catch((error) => {
+            console.warn(`WSL full-text indexing failed: ${error instanceof Error ? error.message : String(error)}`);
+          });
+        }
+      },
       watchManager: ensureRemoteWatchManager(),
       onEnvironmentsUpdated: emitEnvironmentsUpdated,
     });
@@ -2304,6 +2353,7 @@ if (!app.requestSingleInstanceLock()) {
 
 app.whenReady().then(async () => {
   await appUpdateService.registerRunningProcess();
+  void installedRuntimeMonitor?.start();
   postgresRuntime = await startPostgresRuntime({ userDataPath: app.getPath("userData") });
   postgresDatabase = PostgresDatabase.connect(postgresRuntime.connectionUrl, {
     migrations: POSTGRES_MIGRATIONS,
@@ -2375,6 +2425,7 @@ app.on("activate", () => {
 app.on("before-quit", (event) => {
   if (automationQuitReady) return;
   event.preventDefault();
+  installedRuntimeMonitor?.stop();
   stopAutoIndexRefresh();
   skillService.stopUsageRefresh();
   remoteSessionService.stopQueue();

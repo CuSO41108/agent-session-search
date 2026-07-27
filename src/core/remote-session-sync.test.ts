@@ -187,6 +187,24 @@ describe("remote session sync model", () => {
     expect(payload.source_environment_label).toBe("SSH dev");
   });
 
+  it("builds upload payloads for sessions without a project path", async () => {
+    const session = { ...SESSION, projectPath: "" };
+    const store = {
+      getSession: async () => session,
+      getAllMessages: async () => MESSAGES,
+      getTraceEvents: async () => [],
+    };
+
+    const { payload, portable } = await buildRemoteSessionUploadFromStore(
+      store,
+      session.sessionKey,
+      12_000,
+    );
+
+    expect(portable.projectPath).toBe("");
+    expect(payload.project_path).toBe("");
+  });
+
   it("adds managed attachments to schema 2 snapshots without exposing local paths", async () => {
     const directory = mkdtempSync(path.join(tmpdir(), "agent-recall-remote-attachment-"));
     try {

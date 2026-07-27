@@ -123,7 +123,9 @@ describe("AgentRecall PostgreSQL schema", () => {
     const migrations = await upgradedDatabase.query<{ version: number }>(
       "select version from agent_recall.schema_migrations order by version",
     );
-    expect(migrations.rows.map((row) => Number(row.version))).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
+    expect(migrations.rows.map((row) => Number(row.version))).toEqual(
+      POSTGRES_MIGRATIONS.map((migration) => migration.version),
+    );
     await upgradedDatabase.close();
   });
 

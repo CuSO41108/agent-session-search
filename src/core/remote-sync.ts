@@ -972,7 +972,30 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function isCanonicalBase64(value: string): boolean {
-  return /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(value);
+  if (value.length % 4 !== 0) return false;
+
+  let paddingStart = value.length;
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code === 61) {
+      paddingStart = index;
+      break;
+    }
+    const isUppercase = code >= 65 && code <= 90;
+    const isLowercase = code >= 97 && code <= 122;
+    const isDigit = code >= 48 && code <= 57;
+    if (!isUppercase && !isLowercase && !isDigit && code !== 43 && code !== 47) return false;
+  }
+
+  if (paddingStart === value.length) return true;
+  const paddingLength = value.length - paddingStart;
+  if (paddingLength > 2 || (paddingLength === 1 && paddingStart % 4 !== 3) || (paddingLength === 2 && paddingStart % 4 !== 2)) {
+    return false;
+  }
+  for (let index = paddingStart; index < value.length; index += 1) {
+    if (value.charCodeAt(index) !== 61) return false;
+  }
+  return true;
 }
 
 const REMOTE_COLLECTOR_SCRIPT = String.raw`import json

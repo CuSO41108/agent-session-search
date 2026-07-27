@@ -129,6 +129,46 @@ describe("SessionStore PostgreSQL facade", () => {
     });
   });
 
+  it("tracks full-content freshness separately from remote summary metadata", async () => {
+    const store = createStore();
+    const session = indexedSession();
+
+    await store.upsertIndexedSessionSummary(session, messages.length);
+    await expect(
+      store.isSessionContentFresh(session.sessionKey, session.fileMtimeMs, session.fileSize),
+    ).resolves.toBe(false);
+
+    await store.upsertIndexedSession(session, messages);
+    await expect(
+      store.isSessionContentFresh(session.sessionKey, session.fileMtimeMs, session.fileSize),
+    ).resolves.toBe(true);
+
+    const changed = { ...session, fileMtimeMs: 300, fileSize: 400 };
+    await store.upsertIndexedSessionSummary(changed, messages.length);
+    await expect(
+      store.isSessionContentFresh(changed.sessionKey, changed.fileMtimeMs, changed.fileSize),
+    ).resolves.toBe(false);
+  });
+
+  it("prunes zero-message Cursor state database shells even when the database still exists", async () => {
+    const store = createStore();
+    const stateDbPath = "/synthetic/Cursor/User/globalStorage/state.vscdb";
+    const shell = indexedSession({
+      sessionKey: "cursor:repo:empty",
+      rawId: "empty",
+      source: "cursor-agent",
+      filePath: stateDbPath,
+      originalTitle: "Empty Cursor shell",
+      firstQuestion: "",
+    });
+
+    await store.upsertIndexedSessionSummary(shell, 0);
+
+    await expect(
+      store.listSessionKeysByFilePath("local", new Set([stateDbPath])),
+    ).resolves.toContain(shell.sessionKey);
+  });
+
   it("keeps Session search results paged while filtering subagents in SQL", async () => {
     const store = createStore();
     await store.upsertIndexedSession(indexedSession(), messages);

@@ -484,13 +484,13 @@ export class PostgresSessionRepository {
             original_title, first_question, started_at, file_mtime_ms, file_size,
             pr_url, pr_number, message_count, turn_count, input_tokens, output_tokens,
             cached_input_tokens, reasoning_output_tokens, total_tokens, indexed_at,
-            is_subagent, parent_session_id
+            content_indexed_mtime_ms, content_indexed_size, is_subagent, parent_session_id
           )
           values (
             $1, $2, $3, $4, $5, $6, $7,
             $8, $9, $10, $11, $12,
             $13, $14, $15, $16, $17, $18,
-            $19, $20, $21, now(), $22, $23
+            $19, $20, $21, now(), $22, $23, $24, $25
           )
           on conflict (session_key) do update set
             raw_id = excluded.raw_id,
@@ -514,6 +514,8 @@ export class PostgresSessionRepository {
             reasoning_output_tokens = excluded.reasoning_output_tokens,
             total_tokens = excluded.total_tokens,
             indexed_at = excluded.indexed_at,
+            content_indexed_mtime_ms = excluded.content_indexed_mtime_ms,
+            content_indexed_size = excluded.content_indexed_size,
             is_subagent = excluded.is_subagent,
             parent_session_id = excluded.parent_session_id
         `,
@@ -539,6 +541,8 @@ export class PostgresSessionRepository {
           tokenUsage.cachedInputTokens,
           tokenUsage.reasoningOutputTokens,
           tokenUsage.totalTokens,
+          session.fileMtimeMs,
+          session.fileSize,
           Boolean(session.isSubagent),
           session.parentSessionId ?? null,
         ],
@@ -682,13 +686,13 @@ export class PostgresSessionRepository {
             original_title, first_question, started_at, file_mtime_ms, file_size,
             pr_url, pr_number, message_count, turn_count, input_tokens, output_tokens,
             cached_input_tokens, reasoning_output_tokens, total_tokens, indexed_at,
-            is_subagent, parent_session_id
+            content_indexed_mtime_ms, content_indexed_size, is_subagent, parent_session_id
           )
           values (
             $1, $2, $3, $4, $5, $6, $7,
             $8, $9, $10, $11, $12,
             $13, $14, $15, 0, $16, $17,
-            $18, $19, $20, now(), $21, $22
+            $18, $19, $20, now(), 0, 0, $21, $22
           )
           on conflict (session_key) do update set
             raw_id = excluded.raw_id,
@@ -831,6 +835,31 @@ export class PostgresSessionRepository {
       && (row.pr_number === null ? null : numberValue(row.pr_number)) === (session.prNumber ?? null)
       && Boolean(row.is_subagent) === Boolean(session.isSubagent)
       && (row.parent_session_id ?? null) === (session.parentSessionId ?? null),
+    );
+  }
+
+  async isSessionContentFresh(
+    sessionKey: string,
+    fileMtimeMs: number,
+    fileSize: number,
+  ): Promise<boolean> {
+    if (fileMtimeMs <= 0 && fileSize <= 0) return false;
+    const result = await this.database.query<{
+      content_indexed_mtime_ms: number | string;
+      content_indexed_size: number | string;
+    }>(
+      `
+        select content_indexed_mtime_ms, content_indexed_size
+        from agent_recall.sessions
+        where session_key = $1
+      `,
+      [sessionKey],
+    );
+    const row = result.rows[0];
+    return Boolean(
+      row
+      && Math.abs(numberValue(row.content_indexed_mtime_ms) - fileMtimeMs) < 0.001
+      && numberValue(row.content_indexed_size) === fileSize,
     );
   }
 
@@ -1278,16 +1307,27 @@ export class PostgresSessionRepository {
     environmentId: string,
     filePaths: ReadonlySet<string>,
   ): Promise<string[]> {
-    const result = await this.database.query<{ session_key: string; file_path: string }>(
+    const result = await this.database.query<{
+      session_key: string;
+      source: SessionSource;
+      file_path: string;
+      message_count: number | string;
+    }>(
       `
-        select session_key, file_path
+        select session_key, source, file_path, message_count
         from agent_recall.sessions
-        where environment_id = $1 and file_path <> ''
+        where storage_environment_id = $1 and file_path <> ''
       `,
       [environmentId],
     );
     return result.rows
-      .filter((row) => !filePaths.has(row.file_path))
+      .filter((row) =>
+        !filePaths.has(row.file_path)
+        || (
+          row.source === "cursor-agent"
+          && /(^|[\\/])state\.vscdb$/iu.test(row.file_path)
+          && numberValue(row.message_count) === 0
+        ))
       .map((row) => row.session_key);
   }
 
@@ -1373,6 +1413,8 @@ export class PostgresSessionRepository {
         update agent_recall.sessions
         set file_mtime_ms = 0,
           file_size = 0,
+          content_indexed_mtime_ms = 0,
+          content_indexed_size = 0,
           message_count = 0,
           turn_count = 0,
           input_tokens = 0,

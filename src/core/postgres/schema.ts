@@ -969,4 +969,14 @@ export const POSTGRES_MIGRATIONS: readonly PostgresMigration[] = [{
         ALTER COLUMN storage_environment_id SET NOT NULL;
     `,
   ],
+}, {
+  version: 9,
+  name: "track full Session content freshness",
+  statements: [
+    `
+      ALTER TABLE agent_recall.sessions
+        ADD COLUMN IF NOT EXISTS content_indexed_mtime_ms double precision NOT NULL DEFAULT 0,
+        ADD COLUMN IF NOT EXISTS content_indexed_size bigint NOT NULL DEFAULT 0;
+    `,
+  ],
 }];

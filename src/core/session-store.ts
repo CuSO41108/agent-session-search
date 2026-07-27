@@ -134,6 +134,15 @@ export class SessionStore {
     return this.sessions.isIndexedSessionFresh(session);
   }
 
+  async isSessionContentFresh(
+    sessionKey: string,
+    fileMtimeMs: number,
+    fileSize: number,
+  ): Promise<boolean> {
+    await this.ready;
+    return this.sessions.isSessionContentFresh(sessionKey, fileMtimeMs, fileSize);
+  }
+
   async touchIndexedAtIfMissing(sessionKey: string): Promise<void> {
     await this.ready;
     await this.sessions.touchIndexedAtIfMissing(sessionKey);

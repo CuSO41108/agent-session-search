@@ -4,7 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import {
   buildRulesSyncSetupSql,
-  restoreGlobalRules,
+  restoreRules,
   ruleIdentity,
   scanLocalRules,
   SupabaseRulesSyncClient,
@@ -142,7 +142,7 @@ describe("rules sync", () => {
 
   it("restores a global rule when the local file does not exist", () => {
     const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "rules-restore-new-"));
-    const result = restoreGlobalRules([makeRemoteRule()], { homeDir });
+    const result = restoreRules([makeRemoteRule()], { homeDir });
     expect(result.restored).toEqual(["CLAUDE.md"]);
     expect(result.skipped).toEqual([]);
     expect(result.backedUp).toEqual([]);
@@ -156,7 +156,7 @@ describe("rules sync", () => {
     fs.mkdirSync(claudeDir, { recursive: true });
     fs.writeFileSync(path.join(claudeDir, "CLAUDE.md"), "# Restored Rules", "utf8");
     const hash = require("node:crypto").createHash("sha256").update("# Restored Rules").digest("hex");
-    const result = restoreGlobalRules([makeRemoteRule({ content_hash: hash })], { homeDir });
+    const result = restoreRules([makeRemoteRule({ content_hash: hash })], { homeDir });
     expect(result.skipped).toEqual(["CLAUDE.md"]);
     expect(result.restored).toEqual([]);
     expect(fs.existsSync(path.join(claudeDir, "CLAUDE.md.bak"))).toBe(false);
@@ -168,7 +168,7 @@ describe("rules sync", () => {
     const claudeDir = path.join(homeDir, ".claude");
     fs.mkdirSync(claudeDir, { recursive: true });
     fs.writeFileSync(path.join(claudeDir, "CLAUDE.md"), "# Old local content", "utf8");
-    const result = restoreGlobalRules([makeRemoteRule()], { homeDir });
+    const result = restoreRules([makeRemoteRule()], { homeDir });
     expect(result.restored).toEqual(["CLAUDE.md"]);
     expect(result.backedUp).toEqual(["CLAUDE.md"]);
     expect(fs.readFileSync(path.join(claudeDir, "CLAUDE.md"), "utf8")).toBe("# Restored Rules");
@@ -176,15 +176,85 @@ describe("rules sync", () => {
     fs.rmSync(homeDir, { recursive: true, force: true });
   });
 
-  it("skips project-scope rules and unknown agents", () => {
+  it("skips project-scope rules when no matching projectDir is provided", () => {
     const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "rules-restore-skip2-"));
-    const result = restoreGlobalRules([
+    const result = restoreRules([
       makeRemoteRule({ scope: "project", project_path: "my-app" }),
       makeRemoteRule({ agent: "qoder", name: "some-rule.md" }),
     ], { homeDir });
     expect(result.restored).toEqual([]);
     expect(result.skipped).toEqual([]);
     expect(result.backedUp).toEqual([]);
+    fs.rmSync(homeDir, { recursive: true, force: true });
+  });
+
+  it("scans nested CLAUDE.md files with relative path as name", () => {
+    const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "rules-nested-scan-"));
+    const projectDir = path.join(homeDir, "monorepo");
+    fs.mkdirSync(path.join(projectDir, "packages", "core"), { recursive: true });
+    fs.mkdirSync(path.join(projectDir, "packages", "api"), { recursive: true });
+    fs.mkdirSync(path.join(projectDir, "node_modules", "dep"), { recursive: true });
+    fs.writeFileSync(path.join(projectDir, "CLAUDE.md"), "# Root rules", "utf8");
+    fs.writeFileSync(path.join(projectDir, "packages", "core", "CLAUDE.md"), "# Core rules", "utf8");
+    fs.writeFileSync(path.join(projectDir, "packages", "api", "CLAUDE.md"), "# API rules", "utf8");
+    fs.writeFileSync(path.join(projectDir, "node_modules", "dep", "CLAUDE.md"), "# Should be skipped", "utf8");
+
+    const rules = scanLocalRules({ homeDir, projectDirs: [projectDir] });
+    const claudeProjectRules = rules.filter((r) => r.agent === "claude" && r.scope === "project");
+    expect(claudeProjectRules).toHaveLength(3);
+    expect(claudeProjectRules.map((r) => r.name).sort()).toEqual(["CLAUDE.md", "packages/api/CLAUDE.md", "packages/core/CLAUDE.md"]);
+    // node_modules should be skipped
+    expect(claudeProjectRules.find((r) => r.name.includes("node_modules"))).toBeUndefined();
+    fs.rmSync(homeDir, { recursive: true, force: true });
+  });
+
+  it("assigns different identities to root and nested CLAUDE.md", () => {
+    const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "rules-nested-id-"));
+    const projectDir = path.join(homeDir, "myapp");
+    fs.mkdirSync(path.join(projectDir, "sub"), { recursive: true });
+    fs.writeFileSync(path.join(projectDir, "CLAUDE.md"), "Root", "utf8");
+    fs.writeFileSync(path.join(projectDir, "sub", "CLAUDE.md"), "Sub", "utf8");
+
+    const rules = scanLocalRules({ homeDir, projectDirs: [projectDir] });
+    const identities = rules.filter((r) => r.agent === "claude").map((r) => ruleIdentity(r));
+    expect(new Set(identities).size).toBe(identities.length);
+    expect(identities).toContain("claude:project:myapp:CLAUDE.md");
+    expect(identities).toContain("claude:project:myapp:sub/CLAUDE.md");
+    fs.rmSync(homeDir, { recursive: true, force: true });
+  });
+
+  it("restores a project-scope rule to the matching local project directory", () => {
+    const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "rules-restore-proj-"));
+    const projectDir = path.join(homeDir, "my-project");
+    fs.mkdirSync(projectDir, { recursive: true });
+    const remoteRule = makeRemoteRule({
+      scope: "project",
+      name: "CLAUDE.md",
+      project_path: "my-project",
+      content: "# Project rules from remote",
+    });
+    const result = restoreRules([remoteRule], { homeDir, projectDirs: [projectDir] });
+    expect(result.restored).toEqual(["CLAUDE.md"]);
+    expect(fs.readFileSync(path.join(projectDir, "CLAUDE.md"), "utf8")).toBe("# Project rules from remote");
+    fs.rmSync(homeDir, { recursive: true, force: true });
+  });
+
+  it("restores a nested project-scope rule using relative path name", () => {
+    const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "rules-restore-nested-"));
+    const projectDir = path.join(homeDir, "mono");
+    fs.mkdirSync(path.join(projectDir, "packages", "core"), { recursive: true });
+    fs.writeFileSync(path.join(projectDir, "packages", "core", "CLAUDE.md"), "# Old core rules", "utf8");
+    const remoteRule = makeRemoteRule({
+      scope: "project",
+      name: "packages/core/CLAUDE.md",
+      project_path: "mono",
+      content: "# New core rules from remote",
+    });
+    const result = restoreRules([remoteRule], { homeDir, projectDirs: [projectDir] });
+    expect(result.restored).toEqual(["packages/core/CLAUDE.md"]);
+    expect(result.backedUp).toEqual(["packages/core/CLAUDE.md"]);
+    expect(fs.readFileSync(path.join(projectDir, "packages", "core", "CLAUDE.md"), "utf8")).toBe("# New core rules from remote");
+    expect(fs.readFileSync(path.join(projectDir, "packages", "core", "CLAUDE.md.bak"), "utf8")).toBe("# Old core rules");
     fs.rmSync(homeDir, { recursive: true, force: true });
   });
 });

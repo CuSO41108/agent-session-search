@@ -624,6 +624,7 @@ export function loadCodexSessionRows(
     sourceOverride?: SessionSource;
     stat?: VirtualSessionFileStat;
     sessionMeta?: NonNullable<ReturnType<typeof parseCodexSessionMetaLine>>;
+    includeTraceEvents?: boolean;
   } = {},
 ): LoadedSession | null {
   if (rows.length === 0) return null;
@@ -633,7 +634,7 @@ export function loadCodexSessionRows(
 
   const messages = extractMessages(rows, "codex");
   const tokenEvents = extractCodexTokenEvents(rows);
-  const traceEvents = extractTraceEvents(rows, "codex");
+  const traceEvents = options.includeTraceEvents === false ? [] : extractTraceEvents(rows, "codex");
   const tokenUsage = tokenUsageFromEvents(tokenEvents);
   const question = firstQuestion(messages);
   const source: SessionSource = options.sourceOverride || (CODEX_APP_ORIGINATORS.has(meta.originator || "") ? "codex-app" : "codex-cli");
@@ -718,12 +719,13 @@ export function loadClaudeCliSessionRows(
     stat?: VirtualSessionFileStat;
     isSubagent?: boolean;
     parentSessionId?: string | null;
+    includeTraceEvents?: boolean;
   } = {},
 ): LoadedSession | null {
   const rawId = options.rawId || path.basename(filePath, ".jsonl");
   const messages = extractMessages(rows, "claude");
   const tokenEvents = extractClaudeTokenEvents(rows);
-  const traceEvents = extractTraceEvents(rows, "claude");
+  const traceEvents = options.includeTraceEvents === false ? [] : extractTraceEvents(rows, "claude");
   const tokenUsage = tokenUsageFromEvents(tokenEvents);
   const question = firstQuestion(messages);
   const aiTitle = firstAiTitle(rows);

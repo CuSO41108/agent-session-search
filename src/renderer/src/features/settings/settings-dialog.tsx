@@ -149,9 +149,6 @@ export function SettingsDialog({
   onLanguageChange,
   onDefaultTerminalChange,
   onGlobalShortcutChange,
-  skillHookInstalled,
-  skillHookBusy,
-  onSkillHookChange,
   sessionHookStatus,
   sessionHookBusy,
   onSessionHookChange,
@@ -186,9 +183,6 @@ export function SettingsDialog({
   onLanguageChange: (language: LanguageMode) => void;
   onDefaultTerminalChange: (terminal: AppSettings["defaultTerminal"]) => void;
   onGlobalShortcutChange: (shortcut: AppSettings["globalShortcut"]) => void;
-  skillHookInstalled: boolean | null;
-  skillHookBusy: boolean;
-  onSkillHookChange: (enabled: boolean) => void;
   sessionHookStatus: SessionSyncHookStatus | null;
   sessionHookBusy: boolean;
   onSessionHookChange: (enabled: boolean) => void;
@@ -1010,28 +1004,6 @@ export function SettingsDialog({
                       <option key={channel.id} value={channel.id}>{channel.label} · {channel.agentId}</option>
                     ))}
                   </select>
-                </label>
-                <header className="settings-pane-head" style={{ marginTop: 18 }}>
-                  <h3>{l("Skill usage", "Skill 统计")}</h3>
-                  <p>{l("Count how often each skill is used so the Skills panel can sort by most used.", "统计每个 skill 的使用次数，让 Skills 面板可以按使用最多排序。")}</p>
-                </header>
-                <label className="settings-field settings-toggle">
-                  <div className="settings-field-text">
-                    <span className="settings-field-title">{l("Track skill usage", "统计 Skill 使用次数")}</span>
-                    <span className="settings-field-sub">
-                      {l(
-                        "Installs a PostToolUse hook in ~/.claude/settings.json for Claude Code. Codex usage is inferred automatically from local ~/.codex/sessions logs.",
-                        "在 ~/.claude/settings.json 安装 Claude Code 的 PostToolUse hook。Codex 使用次数会自动从本地 ~/.codex/sessions 日志推断。",
-                      )}
-                    </span>
-                  </div>
-                  <input
-                    type="checkbox"
-                    className="switch"
-                    checked={Boolean(skillHookInstalled)}
-                    disabled={skillHookInstalled === null || skillHookBusy}
-                    onChange={(event) => onSkillHookChange(event.currentTarget.checked)}
-                  />
                 </label>
                 <header className="settings-pane-head" style={{ marginTop: 18 }}>
                   <h3>{l("Supabase skill sync", "Supabase Skill 同步")}</h3>

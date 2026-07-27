@@ -177,7 +177,7 @@ export class PostgresSessionSearchRepository {
       values,
     );
     const sessions = result.rows.map((row) => hydrateSession(row, terms));
-    if (clauses.length > 0) await this.attachMessageHits(sessions, clauses, terms);
+    if (clauses.length > 0) await this.attachMessageHits(sessions, clauses, terms, query);
     const totalCount = result.rows.length > 0 ? numberValue(result.rows[0].total_count) : 0;
     return {
       sessions,
@@ -190,6 +190,7 @@ export class PostgresSessionSearchRepository {
     sessions: SessionSearchResult[],
     clauses: readonly string[],
     terms: readonly string[],
+    query: string,
   ): Promise<void> {
     if (sessions.length === 0) return;
     const values: unknown[] = [sessions.map((session) => session.sessionKey)];
@@ -225,25 +226,58 @@ export class PostgresSessionSearchRepository {
       values,
     );
     const sessionsByKey = new Map(sessions.map((session) => [session.sessionKey, session]));
-    const hitCounts = new Map<string, number>();
+    const phrase = query
+      .replace(/"/gu, "")
+      .replace(/\bAND\b/giu, " ")
+      .replace(/\s+/gu, " ")
+      .trim()
+      .toLocaleLowerCase();
+    const rowsBySession = new Map<
+      string,
+      Array<(typeof result.rows)[number] & {
+        matchedTerms: string[];
+        rank: number;
+        snippet: string;
+      }>
+    >();
     for (const row of result.rows) {
-      hitCounts.set(row.session_key, (hitCounts.get(row.session_key) ?? 0) + 1);
-      const session = sessionsByKey.get(row.session_key);
-      if (!session || (session.matchHits?.length ?? 0) >= 2) continue;
-      const matchedTerms = terms.filter((term) => row.content.toLocaleLowerCase().includes(term));
-      const hit: SessionMatchHit = {
-        messageIndex: numberValue(row.source_message_index),
-        role: row.role,
-        timestamp: isoValue(row.occurred_at),
-        snippet: searchSnippet(row.content, matchedTerms),
-        matchedTerms,
-        turnId: row.turn_id,
-        turnIndex: numberValue(row.turn_index),
+      const normalized = row.content.replace(/\s+/gu, " ").trim().toLocaleLowerCase();
+      const matchedTerms = terms.filter((term) => normalized.includes(term));
+      if (matchedTerms.length === 0) continue;
+      const phraseMatched = phrase.length > 0 && normalized.includes(phrase);
+      const ranked = {
+        ...row,
+        matchedTerms: phraseMatched
+          ? [phrase, ...matchedTerms.filter((term) => term !== phrase)]
+          : matchedTerms,
+        rank: phraseMatched ? 3 : matchedTerms.length === terms.length ? 2 : 1,
+        snippet: searchSnippet(row.content, [phrase, ...matchedTerms].filter(Boolean)),
       };
-      session.matchHits?.push(hit);
+      const group = rowsBySession.get(row.session_key);
+      if (group) group.push(ranked);
+      else rowsBySession.set(row.session_key, [ranked]);
     }
-    for (const session of sessions) {
-      session.messageMatchCount = hitCounts.get(session.sessionKey) ?? 0;
+
+    for (const [sessionKey, rows] of rowsBySession) {
+      const session = sessionsByKey.get(sessionKey);
+      if (!session) continue;
+      session.messageMatchCount = rows.length;
+      rows.sort((left, right) =>
+        right.rank - left.rank
+        || right.matchedTerms.length - left.matchedTerms.length
+        || numberValue(left.source_message_index) - numberValue(right.source_message_index));
+      for (const row of rows.slice(0, 2)) {
+        const hit: SessionMatchHit = {
+          messageIndex: numberValue(row.source_message_index),
+          role: row.role,
+          timestamp: isoValue(row.occurred_at),
+          snippet: row.snippet,
+          matchedTerms: row.matchedTerms,
+          turnId: row.turn_id,
+          turnIndex: numberValue(row.turn_index),
+        };
+        session.matchHits?.push(hit);
+      }
       session.matchSnippet ??= session.matchHits?.[0]?.snippet ?? null;
     }
   }
