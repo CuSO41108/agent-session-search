@@ -64,6 +64,7 @@ export const AUTOMATION_CHANNELS = {
   workflowReviseRun: "automation:workflow:revise-run",
   workflowStopRun: "automation:workflow:stop-run",
   workflowResolveIntervention: "automation:workflow:resolve-intervention",
+  workflowResolveRecovery: "automation:workflow:resolve-recovery",
   workflowSendNodeMessage: "automation:workflow:send-node-message",
   workflowCompleteNodeConversation: "automation:workflow:complete-node-conversation",
   workflowRejectNodeCompletion: "automation:workflow:reject-node-completion",

@@ -2,7 +2,7 @@ import type { WorkflowV2Plan } from "../workflow-v2/planning";
 import type { WorkflowV2HumanIntervention } from "../workflow-v2/review";
 import type { WorkflowV2ScriptParameterDef } from "../workflow-v2/definition";
 import type { WorkflowV2NodeAcceptanceReport } from "../workflow-v2/packets";
-import type { WorkflowOperationRecord, WorkflowRecoveryPreview, WorkflowTransactionState } from "../workflow-v2/transaction";
+import type { WorkflowOperationRecord, WorkflowRecoveryDecisionRecord, WorkflowRecoveryPreview, WorkflowTransactionState } from "../workflow-v2/transaction";
 
 export interface WorkflowNodeMessage {
   id: string;
@@ -142,6 +142,7 @@ export interface WorkflowRunState {
   transaction?: WorkflowTransactionState;
   operations?: WorkflowOperationRecord[];
   recovery?: WorkflowRecoveryPreview;
+  recoveryDecisions?: WorkflowRecoveryDecisionRecord[];
   startedAt: number;
   finishedAt: number | undefined;
   lastError: string | undefined;

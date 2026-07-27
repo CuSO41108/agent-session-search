@@ -177,6 +177,16 @@ export interface WorkflowRecoveryPreview {
   availableActions: WorkflowRecoveryAction[];
 }
 
+export interface WorkflowRecoveryDecisionRecord {
+  decisionId: string;
+  transactionId: string;
+  action: WorkflowRecoveryAction;
+  actor: string;
+  reason: string;
+  operationIds: string[];
+  decidedAt: number;
+}
+
 export type WorkflowCommitPlanStepKind = "reversible_external" | "workspace" | "irreversible_external";
 
 export interface WorkflowCommitPlanStep {

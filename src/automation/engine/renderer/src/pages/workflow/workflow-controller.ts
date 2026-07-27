@@ -17,6 +17,7 @@ import type {
 } from "../../../../shared/types";
 import type { WorkflowNodeConversation } from "../../../../shared/workflow-v2/conversation";
 import type { WorkflowV2InterventionAction } from "../../../../shared/workflow-v2/review";
+import type { WorkflowRecoveryAction } from "../../../../shared/workflow-v2/transaction";
 import type { Language } from "../../app/language";
 
 type MaybePromise = void | Promise<void>;
@@ -91,6 +92,7 @@ export interface WorkflowController {
   onReviseRun?: (nodeId: string, definition: WorkflowV2Definition, reason: string) => MaybePromise;
   onSubmitScriptInput?: (nodeId: string, values: Record<string, unknown>) => MaybePromise;
   onResolveIntervention?: (nodeId: string, action: WorkflowV2InterventionAction, reason?: string) => MaybePromise;
+  onResolveRecovery?: (runId: string, action: WorkflowRecoveryAction, reason: string) => MaybePromise;
   onSendNodeMessage?: (conversationId: string, message: string) => MaybePromise;
   onCompleteNodeConversation?: (conversationId: string) => MaybePromise;
   onRejectNodeCompletion?: (conversationId: string, instruction: string) => MaybePromise;

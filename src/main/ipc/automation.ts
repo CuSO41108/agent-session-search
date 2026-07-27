@@ -16,6 +16,7 @@ import type {
   PauseWorkflowNodeRequest,
   RejectWorkflowNodeCompletionRequest,
   ResolveWorkflowV2InterventionRequest,
+  ResolveWorkflowV2RecoveryRequest,
   ResolveRuntimeApprovalRequest,
   ReviewWorkflowRequest,
   ReviseWorkflowV2RunRequest,
@@ -150,6 +151,11 @@ const mcpInstallSchema = z.object({
   allowedPath: pathSchema.optional(),
   token: z.string().max(20_000).optional(),
 });
+const workflowRecoverySchema = workflowStopSchema.extend({
+  action: z.enum(["continue", "rollback_savepoint", "compensate_all", "keep_state", "abandon"]),
+  actor: z.string().trim().min(1).max(256),
+  reason: z.string().trim().min(1).max(2_000),
+}).strict();
 const mcpToolSchema = z.object({
   name: idSchema,
   description: z.string().max(20_000).optional(),
@@ -321,6 +327,7 @@ export function registerAutomationIpc({
   ready(AUTOMATION_CHANNELS.workflowReviseRun, (value: unknown) => service.workflows.reviseWorkflowV2Run(workflowReviseSchema.parse(value) as unknown as ReviseWorkflowV2RunRequest));
   ready(AUTOMATION_CHANNELS.workflowStopRun, (value: unknown) => service.workflows.stopWorkflowRun(workflowStopSchema.parse(value) as StopWorkflowRunRequest));
   ready(AUTOMATION_CHANNELS.workflowResolveIntervention, (value: unknown) => service.workflows.resolveWorkflowV2Intervention(workflowInterventionSchema.parse(value) as ResolveWorkflowV2InterventionRequest));
+  ready(AUTOMATION_CHANNELS.workflowResolveRecovery, (value: unknown) => service.workflows.resolveWorkflowV2Recovery(workflowRecoverySchema.parse(value) as ResolveWorkflowV2RecoveryRequest));
   ready(AUTOMATION_CHANNELS.workflowSendNodeMessage, (value: unknown) => {
     const request = z.object({ conversationId: idSchema, message: z.string().trim().min(1).max(200_000) }).parse(value);
     return service.workflows.sendWorkflowNodeMessage(request as SendWorkflowNodeMessageRequest);

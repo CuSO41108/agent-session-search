@@ -74,6 +74,7 @@ export type {
   StartWorkflowNodeRequest,
   SubmitWorkflowScriptInputRequest,
   ResolveWorkflowV2InterventionRequest,
+  ResolveWorkflowV2RecoveryRequest,
   AnswerWorkflowGateRequest,
   FinishWorkflowRunRequest,
 } from "./workflow/commands";

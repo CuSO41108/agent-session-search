@@ -254,8 +254,9 @@ export class WorkflowV2RunExecutor {
         runId,
         transaction: structuredClone(transaction),
         operations,
+        recoveryDecisions: structuredClone(persisted?.recoveryDecisions ?? []),
         recovery: recoveryVisible && persisted
-          ? buildWorkflowV2RecoveryPreview({ transaction, operations, runState: persisted.runState, ...(workspaceDiff ? { workspaceDiff } : {}) })
+          ? buildWorkflowV2RecoveryPreview({ transaction, operations, runState: persisted.runState, ...(workspaceDiff ? { workspaceDiff } : {}), canRollbackSavepoint: Boolean(durableStore?.restoreWorkspaceSavepoint) })
           : null,
       });
     };
@@ -1429,7 +1430,8 @@ export class WorkflowV2RunExecutor {
         },
       });
 
-      const finalReport = buildWorkflowV2FinalReport(plan, result.workerOutputs, result.runState.status);
+      const finalDurableState = await durableStore?.readRunState?.(workflow.workflowId, runId);
+      const finalReport = buildWorkflowV2FinalReport(plan, result.workerOutputs, result.runState.status, finalDurableState?.recoveryDecisions);
       if (this.runRegistry.isStopRequested(runId)) return;
       if (result.runState.status === "completed") {
         if (workspaceIsolated) {

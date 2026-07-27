@@ -3,6 +3,7 @@ import type {
   PauseWorkflowNodeRequest,
   ReviseWorkflowV2RunRequest,
   ResolveWorkflowV2InterventionRequest,
+  ResolveWorkflowV2RecoveryRequest,
   RunWorkflowRequest,
   StartWorkflowNodeRequest,
   StopWorkflowRunRequest,
@@ -47,6 +48,10 @@ export class WorkflowRunService {
 
   resolveIntervention(input: ResolveWorkflowV2InterventionRequest): Promise<WorkflowOperationResult> {
     return this.deps.runtime.resolveWorkflowV2Intervention(input);
+  }
+
+  resolveRecovery(input: ResolveWorkflowV2RecoveryRequest): Promise<WorkflowOperationResult> {
+    return this.deps.runtime.resolveWorkflowV2Recovery(input);
   }
 
   stop(input: StopWorkflowRunRequest): Promise<WorkflowOperationResult> {

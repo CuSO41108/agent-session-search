@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { appendFile, mkdir, open, readFile, rename, rm } from "node:fs/promises";
+import { appendFile, mkdir, open, readFile, readdir, rename, rm } from "node:fs/promises";
 import path from "node:path";
 import {
   isWorkflowV2CacheEntryMetadata,
@@ -517,6 +517,41 @@ export class WorkflowV2FileStore {
 
   private workspaceTransaction(workflowId: string, runId: string): WorkflowV2WorkspaceTransaction {
     return new WorkflowV2WorkspaceTransaction(path.join(this.layout(workflowId, runId).runDir, "transaction-workspace"));
+  }
+
+  cleanupExpiredRuns(now = Date.now()): Promise<Array<{ workflowId: string; runId: string }>> {
+    return this.enqueueValue(async () => {
+      const workflowsRoot = path.resolve(this.rootDir, "workflows");
+      const removed: Array<{ workflowId: string; runId: string }> = [];
+      const workflows = await readDirectories(workflowsRoot);
+      for (const workflowId of workflows) {
+        const runsRoot = path.join(workflowsRoot, workflowId, "runs");
+        for (const runId of await readDirectories(runsRoot)) {
+          const layout = this.layout(workflowId, runId);
+          const stateContent = await readOptionalFile(layout.runStatePath);
+          if (!stateContent) continue;
+          const parsed = parseJson(stateContent, "Workflow V2 persisted run state");
+          if (!isWorkflowV2PersistedRunState(parsed) || !parsed.transaction) continue;
+          if (parsed.transaction.retentionUntil > now) continue;
+          if (parsed.transaction.status !== "committed" && parsed.transaction.status !== "rolled_back") continue;
+          const resolvedRunDir = path.resolve(layout.runDir);
+          if (!resolvedRunDir.startsWith(`${workflowsRoot}${path.sep}`)) throw new Error("Workflow V2 cleanup target escaped the storage root.");
+          await rm(resolvedRunDir, { recursive: true, force: true });
+          removed.push({ workflowId, runId });
+        }
+      }
+      return removed;
+    });
+  }
+}
+
+async function readDirectories(parent: string): Promise<string[]> {
+  try {
+    const entries = await readdir(parent, { withFileTypes: true });
+    return entries.filter((entry) => entry.isDirectory() && !entry.isSymbolicLink()).map((entry) => entry.name).sort();
+  } catch (error) {
+    if (isNodeError(error) && error.code === "ENOENT") return [];
+    throw error;
   }
 }
 

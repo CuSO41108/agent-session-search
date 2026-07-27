@@ -2,6 +2,7 @@ import type {
   AnswerWorkflowGateRequest,
   PauseWorkflowNodeRequest,
   ResolveWorkflowV2InterventionRequest,
+  ResolveWorkflowV2RecoveryRequest,
   RunWorkflowRequest,
   StartWorkflowNodeRequest,
   StopWorkflowRunRequest,
@@ -59,12 +60,13 @@ import {
 } from "../../shared/workflow-v2/storage";
 import {
   buildWorkflowV2RecoveryPlan,
+  buildWorkflowV2RecoveryPreview,
   createWorkflowV2NodeCacheFingerprint,
   materializeWorkflowV2Recovery,
 } from "./v2/workflow-v2-recovery";
 import { transitionWorkflowV2NodeState } from "./v2/workflow-v2-scheduler";
 import { createWorkflowV2ScriptApprovalOverride, rejectWorkflowV2ScriptApproval, WorkflowV2ScriptApprovalCoordinator } from "./v2/workflow-v2-script-approval";
-import { workflowTransactionPreflightError } from "../../shared/workflow-v2/transaction";
+import { sanitizeWorkflowOperationRecord, workflowTransactionPreflightError } from "../../shared/workflow-v2/transaction";
 
 
 export class WorkflowRuntime {
@@ -353,6 +355,89 @@ export class WorkflowRuntime {
       action: input.action,
       ...(input.reason?.trim() ? { reason: input.reason.trim() } : {}),
     });
+  }
+
+  async resolveWorkflowV2Recovery(input: ResolveWorkflowV2RecoveryRequest): Promise<WorkflowOperationResult> {
+    if (!input.actor.trim() || input.actor.length > 256 || !input.reason.trim() || input.reason.length > 2_000) {
+      return { ok: false, workflowId: input.workflowId, runId: input.runId, error: "Workflow recovery actor and reason are required." };
+    }
+    const snapshot = this.deps.snapshot();
+    const run = snapshot.workflowStore.runs.find((item) => item.workflowId === input.workflowId && item.runId === input.runId);
+    if (!run) return { ok: false, workflowId: input.workflowId, runId: input.runId, error: `Workflow run ${input.runId} was not found.` };
+    const store = this.deps.createWorkflowV2Store?.();
+    if (!store?.readRunState || !store.readOperations) {
+      return { ok: false, workflowId: input.workflowId, runId: input.runId, error: "Workflow recovery storage is unavailable." };
+    }
+    const persisted = await store.readRunState(input.workflowId, input.runId);
+    if (!persisted?.transaction) {
+      return { ok: false, workflowId: input.workflowId, runId: input.runId, error: "Workflow transaction recovery state was not found." };
+    }
+    const operations = (await store.readOperations(input.workflowId, input.runId)).map(sanitizeWorkflowOperationRecord);
+    const workspaceDiff = await store.inspectWorkspaceTransaction?.({ workflowId: input.workflowId, runId: input.runId });
+    const preview = buildWorkflowV2RecoveryPreview({ transaction: persisted.transaction, operations, runState: persisted.runState, ...(workspaceDiff ? { workspaceDiff } : {}), canRollbackSavepoint: Boolean(store.restoreWorkspaceSavepoint) });
+    if (!preview.availableActions.includes(input.action)) {
+      return { ok: false, workflowId: input.workflowId, runId: input.runId, error: `Workflow recovery action ${input.action} is not safe for the current transaction facts.` };
+    }
+    if (input.action === "rollback_savepoint" && (!persisted.transaction.currentSavepointId || !store.restoreWorkspaceSavepoint)) {
+      return { ok: false, workflowId: input.workflowId, runId: input.runId, error: "Workflow savepoint rollback is unavailable." };
+    }
+    const continuationTargetNodeId = input.action === "continue"
+      ? persisted.runState.nodeOrder.find((nodeId) => {
+          const status = persisted.runState.nodes[nodeId]?.status;
+          return status !== "completed" && status !== "skipped";
+        })
+      : undefined;
+    if (input.action === "continue" && !continuationTargetNodeId) {
+      return { ok: false, workflowId: input.workflowId, runId: input.runId, error: "Workflow recovery has no pending node to continue." };
+    }
+    const now = Date.now();
+    const operationIds = operations.map((operation) => operation.operationId);
+    const decision = {
+      decisionId: `${persisted.transaction.transactionId}:recovery:${persisted.eventCount}`,
+      transactionId: persisted.transaction.transactionId,
+      action: input.action,
+      actor: input.actor.trim(),
+      reason: input.reason.trim(),
+      operationIds,
+      decidedAt: now,
+    };
+    const recoveryDecisions = [...(persisted.recoveryDecisions ?? []), decision];
+    await store.appendEvents({
+      workflowId: input.workflowId,
+      runId: input.runId,
+      events: [{
+        sequence: persisted.eventCount,
+        workflowId: input.workflowId,
+        runId: input.runId,
+        transactionId: persisted.transaction.transactionId,
+        type: "recovery_decision",
+        at: now,
+        detail: `action=${input.action}; actor=${input.actor.trim()}; reason=${input.reason.trim()}; operationIds=${operationIds.join(",") || "none"}`,
+      }],
+    });
+    await store.persistRunState({ ...persisted, eventCount: persisted.eventCount + 1, savedAt: now, recoveryDecisions });
+    const transaction = structuredClone(persisted.transaction);
+    transaction.updatedAt = now;
+    if (input.action === "rollback_savepoint") {
+      await store.restoreWorkspaceSavepoint!({ workflowId: input.workflowId, runId: input.runId, savepointId: transaction.currentSavepointId! });
+      transaction.status = "waiting_for_user";
+    } else if (input.action === "continue") {
+      transaction.status = "active";
+    }
+    await store.persistRunState({ ...persisted, eventCount: persisted.eventCount + 1, savedAt: now, transaction, recoveryDecisions });
+    const nextPreview = buildWorkflowV2RecoveryPreview({ transaction, operations, runState: persisted.runState, ...(workspaceDiff ? { workspaceDiff } : {}), canRollbackSavepoint: Boolean(store.restoreWorkspaceSavepoint) });
+    this.deps.updateWorkflowRunState({
+      workflowId: input.workflowId,
+      runId: input.runId,
+      transaction,
+      operations,
+      recovery: input.action === "continue" ? null : nextPreview,
+      recoveryDecisions,
+    });
+    if (input.action === "continue") {
+      return this.startWorkflowNode({ workflowId: input.workflowId, runId: input.runId, nodeId: continuationTargetNodeId! });
+    }
+    return { ok: true, workflowId: input.workflowId, runId: input.runId };
   }
 
   async completeInteractiveNode(input: {

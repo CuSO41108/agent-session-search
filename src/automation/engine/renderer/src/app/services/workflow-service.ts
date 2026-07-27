@@ -12,6 +12,7 @@ import type {
   StopWorkflowRunRequest,
   SubmitWorkflowScriptInputRequest,
   ResolveWorkflowV2InterventionRequest,
+  ResolveWorkflowV2RecoveryRequest,
   WorkflowOperationResult,
   CompleteWorkflowNodeConversationRequest,
   ConfirmWorkflowRequest,
@@ -43,6 +44,7 @@ export interface WorkflowService {
   startNode: (request: StartWorkflowNodeRequest) => Promise<WorkflowOperationResult>;
   submitScriptInput: (request: SubmitWorkflowScriptInputRequest) => Promise<WorkflowOperationResult>;
   resolveIntervention: (request: ResolveWorkflowV2InterventionRequest) => Promise<WorkflowOperationResult>;
+  resolveRecovery: (request: ResolveWorkflowV2RecoveryRequest) => Promise<WorkflowOperationResult>;
   sendNodeMessage: (request: SendWorkflowNodeMessageRequest) => Promise<AppSnapshot>;
   completeNodeConversation: (request: CompleteWorkflowNodeConversationRequest) => Promise<WorkflowOperationResult>;
   rejectNodeCompletion: (request: RejectWorkflowNodeCompletionRequest) => Promise<AppSnapshot>;
@@ -72,6 +74,7 @@ export function workflowService(): WorkflowService {
     startNode: (request) => api.startWorkflowNode(request),
     submitScriptInput: (request) => api.submitWorkflowScriptInput(request),
     resolveIntervention: (request) => api.resolveWorkflowV2Intervention(request),
+    resolveRecovery: (request) => api.resolveWorkflowV2Recovery(request),
     sendNodeMessage: (request) => api.sendWorkflowNodeMessage(request),
     completeNodeConversation: (request) => api.completeWorkflowNodeConversation(request),
     rejectNodeCompletion: (request) => api.rejectWorkflowNodeCompletion(request),

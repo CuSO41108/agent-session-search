@@ -8,7 +8,7 @@ import type { WorkflowV2RunState } from "./state";
 import type { WorkflowV2ExecutionLeaseState, WorkflowV2ProgressReport } from "./supervision";
 import { isWorkflowV2ProgressReport } from "./supervision";
 import { isWorkflowV2HookJsonValue } from "./hooks";
-import { isWorkflowTransactionState, type WorkflowTransactionState } from "./transaction";
+import { isWorkflowTransactionState, type WorkflowRecoveryDecisionRecord, type WorkflowTransactionState } from "./transaction";
 
 export const WORKFLOW_V2_STORAGE_SCHEMA_VERSION = 1;
 
@@ -82,6 +82,7 @@ export interface WorkflowV2PersistedRunState {
   nodeControl: Record<string, WorkflowV2DurableNodeControlState>;
   /** Optional only for compatibility with runs persisted before transaction governance. */
   transaction?: WorkflowTransactionState;
+  recoveryDecisions?: WorkflowRecoveryDecisionRecord[];
 }
 
 export interface WorkflowV2DurableEvent {
@@ -154,6 +155,7 @@ export function isWorkflowV2PersistedRunState(value: unknown): value is Workflow
     if (!isWorkflowTransactionState(value.transaction)) return false;
     if (value.transaction.transactionId.trim().length === 0) return false;
   }
+  if (value.recoveryDecisions !== undefined && (!Array.isArray(value.recoveryDecisions) || !value.recoveryDecisions.every(isRecoveryDecisionRecord))) return false;
   const nodeIds = new Set(value.runState.nodeOrder);
   return Object.entries(value.nodeControl)
     .every(([nodeId, control]) => nodeIds.has(nodeId) && isDurableNodeControlState(control));
@@ -240,6 +242,15 @@ function isScriptInputState(value: unknown): boolean {
 function isInterventionResolutionRecord(value: unknown): value is WorkflowV2InterventionResolutionRecord {
   if (!isRecord(value) || !isWorkflowV2InterventionAction(value.action)) return false;
   return isNonEmptyString(value.reason) && isNonNegativeFinite(value.resolvedAt);
+}
+
+function isRecoveryDecisionRecord(value: unknown): value is WorkflowRecoveryDecisionRecord {
+  if (!isRecord(value)) return false;
+  return [value.decisionId, value.transactionId, value.actor, value.reason].every(isNonEmptyString)
+    && ["continue", "rollback_savepoint", "compensate_all", "keep_state", "abandon"].includes(value.action as string)
+    && Array.isArray(value.operationIds)
+    && value.operationIds.every(isNonEmptyString)
+    && isNonNegativeFinite(value.decidedAt);
 }
 
 function isExecutionLeaseState(value: unknown): value is WorkflowV2ExecutionLeaseState {

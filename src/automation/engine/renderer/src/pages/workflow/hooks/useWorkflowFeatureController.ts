@@ -158,6 +158,22 @@ export function useWorkflowFeatureController({
         }
         await onRefresh();
       },
+      onResolveRecovery: async (runId, action, reason) => {
+        if (!draft.workflowId) return;
+        const result = await workflows.resolveRecovery({
+          workflowId: draft.workflowId,
+          runId,
+          action,
+          actor: "desktop-user",
+          reason: reason.trim(),
+        });
+        if (!result.ok) {
+          const error = result.error ?? "Workflow recovery action could not be applied.";
+          setSnapshot(await workflows.patchDraft({ workflowId: draft.workflowId, error }));
+          throw new Error(error);
+        }
+        await onRefresh();
+      },
       onRejectNodeCompletion: async (conversationId, instruction) => setSnapshot(await workflows.rejectNodeCompletion({ conversationId, instruction })),
       onInterruptNodeConversation: async (conversationId) => setSnapshot(await workflows.interruptNodeConversation({ conversationId })),
       ...(onResolveRuntimeApproval ? { onResolveRuntimeApproval } : {}),

@@ -19,7 +19,7 @@ import {
 import type { WorkflowV2WorkerOutput } from "../../shared/workflow-v2/packets";
 import type { WorkflowNodeConversation } from "../../shared/workflow-v2/conversation";
 import { createWorkflowV2RunState } from "../../shared/workflow-v2/state";
-import { WORKFLOW_V2_STORAGE_SCHEMA_VERSION, type WorkflowV2PersistedRunState } from "../../shared/workflow-v2/storage";
+import { WORKFLOW_V2_STORAGE_SCHEMA_VERSION, type WorkflowV2DurableEvent, type WorkflowV2PersistedRunState } from "../../shared/workflow-v2/storage";
 import type { WorkflowV2CostBudget, WorkflowV2Plan, WorkflowV2ResultPacket } from "../../shared/workflow-v2/planning";
 import { createStrictWorkflowTransactionPolicy, type WorkflowOperationRecord } from "../../shared/workflow-v2/transaction";
 import { buildWorkflowV2Plan } from "./v2/workflow-v2-planner";
@@ -31,6 +31,7 @@ import {
   parseWorkflowV2WorkerArtifact,
   resolveWorkflowNodeAgent,
   WorkflowRuntime,
+  type WorkflowRunStateUpdate,
   workflowV2LlmNodePrompt,
 } from "./workflow-runtime";
 
@@ -265,7 +266,7 @@ async function workflowV2RuntimeFixture(input: {
   workflow: WorkflowDraftState;
   taskRequests: RunTaskRequest[];
   approvalPolicies: Array<{ allowedFileWriteRoot: string } | undefined>;
-  updates: Array<{ status?: "running" | "waiting_for_user"; progress?: WorkflowRunProgressItem[]; appendEvents?: WorkflowEvent[] }>;
+  updates: Array<Omit<WorkflowRunStateUpdate, "workflowId" | "runId">>;
   startRequests: string[];
   stopTaskIds: string[];
   deleteTaskRequests: Array<{ taskId: string; preserveRuntimeConversation: boolean }>;
@@ -310,7 +311,7 @@ async function workflowV2RuntimeFixture(input: {
   } satisfies WorkflowDraftState;
   const taskRequests: RunTaskRequest[] = [];
   const approvalPolicies: Array<{ allowedFileWriteRoot: string } | undefined> = [];
-  const updates: Array<{ status?: "running" | "waiting_for_user"; progress?: WorkflowRunProgressItem[]; appendEvents?: WorkflowEvent[] }> = [];
+  const updates: Array<Omit<WorkflowRunStateUpdate, "workflowId" | "runId">> = [];
   const startRequests: string[] = [];
   const stopTaskIds: string[] = [];
   const deleteTaskRequests: Array<{ taskId: string; preserveRuntimeConversation: boolean }> = [];
@@ -338,11 +339,8 @@ async function workflowV2RuntimeFixture(input: {
       return { ok: true, workflowId: request.workflowId, runId: request.runId };
     },
     updateWorkflowRunState: (request) => {
-      updates.push({
-        ...(request.status ? { status: request.status } : {}),
-        ...(request.progress ? { progress: structuredClone(request.progress) } : {}),
-        ...(request.appendEvents ? { appendEvents: structuredClone(request.appendEvents) } : {}),
-      });
+      const { workflowId: _workflowId, runId: _runId, ...update } = request;
+      updates.push(structuredClone(update));
     },
     runTask: async (request, approvalPolicy) => {
       taskRequests.push(request);
@@ -2112,6 +2110,72 @@ describe("WorkflowRuntime Workflow V2 bridge", () => {
     expect(aborted).toBe(true);
     expect(fixture.updates.at(-1)?.progress).toEqual([expect.objectContaining({ nodeId: "script-only", status: "paused", detail: expect.stringContaining("timed out") })]);
     expect(persistedStates.at(-1)?.transaction?.status).toBe("recovery_required");
+  });
+
+  test("records a user-confirmed recovery decision without executing side effects", async () => {
+    const definition = workflowV2Definition();
+    const durableEvents: WorkflowV2DurableEvent[] = [];
+    const persistedWrites: WorkflowV2PersistedRunState[] = [];
+    let durable!: WorkflowV2PersistedRunState;
+    const fixture = await workflowV2RuntimeFixture({
+      definition,
+      store: {
+        persistRunState: async (state) => { durable = structuredClone(state); persistedWrites.push(structuredClone(state)); },
+        appendEvents: async ({ events }) => { durableEvents.push(...structuredClone(events)); },
+        readRunState: async () => structuredClone(durable),
+        readOperations: async () => [],
+        inspectWorkspaceTransaction: async () => ({ created: ["result.txt"], modified: [], deleted: [], conflicts: [] }),
+      },
+      executeScript: async () => { throw new Error("recovery decision must not execute scripts"); },
+    });
+    let runState = createWorkflowV2RunState({ definition });
+    runState = transitionWorkflowV2NodeState(runState, { nodeId: "draft", status: "running", now: 1_100 });
+    runState = transitionWorkflowV2NodeState(runState, { nodeId: "draft", status: "paused", now: 1_200, error: "Needs recovery" });
+    durable = {
+      schemaVersion: WORKFLOW_V2_STORAGE_SCHEMA_VERSION,
+      workflowId: definition.workflowId,
+      runId: "run-v2-intervention",
+      graphVersion: definition.graphVersion,
+      savedAt: 1_200,
+      eventCount: 0,
+      plan: fixture.workflow.workflowV2Plan!,
+      runState,
+      workerOutputs: [],
+      nodeControl: Object.fromEntries(definition.nodes.map((node) => [node.id, { extensionCount: 0 }])),
+      transaction: {
+        transactionId: "transaction-recovery",
+        mode: "strict_atomic",
+        status: "recovery_required",
+        baselineId: "baseline-recovery",
+        operationCount: 0,
+        unknownOperationCount: 0,
+        irreversibleOperationCount: 0,
+        startedAt: 1_000,
+        updatedAt: 1_200,
+        retentionUntil: 604_801_200,
+      },
+    };
+    fixture.setRuns([workflowV2InterventionRun(fixture.workflow, "stopped", "paused")]);
+
+    const result = await fixture.runtime.resolveWorkflowV2Recovery({
+      workflowId: definition.workflowId,
+      runId: "run-v2-intervention",
+      action: "keep_state",
+      actor: "desktop-user",
+      reason: "Preserve evidence while the external status is verified.",
+    });
+
+    expect(result).toMatchObject({ ok: true, runId: "run-v2-intervention" });
+    expect(durableEvents).toEqual([expect.objectContaining({
+      type: "recovery_decision",
+      detail: expect.stringContaining("actor=desktop-user"),
+    })]);
+    expect(persistedWrites.at(-1)).toMatchObject({
+      eventCount: 1,
+      transaction: { status: "recovery_required" },
+      recoveryDecisions: [expect.objectContaining({ action: "keep_state", actor: "desktop-user", operationIds: [] })],
+    });
+    expect(fixture.updates.find((update) => update.recovery)).toMatchObject({ recovery: { availableActions: expect.arrayContaining(["keep_state", "abandon"]) } });
   });
 
   test("bounds an oversized script timeout to the platform timer range", async () => {

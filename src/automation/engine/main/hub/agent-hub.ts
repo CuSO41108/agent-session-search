@@ -50,6 +50,7 @@ import type {
   PauseWorkflowNodeRequest,
   ReviseWorkflowV2RunRequest,
   ResolveWorkflowV2InterventionRequest,
+  ResolveWorkflowV2RecoveryRequest,
   ProviderBalanceResult,
   RunWorkflowRequest,
   ListWorkflowOutputsRequest,
@@ -1429,6 +1430,9 @@ export class AgentHub {
   reviseWorkflowV2Run(input: ReviseWorkflowV2RunRequest): Promise<WorkflowOperationResult> { return this.workflowRunService.revise(input); }
   resolveWorkflowV2Intervention(input: ResolveWorkflowV2InterventionRequest): Promise<WorkflowOperationResult> {
     return this.workflowRunService.resolveIntervention(input);
+  }
+  resolveWorkflowV2Recovery(input: ResolveWorkflowV2RecoveryRequest): Promise<WorkflowOperationResult> {
+    return this.workflowRunService.resolveRecovery(input);
   }
 
   stopWorkflowRun(input: StopWorkflowRunRequest): Promise<WorkflowOperationResult> {
@@ -2975,6 +2979,11 @@ export class AgentHub {
     if (!this.storagePath) return false;
     const store = new WorkflowV2FileStore(path.dirname(this.storagePath));
     let reconciled = false;
+    try {
+      await store.cleanupExpiredRuns();
+    } catch (error) {
+      console.warn("Failed to clean up expired Workflow V2 transaction materials:", error);
+    }
 
     for (const [runId, run] of this.workflowStore.runs) {
       if (!run.workflowV2Plan) continue;

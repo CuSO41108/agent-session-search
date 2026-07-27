@@ -165,6 +165,15 @@ describe("WorkflowRunCenter", () => {
       uncertainNodeIds: ["research"],
       availableActions: ["rollback_savepoint", "keep_state", "abandon"],
     };
+    recoveryRun.recoveryDecisions = [{
+      decisionId: "decision-1",
+      transactionId: "transaction-1",
+      action: "keep_state",
+      actor: "desktop-user",
+      reason: "Waiting for external verification.",
+      operationIds: ["operation-1"],
+      decidedAt: 4_000,
+    }];
     recoveryRun.progress[0]!.acceptance = {
       outcome: "degraded",
       issues: [{ code: "tool_retry_recovered", severity: "warning", detail: "A required tool succeeded after retry." }],
@@ -172,7 +181,7 @@ describe("WorkflowRunCenter", () => {
       operationIds: ["operation-1"],
     };
 
-    const html = renderToStaticMarkup(<WorkflowRunCenter runs={[recoveryRun]} open selectedRunId={recoveryRun.runId} language="zh" onSelectRun={() => undefined} onClose={() => undefined} />);
+    const html = renderToStaticMarkup(<WorkflowRunCenter runs={[recoveryRun]} open selectedRunId={recoveryRun.runId} language="zh" onSelectRun={() => undefined} onClose={() => undefined} onResolveRecovery={() => undefined} />);
 
     expect(html).toContain("事务与恢复");
     expect(html).toContain("recovery_required");
@@ -181,6 +190,10 @@ describe("WorkflowRunCenter", () => {
     expect(html).toContain("safe-preview");
     expect(html).toContain("节点验收 · degraded");
     expect(html).toContain("tool_retry_recovered");
+    expect(html).toContain("决定依据");
+    expect(html).toContain("说明核验依据和预期结果");
+    expect(html).toContain("用户恢复决定 · 1");
+    expect(html).toContain("Waiting for external verification.");
   });
 
   test("renders node execution telemetry for runtime, channel, model, attempts, tokens, cost, and duration", () => {

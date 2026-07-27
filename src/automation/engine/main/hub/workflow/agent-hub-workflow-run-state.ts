@@ -110,6 +110,9 @@ export function updateWorkflowRunState(input: {
     ...((input.update.operations ?? input.run.operations) !== undefined
       ? { operations: structuredClone(input.update.operations ?? input.run.operations!) }
       : {}),
+    ...((input.update.recoveryDecisions ?? input.run.recoveryDecisions) !== undefined
+      ? { recoveryDecisions: structuredClone(input.update.recoveryDecisions ?? input.run.recoveryDecisions!) }
+      : {}),
     ...((input.update.recovery ?? input.run.recovery) !== undefined
       ? { recovery: structuredClone(input.update.recovery ?? input.run.recovery!) }
       : {}),

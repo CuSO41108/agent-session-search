@@ -28,6 +28,7 @@ export class WorkflowV2RunPersistence {
   private readonly compatibilityWarning: string | undefined;
   private writeChain: Promise<void> = Promise.resolve();
   private readonly cachedNodeIds = new Set<string>();
+  private recoveryDecisions: NonNullable<WorkflowV2PersistedRunState["recoveryDecisions"]> = [];
 
   constructor(private readonly input: {
     store: WorkflowV2StorePort | undefined;
@@ -159,6 +160,7 @@ export class WorkflowV2RunPersistence {
       if (durable?.transaction?.transactionId === this.transaction.transactionId) {
         this.transaction = structuredClone(durable.transaction);
         this.eventCount = Math.max(this.eventCount, durable.eventCount);
+        this.recoveryDecisions = structuredClone(durable.recoveryDecisions ?? []);
       }
     }
     await this.ensureTransactionStartedUnlocked();
@@ -205,6 +207,7 @@ export class WorkflowV2RunPersistence {
       workerOutputs: checkpoint.workerOutputs.map((output) => structuredClone(output)),
       nodeControl: structuredClone(this.input.nodeControl),
       transaction: structuredClone(this.transaction),
+      recoveryDecisions: structuredClone(this.recoveryDecisions),
     };
     await this.input.store.persistRunState(persisted);
     await this.persistCacheEntries(checkpoint);
@@ -327,6 +330,7 @@ export class WorkflowV2RunPersistence {
     if (durable?.transaction?.transactionId === this.transaction.transactionId) {
       this.transaction = structuredClone(durable.transaction);
       this.eventCount = Math.max(this.eventCount, durable.eventCount);
+      this.recoveryDecisions = structuredClone(durable.recoveryDecisions ?? []);
     }
   }
 

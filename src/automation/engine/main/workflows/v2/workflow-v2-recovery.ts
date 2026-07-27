@@ -12,7 +12,7 @@ import {
 } from "../../../shared/workflow-v2/storage";
 import { createWorkflowV2RunState } from "../../../shared/workflow-v2/state";
 import type { RuntimeConversation } from "../../../shared/types";
-import type { WorkflowOperationRecord, WorkflowRecoveryPreview, WorkflowTransactionState } from "../../../shared/workflow-v2/transaction";
+import type { WorkflowOperationRecord, WorkflowRecoveryDecisionRecord, WorkflowRecoveryPreview, WorkflowTransactionState } from "../../../shared/workflow-v2/transaction";
 import type { ExecuteWorkflowV2Checkpoint } from "./workflow-v2-executor";
 import { transitionWorkflowV2NodeState } from "./workflow-v2-scheduler";
 
@@ -139,9 +139,15 @@ export function buildWorkflowV2FinalReport(
   plan: WorkflowV2PersistedRunState["plan"],
   workerOutputs: readonly WorkflowV2WorkerOutput[],
   status: "completed" | "failed" | "paused" | "running",
+  recoveryDecisions: readonly WorkflowRecoveryDecisionRecord[] = [],
 ): string {
   const outputByNodeId = new Map(workerOutputs.map((output) => [output.nodeId, output]));
   const transactionReport = workflowV2NodeTransactionReport(plan.definition.nodes, outputByNodeId);
+  const recoveryDecisionReport = recoveryDecisions.length > 0 ? [
+    "## Recovery decisions",
+    ...recoveryDecisions.map((decision) => `- ${decision.action} by ${decision.actor} at ${new Date(decision.decidedAt).toISOString()}: ${decision.reason} [operations: ${decision.operationIds.join(", ") || "none"}]`),
+  ].join("\n") : "";
+  const governanceReport = [transactionReport, recoveryDecisionReport].filter(Boolean).join("\n\n");
   if (status === "completed") {
     const terminalNodeIds = new Set(plan.definition.nodes.map((node) => node.id));
     for (const edge of plan.definition.edges) terminalNodeIds.delete(edge.fromNodeId);
@@ -149,7 +155,7 @@ export function buildWorkflowV2FinalReport(
       if (!terminalNodeIds.has(node.id)) continue;
       const output = outputByNodeId.get(node.id);
       const userReport = output ? workflowV2ExplicitUserFacingOutput(output) : undefined;
-      if (userReport) return transactionReport ? `${userReport}\n\n${transactionReport}` : userReport;
+      if (userReport) return governanceReport ? `${userReport}\n\n${governanceReport}` : userReport;
     }
   }
   return [
@@ -166,7 +172,7 @@ export function buildWorkflowV2FinalReport(
       const outputKeys = Object.keys(output.outputs).sort();
       return `- ${node.title} (${node.id}): ${output.summary} [outputs: ${outputKeys.join(", ") || "none"}]`;
     }),
-    ...(transactionReport ? ["", transactionReport] : []),
+    ...(governanceReport ? ["", governanceReport] : []),
   ].join("\n");
 }
 
@@ -175,6 +181,8 @@ export function buildWorkflowV2RecoveryPreview(input: {
   operations: readonly WorkflowOperationRecord[];
   runState: WorkflowV2PersistedRunState["runState"];
   workspaceDiff?: { created: readonly string[]; modified: readonly string[]; deleted: readonly string[]; conflicts?: readonly string[] };
+  canCompensate?: boolean;
+  canRollbackSavepoint?: boolean;
   now?: number;
 }): WorkflowRecoveryPreview {
   const uncertainOperations = input.operations.filter((operation) =>
@@ -208,8 +216,8 @@ export function buildWorkflowV2RecoveryPreview(input: {
     uncertainNodeIds,
     availableActions: [
       ...(uncertainOperations.length === 0 && conflicts.length === 0 ? ["continue" as const] : []),
-      ...(input.transaction.currentSavepointId ? ["rollback_savepoint" as const] : []),
-      ...(hasReversibleAppliedOperation ? ["compensate_all" as const] : []),
+      ...(input.transaction.currentSavepointId && input.canRollbackSavepoint ? ["rollback_savepoint" as const] : []),
+      ...(hasReversibleAppliedOperation && input.canCompensate ? ["compensate_all" as const] : []),
       "keep_state",
       "abandon",
     ],

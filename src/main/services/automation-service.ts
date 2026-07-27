@@ -170,6 +170,7 @@ export type WorkflowAutomationModule = Pick<
   | "reviseWorkflowV2Run"
   | "stopWorkflowRun"
   | "resolveWorkflowV2Intervention"
+  | "resolveWorkflowV2Recovery"
   | "sendWorkflowNodeMessage"
   | "completeWorkflowNodeConversation"
   | "rejectWorkflowNodeCompletion"

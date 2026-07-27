@@ -91,6 +91,34 @@ describe("workflow-v2 file store", () => {
     ]);
   });
 
+  test("cleans only expired committed materials and preserves recovery evidence", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "workflow-v2-retention-"));
+    temporaryDirectories.push(root);
+    const store = new WorkflowV2FileStore(root);
+    const committed = await persistedState();
+    committed.transaction = {
+      transactionId: "transaction-committed",
+      mode: "strict_atomic",
+      status: "committed",
+      baselineId: "baseline-committed",
+      operationCount: 0,
+      unknownOperationCount: 0,
+      irreversibleOperationCount: 0,
+      startedAt: 1_000,
+      updatedAt: 2_000,
+      retentionUntil: 2_000,
+    };
+    const recovery = structuredClone(committed);
+    recovery.runId = "run-recovery";
+    recovery.transaction = { ...committed.transaction, transactionId: "transaction-recovery", status: "recovery_required" };
+    await store.persistRunState(committed);
+    await store.persistRunState(recovery);
+
+    await expect(store.cleanupExpiredRuns(3_000)).resolves.toEqual([{ workflowId: "workflow-1", runId: "run-1" }]);
+    await expect(store.readRunState("workflow-1", "run-1")).resolves.toBeUndefined();
+    await expect(store.readRunState("workflow-1", "run-recovery")).resolves.toMatchObject({ transaction: { status: "recovery_required" } });
+  });
+
   test("deduplicates exact event retries and rejects conflicting or non-monotonic history", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "workflow-v2-event-contract-"));
     temporaryDirectories.push(root);

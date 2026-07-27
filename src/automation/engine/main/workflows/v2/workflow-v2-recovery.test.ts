@@ -105,6 +105,7 @@ describe("workflow-v2 recovery", () => {
       }],
       runState: state.runState,
       workspaceDiff: { created: ["new.txt"], modified: ["changed.txt"], deleted: [], conflicts: ["changed.txt"] },
+      canRollbackSavepoint: true,
       now: 1_600,
     });
 

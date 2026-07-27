@@ -119,6 +119,7 @@ export function WorkflowPage({ controller: source }: { controller: WorkflowContr
   const onStartNode = source.onStartNode;
   const onSubmitScriptInput = source.onSubmitScriptInput;
   const onResolveIntervention = source.onResolveIntervention;
+  const onResolveRecovery = source.onResolveRecovery;
   const onSendNodeMessage = source.onSendNodeMessage;
   const onCompleteNodeConversation = source.onCompleteNodeConversation;
   const onRejectNodeCompletion = source.onRejectNodeCompletion;
@@ -392,6 +393,7 @@ export function WorkflowPage({ controller: source }: { controller: WorkflowContr
         open={runCenterOpen}
         {...(selectedHistoryRunId ? { selectedRunId: selectedHistoryRunId } : {})}
         language={language}
+        {...(onResolveRecovery ? { onResolveRecovery } : {})}
         onSelectRun={setSelectedHistoryRunId}
         onClose={() => setRunCenterOpen(false)}
       />

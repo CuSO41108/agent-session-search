@@ -3,6 +3,7 @@ import type { WorkflowV2ContextBudget, WorkflowV2Definition, WorkflowV2ModelProf
 import type { WorkflowV2AcceptanceCriterion, WorkflowV2CostBudget, WorkflowV2GraphRevision, WorkflowV2Plan } from "../workflow-v2/planning";
 import type { WorkflowV2InterventionAction } from "../workflow-v2/review";
 import type { WorkflowV2GenerationReviewState } from "../workflow-v2/generation-review";
+import type { WorkflowRecoveryAction } from "../workflow-v2/transaction";
 import type { WorkflowGrillMessage } from "./draft";
 import type { WorkflowArtifactReference, WorkflowEvent, WorkflowRunConfigurationSnapshot, WorkflowRunProgressItem, WorkflowRunTriggerSource, WorkflowStatus } from "./run";
 
@@ -206,6 +207,14 @@ export interface StartWorkflowNodeRequest extends PauseWorkflowNodeRequest {}
 export interface ResolveWorkflowV2InterventionRequest extends PauseWorkflowNodeRequest {
   action: WorkflowV2InterventionAction;
   reason?: string;
+}
+
+export interface ResolveWorkflowV2RecoveryRequest {
+  workflowId: string;
+  runId: string;
+  action: WorkflowRecoveryAction;
+  actor: string;
+  reason: string;
 }
 
 export interface ReviseWorkflowV2RunRequest extends PauseWorkflowNodeRequest {

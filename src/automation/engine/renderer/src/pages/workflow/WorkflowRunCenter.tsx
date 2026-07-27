@@ -7,6 +7,7 @@ import type { WorkflowRunTimelineSegment, WorkflowRunTriggerSource } from "../..
 import type { WorkflowRunNodeTelemetry } from "../../../../shared/workflow/run";
 import type { WorkflowNodeConversation } from "../../../../shared/workflow-v2/conversation";
 import type { WorkflowNodeMessage } from "../../../../shared/workflow/run";
+import type { WorkflowRecoveryAction } from "../../../../shared/workflow-v2/transaction";
 
 interface WorkflowRunCenterProps {
   runs: WorkflowRunState[];
@@ -19,6 +20,7 @@ interface WorkflowRunCenterProps {
   language?: "en" | "zh";
   onSelectRun: (runId: string | undefined) => void;
   onClose: () => void;
+  onResolveRecovery?: (runId: string, action: WorkflowRecoveryAction, reason: string) => void | Promise<void>;
 }
 
 const STATUS_LABELS: Record<WorkflowStatus, { en: string; zh: string }> = {
@@ -166,7 +168,7 @@ export function WorkflowRunCenter(props: WorkflowRunCenterProps) {
   return <WorkflowRunCenterOpen {...props} />;
 }
 
-function WorkflowRunCenterOpen({ runs, conversations = [], artifacts = [], loading = false, error, selectedRunId, language = "en", onSelectRun, onClose }: WorkflowRunCenterProps) {
+function WorkflowRunCenterOpen({ runs, conversations = [], artifacts = [], loading = false, error, selectedRunId, language = "en", onSelectRun, onClose, onResolveRecovery }: WorkflowRunCenterProps) {
   const [activeRunId, setActiveRunId] = useState<string | undefined>(selectedRunId);
   const [statusFilter, setStatusFilter] = useState<WorkflowStatus | "all">("all");
   const [sourceFilter, setSourceFilter] = useState<WorkflowRunTriggerSource | "all">("all");
@@ -174,6 +176,9 @@ function WorkflowRunCenterOpen({ runs, conversations = [], artifacts = [], loadi
   const [runListLimit, setRunListLimit] = useState(50);
   const [startedAfter, setStartedAfter] = useState("");
   const [startedBefore, setStartedBefore] = useState("");
+  const [recoveryReason, setRecoveryReason] = useState("");
+  const [recoveryActionError, setRecoveryActionError] = useState<string>();
+  const [recoveryBusy, setRecoveryBusy] = useState(false);
   const selectedRun = activeRunId ? runs.find((run) => run.runId === activeRunId) : undefined;
   const graphVersions = useMemo(() => [...new Set(runs.map((run) => run.workflowV2Plan.graphVersion))].sort((left, right) => right - left), [runs]);
   const filters: WorkflowRunFilters = {
@@ -278,6 +283,20 @@ function WorkflowRunCenterOpen({ runs, conversations = [], artifacts = [], loadi
                     {selectedRun.recovery.conflicts.map((conflict) => <span key={`conflict:${conflict}`}>{language === "zh" ? "冲突" : "Conflict"} · {conflict}</span>)}
                     <span>{language === "zh" ? "可用处理动作" : "Available actions"} · {selectedRun.recovery.availableActions.map((action) => recoveryActionLabel(action, language)).join(" / ")}</span>
                   </div> : null}
+                  {selectedRun.recovery && onResolveRecovery ? <div className="workflow-run-center-recovery-actions">
+                    <label><span>{language === "zh" ? "决定依据" : "Decision reason"}</span><input value={recoveryReason} maxLength={2_000} onChange={(event) => setRecoveryReason(event.currentTarget.value)} placeholder={language === "zh" ? "说明核验依据和预期结果" : "Describe the evidence and expected outcome"} /></label>
+                    <div>{selectedRun.recovery.availableActions.map((action) => <button key={action} type="button" disabled={recoveryBusy || recoveryReason.trim().length === 0} onClick={() => {
+                      const prompt = language === "zh" ? `确认执行“${recoveryActionLabel(action, language)}”？执行前请再次核对当前 diff 与 operation receipt。` : `Confirm “${recoveryActionLabel(action, language)}”? Re-check the current diff and operation receipts first.`;
+                      if (!window.confirm(prompt)) return;
+                      setRecoveryBusy(true);
+                      setRecoveryActionError(undefined);
+                      void Promise.resolve(onResolveRecovery(selectedRun.runId, action, recoveryReason.trim()))
+                        .then(() => setRecoveryReason(""))
+                        .catch((actionError) => setRecoveryActionError(actionError instanceof Error ? actionError.message : String(actionError)))
+                        .finally(() => setRecoveryBusy(false));
+                    }}>{recoveryActionLabel(action, language)}</button>)}</div>
+                    {recoveryActionError ? <p className="is-error">{recoveryActionError}</p> : null}
+                  </div> : null}
                   {(selectedRun.operations?.length ?? 0) > 0 ? <div className="workflow-run-center-artifact-list">
                     {selectedRun.operations!.map((operation) => <article key={operation.operationId}>
                       <strong>{operation.kind} · {operation.state}</strong>
@@ -288,6 +307,10 @@ function WorkflowRunCenterOpen({ runs, conversations = [], artifacts = [], loadi
                       {operation.receipt !== undefined ? <details><summary>{language === "zh" ? "查看 receipt" : "View receipt"}</summary><pre>{JSON.stringify(operation.receipt, null, 2)}</pre></details> : null}
                     </article>)}
                   </div> : null}
+                  {(selectedRun.recoveryDecisions?.length ?? 0) > 0 ? <details className="workflow-run-center-node-outputs">
+                    <summary>{language === "zh" ? "用户恢复决定" : "Recovery decisions"} · {selectedRun.recoveryDecisions!.length}</summary>
+                    <div className="workflow-run-center-events">{selectedRun.recoveryDecisions!.map((decision) => <span key={decision.decisionId}>{recoveryActionLabel(decision.action, language)} · {decision.actor} · {formatDate(decision.decidedAt, language)} · {decision.reason} · operationId: {decision.operationIds.join(", ") || "—"}</span>)}</div>
+                  </details> : null}
                 </section> : null}
                 {selectedArtifacts.length > 0 ? <section className="workflow-run-center-section workflow-run-center-artifacts"><header><GitBranch size={14} /><strong>{labels.artifacts}</strong></header><div className="workflow-run-center-artifact-list">{selectedArtifacts.map((artifact) => <article key={artifact.id}><strong>{artifact.title}</strong><small>{artifact.kind === "file" ? artifactFileName(artifact.path) : artifact.kind === "url" ? artifactUrlPreview(artifact.url) : "text"}</small>{artifact.description ? <p>{artifact.description}</p> : null}{artifact.kind === "text" && artifact.content ? <pre>{artifact.content.slice(0, 4000)}</pre> : null}</article>)}</div></section> : null}
                 <section className="workflow-run-center-section">
