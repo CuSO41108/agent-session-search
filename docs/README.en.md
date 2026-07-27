@@ -79,7 +79,7 @@ After launch, the app stays in the menu bar or system tray; settings, theme, lan
 
 - **Remote sync**: After configuring the same Supabase URL and anon key, another device can search and view cloud sessions and restore them into Claude Code, Codex, CodeBuddy, CodeWiz, or Cursor; upload manually, or install the Claude Code / Codex hooks to record pending sessions automatically. Sync is designed for personal projects, and deleting a cloud copy never affects the local session.
 - **MCP tools**: The built-in `agent-recall-mcp` lets Claude Code, Codex, CodeBuddy, and others search and read session history in chat, manage tags, favorites, and visibility, or run cross-agent migration.
-- **Skills and digital assets**: View, filter, and manage local Codex / Claude Code Skills, and sync Skills, Rules (such as `CLAUDE.md` and Qoder rules), and Memories (Qoder / Codex memories) across machines through Supabase.
+- **Skills and digital assets**: View, filter, and manage local Codex / Claude Code Skills, and sync Skills, Rules (such as `CLAUDE.md`, `AGENTS.md`, and Qoder rules), and Memories (Qoder / Codex memories) across machines through Supabase.
 
 These capabilities share the same Supabase configuration inside the app and are designed for personal cross-device use. Setup steps and details are in the [User Guide](./guide.en.md).
 
