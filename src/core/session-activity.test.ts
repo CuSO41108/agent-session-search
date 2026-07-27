@@ -182,7 +182,7 @@ describe("live session detection", () => {
 
   it("maps only recently active Codex Desktop sessions whose agents have unfinished tasks", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "session-search-codex-app-live-"));
-    const now = new Date();
+    const now = new Date("2026-07-28T12:00:00.000Z");
     const sessionsDir = path.join(root, "Test User", ".codex", "sessions", "2026", "07", "27");
     const firstSessionId = "019e82e1-b60d-7b12-95c3-d33e1d05f0a9";
     const secondSessionId = "019e82e1-b60d-7b12-95c3-d33e1d05f0b0";
@@ -219,7 +219,11 @@ describe("live session detection", () => {
     fs.writeFileSync(fifthSessionFile, [
       JSON.stringify({ type: "event_msg", payload: { type: "task_started" } }),
     ].join("\n") + "\n");
+    const activeModifiedAt = new Date(now.getTime() - 23 * 60 * 60 * 1000);
     const staleModifiedAt = new Date(now.getTime() - 25 * 60 * 60 * 1000);
+    for (const sessionFile of [firstSessionFile, secondSessionFile, thirdSessionFile, fourthSessionFile]) {
+      fs.utimesSync(sessionFile, activeModifiedAt, activeModifiedAt);
+    }
     fs.utimesSync(fifthSessionFile, staleModifiedAt, staleModifiedAt);
     const lsofCalls: string[] = [];
     try {
