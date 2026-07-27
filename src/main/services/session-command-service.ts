@@ -224,7 +224,6 @@ export class SessionCommandService {
     const isCodexSession = [
       "codex-cli",
       "codex-app",
-      "codex-internal",
       "tcodex-cli",
     ].includes(session.source);
     if (!isCodexSession || !isLocalSessionEnvironment(session)) return null;

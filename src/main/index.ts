@@ -179,6 +179,7 @@ import type {
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PRODUCT_NAME = "AgentRecall";
 const TRAY_ICON_RELATIVE_PATH = path.join("assets", "tray-iconTemplate.png");
+const APP_ICON_RELATIVE_PATH = path.join("assets", "app-icon.png");
 const releaseUpdateRuntime = app.isPackaged || process.env.AGENT_RECALL_RELEASE_BUILD === "1";
 
 const OPTIONAL_SOURCE_SETTINGS = OPTIONAL_SESSION_SOURCE_DESCRIPTORS.map((descriptor) => ({
@@ -1361,8 +1362,6 @@ async function runIndexSync(): Promise<IndexStatus> {
     batchSize: 50,
     timeBudgetMs: 8,
     loadOptions: {
-      includeClaudeInternal: settings.includeClaudeInternal,
-      includeCodexInternal: settings.includeCodexInternal,
       includeTclaude: settings.includeTclaude,
       includeTcodex: settings.includeTcodex,
       includeCodeBuddyCli: settings.includeCodeBuddyCli,
@@ -2393,6 +2392,13 @@ app.whenReady().then(async () => {
   createWindow();
   createTray();
   applyDockVisibility(getSettings().showInDock);
+  if (process.platform === "darwin" && app.dock) {
+    const dockIconPath = resolveAssetPath(APP_ICON_RELATIVE_PATH);
+    if (dockIconPath) {
+      const dockIcon = nativeImage.createFromPath(dockIconPath);
+      if (!dockIcon.isEmpty()) app.dock.setIcon(dockIcon);
+    }
+  }
   void appUpdateService.showPreviousUpdateResult();
   const shortcut = getSettings().globalShortcut;
   if (!registerAppGlobalShortcut(shortcut)) {

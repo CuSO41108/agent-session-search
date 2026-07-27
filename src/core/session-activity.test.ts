@@ -180,32 +180,73 @@ describe("live session detection", () => {
     fs.rmSync(root, { recursive: true, force: true });
   });
 
-  it("does not inspect Codex Desktop app helper processes as CLI sessions", async () => {
-    let lsofCalls = 0;
-    const snapshot = await loadLiveSessionSnapshot({
-      platform: "darwin",
-      runner: async (command, args) => {
-        if (command === "/bin/ps") {
-          return [
-            "601 /Applications/Codex.app/Contents/MacOS/Codex",
-            "602 /Applications/Codex.app/Contents/Frameworks/Codex Framework.framework/Helpers/Codex (Renderer).app/Contents/MacOS/Codex (Renderer) --type=renderer",
-            "603 /Applications/Codex.app/Contents/Resources/codex app-server --analytics-default-enabled",
-            "604 /opt/homebrew/bin/codex",
-            "605 node /opt/homebrew/bin/codex",
-            "606 /Users/test/.codex/computer-use/Codex Computer Use.app/Contents/MacOS/SkyComputerUseService",
-          ].join("\n");
-        }
-        if (command === "lsof") {
-          lsofCalls++;
-          expect(args).toEqual(["-p", "604"]);
-          return "COMMAND PID USER FD TYPE DEVICE SIZE/OFF NODE NAME\ncodex 604 user cwd DIR 1,4 0 1 /work/app\n";
-        }
-        return "";
-      },
-    });
+  it("maps only Codex Desktop sessions whose agents are working", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "session-search-codex-app-live-"));
+    const sessionsDir = path.join(root, "Test User", ".codex", "sessions", "2026", "07", "27");
+    const firstSessionId = "019e82e1-b60d-7b12-95c3-d33e1d05f0a9";
+    const secondSessionId = "019e82e1-b60d-7b12-95c3-d33e1d05f0b0";
+    const thirdSessionId = "019e82e1-b60d-7b12-95c3-d33e1d05f0b1";
+    const firstSessionFile = path.join(sessionsDir, `rollout-2026-07-27T10-00-00-${firstSessionId}.jsonl`);
+    const secondSessionFile = path.join(sessionsDir, `rollout-2026-07-27T10-05-00-${secondSessionId}.jsonl`);
+    const thirdSessionFile = path.join(sessionsDir, `rollout-2026-07-27T10-10-00-${thirdSessionId}.jsonl`);
+    fs.mkdirSync(sessionsDir, { recursive: true });
+    fs.writeFileSync(firstSessionFile, [
+      JSON.stringify({ type: "session_meta", payload: { id: firstSessionId } }),
+      JSON.stringify({ type: "event_msg", payload: { type: "task_started" } }),
+      JSON.stringify({
+        type: "response_item",
+        payload: { type: "message", content: `${"x".repeat(70_000)} mentions "type":"task_complete" without completing` },
+      }),
+    ].join("\n") + "\n");
+    fs.writeFileSync(secondSessionFile, [
+      JSON.stringify({ type: "event_msg", payload: { type: "task_started" } }),
+      JSON.stringify({ type: "event_msg", payload: { type: "task_complete", last_agent_message: "完成".repeat(35_000) } }),
+    ].join("\n") + "\n");
+    fs.writeFileSync(thirdSessionFile, [
+      JSON.stringify({ type: "event_msg", payload: { type: "task_started" } }),
+      JSON.stringify({ type: "event_msg", payload: { type: "task_complete" } }),
+      JSON.stringify({ type: "event_msg", payload: { type: "task_started" } }),
+    ].join("\n") + "\n");
+    const lsofCalls: string[] = [];
+    try {
+      const snapshot = await loadLiveSessionSnapshot({
+        platform: "darwin",
+        runner: async (command, args) => {
+          if (command === "/bin/ps") {
+            return [
+              "601 /Applications/Codex.app/Contents/MacOS/Codex",
+              "602 /Applications/Codex.app/Contents/Frameworks/Codex Framework.framework/Helpers/Codex (Renderer).app/Contents/MacOS/Codex (Renderer) --type=renderer",
+              "603 /Applications/Codex.app/Contents/Resources/codex -c features.code_mode_host=true app-server --analytics-default-enabled",
+              "604 /opt/homebrew/bin/codex",
+              "605 node /opt/homebrew/bin/codex",
+              "606 /Users/test/.codex/computer-use/Codex Computer Use.app/Contents/MacOS/SkyComputerUseService",
+            ].join("\n");
+          }
+          if (command === "lsof") {
+            lsofCalls.push(args.join(" "));
+            if (args.join(" ") === "-p 603") {
+              return [
+                "COMMAND PID USER FD TYPE DEVICE SIZE/OFF NODE NAME",
+                `codex 603 user 21u REG 1,4 0 1 ${firstSessionFile}`,
+                `codex 603 user 44u REG 1,4 0 1 ${secondSessionFile}`,
+                `codex 603 user 47u REG 1,4 0 1 ${thirdSessionFile}`,
+                `codex 603 user 48u REG 1,4 0 1 ${thirdSessionFile}`,
+              ].join("\n");
+            }
+            return "COMMAND PID USER FD TYPE DEVICE SIZE/OFF NODE NAME\n";
+          }
+          return "";
+        },
+      });
 
-    expect(snapshot.sessions).toEqual([]);
-    expect(lsofCalls).toBe(1);
+      expect(snapshot.sessions).toEqual([
+        { family: "codex", rawId: firstSessionId, pid: 603 },
+        { family: "codex", rawId: thirdSessionId, pid: 603 },
+      ]);
+      expect(lsofCalls.sort()).toEqual(["-p 603", "-p 604"]);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it("maps a running Trae app process through its workspace state database", async () => {

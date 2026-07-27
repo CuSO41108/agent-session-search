@@ -83,8 +83,6 @@ const allMigrationTargetsEnabled = {
   ...defaultSettings,
   includeTclaude: true,
   includeTcodex: true,
-  includeClaudeInternal: true,
-  includeCodexInternal: true,
 };
 
 const targetSources: Record<MigrationTarget, SessionSource> = {
@@ -95,8 +93,6 @@ const targetSources: Record<MigrationTarget, SessionSource> = {
   cursor: "cursor-agent",
   tclaude: "tclaude-cli",
   tcodex: "tcodex-cli",
-  "claude-internal": "claude-internal",
-  "codex-internal": "codex-internal",
 };
 
 describe("migrateSessionForMcp — happy path", () => {
@@ -138,39 +134,6 @@ describe("migrateSessionForMcp — happy path", () => {
       }
     },
   );
-
-  it("migrates a TClaude source to Codex Internal with a scoped safe resume command", async () => {
-    const store = createInMemoryStore();
-    const projectPath = makeProjectDir();
-    const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "mcp-mig-home-"));
-    const { sessionKey } = await seedLocalSession(store, {
-      sessionKey: "tclaude:source-1",
-      rawId: "source-1",
-      source: "tclaude-cli",
-      projectPath,
-    });
-    try {
-      const result = await migrateSessionForMcp(
-        { sessionKey, target: "codex-internal" },
-        { store, settings: allMigrationTargetsEnabled, inspectCli: noOpInspect, homeDir },
-      );
-
-      expect(result).toMatchObject({ target: "codex-internal", launched: false, indexed: true });
-      expect(result.targetFilePath).toContain(path.join(homeDir, ".codex-internal"));
-      const indexed = await store.getSession(`codex-internal:${result.targetSessionId}`);
-      expect(indexed?.source).toBe("codex-internal");
-      expect((await store.listSessionMigrations(sessionKey))[0]).toMatchObject({
-        sourceAgent: "claude",
-        targetAgent: "codex-internal",
-      });
-      expect(result.resumeCommand).toContain(`CODEX_HOME=${path.join(homeDir, ".codex-internal")}`);
-      expect(result.resumeCommand).toContain(result.targetSessionId);
-    } finally {
-      await store.close();
-      fs.rmSync(homeDir, { recursive: true, force: true });
-      fs.rmSync(projectPath, { recursive: true, force: true });
-    }
-  });
 
   it("migrates a Claude source to Codex and registers the native Codex index entry", async () => {
     const store = createInMemoryStore();

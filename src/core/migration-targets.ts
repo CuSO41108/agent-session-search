@@ -2,9 +2,7 @@ import type { MigrationAgent, MigrationTarget, SessionSource } from "./types";
 
 export type OptionalMigrationTargetSetting =
   | "includeTclaude"
-  | "includeTcodex"
-  | "includeClaudeInternal"
-  | "includeCodexInternal";
+  | "includeTcodex";
 
 export type MigrationTargetSettings = Record<OptionalMigrationTargetSetting, boolean>;
 
@@ -54,20 +52,6 @@ export const MIGRATION_TARGETS: readonly MigrationTargetDescriptor[] = [
     source: "tcodex-cli",
     enabledSetting: "includeTcodex",
   },
-  {
-    id: "claude-internal",
-    label: "Claude Code Internal",
-    family: "claude",
-    source: "claude-internal",
-    enabledSetting: "includeClaudeInternal",
-  },
-  {
-    id: "codex-internal",
-    label: "Codex Internal",
-    family: "codex",
-    source: "codex-internal",
-    enabledSetting: "includeCodexInternal",
-  },
 ] as const satisfies readonly MigrationTargetDescriptor[];
 
 export const MIGRATION_TARGET_IDS = [
@@ -78,8 +62,6 @@ export const MIGRATION_TARGET_IDS = [
   "cursor",
   "tclaude",
   "tcodex",
-  "claude-internal",
-  "codex-internal",
 ] as const satisfies readonly MigrationTarget[];
 
 export const BASE_MIGRATION_TARGETS = ["claude", "codex", "codebuddy", "codewiz", "cursor"] as const satisfies readonly MigrationTarget[];

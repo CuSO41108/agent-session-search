@@ -125,11 +125,11 @@
 }
 
 .update-brand-mark {
+  display: block;
   width: 82px;
   height: 82px;
   margin-bottom: 5px;
-  overflow: visible;
-  filter: drop-shadow(0 15px 19px rgba(44, 89, 212, 0.2));
+  filter: drop-shadow(0 15px 19px rgba(94, 61, 212, 0.24));
 }
 
 .update-app-identity h3 {
@@ -1567,4 +1567,3 @@ body.overlay-open .results,
 body.overlay-open .sidebar {
   overflow: hidden;
 }
-

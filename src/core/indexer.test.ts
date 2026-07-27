@@ -230,13 +230,39 @@ describe("indexer", () => {
     }
   });
 
+  it("rebuilds unchanged session content when a metadata dependency changes", async () => {
+    const store = createInMemoryStore();
+    const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "agent-recall-codex-content-refresh-"));
+    try {
+      const filePath = writeCodexSession(homeDir, "codex-content-refresh", "alphaoldx", "Stable Title");
+      await syncDefaultSessionsInBatches(store, { batchSize: 1, loadOptions: { homeDir } });
+      expect(await store.searchSessions({ query: "alphaoldx", limit: 10 })).toHaveLength(1);
+
+      const previousStat = fs.statSync(filePath);
+      const content = fs.readFileSync(filePath, "utf8").replace("alphaoldx", "betanewxx");
+      fs.writeFileSync(filePath, content);
+      fs.utimesSync(filePath, previousStat.atime, previousStat.mtime);
+
+      const indexPath = path.join(homeDir, ".codex", "session_index.jsonl");
+      const futureIndexTime = new Date(Date.now() + 2000);
+      fs.utimesSync(indexPath, futureIndexTime, futureIndexTime);
+
+      const warm = await syncDefaultSessionsInBatches(store, { batchSize: 1, loadOptions: { homeDir } });
+
+      expect(warm).toMatchObject({ indexed: 1, skipped: 0, total: 1 });
+      expect(await store.searchSessions({ query: "betanewxx", limit: 10 })).toHaveLength(1);
+      expect(await store.searchSessions({ query: "alphaoldx", limit: 10 })).toHaveLength(0);
+    } finally {
+      store.close();
+      fs.rmSync(homeDir, { recursive: true, force: true });
+    }
+  });
+
   it.each([
     { target: "claude", source: "claude-cli" },
     { target: "tclaude", source: "tclaude-cli" },
-    { target: "claude-internal", source: "claude-internal" },
     { target: "codex", source: "codex-cli" },
     { target: "tcodex", source: "tcodex-cli" },
-    { target: "codex-internal", source: "codex-internal" },
     { target: "codebuddy", source: "codebuddy-cli" },
     { target: "codewiz", source: "codewiz-cli" },
     { target: "cursor", source: "cursor-agent" },

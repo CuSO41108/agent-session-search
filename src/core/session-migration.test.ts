@@ -175,11 +175,9 @@ describe("session migration model", () => {
   it.each([
     ["claude-cli", "claude"],
     ["claude-app", "claude"],
-    ["claude-internal", "claude"],
     ["tclaude-cli", "claude"],
     ["codex-cli", "codex"],
     ["codex-app", "codex"],
-    ["codex-internal", "codex"],
     ["tcodex-cli", "codex"],
     ["codebuddy-cli", "codebuddy"],
     ["codewiz-cli", "codewiz"],
@@ -197,11 +195,9 @@ describe("session migration model", () => {
   it.each([
     "claude-cli",
     "claude-app",
-    "claude-internal",
     "tclaude-cli",
     "codex-cli",
     "codex-app",
-    "codex-internal",
     "tcodex-cli",
     "codebuddy-cli",
     "codewiz-cli",
@@ -214,8 +210,6 @@ describe("session migration model", () => {
       "cursor",
       "tclaude",
       "tcodex",
-      "claude-internal",
-      "codex-internal",
     ] as const satisfies readonly MigrationTarget[];
 
     expect(supportedMigrationTargets(source, enabledTargets)).toEqual(enabledTargets);
@@ -255,6 +249,7 @@ describe("session migration model", () => {
 
     expect(portableSessionFrom(session("claude-cli"), input)).toEqual({
       sourceSessionKey: "claude-cli:1",
+      sourceSessionId: "1",
       sourceAgent: "claude",
       title: "Display",
       projectPath: "/repo",
@@ -263,6 +258,8 @@ describe("session migration model", () => {
         { role: "user", content: "你好", timestamp: "2026-06-23T00:00:00Z", index: 0 },
         { role: "assistant", content: "hello", timestamp: "2026-06-23T00:00:01Z", index: 1 },
       ],
+      isSubagent: false,
+      parentSessionId: null,
     });
   });
 
@@ -332,17 +329,17 @@ describe("migrateSession", () => {
     const result = await migrateSession({
       source: session("tclaude-cli"),
       messages,
-      target: "codex-internal",
+      target: "tcodex",
       deps,
     });
 
-    expect(result.target).toBe("codex-internal");
-    expect(inspectCli).toHaveBeenCalledWith("codex-internal");
-    expect(write).toHaveBeenCalledWith("codex-internal", expect.objectContaining({ sourceAgent: "claude" }));
-    expect(refreshIndex).toHaveBeenCalledWith("codex-internal", "/tmp/target-session-1.jsonl", "target-session-1");
-    expect(launch).toHaveBeenCalledWith("codex-internal", "target-session-1", "/repo");
+    expect(result.target).toBe("tcodex");
+    expect(inspectCli).toHaveBeenCalledWith("tcodex");
+    expect(write).toHaveBeenCalledWith("tcodex", expect.objectContaining({ sourceAgent: "claude" }));
+    expect(refreshIndex).toHaveBeenCalledWith("tcodex", "/tmp/target-session-1.jsonl", "target-session-1");
+    expect(launch).toHaveBeenCalledWith("tcodex", "target-session-1", "/repo");
     expect(seenRecords).toEqual([
-      expect.objectContaining({ sourceAgent: "claude", targetAgent: "codex-internal" }),
+      expect.objectContaining({ sourceAgent: "claude", targetAgent: "tcodex" }),
     ]);
   });
 

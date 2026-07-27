@@ -122,7 +122,7 @@ function serializeSession(
       session,
       sessionId,
       requiredRuntimeValue(runtimeMetadata.codexModelProvider, "Codex model provider"),
-      target === "codex" && process.platform === "win32",
+      target === "codex",
     );
   }
   if (family === "claude") {
@@ -137,18 +137,31 @@ function serializeCodex(
   modelProvider: string,
   includeVsCodeEvents: boolean,
 ): unknown[] {
+  const parentSessionId = session.isSubagent ? session.parentSessionId?.trim() || null : null;
+  const subagentPath = parentSessionId ? codexSubagentPath(session) : null;
+  const subagentNickname = parentSessionId ? session.title || "Migrated subagent" : null;
   const rows: unknown[] = [{
     type: "session_meta",
     timestamp: session.startedAt,
     payload: {
-      ...(includeVsCodeEvents ? { session_id: sessionId } : {}),
+      ...(includeVsCodeEvents ? { session_id: parentSessionId ?? sessionId } : {}),
       id: sessionId,
+      ...(parentSessionId ? { forked_from_id: parentSessionId, parent_thread_id: parentSessionId } : {}),
       timestamp: session.startedAt,
       cwd: session.projectPath,
       title: session.title,
       originator: "agent-recall",
       cli_version: "migration",
-      ...(includeVsCodeEvents ? { source: "vscode", thread_source: "user", history_mode: "legacy" } : {}),
+      ...(includeVsCodeEvents
+        ? {
+            source: parentSessionId
+              ? codexSubagentSource(parentSessionId, subagentPath!, subagentNickname!)
+              : "vscode",
+            thread_source: parentSessionId ? "subagent" : "user",
+            history_mode: "legacy",
+            ...(parentSessionId ? { agent_nickname: subagentNickname, agent_path: subagentPath } : {}),
+          }
+        : {}),
       model_provider: modelProvider,
     },
   }];
@@ -488,10 +501,8 @@ export function targetFilePathForRemoteEnvironment(
 const TARGET_ROOTS: Record<MigrationTarget, string> = {
   claude: ".claude",
   tclaude: ".tclaude",
-  "claude-internal": ".claude-internal",
   codex: ".codex",
   tcodex: ".tcodex",
-  "codex-internal": ".codex-internal",
   codebuddy: ".codebuddy",
   codewiz: path.join(".local", "share", "codewiz"),
   cursor: ".cursor",
@@ -542,6 +553,7 @@ async function updateCodexSessionIndex(
   now: Date,
 ): Promise<void> {
   if (migrationTargetDescriptor(target).family !== "codex") return;
+  if (session.isSubagent) return;
 
   const indexPath = path.join(targetHome, "session_index.jsonl");
   let existingRows: unknown[] = [];
@@ -581,7 +593,7 @@ function updateCodexAppServerState(
   now: Date,
   runtimeMetadata: MigrationTargetRuntimeMetadata,
 ): void {
-  if (target !== "codex" || process.platform !== "win32") return;
+  if (target !== "codex") return;
 
   const statePath = findCodexStateDatabase(targetHome);
   if (!statePath) return;
@@ -622,7 +634,13 @@ function updateCodexAppServerState(
       rollout_path: rolloutPath,
       created_at: existing?.created_at ?? createdAt,
       updated_at: updatedAt,
-      source: "vscode",
+      source: session.isSubagent && session.parentSessionId
+        ? JSON.stringify(codexSubagentSource(
+            session.parentSessionId,
+            codexSubagentPath(session),
+            session.title || "Migrated subagent",
+          ))
+        : "vscode",
       model_provider: requiredRuntimeValue(runtimeMetadata.codexModelProvider, "Codex model provider"),
       cwd,
       title,
@@ -636,10 +654,10 @@ function updateCodexAppServerState(
       memory_mode: existing?.memory_mode ?? template?.memory_mode ?? "enabled",
       model: existing?.model ?? template?.model ?? null,
       reasoning_effort: existing?.reasoning_effort ?? template?.reasoning_effort ?? null,
-      agent_path: existing?.agent_path ?? template?.agent_path ?? null,
+      agent_path: session.isSubagent ? codexSubagentPath(session) : existing?.agent_path ?? template?.agent_path ?? null,
       created_at_ms: existing?.created_at_ms ?? createdAtMs,
       updated_at_ms: updatedAtMs,
-      thread_source: "user",
+      thread_source: session.isSubagent && session.parentSessionId ? "subagent" : "user",
       preview: title,
       recency_at: updatedAt,
       recency_at_ms: updatedAtMs,
@@ -668,6 +686,26 @@ function updateCodexAppServerState(
   } finally {
     db?.close();
   }
+}
+
+function codexSubagentPath(session: PortableSession): string {
+  const sourceId = session.sourceSessionId || session.sourceSessionKey.split(":").at(-1) || "subagent";
+  const slug = sourceId.replace(/[^A-Za-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 80) || "subagent";
+  return `/root/migrated_${slug}`;
+}
+
+function codexSubagentSource(parentSessionId: string, agentPath: string, agentNickname: string): Record<string, unknown> {
+  return {
+    subagent: {
+      thread_spawn: {
+        parent_thread_id: parentSessionId,
+        depth: 1,
+        agent_path: agentPath,
+        agent_nickname: agentNickname,
+        agent_role: null,
+      },
+    },
+  };
 }
 
 function findCodexStateDatabase(targetHome: string): string | null {
@@ -735,7 +773,7 @@ function validateNativeStructure(
       sessionId,
       session,
       requiredRuntimeValue(runtimeMetadata.codexModelProvider, "Codex model provider"),
-      target === "codex" && process.platform === "win32",
+      target === "codex",
     );
   } else if (family === "claude") {
     validateClaudeStructure(rows, sessionId, session, requiredRuntimeValue(runtimeMetadata.claudeModel, "Claude model"));
@@ -757,6 +795,7 @@ function validateCodexStructure(
   if (rows.length !== expectedRows) failValidation("codex", "has an unexpected row count");
   const meta = record(rows[0]);
   const payload = record(meta?.payload);
+  const parentSessionId = session.isSubagent ? session.parentSessionId?.trim() || null : null;
   if (
     meta?.type !== "session_meta"
     || meta.timestamp !== session.startedAt
@@ -765,9 +804,11 @@ function validateCodexStructure(
     || payload.cwd !== session.projectPath
     || payload.model_provider !== modelProvider
     || (includeVsCodeEvents && (
-      payload.session_id !== sessionId
-      || payload.source !== "vscode"
-      || payload.thread_source !== "user"
+      payload.session_id !== (parentSessionId ?? sessionId)
+      || (parentSessionId
+        ? record(record(record(payload.source)?.subagent)?.thread_spawn)?.parent_thread_id !== parentSessionId
+        : payload.source !== "vscode")
+      || payload.thread_source !== (parentSessionId ? "subagent" : "user")
       || payload.history_mode !== "legacy"
     ))
   ) {

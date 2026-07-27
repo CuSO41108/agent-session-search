@@ -83,6 +83,20 @@ async function main() {
     if (result.errors.length > 0) process.exitCode = 1;
     return;
   }
+  if (args.has("install-app")) {
+    const { installMacosApp } = require("./install-macos-app.cjs");
+    const result = installMacosApp();
+    if (result.status === "installed") {
+      process.stdout.write(`已生成 ${result.appPath}，现在可以从 Launchpad / Spotlight / Dock 打开 AgentRecall。\n`);
+      for (const warning of result.warnings) process.stdout.write(`${warning}\n`);
+    } else if (result.status === "unsupported") {
+      process.stdout.write("install-app 目前仅支持 macOS。\n");
+    } else {
+      process.stderr.write(`生成 AgentRecall.app 失败：${result.detail}\n`);
+      process.exitCode = 1;
+    }
+    return;
+  }
 
   const explicitCheck = args.has("--check-update") || args.has("--update");
   const preferenceEnabled = await readUpdatePreference();
@@ -150,6 +164,12 @@ async function main() {
   } catch (error) {
     if (!isElectronRuntimeReady(packagePath)) throw error;
     if (process.stdout.isTTY) process.stdout.write("Electron 运行时校验失败，已检测到可用运行时，继续启动应用。\n");
+  }
+  if (process.platform === "darwin" && process.stdout.isTTY) {
+    const { findInstalledMacosApp } = require("./install-macos-app.cjs");
+    if (!findInstalledMacosApp()) {
+      process.stdout.write("提示：运行 `agent-recall install-app` 后，可以像普通 App 一样从 Launchpad / Spotlight 打开。\n");
+    }
   }
   launchApp();
 }

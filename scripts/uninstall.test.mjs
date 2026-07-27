@@ -84,3 +84,17 @@ test("uninstall removes only AgentRecall integrations and caches", async () => {
   assert.equal(fs.existsSync(path.join(homeDir, ".agent-recall", "db-path")), true);
   assert.equal(fs.existsSync(path.join(homeDir, ".agent-recall", "update-install.lock")), false);
 });
+
+test("uninstall removes the generated macOS app launcher", { skip: process.platform !== "darwin" }, async () => {
+  const homeDir = await mkdtemp(path.join(os.tmpdir(), "agent-session-uninstall-app-"));
+  temporaryDirectories.add(homeDir);
+  const appContents = path.join(homeDir, "Applications", "AgentRecall.app", "Contents");
+  fs.mkdirSync(appContents, { recursive: true });
+  fs.writeFileSync(path.join(appContents, "Info.plist"), "<key>CFBundleIdentifier</key><string>com.agent-recall.launcher</string>");
+
+  const result = await uninstall({ homeDir });
+
+  assert.deepEqual(result.errors, []);
+  assert.ok(result.messages.includes("Removed the AgentRecall.app launcher."));
+  assert.equal(fs.existsSync(path.join(homeDir, "Applications", "AgentRecall.app")), false);
+});

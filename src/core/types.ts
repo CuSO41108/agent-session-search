@@ -1,10 +1,8 @@
 export type SessionSource =
   | "claude-cli"
   | "claude-app"
-  | "claude-internal"
   | "codex-cli"
   | "codex-app"
-  | "codex-internal"
   | "tclaude-cli"
   | "tcodex-cli"
   | "codebuddy-cli"
@@ -87,7 +85,7 @@ export interface SessionMessageEvent {
 }
 
 export type MigrationAgent = "claude" | "codex" | "codebuddy" | "codewiz" | "cursor";
-export type MigrationTarget = MigrationAgent | "tclaude" | "tcodex" | "claude-internal" | "codex-internal";
+export type MigrationTarget = MigrationAgent | "tclaude" | "tcodex";
 export type SessionMigrationStrategy = "complete" | "ai-compressed" | "locally-truncated";
 export type SessionMigrationStage = "reading" | "compressing" | "writing" | "indexing" | "launching";
 
@@ -108,6 +106,7 @@ export interface MigrationCompressionEvent {
 
 export interface PortableSession {
   sourceSessionKey: string;
+  sourceSessionId?: string;
   sourceAgent: MigrationAgent;
   title: string;
   projectPath: string;
@@ -116,6 +115,7 @@ export interface PortableSession {
   turnBoundaries?: number[];
   isSubagent?: boolean;
   parentSessionId?: string | null;
+  subagents?: PortableSession[];
 }
 
 export interface SessionMigrationProgress {
@@ -137,6 +137,7 @@ export interface SessionMigrationResult {
   resumeCommand: string;
   indexed: boolean;
   launched: boolean;
+  restoredSubagentCount?: number;
   warning?: string;
 }
 
@@ -602,6 +603,7 @@ export interface CodeBuddyConversationLine {
   content?: Array<{ type?: string; text?: string }>;
   sessionId?: string;
   cwd?: string;
+  gitBranch?: string;
   providerData?: {
     usage?: {
       input_tokens?: number;

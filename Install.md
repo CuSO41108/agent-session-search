@@ -28,6 +28,16 @@ agent-recall
 
 应用启动后常驻后台（菜单栏有图标），默认按 **⌥ Option + Space** 唤起搜索窗口；如果和 Raycast 等工具冲突，可以在 Settings 里修改或关闭全局快捷键。Settings 也可以用 `Cmd+,` 打开，Appearance 里可以切换明暗主题和 English / 中文界面。
 
+### 像普通 App 一样打开（macOS）
+
+如果不想每次都从终端启动，可以生成一个本地的 `AgentRecall.app`：
+
+```bash
+agent-recall install-app
+```
+
+之后就能从 Launchpad、Spotlight 或 Dock 直接打开 AgentRecall。启动器优先安装到 `/Applications`，该目录不可写时退回 `~/Applications`。重复执行会原地刷新（例如重装或更换 Node 版本后建议再跑一次）。`agent-recall uninstall` 会一并删除该启动器。
+
 如果要使用 SSH 远程会话，请确保本机可以用系统 `ssh` 非交互连接远端机器，远端安装了 `python3`。实时监听需要远端有 `inotifywait` 或 `fswatch`；没有时应用会退化为轮询同步。
 
 Windows 用户还可以在设置中添加已安装的 WSL 发行版。WSL 会话搜索和 Resume 需要发行版可运行 `bash`、`python3`，并在 WSL 内安装对应的 Codex 或 Claude Code CLI。WSL 发行版中安装 `inotifywait` 或 `fswatch` 后可以实时监听会话变化；如果两者都没有，应用会自动退化为定时轮询同步。WSL 会话目前支持搜索、查看和 Resume，暂不支持会话迁移。

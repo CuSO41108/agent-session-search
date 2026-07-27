@@ -52,8 +52,6 @@
 | Claude Desktop app | `~/Library/Application Support/Claude/claude-code-sessions/**/local_*.json` plus Claude Code project logs |
 | TClaude CLI | Optional in settings; reads `~/.tclaude/projects/*/*.jsonl` (a Claude Code fork sharing the same format); supports Resume |
 | TCodex CLI | Optional in settings; reads `~/.tcodex/sessions/**/*.jsonl` (a Codex fork sharing the same format); supports Resume |
-| Claude Code Internal | Optional in settings; reads `~/.claude-internal/projects/*/*.jsonl` |
-| Codex Internal | Optional in settings; reads `~/.codex-internal/sessions/**/*.jsonl` |
 | CodeBuddy CLI | Optional in settings; reads `~/.codebuddy/projects/**/*.jsonl` |
 | OpenClaw | Optional in settings; reads `~/.openclaw/agents/*/sessions/*.jsonl`, legacy `~/.clawdbot/agents/*/sessions/*.jsonl`, excluding `*.trajectory.jsonl` |
 | Hermes | Optional in settings; reads `~/.hermes/state.db` |
@@ -67,7 +65,7 @@
 
 Codex title metadata is read from `~/.codex/session_index.jsonl` when that file exists. If no upstream title is available, the app uses the first meaningful user question as the default title.
 
-CodeBuddy CLI, TClaude, TCodex, Claude Code Internal, Codex Internal, OpenClaw, Hermes, OpenCode, ZCode, Cursor Agent, Trae, and Qoder are off by default and can be selected from Settings -> Optional sources. Once enabled, they support local indexing, search, details, and source filtering. Because TClaude / TCodex share the Claude Code / Codex formats, they additionally support Resume and one-click launch (invoking the `tclaude` / `tcodex` commands respectively). WSL environments support only Codex and Claude Code search, details, and Resume; WSL session migration is not supported yet. ZCode also includes local tool-call records and time-ranged token statistics; it does not support Resume, migration, SSH, remote sync, opening ZCode, or quota lookup. Deleting a ZCode session removes only the explicitly selected session and its related records, never the shared database file. For the other sources, Resume, SSH remote sync, and provider-specific usage stats are intentionally separate follow-up work. Trae and Qoder also support open-state detection.
+CodeBuddy CLI, TClaude, TCodex, OpenClaw, Hermes, OpenCode, ZCode, Cursor Agent, Trae, and Qoder are off by default and can be selected from Settings -> Optional sources. Once enabled, they support local indexing, search, details, and source filtering. Because TClaude / TCodex share the Claude Code / Codex formats, they additionally support Resume and one-click launch (invoking the `tclaude` / `tcodex` commands respectively). WSL environments support only Codex and Claude Code search, details, and Resume; WSL session migration is not supported yet. ZCode also includes local tool-call records and time-ranged token statistics; it does not support Resume, migration, SSH, remote sync, opening ZCode, or quota lookup. Deleting a ZCode session removes only the explicitly selected session and its related records, never the shared database file. For the other sources, Resume, SSH remote sync, and provider-specific usage stats are intentionally separate follow-up work. Trae and Qoder also support open-state detection.
 
 ## Remote Session Sync
 
@@ -224,7 +222,6 @@ npm run release-note:check
 - `README.md` is the Chinese project overview for users and developers.
 - `docs/README.en.md` is the English project overview.
 - `Install.md` covers install, update, and uninstall steps, plus a safe setup guide for Coding Agents.
-- `start.sh` is the macOS one-command launcher that checks the environment, installs missing dependencies, and starts the app.
 
 ## License
 

@@ -28,7 +28,7 @@ function nodeMajor(version) {
 function nodeCommand() {
   const candidates = [];
 
-  // The node running this script (e.g. the one start.sh resolved via nvm).
+  // The Node executable running this setup script.
   const base = path.basename(process.execPath).toLowerCase();
   if (base === "node" || base === "node.exe") {
     candidates.push(process.execPath);

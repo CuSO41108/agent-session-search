@@ -12,8 +12,6 @@ import {
 const allDisabled: MigrationTargetSettings = {
   includeTclaude: false,
   includeTcodex: false,
-  includeClaudeInternal: false,
-  includeCodexInternal: false,
 };
 
 describe("migration target registry", () => {
@@ -26,8 +24,6 @@ describe("migration target registry", () => {
       "cursor",
       "tclaude",
       "tcodex",
-      "claude-internal",
-      "codex-internal",
     ]);
     expect(new Set(MIGRATION_TARGET_IDS).size).toBe(MIGRATION_TARGET_IDS.length);
     expect(MIGRATION_TARGETS.map(({ id }) => id)).toEqual(MIGRATION_TARGET_IDS);
@@ -74,7 +70,7 @@ describe("migration target registry", () => {
     ]);
   });
 
-  it("maps the four optional migration targets", () => {
+  it("maps the two optional migration targets", () => {
     expect(MIGRATION_TARGETS.slice(5)).toEqual([
       {
         id: "tclaude",
@@ -90,20 +86,6 @@ describe("migration target registry", () => {
         source: "tcodex-cli",
         enabledSetting: "includeTcodex",
       },
-      {
-        id: "claude-internal",
-        label: "Claude Code Internal",
-        family: "claude",
-        source: "claude-internal",
-        enabledSetting: "includeClaudeInternal",
-      },
-      {
-        id: "codex-internal",
-        label: "Codex Internal",
-        family: "codex",
-        source: "codex-internal",
-        enabledSetting: "includeCodexInternal",
-      },
     ]);
   });
 
@@ -118,8 +100,6 @@ describe("migration target registry", () => {
     expect(enabledMigrationTargets({
       includeTclaude: true,
       includeTcodex: true,
-      includeClaudeInternal: true,
-      includeCodexInternal: true,
     })).toEqual(MIGRATION_TARGET_IDS);
   });
 
@@ -129,8 +109,8 @@ describe("migration target registry", () => {
   });
 
   it("rejects disabled optional targets with their display label", () => {
-    expect(() => assertMigrationTargetEnabled("claude-internal", allDisabled)).toThrow(
-      "Claude Code Internal migration target is disabled in Settings.",
+    expect(() => assertMigrationTargetEnabled("tclaude", allDisabled)).toThrow(
+      "TClaude migration target is disabled in Settings.",
     );
     expect(() => assertMigrationTargetEnabled("claude", allDisabled)).not.toThrow();
   });

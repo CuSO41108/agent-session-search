@@ -47,7 +47,7 @@ npm install -g https://github.com/zszz3/AgentRecall/releases/latest/download/age
 | macOS | `agent-recall` | `⌥ Option + Space` |
 | Windows | `agent-recall` | `Ctrl + Alt + Space` |
 
-启动后应用会常驻菜单栏或系统托盘。设置、主题、语言和快捷键都可以在应用内调整。完整安装、更新、回滚和卸载说明见 [Install.md](./Install.md)。
+启动后应用会常驻菜单栏或系统托盘。设置、主题、语言和快捷键都可以在应用内调整。macOS 上执行 `agent-recall install-app` 可以生成本地 `AgentRecall.app`，之后直接从 Launchpad / Spotlight / Dock 打开。完整安装、更新、回滚和卸载说明见 [Install.md](./Install.md)。
 
 常用更新命令：
 
@@ -134,7 +134,6 @@ npm run package:smoke
 
 - [Install.md](./Install.md)：安装、更新、卸载和环境说明。
 - [docs/README.en.md](./docs/README.en.md)：英文 README。
-- [start.sh](./start.sh)：macOS 一键启动脚本。
 
 ## 开源协议
 

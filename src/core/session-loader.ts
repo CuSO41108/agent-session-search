@@ -68,8 +68,6 @@ import type {
 } from "./types";
 
 const CODEX_APP_ORIGINATORS = new Set(["Codex Desktop", "codex_work_desktop"]);
-const CLAUDE_INTERNAL_DIR = ".claude-internal";
-const CODEX_INTERNAL_DIR = ".codex-internal";
 const TCLAUDE_DIR = ".tclaude";
 const TCODEX_DIR = ".tcodex";
 const CODEBUDDY_DIR = ".codebuddy";
@@ -585,6 +583,50 @@ function firstClaudeGitBranch(rows: unknown[]): string | null {
   return null;
 }
 
+// CodeBuddy rows do not currently embed gitBranch, so derive it from the
+// session working directory when that directory belongs to a Git repository.
+function readGitBranchFromCwd(cwd: string): string | null {
+  if (!cwd.trim()) return null;
+
+  let current = path.resolve(cwd);
+  for (let depth = 0; depth < 64; depth += 1) {
+    const branch = readGitBranchAt(path.join(current, ".git"));
+    if (branch) return branch;
+    const parent = path.dirname(current);
+    if (parent === current) break;
+    current = parent;
+  }
+  return null;
+}
+
+function readGitBranchAt(gitPath: string): string | null {
+  try {
+    if (!fs.existsSync(gitPath)) return null;
+
+    let gitDir = gitPath;
+    const gitStat = fs.statSync(gitPath);
+    if (gitStat.isFile()) {
+      const content = fs.readFileSync(gitPath, "utf8").trim();
+      const match = /^gitdir:\s*(.+)$/iu.exec(content);
+      if (!match?.[1]) return null;
+      const gitDirRef = match[1].trim();
+      gitDir = path.isAbsolute(gitDirRef)
+        ? gitDirRef
+        : path.resolve(path.dirname(gitPath), gitDirRef);
+    } else if (!gitStat.isDirectory()) {
+      return null;
+    }
+
+    const head = fs.readFileSync(path.join(gitDir, "HEAD"), "utf8").trim();
+    const refMatch = /^ref:\s*refs\/heads\/(.+)$/u.exec(head);
+    if (refMatch?.[1]) return refMatch[1].trim() || null;
+    if (/^[0-9a-f]{40,64}$/iu.test(head)) return "HEAD";
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 function firstCodeBuddySessionMeta(rows: unknown[], fallbackRawId: string): { rawId: string; projectPath: string; timestamp: number } {
   let rawId = fallbackRawId;
   let projectPath = "";
@@ -639,7 +681,7 @@ export function loadCodexSessionRows(
   const question = firstQuestion(messages);
   const source: SessionSource = options.sourceOverride || (CODEX_APP_ORIGINATORS.has(meta.originator || "") ? "codex-app" : "codex-cli");
   const session = createIndexedSession({
-    keyPrefix: source === "codex-internal" ? "codex-internal" : source === "tcodex-cli" ? "tcodex" : "codex",
+    keyPrefix: source === "tcodex-cli" ? "tcodex" : "codex",
     rawId: meta.id,
     source,
     projectPath: meta.projectPath,
@@ -733,7 +775,7 @@ export function loadClaudeCliSessionRows(
   const gitBranch = firstClaudeGitBranch(rows);
   return {
     session: createIndexedSession({
-      keyPrefix: options.source === "claude-internal" ? "claude-internal" : options.source === "tclaude-cli" ? "tclaude" : "claude",
+      keyPrefix: options.source === "tclaude-cli" ? "tclaude" : "claude",
       rawId,
       source: options.source ?? "claude-cli",
       projectPath: options.cwd || embeddedCwd || "",
@@ -922,6 +964,7 @@ export function loadCodeBuddyCliSessionRows(
   const tokenEvents = extractCodeBuddyTokenEvents(rows);
   const traceEvents = extractTraceEvents(rows, "codebuddy");
   const question = firstQuestion(messages);
+  const gitBranch = firstClaudeGitBranch(rows) ?? readGitBranchFromCwd(meta.projectPath);
 
   return {
     session: createIndexedSession({
@@ -933,6 +976,7 @@ export function loadCodeBuddyCliSessionRows(
       originalTitle: firstAiTitle(rows) || cleanTitle(question) || "Untitled Session",
       firstQuestion: cleanTitle(question),
       timestamp: meta.timestamp,
+      gitBranch,
       tokenUsage: tokenUsageFromEvents(tokenEvents),
       stat,
     }),
@@ -987,8 +1031,6 @@ export function* loadDefaultSessionsIterator(options: SessionLoadOptions = {}): 
     for (const dirName of TRAE_DIR_NAMES) yield* loadTraeSessionsIterator(path.join(homeDir, dirName), options);
   }
   if (options.includeQoder) yield* loadQoderSessionsIterator(path.join(homeDir, QODER_DIR), options);
-  if (options.includeClaudeInternal) yield* loadClaudeCliSessionsIterator(path.join(homeDir, CLAUDE_INTERNAL_DIR), "claude-internal", options);
-  if (options.includeCodexInternal) yield* loadCodexSessionsIterator(path.join(homeDir, CODEX_INTERNAL_DIR), "codex-internal", options);
   if (options.includeTclaude) yield* loadClaudeCliSessionsIterator(path.join(homeDir, TCLAUDE_DIR), "tclaude-cli", options);
   if (options.includeTcodex) yield* loadCodexSessionsIterator(path.join(homeDir, TCODEX_DIR), "tcodex-cli", options);
   if (options.includeCodeBuddyCli) yield* loadCodeBuddyCliSessionsIterator(path.join(homeDir, CODEBUDDY_DIR), options);

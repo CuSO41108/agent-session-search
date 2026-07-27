@@ -157,8 +157,6 @@ describe("platform application resolution", () => {
   });
 
   it("starts fresh installs with only Claude Code and Codex sources enabled", () => {
-    expect(defaultSettings.includeClaudeInternal).toBe(false);
-    expect(defaultSettings.includeCodexInternal).toBe(false);
     expect(defaultSettings.includeTclaude).toBe(false);
     expect(defaultSettings.includeTcodex).toBe(false);
     expect(defaultSettings.includeCodeBuddyCli).toBe(false);
@@ -239,7 +237,6 @@ describe("resume commands", () => {
   it.each([
     ["codex-cli", "openai"],
     ["tcodex-cli", "tencent"],
-    ["codex-internal", "codebuddy"],
   ] as const)("supplies the matching provider for a legacy %s migration", (source, provider) => {
     const directory = mkdtempSync(path.join(tmpdir(), "agent-session-resume-provider-"));
     const filePath = path.join(directory, "legacy-codex.jsonl");
@@ -673,15 +670,15 @@ describe("API settings", () => {
     ).toMatchObject({ customApiKey: "" });
   });
 
-  it("preserves disabled optional internal sources", () => {
+  it("preserves disabled optional Tencent-fork sources", () => {
     expect(
       mergeAppSettings(
-        { ...defaultSettings, includeClaudeInternal: true, includeCodexInternal: true },
-        { includeClaudeInternal: false, includeCodexInternal: false },
+        { ...defaultSettings, includeTclaude: true, includeTcodex: true },
+        { includeTclaude: false, includeTcodex: false },
       ),
     ).toMatchObject({
-      includeClaudeInternal: false,
-      includeCodexInternal: false,
+      includeTclaude: false,
+      includeTcodex: false,
     });
   });
 
@@ -901,91 +898,6 @@ describe("reveal in file manager", () => {
 });
 
 describe("resume process specs", () => {
-  it("uses the concrete Claude Internal binary for ordinary resume", () => {
-    const session = {
-      source: "claude-internal",
-      rawId: "internal-claude-1",
-      projectPath: "/repo",
-    } as SessionSearchResult;
-    const settings = { ...defaultSettings, claudeInternalBinary: "/opt/Internal CLI/claude-internal" };
-
-    expect(getResumeProcessSpec(session, settings, { platform: "darwin" })).toMatchObject({
-      command: "/opt/Internal CLI/claude-internal",
-      args: ["--resume", "internal-claude-1"],
-      cwd: "/repo",
-      env: undefined,
-      displayCommand: "cd /repo && '/opt/Internal CLI/claude-internal' --resume internal-claude-1",
-    });
-  });
-
-  it("keeps ordinary Codex Internal resume in its scoped CODEX_HOME", () => {
-    const session = {
-      source: "codex-internal",
-      rawId: "internal-codex-1",
-      projectPath: "/repo with spaces",
-    } as SessionSearchResult;
-    const settings = { ...defaultSettings, codexBinary: "/opt/Codex CLI/codex" };
-    const options = { platform: "darwin" as const, homeDir: "/Users/internal user" };
-
-    expect(getResumeProcessSpec(session, settings, options)).toEqual({
-      command: "/opt/Codex CLI/codex",
-      args: ["resume", "internal-codex-1"],
-      cwd: "/repo with spaces",
-      env: { CODEX_HOME: "/Users/internal user/.codex-internal" },
-      displayCommand:
-        "cd '/repo with spaces' && CODEX_HOME='/Users/internal user/.codex-internal' '/opt/Codex CLI/codex' resume internal-codex-1",
-    });
-  });
-
-  it("scopes ordinary Codex Internal display commands in POSIX, PowerShell, and Cmd", () => {
-    const session = {
-      source: "codex-internal",
-      rawId: "internal id",
-      projectPath: "C:\\repo & tools",
-    } as SessionSearchResult;
-    const homeDir = "C:\\Users\\Internal User";
-    const options = { platform: "win32" as const, homeDir };
-    const powershell = getResumeCommand(session, { ...defaultSettings, defaultTerminal: "PowerShell" }, options);
-    const cmd = getResumeCommand(session, { ...defaultSettings, defaultTerminal: "Cmd" }, options);
-    const posix = getResumeCommand(
-      { ...session, projectPath: "/repo with spaces" },
-      defaultSettings,
-      { platform: "linux", homeDir: "/home/internal user" },
-    );
-
-    expect(posix).toBe(
-      "cd '/repo with spaces' && CODEX_HOME='/home/internal user/.codex-internal' codex resume 'internal id'",
-    );
-    expect(powershell).toContain("try { $env:CODEX_HOME = 'C:\\Users\\Internal User\\.codex-internal'");
-    expect(powershell).toContain("codex resume 'internal id'");
-    expect(cmd).toContain('setlocal & set "CODEX_HOME=C:\\Users\\Internal User\\.codex-internal"');
-    expect(cmd).toContain('cd /d "C:\\repo & tools" && codex resume "internal id" & endlocal');
-  });
-
-  it("keeps dangerous ordinary Codex Internal values encoded in the Windows launch chain", () => {
-    const session = {
-      source: "codex-internal",
-      rawId: "id-%PATH%-!TEMP!-&|<>^\"",
-      projectPath: "C:\\repo\\%PATH%\\!TEMP! & source",
-    } as SessionSearchResult;
-    const settings = {
-      ...defaultSettings,
-      defaultTerminal: "Cmd" as const,
-      codexBinary: "C:\\Tools\\%PATH%\\!TEMP!\\codex & helper.exe",
-    };
-    const plan = buildWindowsResumeLaunchPlan(session, settings, {
-      terminal: "Cmd",
-      platform: "win32",
-      homeDir: "C:\\Users\\%PATH%\\!TEMP!",
-    });
-
-    const command = plan[0].args.at(-1) ?? "";
-    expect(command).toMatch(/^setlocal DisableDelayedExpansion & powershell\.exe -NoLogo -NoProfile -EncodedCommand [A-Za-z0-9+/=]+ & endlocal$/);
-    expect(decodeEncodedCmdPowerShell(command)).toBe(
-      "$ErrorActionPreference = 'Stop'; $env:CODEX_HOME = 'C:\\Users\\%PATH%\\!TEMP!\\.codex-internal'; & 'C:\\Tools\\%PATH%\\!TEMP!\\codex & helper.exe' resume 'id-%PATH%-!TEMP!-&|<>^\"'",
-    );
-  });
-
   it("builds Codex resume as binary args with cwd instead of shell text", () => {
     const session = {
       source: "codex-cli",
@@ -1105,34 +1017,17 @@ describe("migration cli process specs", () => {
       codeBuddyBinary: "/cli/codebuddy safe",
       tclaudeBinary: "/cli/tclaude safe",
       tcodexBinary: "/cli/tcodex safe",
-      claudeInternalBinary: "/cli/claude-internal safe",
     };
 
-    for (const target of ["claude", "codex", "codebuddy", "tclaude", "tcodex", "claude-internal", "codex-internal"] as const) {
+    for (const target of ["claude", "codex", "codebuddy", "tclaude", "tcodex"] as const) {
       const command = getSafeMigrationResumeCommand(target, "id with space", "/repo with space", settings, {
         platform: "linux",
         homeDir: "/home/me",
       });
       expect(command).toContain("cd '/repo with space' &&");
       expect(command).toContain("'id with space'");
-      expect(command).toContain(["codex", "tcodex", "codex-internal"].includes(target) ? " resume " : " --resume ");
+      expect(command).toContain(["codex", "tcodex"].includes(target) ? " resume " : " --resume ");
     }
-  });
-
-  it("keeps Codex Internal CODEX_HOME scoped in safe POSIX, PowerShell, and Cmd commands", () => {
-    const posix = getSafeMigrationResumeCommand("codex-internal", "id", "/repo", defaultSettings, {
-      platform: "linux", homeDir: "/home/me",
-    });
-    const powershell = getSafeMigrationResumeCommand("codex-internal", "id", "C:\\repo", {
-      ...defaultSettings, defaultTerminal: "PowerShell",
-    }, { platform: "win32", homeDir: "C:\\Users\\me" });
-    const cmd = getSafeMigrationResumeCommand("codex-internal", "id", "C:\\repo", {
-      ...defaultSettings, defaultTerminal: "Cmd",
-    }, { platform: "win32", homeDir: "C:\\Users\\me" });
-
-    expect(posix).toContain("CODEX_HOME=/home/me/.codex-internal");
-    expect(powershell).toContain("try { $env:CODEX_HOME = 'C:\\Users\\me\\.codex-internal'");
-    expect(cmd).toContain('setlocal & set "CODEX_HOME=C:\\Users\\me\\.codex-internal"');
   });
 
   it("encodes dangerous safe-fallback Cmd command, argv, and cwd values as literal PowerShell payload", () => {
@@ -1153,23 +1048,6 @@ describe("migration cli process specs", () => {
     );
   });
 
-  it("encodes dangerous Codex Internal CODEX_HOME only inside the PowerShell child payload", () => {
-    const settings = {
-      ...defaultSettings,
-      defaultTerminal: "Cmd" as const,
-      codexBinary: "C:\\Tools\\codex.exe",
-    };
-    const command = getSafeMigrationResumeCommand("codex-internal", "id", "C:\\repo", settings, {
-      platform: "win32",
-      homeDir: "C:\\Users\\%PATH%\\!TEMP!\\\"quoted\" &|<>^\r\nme",
-    });
-
-    expect(command).toMatch(/^setlocal DisableDelayedExpansion & powershell\.exe -NoLogo -NoProfile -EncodedCommand [A-Za-z0-9+/=]+ & endlocal$/);
-    expect(command).not.toContain("CODEX_HOME=");
-    expect(decodeEncodedCmdPowerShell(command)).toBe(
-      "$ErrorActionPreference = 'Stop'; $env:CODEX_HOME = 'C:\\Users\\%PATH%\\!TEMP!\\\"quoted\" &|<>^\r\nme\\.codex-internal'; Set-Location -LiteralPath 'C:\\repo'; & 'C:\\Tools\\codex.exe' 'resume' 'id'",
-    );
-  });
   it("maps each migration target to its configured binary", () => {
     const settings = {
       ...defaultSettings,
@@ -1179,7 +1057,6 @@ describe("migration cli process specs", () => {
       cursorBinary: "/opt/Cursor CLI/cursor-agent",
       tclaudeBinary: "/opt/Tencent CLI/tclaude",
       tcodexBinary: "/opt/Tencent CLI/tcodex",
-      claudeInternalBinary: "/opt/Internal CLI/claude-internal",
     };
 
     expect(migrationBinary("claude", settings)).toBe("/opt/Claude CLI/claude");
@@ -1188,8 +1065,6 @@ describe("migration cli process specs", () => {
     expect(migrationBinary("cursor", settings)).toBe("/opt/Cursor CLI/cursor-agent");
     expect(migrationBinary("tclaude", settings)).toBe("/opt/Tencent CLI/tclaude");
     expect(migrationBinary("tcodex", settings)).toBe("/opt/Tencent CLI/tcodex");
-    expect(migrationBinary("claude-internal", settings)).toBe("/opt/Internal CLI/claude-internal");
-    expect(migrationBinary("codex-internal", settings)).toBe("/opt/Codex CLI/codex");
   });
 
   it("uses Codex resume args for the Codex family and Claude resume args for the other targets", () => {
@@ -1201,16 +1076,15 @@ describe("migration cli process specs", () => {
       cursorBinary: "/cli/cursor-agent",
       tclaudeBinary: "/cli/tclaude",
       tcodexBinary: "/cli/tcodex",
-      claudeInternalBinary: "/cli/claude-internal",
     };
 
-    for (const target of ["codex", "tcodex", "codex-internal"] as const) {
+    for (const target of ["codex", "tcodex"] as const) {
       expect(getMigrationResumeProcessSpec(target, "id", "/repo", settings, { homeDir: "/home/me" }).args).toEqual([
         "resume",
         "id",
       ]);
     }
-    for (const target of ["claude", "tclaude", "claude-internal", "codebuddy", "cursor"] as const) {
+    for (const target of ["claude", "tclaude", "codebuddy", "cursor"] as const) {
       expect(getMigrationResumeProcessSpec(target, "id", "/repo", settings).args).toEqual(["--resume", "id"]);
     }
   });
@@ -1277,62 +1151,6 @@ describe("migration cli process specs", () => {
     });
   });
 
-  it.each(["darwin", "linux"] as const)("scopes Codex Internal CODEX_HOME in its %s process spec and POSIX display command", (platform) => {
-    const settings = { ...defaultSettings, codexBinary: "/opt/Codex CLI/codex" };
-
-    expect(
-      getMigrationResumeProcessSpec(
-        "codex-internal",
-        "session 'one'; echo nope",
-        "/repo it's safe",
-        settings,
-        { homeDir: "/Users/a user", platform },
-      ),
-    ).toEqual({
-      command: "/opt/Codex CLI/codex",
-      args: ["resume", "session 'one'; echo nope"],
-      cwd: "/repo it's safe",
-      env: { CODEX_HOME: "/Users/a user/.codex-internal" },
-      displayCommand:
-        "cd '/repo it'\\''s safe' && CODEX_HOME='/Users/a user/.codex-internal' '/opt/Codex CLI/codex' resume 'session '\\''one'\\''; echo nope'",
-    });
-    expect(getMigrationResumeProcessSpec("codex", "id", "/repo", settings, { homeDir: "/Users/a user" }).env).toBeUndefined();
-  });
-
-  it("restores or removes CODEX_HOME after the Codex Internal PowerShell command", () => {
-    const settings = {
-      ...defaultSettings,
-      defaultTerminal: "PowerShell" as const,
-      codexBinary: "C:\\Program Files\\Codex CLI\\codex.exe",
-    };
-
-    expect(
-      getMigrationResumeProcessSpec("codex-internal", "id 'quoted'", "C:\\repo & tools", settings, {
-        homeDir: "C:\\Users\\A User",
-        platform: "win32",
-      }).displayCommand,
-    ).toBe(
-      "$__assHadCodexHome = Test-Path Env:CODEX_HOME; $__assCodexHome = $env:CODEX_HOME; try { $env:CODEX_HOME = 'C:\\Users\\A User\\.codex-internal'; cd 'C:\\repo & tools'; & 'C:\\Program Files\\Codex CLI\\codex.exe' resume 'id ''quoted''' } finally { if ($__assHadCodexHome) { $env:CODEX_HOME = $__assCodexHome } else { Remove-Item Env:CODEX_HOME -ErrorAction SilentlyContinue } }",
-    );
-  });
-
-  it("uses cmd setlocal/endlocal for Codex Internal without leaking CODEX_HOME", () => {
-    const settings = {
-      ...defaultSettings,
-      defaultTerminal: "Cmd" as const,
-      codexBinary: "C:\\Program Files\\Codex CLI\\codex.exe",
-    };
-
-    expect(
-      getMigrationResumeProcessSpec("codex-internal", "id & next", "C:\\repo with spaces", settings, {
-        homeDir: "C:\\Users\\A User",
-        platform: "win32",
-      }).displayCommand,
-    ).toBe(
-      'setlocal & set "CODEX_HOME=C:\\Users\\A User\\.codex-internal" & cd /d "C:\\repo with spaces" && "C:\\Program Files\\Codex CLI\\codex.exe" resume "id & next" & endlocal',
-    );
-  });
-
   it("encodes ordinary Cmd migration values so percent and delayed expansion cannot rewrite them", () => {
     const settings = {
       ...defaultSettings,
@@ -1346,26 +1164,6 @@ describe("migration cli process specs", () => {
 
     expect(
       getMigrationResumeProcessSpec("codex", sessionId, projectPath, settings, { platform: "win32" }).displayCommand,
-    ).toBe(encodedCmdPowerShell(expectedScript));
-  });
-
-  it("encodes Codex Internal Cmd values while keeping CODEX_HOME child-scoped", () => {
-    const settings = {
-      ...defaultSettings,
-      defaultTerminal: "Cmd" as const,
-      codexBinary: "C:\\Tools\\%PATH%\\!TEMP!\\codex ^ internal.exe",
-    };
-    const expectedScript =
-      "$ErrorActionPreference = 'Stop'; $env:CODEX_HOME = 'C:\\Users\\%PATH%\\!TEMP!\\.codex-internal'; Set-Location -LiteralPath 'C:\\repo\\%PATH%\\!TEMP! | source'; & 'C:\\Tools\\%PATH%\\!TEMP!\\codex ^ internal.exe' resume 'id-%PATH%-!TEMP!-<next>'";
-
-    expect(
-      getMigrationResumeProcessSpec(
-        "codex-internal",
-        "id-%PATH%-!TEMP!-<next>",
-        "C:\\repo\\%PATH%\\!TEMP! | source",
-        settings,
-        { homeDir: "C:\\Users\\%PATH%\\!TEMP!", platform: "win32" },
-      ).displayCommand,
     ).toBe(encodedCmdPowerShell(expectedScript));
   });
 
@@ -1488,13 +1286,6 @@ describe("migration cli process specs", () => {
         "@tencent/tcodex 0.0.13",
       ].join("\n")),
     ).resolves.toBeUndefined();
-    await expect(
-      inspectMigrationCli("claude-internal", defaultSettings, async () => [
-        "claude: 2.1.154",
-        "claude-internal: 1.1.9",
-      ].join("\n")),
-    ).resolves.toBeUndefined();
-    await expect(inspectMigrationCli("codex-internal", defaultSettings, async () => "codex-cli 0.141.0")).resolves.toBeUndefined();
   });
 
   it.each([
@@ -1503,8 +1294,6 @@ describe("migration cli process specs", () => {
     ["codex", "codex 0.141"],
     ["tclaude", "@tencent/tclaude 0.0.9garbage\n@anthropic-ai/claude-code 2.1.154"],
     ["tclaude", "@tencent/tclaude 0.0.9\n@anthropic-ai/claude-code 2.1.154-preview"],
-    ["claude-internal", "claude-internal: 1.1.9junk\nclaude: 2.1.154"],
-    ["claude-internal", "claude-internal: 1.1.9\nclaude: 2.1.154-preview"],
   ] as const)("rejects non-release version text for %s", async (target, output) => {
     await expect(inspectMigrationCli(target, defaultSettings, async () => output)).rejects.toThrow(/version/i);
   });
@@ -1519,39 +1308,6 @@ describe("migration cli process specs", () => {
     await expect(
       inspectMigrationCli("tcodex", defaultSettings, async () => "@tencent/tcodex 0.0.13"),
     ).rejects.toThrow("@openai/codex version");
-    await expect(
-      inspectMigrationCli("claude-internal", defaultSettings, async () => "claude: 2.1.154"),
-    ).rejects.toThrow("claude-internal version");
-  });
-
-  it("passes a scoped CODEX_HOME only to Codex Internal version inspection", async () => {
-    const calls: Array<{ command: string; args: string[]; env?: Record<string, string> }> = [];
-    const runner = async (command: string, args: string[], env?: Record<string, string>) => {
-      calls.push({ command, args, env });
-      return "Codex CLI 0.141.0";
-    };
-
-    await inspectMigrationCli("codex-internal", defaultSettings, runner, { homeDir: "/Users/a user" });
-    await inspectMigrationCli("codex", defaultSettings, runner, { homeDir: "/Users/a user" });
-
-    expect(calls).toEqual([
-      { command: "codex", args: ["--version"], env: { CODEX_HOME: "/Users/a user/.codex-internal" } },
-      { command: "codex", args: ["--version"], env: undefined },
-    ]);
-  });
-
-  it("uses Windows path semantics for the Codex Internal version environment", async () => {
-    const calls: Array<{ env?: Record<string, string> }> = [];
-    await inspectMigrationCli(
-      "codex-internal",
-      defaultSettings,
-      async (_command, _args, env) => {
-        calls.push({ env });
-        return "codex-cli 0.141.0";
-      },
-      { homeDir: "C:\\Users\\A User", platform: "win32" },
-    );
-    expect(calls).toEqual([{ env: { CODEX_HOME: "C:\\Users\\A User\\.codex-internal" } }]);
   });
 
   it("merges child process env overrides without dropping the parent environment", () => {

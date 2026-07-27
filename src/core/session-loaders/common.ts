@@ -17,8 +17,6 @@ export type TraceEventDraft = Omit<SessionTraceEvent, "index">;
 
 export interface SessionLoadOptions {
   homeDir?: string;
-  includeClaudeInternal?: boolean;
-  includeCodexInternal?: boolean;
   includeTclaude?: boolean;
   includeTcodex?: boolean;
   includeCodeBuddyCli?: boolean;
@@ -262,8 +260,6 @@ export function createIndexedSession(input: {
   keyPrefix:
     | "claude"
     | "codex"
-    | "claude-internal"
-    | "codex-internal"
     | "tclaude"
     | "tcodex"
     | "codebuddy"

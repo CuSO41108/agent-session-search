@@ -351,13 +351,10 @@ select:focus-visible {
 }
 
 .brand-mark {
-  display: grid;
-  place-items: center;
+  display: block;
   width: 26px;
   height: 26px;
   flex: 0 0 auto;
-  border-radius: 7px;
-  color: var(--accent);
 }
 
 .brand h1 {

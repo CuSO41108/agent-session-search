@@ -49,6 +49,7 @@ export interface BatchIndexOptions {
   batchSize?: number;
   timeBudgetMs?: number;
   loadOptions?: SessionLoadOptions;
+  forceReindex?: (item: LoadedSession) => boolean;
   onProgress?: (status: IndexStatus) => void;
   onEnvironmentsChanged?: () => void;
   yieldToEventLoop?: () => Promise<void>;
@@ -90,7 +91,7 @@ export async function syncLoadedSessionsInBatches(
       options.onEnvironmentsChanged,
     );
     try {
-      if (await store.isIndexedSessionFresh(item.session)) {
+      if (!options.forceReindex?.(item) && await store.isIndexedSessionFresh(item.session)) {
         await store.touchIndexedAtIfMissing(item.session.sessionKey);
         skipped++;
       } else {
@@ -179,6 +180,7 @@ export async function syncDefaultSessionsInBatches(
   options: BatchIndexOptions = {},
 ): Promise<IndexStatus> {
   const indexedFiles = sessionFileSnapshots(await store.listIndexedSessionFiles());
+  const dependencyChangedFiles = new Set<string>();
   let fileSkipped = 0;
   const loadOptions = options.loadOptions ?? {};
   const shouldSkipFile = loadOptions.shouldSkipFile;
@@ -191,6 +193,9 @@ export async function syncDefaultSessionsInBatches(
       const customDecision = shouldSkipFile?.(filePath, stat, dependencyMtimeMs);
       if (customDecision !== undefined) return customDecision;
       const snapshot = findSessionFileSnapshot(indexedFiles, filePath, stat);
+      if (snapshot !== undefined && dependencyMtimeMs > snapshot.indexedAt) {
+        dependencyChangedFiles.add(filePath);
+      }
       return snapshot !== undefined && snapshot.indexedAt > 0 && dependencyMtimeMs <= snapshot.indexedAt;
     },
     onSkippedFile: (filePath, stat) => {
@@ -206,6 +211,8 @@ export async function syncDefaultSessionsInBatches(
   })();
   const status = await syncLoadedSessionsInBatches(store, loaded, {
     ...options,
+    forceReindex: (item) =>
+      dependencyChangedFiles.has(item.session.filePath) || options.forceReindex?.(item) === true,
     onProgress: (status) => options.onProgress?.({ ...status, skipped: status.skipped + fileSkipped, total: status.total + fileSkipped }),
   });
   // Prune sessions whose source files no longer exist on disk. Only applies to

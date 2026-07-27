@@ -26,6 +26,7 @@ import {
   Wrench,
   X,
 } from "lucide-react";
+import appIconUrl from "../../../../../assets/app-icon.png";
 import type { AppUpdateProgress, AppUpdateStatus } from "../../../../core/app-update-types";
 import { formatRelativeTime } from "../../../../core/format-session";
 import type { AppSettings, AppSettingsUpdate } from "../../../../core/platform";
@@ -58,29 +59,6 @@ export type SettingsSection =
   | "skills"
   | "appearance"
   | "about";
-
-function UpdateBrandMark(): ReactElement {
-  return (
-    <svg className="update-brand-mark" viewBox="0 0 96 96" aria-hidden="true">
-      <defs>
-        <linearGradient id="update-brand-gradient" x1="14" y1="8" x2="82" y2="88" gradientUnits="userSpaceOnUse">
-          <stop stopColor="#1687ff" />
-          <stop offset="0.55" stopColor="#3d63ed" />
-          <stop offset="1" stopColor="#7047d7" />
-        </linearGradient>
-        <radialGradient id="update-brand-glow" cx="0" cy="0" r="1" gradientTransform="translate(25 20) rotate(46) scale(69)">
-          <stop stopColor="#ffffff" stopOpacity="0.32" />
-          <stop offset="0.62" stopColor="#ffffff" stopOpacity="0" />
-        </radialGradient>
-      </defs>
-      <rect x="3" y="3" width="90" height="90" rx="27" fill="url(#update-brand-gradient)" />
-      <rect x="3" y="3" width="90" height="90" rx="27" fill="url(#update-brand-glow)" />
-      <circle cx="43" cy="41" r="21" fill="none" stroke="#ffffff" strokeWidth="6" />
-      <path d="M58.5 56.5 73 71" fill="none" stroke="#ffffff" strokeWidth="7" strokeLinecap="round" />
-      <path d="m35.5 33.5 7.5 7.5-7.5 7.5M47.5 49h8.5" fill="none" stroke="#ffffff" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
-  );
-}
 
 function UpdateReleaseSection({
   kind,
@@ -538,32 +516,6 @@ export function SettingsDialog({
                     checked={Boolean(settings?.includeCodeWizCli)}
                     disabled={!settings || saving}
                     onChange={(event) => onSettingsChange({ includeCodeWizCli: event.currentTarget.checked })}
-                  />
-                </label>
-                <label className="settings-field settings-toggle">
-                  <div className="settings-field-text">
-                    <span className="settings-field-title">Include ~/.claude-internal</span>
-                    <span className="settings-field-sub">{l("Indexes Claude Code Internal sessions and allows migration to that CLI.", "索引 Claude Code Internal 会话，并允许迁移到该 CLI。")}</span>
-                  </div>
-                  <input
-                    type="checkbox"
-                    className="switch"
-                    checked={Boolean(settings?.includeClaudeInternal)}
-                    disabled={!settings || saving}
-                    onChange={(event) => onSettingsChange({ includeClaudeInternal: event.currentTarget.checked })}
-                  />
-                </label>
-                <label className="settings-field settings-toggle">
-                  <div className="settings-field-text">
-                    <span className="settings-field-title">Include ~/.codex-internal</span>
-                    <span className="settings-field-sub">{l("Indexes Codex Internal sessions and allows migration to that CLI.", "索引 Codex Internal 会话，并允许迁移到该 CLI。")}</span>
-                  </div>
-                  <input
-                    type="checkbox"
-                    className="switch"
-                    checked={Boolean(settings?.includeCodexInternal)}
-                    disabled={!settings || saving}
-                    onChange={(event) => onSettingsChange({ includeCodexInternal: event.currentTarget.checked })}
                   />
                 </label>
                 <label className="settings-field settings-toggle">
@@ -1179,7 +1131,7 @@ export function SettingsDialog({
             {activeSection === "about" ? (
               <section className="settings-pane update-about-pane">
                 <div className="update-app-identity">
-                  <UpdateBrandMark />
+                  <img className="update-brand-mark" src={appIconUrl} alt="" />
                   <h3>AgentRecall</h3>
                   <p>
                     {appUpdateStatus?.developmentBuild

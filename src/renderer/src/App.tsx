@@ -119,8 +119,6 @@ const ProviderPage = lazy(() =>
 const DEFAULT_MIGRATION_TARGET_SETTINGS = {
   includeTclaude: false,
   includeTcodex: false,
-  includeClaudeInternal: false,
-  includeCodexInternal: false,
 } satisfies MigrationTargetSettings;
 
 type PendingSourceKey = (typeof OPTIONAL_SESSION_SOURCE_DESCRIPTORS)[number]["pendingKey"];

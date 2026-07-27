@@ -156,6 +156,15 @@ describe("PostgreSQL MCP data facade", () => {
       const schema = await mcp.migrationTargetSchema(z);
       expect(schema.parse("codex")).toBe("codex");
       expect(() => schema.parse("gemini")).toThrow();
+      expect(schema.options).toEqual([
+        "claude",
+        "codex",
+        "codebuddy",
+        "codewiz",
+        "cursor",
+        "tclaude",
+        "tcodex",
+      ]);
     } finally {
       fs.rmSync(home, { recursive: true, force: true });
     }

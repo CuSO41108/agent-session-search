@@ -121,12 +121,15 @@ export function portableSessionFrom(
 
   return {
     sourceSessionKey: session.sessionKey,
+    sourceSessionId: session.rawId,
     sourceAgent,
     title: session.displayTitle,
     projectPath: session.projectPath,
     startedAt: new Date(session.timestamp).toISOString(),
     messages: portableMessages,
     ...(turnBoundaries && turnBoundaries.length > 0 ? { turnBoundaries } : {}),
+    isSubagent: session.isSubagent === true,
+    parentSessionId: session.parentSessionId ?? null,
   };
 }
 
