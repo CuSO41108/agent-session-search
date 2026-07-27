@@ -104,9 +104,19 @@ export function updateWorkflowRunState(input: {
     ...((input.update.finalReport ?? input.run.finalReport) !== undefined
       ? { finalReport: input.update.finalReport ?? input.run.finalReport }
       : {}),
+    ...((input.update.transaction ?? input.run.transaction) !== undefined
+      ? { transaction: structuredClone(input.update.transaction ?? input.run.transaction!) }
+      : {}),
+    ...((input.update.operations ?? input.run.operations) !== undefined
+      ? { operations: structuredClone(input.update.operations ?? input.run.operations!) }
+      : {}),
+    ...((input.update.recovery ?? input.run.recovery) !== undefined
+      ? { recovery: structuredClone(input.update.recovery ?? input.run.recovery!) }
+      : {}),
     lastError: input.update.lastError ?? input.run.lastError,
     finishedAt: input.run.finishedAt,
   };
+  if (input.update.recovery === null) delete nextRun.recovery;
 
   const nextWorkflow = input.cloneDraft({
     ...input.workflow,

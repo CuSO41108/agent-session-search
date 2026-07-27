@@ -11,6 +11,7 @@ import { buildWorkflowV2Plan } from "./workflow-v2-planner";
 import { transitionWorkflowV2NodeState } from "./workflow-v2-scheduler";
 import {
   buildWorkflowV2FinalReport,
+  buildWorkflowV2RecoveryPreview,
   buildWorkflowV2RecoveryPlan,
   createWorkflowV2NodeCacheFingerprint,
   materializeWorkflowV2Recovery,
@@ -71,6 +72,55 @@ function fingerprint(graphVersion = 1): WorkflowV2NodeCacheFingerprint {
 }
 
 describe("workflow-v2 recovery", () => {
+  test("builds a recovery preview from uncertain operations and workspace facts", async () => {
+    const state = await persisted();
+    const preview = buildWorkflowV2RecoveryPreview({
+      transaction: {
+        transactionId: "transaction-1",
+        mode: "strict_atomic",
+        status: "recovery_required",
+        baselineId: "baseline-1",
+        currentSavepointId: "savepoint-1",
+        operationCount: 2,
+        unknownOperationCount: 1,
+        irreversibleOperationCount: 0,
+        startedAt: 1_000,
+        updatedAt: 1_500,
+        retentionUntil: 2_000,
+      },
+      operations: [{
+        operationId: "operation-1",
+        transactionId: "transaction-1",
+        runId: "run-1",
+        nodeId: "second",
+        attempt: 1,
+        kind: "http",
+        target: "https://example.test/resource",
+        idempotencyKey: "key-1",
+        state: "unknown",
+        reversible: true,
+        createdAt: 1_200,
+        updatedAt: 1_400,
+        error: "request timed out",
+      }],
+      runState: state.runState,
+      workspaceDiff: { created: ["new.txt"], modified: ["changed.txt"], deleted: [], conflicts: ["changed.txt"] },
+      now: 1_600,
+    });
+
+    expect(preview).toMatchObject({
+      status: "recovery_required",
+      changedPaths: ["changed.txt", "new.txt"],
+      conflicts: ["changed.txt"],
+      uncertainNodeIds: ["second"],
+      availableActions: ["rollback_savepoint", "keep_state", "abandon"],
+    });
+    expect(preview.blockers).toEqual(expect.arrayContaining([
+      expect.stringContaining("operation-1: unknown"),
+      expect.stringContaining("Workspace conflicts"),
+    ]));
+  });
+
   test("uses the terminal node Markdown output as the completed user report", async () => {
     const workflow = definition();
     const plan = await buildWorkflowV2Plan({ definition: workflow, approvedBy: "tester", now: 1_000 });

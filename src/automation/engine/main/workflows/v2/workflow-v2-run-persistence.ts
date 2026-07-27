@@ -44,6 +44,7 @@ export class WorkflowV2RunPersistence {
     recoveryOverrides?: ReadonlyMap<string, WorkflowV2RecoveryOverride>;
     initialTransaction?: WorkflowTransactionState;
     baselineId?: string;
+    onTransactionChanged?: (state: WorkflowTransactionState) => Promise<void> | void;
   }) {
     this.eventCount = input.initialEventCount;
     this.previousRunState = input.initialCheckpoint ? structuredClone(input.initialCheckpoint.runState) : undefined;
@@ -87,6 +88,7 @@ export class WorkflowV2RunPersistence {
         { type: "baseline_frozen", transactionId: this.transaction.transactionId, at: now, detail: `baselineId=${baselineId}` },
         { type: "preflight_passed", transactionId: this.transaction.transactionId, at: now, detail: "Isolated workspace is ready." },
       ]);
+      await this.notifyTransactionChanged();
     });
   }
 
@@ -102,6 +104,7 @@ export class WorkflowV2RunPersistence {
         detail: `savepointId=${savepointId}; attempt=${attempt}`,
       }]);
       if (this.latest) await this.persistCheckpointUnlocked(this.latest, false);
+      await this.notifyTransactionChanged();
     });
   }
 
@@ -144,6 +147,7 @@ export class WorkflowV2RunPersistence {
         }]);
       }
       if (this.latest) await this.persistCheckpointUnlocked(this.latest, false);
+      await this.notifyTransactionChanged();
     });
   }
 
@@ -205,6 +209,7 @@ export class WorkflowV2RunPersistence {
     await this.input.store.persistRunState(persisted);
     await this.persistCacheEntries(checkpoint);
     this.previousRunState = structuredClone(checkpoint.runState);
+    await this.notifyTransactionChanged();
   }
 
   persistControlState(nodeId: string, type: string, detail?: string): Promise<void> {
@@ -232,6 +237,7 @@ export class WorkflowV2RunPersistence {
           detail: `${planned.kind}:${planned.target}`,
         }]);
       }
+      await this.notifyTransactionChanged();
       return planned;
     });
   }
@@ -266,6 +272,7 @@ export class WorkflowV2RunPersistence {
           }]);
         }
       }
+      await this.notifyTransactionChanged();
       return transitioned;
     });
   }
@@ -332,6 +339,10 @@ export class WorkflowV2RunPersistence {
       detail: [`mode=${this.transaction.mode}`, this.compatibilityWarning].filter(Boolean).join("; "),
     }]);
     this.transactionStartRecorded = true;
+  }
+
+  private async notifyTransactionChanged(): Promise<void> {
+    await this.input.onTransactionChanged?.(structuredClone(this.transaction));
   }
 
   private enqueueWrite<T>(operation: () => Promise<T>): Promise<T> {

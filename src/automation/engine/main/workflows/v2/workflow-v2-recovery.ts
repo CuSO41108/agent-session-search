@@ -12,6 +12,7 @@ import {
 } from "../../../shared/workflow-v2/storage";
 import { createWorkflowV2RunState } from "../../../shared/workflow-v2/state";
 import type { RuntimeConversation } from "../../../shared/types";
+import type { WorkflowOperationRecord, WorkflowRecoveryPreview, WorkflowTransactionState } from "../../../shared/workflow-v2/transaction";
 import type { ExecuteWorkflowV2Checkpoint } from "./workflow-v2-executor";
 import { transitionWorkflowV2NodeState } from "./workflow-v2-scheduler";
 
@@ -167,6 +168,52 @@ export function buildWorkflowV2FinalReport(
     }),
     ...(transactionReport ? ["", transactionReport] : []),
   ].join("\n");
+}
+
+export function buildWorkflowV2RecoveryPreview(input: {
+  transaction: WorkflowTransactionState;
+  operations: readonly WorkflowOperationRecord[];
+  runState: WorkflowV2PersistedRunState["runState"];
+  workspaceDiff?: { created: readonly string[]; modified: readonly string[]; deleted: readonly string[]; conflicts?: readonly string[] };
+  now?: number;
+}): WorkflowRecoveryPreview {
+  const uncertainOperations = input.operations.filter((operation) =>
+    operation.state === "applying" || operation.state === "unknown" || operation.state === "compensating");
+  const blockers = uncertainOperations.map((operation) =>
+    `${operation.operationId}: ${operation.state}${operation.error ? ` (${operation.error})` : ""}`);
+  const uncertainNodeIds = [...new Set(uncertainOperations.map((operation) => operation.nodeId))].sort();
+  const pendingNodeIds = input.runState.nodeOrder.filter((nodeId) => {
+    const status = input.runState.nodes[nodeId]?.status;
+    return status === "blocked" || status === "ready" || status === "running" || status === "validating" || status === "awaiting_review";
+  });
+  const conflicts = [...new Set(input.workspaceDiff?.conflicts ?? [])].sort();
+  const changedPaths = [...new Set([
+    ...(input.workspaceDiff?.created ?? []),
+    ...(input.workspaceDiff?.modified ?? []),
+    ...(input.workspaceDiff?.deleted ?? []),
+  ])].sort();
+  if (conflicts.length > 0) blockers.push(`Workspace conflicts: ${conflicts.join(", ")}`);
+  if (input.transaction.status === "recovery_required" && blockers.length === 0) {
+    blockers.push("The transaction requires recovery review before execution can continue.");
+  }
+  const hasReversibleAppliedOperation = input.operations.some((operation) => operation.state === "applied" && operation.reversible);
+  return {
+    generatedAt: input.now ?? Date.now(),
+    transactionId: input.transaction.transactionId,
+    status: input.transaction.status,
+    blockers,
+    conflicts,
+    changedPaths,
+    pendingNodeIds,
+    uncertainNodeIds,
+    availableActions: [
+      ...(uncertainOperations.length === 0 && conflicts.length === 0 ? ["continue" as const] : []),
+      ...(input.transaction.currentSavepointId ? ["rollback_savepoint" as const] : []),
+      ...(hasReversibleAppliedOperation ? ["compensate_all" as const] : []),
+      "keep_state",
+      "abandon",
+    ],
+  };
 }
 
 function workflowV2NodeTransactionReport(

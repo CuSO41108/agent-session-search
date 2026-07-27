@@ -163,6 +163,20 @@ export interface WorkflowOperationRecord {
   updatedAt: number;
 }
 
+export type WorkflowRecoveryAction = "continue" | "rollback_savepoint" | "compensate_all" | "keep_state" | "abandon";
+
+export interface WorkflowRecoveryPreview {
+  generatedAt: number;
+  transactionId: string;
+  status: WorkflowTransactionStatus;
+  blockers: string[];
+  conflicts: string[];
+  changedPaths: string[];
+  pendingNodeIds: string[];
+  uncertainNodeIds: string[];
+  availableActions: WorkflowRecoveryAction[];
+}
+
 export type WorkflowCommitPlanStepKind = "reversible_external" | "workspace" | "irreversible_external";
 
 export interface WorkflowCommitPlanStep {

@@ -124,6 +124,65 @@ describe("WorkflowRunCenter", () => {
     expect(html).toContain("Finished");
   });
 
+  test("shows transaction recovery facts, receipts, and node acceptance", () => {
+    const recoveryRun = run({ runId: "recovery-run", status: "failed", startedAt: 2_000, finishedAt: 4_000 });
+    recoveryRun.transaction = {
+      transactionId: "transaction-1",
+      mode: "strict_atomic",
+      status: "recovery_required",
+      baselineId: "baseline-1",
+      currentSavepointId: "savepoint-1",
+      operationCount: 1,
+      unknownOperationCount: 1,
+      irreversibleOperationCount: 0,
+      startedAt: 2_000,
+      updatedAt: 4_000,
+      retentionUntil: 604_804_000,
+    };
+    recoveryRun.operations = [{
+      operationId: "operation-1",
+      transactionId: "transaction-1",
+      runId: recoveryRun.runId,
+      nodeId: "research",
+      attempt: 1,
+      kind: "http",
+      target: "https://example.test/resource",
+      idempotencyKey: "key-1",
+      state: "unknown",
+      reversible: true,
+      receipt: { requestId: "safe-preview" },
+      createdAt: 2_500,
+      updatedAt: 3_500,
+    }];
+    recoveryRun.recovery = {
+      generatedAt: 4_000,
+      transactionId: "transaction-1",
+      status: "recovery_required",
+      blockers: ["operation-1: unknown"],
+      conflicts: ["result.txt"],
+      changedPaths: ["result.txt"],
+      pendingNodeIds: [],
+      uncertainNodeIds: ["research"],
+      availableActions: ["rollback_savepoint", "keep_state", "abandon"],
+    };
+    recoveryRun.progress[0]!.acceptance = {
+      outcome: "degraded",
+      issues: [{ code: "tool_retry_recovered", severity: "warning", detail: "A required tool succeeded after retry." }],
+      changedPaths: ["result.txt"],
+      operationIds: ["operation-1"],
+    };
+
+    const html = renderToStaticMarkup(<WorkflowRunCenter runs={[recoveryRun]} open selectedRunId={recoveryRun.runId} language="zh" onSelectRun={() => undefined} onClose={() => undefined} />);
+
+    expect(html).toContain("事务与恢复");
+    expect(html).toContain("recovery_required");
+    expect(html).toContain("operation-1: unknown");
+    expect(html).toContain("回滚到保存点");
+    expect(html).toContain("safe-preview");
+    expect(html).toContain("节点验收 · degraded");
+    expect(html).toContain("tool_retry_recovered");
+  });
+
   test("renders node execution telemetry for runtime, channel, model, attempts, tokens, cost, and duration", () => {
     const observedRun = run({ runId: "observed-run", status: "completed", startedAt: 2_000, finishedAt: 62_000 });
     (observedRun.progress[0] as WorkflowRunState["progress"][number] & { telemetry: unknown }).telemetry = {

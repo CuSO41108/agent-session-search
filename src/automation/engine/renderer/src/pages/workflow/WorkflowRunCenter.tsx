@@ -93,6 +93,17 @@ function eventLabel(type: string, language: "en" | "zh"): string {
   return type.replaceAll("_", " ");
 }
 
+function recoveryActionLabel(action: string, language: "en" | "zh"): string {
+  const labels: Record<string, { en: string; zh: string }> = {
+    continue: { en: "Continue", zh: "继续" },
+    rollback_savepoint: { en: "Roll back to savepoint", zh: "回滚到保存点" },
+    compensate_all: { en: "Best-effort compensation", zh: "尽力全量补偿" },
+    keep_state: { en: "Keep current state", zh: "保留现场" },
+    abandon: { en: "Abandon recovery", zh: "放弃处理" },
+  };
+  return labels[action]?.[language] ?? action;
+}
+
 function runIcon(status: WorkflowStatus) {
   if (status === "completed") return CheckCircle2;
   if (status === "failed" || status === "waiting_for_user") return CircleAlert;
@@ -251,6 +262,33 @@ function WorkflowRunCenterOpen({ runs, conversations = [], artifacts = [], loadi
                   <div className="workflow-run-center-metrics"><span><b>{labels.started}</b>{formatDate(selectedRun.startedAt, language)}</span><span><b>{labels.finished}</b>{selectedRun.finishedAt ? formatDate(selectedRun.finishedAt, language) : "—"}</span><span><b>{labels.duration}</b>{formatDuration(selectedRun)}</span><span><b>{labels.trigger}</b>{triggerSourceLabel(selectedRun.triggerSource, language)}</span><span><b>{labels.graph}</b>v{selectedRun.workflowV2Plan.graphVersion}</span></div>
                 </header>
                 {selectedRun.lastError ? <div className="workflow-run-center-error"><CircleAlert size={15} /><span>{selectedRun.lastError}</span></div> : null}
+                {selectedRun.transaction ? <section className="workflow-run-center-section workflow-run-center-transaction">
+                  <header><CircleAlert size={14} /><strong>{language === "zh" ? "事务与恢复" : "Transaction and recovery"}</strong></header>
+                  <div className="workflow-run-center-config-grid">
+                    <span><b>{language === "zh" ? "事务模式" : "Mode"}</b>{selectedRun.transaction.mode}</span>
+                    <span><b>{language === "zh" ? "事务状态" : "Status"}</b>{selectedRun.transaction.status}</span>
+                    <span><b>{language === "zh" ? "保存点" : "Savepoint"}</b>{selectedRun.transaction.currentSavepointId ?? "—"}</span>
+                    <span><b>{language === "zh" ? "操作总数" : "Operations"}</b>{selectedRun.transaction.operationCount}</span>
+                    <span><b>{language === "zh" ? "状态未知" : "Unknown"}</b>{selectedRun.transaction.unknownOperationCount}</span>
+                    <span><b>{language === "zh" ? "不可撤销" : "Irreversible"}</b>{selectedRun.transaction.irreversibleOperationCount}</span>
+                    <span><b>{language === "zh" ? "材料保留至" : "Retained until"}</b>{formatDate(selectedRun.transaction.retentionUntil, language)}</span>
+                  </div>
+                  {selectedRun.recovery ? <div className="workflow-run-center-events">
+                    {selectedRun.recovery.blockers.map((blocker) => <span key={blocker}>{language === "zh" ? "阻塞" : "Blocker"} · {blocker}</span>)}
+                    {selectedRun.recovery.conflicts.map((conflict) => <span key={`conflict:${conflict}`}>{language === "zh" ? "冲突" : "Conflict"} · {conflict}</span>)}
+                    <span>{language === "zh" ? "可用处理动作" : "Available actions"} · {selectedRun.recovery.availableActions.map((action) => recoveryActionLabel(action, language)).join(" / ")}</span>
+                  </div> : null}
+                  {(selectedRun.operations?.length ?? 0) > 0 ? <div className="workflow-run-center-artifact-list">
+                    {selectedRun.operations!.map((operation) => <article key={operation.operationId}>
+                      <strong>{operation.kind} · {operation.state}</strong>
+                      <small>{operation.operationId}</small>
+                      <p>{operation.target}</p>
+                      <small>{operation.reversible ? (language === "zh" ? "可补偿" : "Reversible") : (language === "zh" ? "不可撤销" : "Irreversible")}</small>
+                      {operation.error ? <p className="is-error">{operation.error}</p> : null}
+                      {operation.receipt !== undefined ? <details><summary>{language === "zh" ? "查看 receipt" : "View receipt"}</summary><pre>{JSON.stringify(operation.receipt, null, 2)}</pre></details> : null}
+                    </article>)}
+                  </div> : null}
+                </section> : null}
                 {selectedArtifacts.length > 0 ? <section className="workflow-run-center-section workflow-run-center-artifacts"><header><GitBranch size={14} /><strong>{labels.artifacts}</strong></header><div className="workflow-run-center-artifact-list">{selectedArtifacts.map((artifact) => <article key={artifact.id}><strong>{artifact.title}</strong><small>{artifact.kind === "file" ? artifactFileName(artifact.path) : artifact.kind === "url" ? artifactUrlPreview(artifact.url) : "text"}</small>{artifact.description ? <p>{artifact.description}</p> : null}{artifact.kind === "text" && artifact.content ? <pre>{artifact.content.slice(0, 4000)}</pre> : null}</article>)}</div></section> : null}
                 <section className="workflow-run-center-section">
                   <header><GitBranch size={14} /><strong>{labels.config}</strong></header>
@@ -305,6 +343,14 @@ function WorkflowRunCenterOpen({ runs, conversations = [], artifacts = [], loadi
                           {eventError ? <p className="is-error">{getWorkflowErrorCode(eventError)} · {eventError}</p> : null}
                           {progress?.inputSummary ? <details className="workflow-run-center-node-outputs"><summary>{labels.inputSummary}</summary><pre>{JSON.stringify(progress.inputSummary, null, 2)}</pre></details> : null}
                           {progress?.outputs ? <details className="workflow-run-center-node-outputs"><summary>{labels.outputs}</summary><pre>{JSON.stringify(progress.outputs, null, 2)}</pre></details> : null}
+                          {progress?.acceptance ? <details className="workflow-run-center-node-outputs" open={progress.acceptance.outcome !== "clean"}>
+                            <summary>{language === "zh" ? "节点验收" : "Node acceptance"} · {progress.acceptance.outcome}</summary>
+                            <div className="workflow-run-center-events">
+                              <span>{language === "zh" ? "变更路径" : "Changed paths"} · {progress.acceptance.changedPaths.join(", ") || "—"}</span>
+                              <span>operationId · {progress.acceptance.operationIds.join(", ") || "—"}</span>
+                              {progress.acceptance.issues.map((issue) => <span key={`${issue.code}:${issue.detail}`}>{issue.severity} · {issue.code} · {issue.detail}</span>)}
+                            </div>
+                          </details> : null}
                           {timelineSegments.length > 0 ? <div className="workflow-run-center-node-timeline-visual" aria-label={labels.timeline}><div className="workflow-run-center-node-track">{timelineSegments.map((segment, index) => <span key={`${segment.kind}-${segment.startedAt}-${index}`} className={`workflow-run-center-node-track-segment is-${segment.kind}`} style={selectedTimelineBounds ? getWorkflowRunTimelineSegmentStyle(segment, selectedTimelineBounds) : undefined} title={`${segment.kind.replaceAll("_", " ")} · ${formatNodeDuration({ attempt: segment.attempt ?? 1, startedAt: segment.startedAt, finishedAt: segment.finishedAt })}`} />)}</div><div className="workflow-run-center-node-segments">{timelineSegments.map((segment, index) => <span key={`${segment.kind}-${segment.startedAt}-${index}`}><b>{segment.kind.replaceAll("_", " ")}</b> {formatNodeDuration({ attempt: segment.attempt ?? 1, startedAt: segment.startedAt, finishedAt: segment.finishedAt })}</span>)}</div></div> : null}
                           {events.length > 0 ? (
                             <div className="workflow-run-center-events">

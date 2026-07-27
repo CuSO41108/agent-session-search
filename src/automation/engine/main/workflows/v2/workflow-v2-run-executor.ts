@@ -11,7 +11,7 @@ import type {
   WorkflowV2ResultPacket,
   WorkflowV2TaskPacket,
 } from "../../../shared/workflow-v2/planning";
-import { resolveWorkflowTransactionPolicy, type WorkflowOperationRecord } from "../../../shared/workflow-v2/transaction";
+import { resolveWorkflowTransactionPolicy, sanitizeWorkflowOperationRecord, type WorkflowOperationRecord, type WorkflowTransactionState } from "../../../shared/workflow-v2/transaction";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import {
@@ -88,7 +88,7 @@ import { recordWorkflowV2ScriptInputRequest, resolveWorkflowV2ScriptInput, workf
 import { projectWorkflowV2PausedNodeInteraction } from "./workflow-v2-node-interaction";
 import { executeAuthorizedWorkflowV2Script } from "./workflow-v2-script-execution";
 import { authorizeWorkflowV2ScriptOperation } from "./workflow-v2-script-approval";
-import { buildWorkflowV2FinalReport } from "./workflow-v2-recovery";
+import { buildWorkflowV2FinalReport, buildWorkflowV2RecoveryPreview } from "./workflow-v2-recovery";
 import {
   createWorkflowV2HookRegistry,
   runWorkflowV2HookChain,
@@ -239,6 +239,26 @@ export class WorkflowV2RunExecutor {
     }
     const configuredAgentId = workflow.configuredAgentId || latestSnapshot.configuredAgents[0]?.id || "default-agent";
     const modelId = configuredAgentModelId(workflow, latestSnapshot);
+    const publishTransactionProjection = async (transaction: WorkflowTransactionState): Promise<void> => {
+      const operations = (await durableStore?.readOperations?.(workflow.workflowId, runId) ?? [])
+        .map(sanitizeWorkflowOperationRecord);
+      const persisted = await durableStore?.readRunState?.(workflow.workflowId, runId);
+      const workspaceDiff = workspaceIsolated
+        ? await durableStore?.inspectWorkspaceTransaction?.({ workflowId: workflow.workflowId, runId })
+        : undefined;
+      const recoveryVisible = transaction.status === "waiting_for_user"
+        || transaction.status === "recovery_required"
+        || transaction.status === "partially_rolled_back";
+      this.deps.updateWorkflowRunState({
+        workflowId: workflow.workflowId,
+        runId,
+        transaction: structuredClone(transaction),
+        operations,
+        recovery: recoveryVisible && persisted
+          ? buildWorkflowV2RecoveryPreview({ transaction, operations, runState: persisted.runState, ...(workspaceDiff ? { workspaceDiff } : {}) })
+          : null,
+      });
+    };
     const persistence = new WorkflowV2RunPersistence({
       store: durableStore,
       workflow,
@@ -253,6 +273,7 @@ export class WorkflowV2RunExecutor {
       configuredAgentId,
       modelId, configuredAgents: latestSnapshot.configuredAgents,
       ...(input.recoveryOverrides ? { recoveryOverrides: input.recoveryOverrides } : {}),
+      onTransactionChanged: publishTransactionProjection,
     });
     if (workspaceIsolated && baselineId && !input.initialTransaction) {
       await persistence.initializeWorkspaceTransaction(baselineId);

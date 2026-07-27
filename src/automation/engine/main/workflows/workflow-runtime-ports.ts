@@ -19,6 +19,7 @@ import type {
   WorkflowV2PersistedRunState,
 } from "../../shared/workflow-v2/storage";
 import type { WorkflowCommitPlan, WorkflowOperationRecord, WorkflowOperationState } from "../../shared/workflow-v2/transaction";
+import type { WorkflowRecoveryPreview, WorkflowTransactionState } from "../../shared/workflow-v2/transaction";
 import type { WorkflowWorkspaceCommitResult, WorkflowWorkspaceDiffResult, WorkflowWorkspacePreparation, WorkflowWorkspaceRollbackResult } from "./v2/workflow-v2-workspace-transaction";
 
 export interface WorkflowRunStateUpdate {
@@ -30,6 +31,9 @@ export interface WorkflowRunStateUpdate {
   contextDocument?: string;
   finalReport?: string;
   lastError?: string;
+  transaction?: WorkflowTransactionState;
+  operations?: WorkflowOperationRecord[];
+  recovery?: WorkflowRecoveryPreview | null;
 }
 
 export interface ExecuteWorkflowV2ScriptRequest {
