@@ -1185,12 +1185,8 @@
 
 .workbench-session-list {
   min-height: 0;
-  flex: 1;
+  flex: 0 0 auto;
   margin-top: 7px;
-  padding-right: 3px;
-  overflow-y: auto;
-  overscroll-behavior: contain;
-  scrollbar-gutter: stable;
 }
 
 .workbench-session-row {

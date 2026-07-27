@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ReactElement } from "react";
-import { ArrowRightLeft, ChevronDown, ChevronUp, CloudUpload, Container, Copy, Download, Edit3, FolderOpen, Laptop, Paperclip, Play, Search, Server, Sparkles, Star, Tag, Terminal as TerminalIcon, Trash2, X } from "lucide-react";
+import { ArrowRightLeft, ChevronDown, ChevronUp, CloudUpload, Container, Copy, Download, Edit3, Eye, EyeOff, FolderOpen, Laptop, Paperclip, Play, Search, Server, Sparkles, Star, Tag, Terminal as TerminalIcon, Trash2, X } from "lucide-react";
 import { formatMessageTime } from "../../../../core/format-session";
 import type {
   SessionMessage,
@@ -540,25 +540,44 @@ export function DetailPanel({
             </button>
           ))}
         </div>
+        <div className="detail-timeline-toolbar">
+          <div className="detail-timeline-heading">
+            <h3>{turns !== null ? l("Turns", "对话轮次") : l("Full Conversation", "完整会话")}</h3>
+            {turns !== null && !turnsLoading ? (
+              <span className="turn-count">{l(`${turns.length} Turns`, `${turns.length} 轮`)}</span>
+            ) : null}
+          </div>
+          <div className="conversation-filters">
+            {turns === null ? (
+              <div className="conversation-role-filter" role="group" aria-label={l("Conversation role filter", "会话角色过滤")}>
+                {CONVERSATION_ROLE_FILTERS.map((filter) => (
+                  <button
+                    key={filter}
+                    className={roleFilter === filter ? "active" : ""}
+                    onClick={() => setRoleFilter(filter)}
+                    aria-pressed={roleFilter === filter}
+                  >
+                    {conversationRoleFilterLabel(filter, language)}
+                  </button>
+                ))}
+              </div>
+            ) : null}
+            <button
+              type="button"
+              className={`conversation-tools-toggle ${showTools ? "active" : ""}`}
+              onClick={toggleTools}
+              aria-pressed={showTools}
+              aria-label={showTools ? l("Hide tool calls", "隐藏工具调用") : l("Show tool calls", "显示工具调用")}
+            >
+              {showTools ? <Eye size={14} /> : <EyeOff size={14} />}
+              <span>{l("Tool calls", "工具调用")}</span>
+              <strong aria-live="polite">{showTools ? l("Shown", "已显示") : l("Hidden", "已隐藏")}</strong>
+            </button>
+          </div>
+        </div>
         <div className="detail-body" ref={bodyRef}>
           {turns !== null ? (
             <section className="conversation turn-conversation">
-              <div className="conversation-header">
-                <h3>{l("Turns", "对话轮次")}</h3>
-                <div className="conversation-filters">
-                  {!turnsLoading ? (
-                    <span className="turn-count">{l(`${turns.length} Turns`, `${turns.length} 轮`)}</span>
-                  ) : null}
-                  <button
-                    type="button"
-                    className={`conversation-tools-toggle ${showTools ? "active" : ""}`}
-                    onClick={toggleTools}
-                    aria-pressed={showTools}
-                  >
-                    {l("Tools", "工具")}
-                  </button>
-                </div>
-              </div>
               <TurnAccordion
                 sessionKey={session.sessionKey}
                 turns={turns}
@@ -591,30 +610,6 @@ export function DetailPanel({
             </section>
           ) : null}
           <section className="conversation">
-            <div className="conversation-header">
-              <h3>{l("Full Conversation", "完整会话")}</h3>
-              <div className="conversation-filters">
-                <div className="conversation-role-filter" role="group" aria-label={l("Conversation role filter", "会话角色过滤")}>
-                  {CONVERSATION_ROLE_FILTERS.map((filter) => (
-                    <button
-                      key={filter}
-                      className={roleFilter === filter ? "active" : ""}
-                      onClick={() => setRoleFilter(filter)}
-                      aria-pressed={roleFilter === filter}
-                    >
-                      {conversationRoleFilterLabel(filter, language)}
-                    </button>
-                  ))}
-                </div>
-                <button
-                  className={`conversation-tools-toggle ${showTools ? "active" : ""}`}
-                  onClick={toggleTools}
-                  aria-pressed={showTools}
-                >
-                  {l("Tools", "工具")}
-                </button>
-              </div>
-            </div>
             {panelSearchOpen ? (
               <div className="panel-search-bar">
                 <Search size={14} />

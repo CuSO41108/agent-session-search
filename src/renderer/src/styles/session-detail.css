@@ -329,16 +329,31 @@
   color: var(--accent);
 }
 
-.conversation-header {
+.detail-timeline-toolbar {
   display: flex;
+  min-height: 48px;
+  flex: 0 0 auto;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  margin: 14px 0 8px;
+  padding: 8px 18px;
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--panel-subtle);
 }
 
-.conversation-header h3 {
+.detail-timeline-heading {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+}
+
+.detail-timeline-heading h3 {
   margin: 0;
+  color: var(--text-muted);
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
 }
 
 .conversation-filters {
@@ -380,24 +395,51 @@
 }
 
 .conversation-tools-toggle {
-  height: 29px;
-  padding: 0 10px;
+  display: inline-flex;
+  height: 30px;
+  align-items: center;
+  gap: 6px;
+  padding: 0 7px 0 9px;
   border: 1px solid var(--border-subtle);
   border-radius: 7px;
-  background: var(--panel-subtle);
+  background: var(--panel-bg);
   color: var(--text-muted);
   font-size: 11px;
   font-weight: 650;
+  transition:
+    background var(--duration-fast) var(--ease-out),
+    border-color var(--duration-fast) var(--ease-out),
+    color var(--duration-fast) var(--ease-out);
 }
 
 .conversation-tools-toggle:hover {
+  border-color: var(--border-strong);
   color: var(--text);
 }
 
 .conversation-tools-toggle.active {
-  background: var(--panel-bg);
-  color: var(--text);
-  box-shadow: inset 0 0 0 1px var(--border-subtle);
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.conversation-tools-toggle > svg {
+  flex: 0 0 auto;
+}
+
+.conversation-tools-toggle > strong {
+  padding: 2px 5px;
+  border-radius: 5px;
+  background: var(--panel-subtle);
+  color: var(--text-faint);
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.conversation-tools-toggle.active > strong {
+  background: var(--accent);
+  color: var(--accent-contrast);
 }
 
 .detail-body {
@@ -409,6 +451,7 @@
 }
 
 .conversation {
+  padding-top: 12px;
   padding-bottom: 22px;
 }
 

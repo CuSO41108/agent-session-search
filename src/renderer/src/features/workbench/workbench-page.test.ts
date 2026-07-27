@@ -3,7 +3,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import type { ManagedSkill } from "../../../../core/managed-skill-library";
 import type { OpenVikingMemorySnapshot } from "../../../../core/openviking-memory";
-import type { SessionStats } from "../../../../core/types";
+import type { SessionSearchResult, SessionStats } from "../../../../core/types";
 import type { TeamChatRoomSummary } from "../../../../shared/team-chat";
 import {
   DEFAULT_WORKBENCH_CARD_ORDER,
@@ -141,6 +141,50 @@ describe("WorkbenchPage cards", () => {
     const html = renderToStaticMarkup(createElement(WorkbenchPage, props()));
 
     expect(html).toContain('style="-webkit-app-region:no-drag"');
+  });
+
+  it("keeps the Session preview to three rows", () => {
+    const sessions: SessionSearchResult[] = Array.from({ length: 5 }, (_, index) => ({
+      sessionKey: `codex:session-${index}`,
+      rawId: `session-${index}`,
+      source: "codex-cli",
+      projectPath: "/work/agent-recall",
+      filePath: `/fixtures/session-${index}.jsonl`,
+      originalTitle: `Session ${index + 1}`,
+      firstQuestion: `Question ${index + 1}`,
+      timestamp: 1_000 - index,
+      fileMtimeMs: 1_000 - index,
+      fileSize: 100,
+      prUrl: null,
+      prNumber: null,
+      environmentId: "local",
+      environmentKind: "local",
+      environmentLabel: "Local",
+      tokenUsage: {
+        inputTokens: 0,
+        outputTokens: 0,
+        cachedInputTokens: 0,
+        reasoningOutputTokens: 0,
+        totalTokens: 0,
+      },
+      customTitle: null,
+      displayTitle: `Session ${index + 1}`,
+      favorited: false,
+      hidden: false,
+      tags: [],
+      matchSnippet: null,
+      lastOpenedAt: null,
+      lastResumedAt: null,
+      lastActivityAt: 1_000 - index,
+      messageCount: 1,
+      aiSummary: null,
+      aiSummaryStale: false,
+    }));
+    const html = renderToStaticMarkup(createElement(WorkbenchPage, props({ sessions })));
+
+    expect(html).toContain("3 条最近会话");
+    expect(html).toContain("Session 3");
+    expect(html).not.toContain("Session 4");
   });
 
   it("shows existing chat groups instead of configured employees", () => {
