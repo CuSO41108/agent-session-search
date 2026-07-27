@@ -5,6 +5,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const { uninstallClaudeStatuslineBridge } = require("./install-claude-statusline.cjs");
+const { uninstallMacosApp } = require("./install-macos-app.cjs");
 const { uninstallSkillUsageHook } = require("./setup-skill-usage-hook.cjs");
 const { uninstallSessionSyncHooks } = require("./setup-session-sync-hook.cjs");
 const { acquireUpdateLock, stopRunningApp, waitForUpdateCompletion } = require("./update-client.cjs");
@@ -37,6 +38,12 @@ async function uninstall(options = {}) {
       messages.push(...mcp.run(true, { homeDir }));
     } catch (error) {
       errors.push(`MCP references: ${error instanceof Error ? error.message : String(error)}`);
+    }
+
+    if (process.platform === "darwin") {
+      const macosApp = uninstallMacosApp({ homeDir });
+      if (macosApp.status === "error") errors.push(`macOS app launcher: ${macosApp.detail}`);
+      else messages.push(macosApp.status === "removed" ? "Removed the AgentRecall.app launcher." : "macOS app launcher did not need changes.");
     }
 
     const cacheFiles = [
