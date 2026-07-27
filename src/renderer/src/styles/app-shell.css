@@ -123,36 +123,8 @@
   color: var(--accent);
 }
 
-.app-navigation-refresh {
-  display: grid;
-  width: 30px;
-  height: 30px;
-  flex: 0 0 auto;
-  align-self: center;
-  margin-top: auto;
-  margin-bottom: 5px;
-  place-items: center;
-  border: 1px solid transparent;
-  border-radius: 8px;
-  color: var(--text-muted);
-}
-
-.app-navigation-refresh:hover:not(:disabled) {
-  border-color: var(--border);
-  background: var(--panel-hover);
-  color: var(--text);
-}
-
-.app-navigation-refresh.error {
-  color: var(--danger);
-}
-
-.app-navigation-refresh.is-running svg {
-  animation: spin 0.9s linear infinite;
-}
-
 .app-navigation-settings {
-  margin-top: 0;
+  margin-top: auto;
 }
 
 .app-navigation-settings > i {

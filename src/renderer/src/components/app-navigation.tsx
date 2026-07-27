@@ -9,12 +9,9 @@ import {
   MessagesSquare,
   PackageSearch,
   PlugZap,
-  RefreshCw,
   Settings,
   Workflow,
 } from "lucide-react";
-import type { IndexStatus } from "../../../core/indexer";
-import { formatRelativeTime } from "../../../core/format-session";
 import type { LanguageMode } from "../language";
 
 const BRAND_LOGO_URL = new URL("../../../../assets/logo.png", import.meta.url).href;
@@ -33,21 +30,17 @@ export type AppPage =
 
 export function AppNavigation({
   activePage,
-  indexStatus,
   settingsOpen,
   signalUpdate,
   language,
   onNavigate,
-  onRefresh,
   onOpenSettings,
 }: {
   activePage: AppPage;
-  indexStatus: IndexStatus | null;
   settingsOpen: boolean;
   signalUpdate: boolean;
   language: LanguageMode;
   onNavigate(page: AppPage): void;
-  onRefresh(): void;
   onOpenSettings(): void;
 }): ReactElement {
   const l = (en: string, zh: string): string => language === "zh" ? zh : en;
@@ -97,23 +90,6 @@ export function AppNavigation({
           <KeyRound size={18} /><span>Provider</span>
         </NavigationItem>
       </nav>
-      <button
-        className={`app-navigation-refresh ${indexStatus?.running ? "is-running" : ""} ${
-          indexStatus?.error ? "error" : ""
-        }`}
-        onClick={onRefresh}
-        disabled={indexStatus?.running}
-        title={indexStatus?.error
-          ? l("Index update failed. Click to retry.", "索引更新失败，点击重试。")
-          : indexStatus?.lastIndexedAt
-            ? `${l("Refresh index", "刷新索引")} · ${formatRelativeTime(indexStatus.lastIndexedAt)}`
-            : l("Refresh index", "刷新索引")}
-        aria-label={indexStatus?.running
-          ? l("Refreshing index", "正在刷新索引")
-          : l("Refresh index", "刷新索引")}
-      >
-        <RefreshCw size={15} />
-      </button>
       <button
         className={`app-navigation-settings ${settingsOpen ? "active" : ""}`}
         onClick={onOpenSettings}

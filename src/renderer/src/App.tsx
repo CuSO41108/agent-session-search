@@ -1185,12 +1185,10 @@ export function App(): ReactElement {
       <div className="titlebar-drag" />
       <AppNavigation
         activePage={activePage}
-        indexStatus={indexStatus}
         settingsOpen={settingsOpen}
         signalUpdate={shouldSignalAppUpdate}
         language={language}
         onNavigate={(page) => void navigateToPage(page)}
-        onRefresh={() => void refreshNow()}
         onOpenSettings={() => {
           setSettingsInitialSection(shouldSignalAppUpdate ? "about" : "terminal");
           setSettingsOpen(true);
