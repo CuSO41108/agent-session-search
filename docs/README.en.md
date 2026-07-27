@@ -222,7 +222,6 @@ npm run release-note:check
 - `README.md` is the Chinese project overview for users and developers.
 - `docs/README.en.md` is the English project overview.
 - `Install.md` covers install, update, and uninstall steps, plus a safe setup guide for Coding Agents.
-- `start.sh` is the macOS one-command launcher that checks the environment, installs missing dependencies, and starts the app.
 
 ## License
 
