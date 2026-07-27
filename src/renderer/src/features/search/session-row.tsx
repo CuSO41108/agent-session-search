@@ -76,7 +76,8 @@ export const SessionRow = memo(function SessionRow({
       className={`session-row ${selected ? "selected" : ""}`}
       onClick={() => {
         onSelect(session.sessionKey);
-        onOpen(session);
+        if (matchHits[0]) onOpenMatch(session, matchHits[0]);
+        else onOpen(session);
       }}
       onContextMenu={(event) => onContextMenu(event, session)}
     >

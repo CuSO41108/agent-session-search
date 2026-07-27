@@ -464,11 +464,26 @@ describe("SessionStore", () => {
 
     expect(conversation).toMatchObject({ messageMatchCount: 3, metadataMatch: null });
     expect(conversation?.matchHits).toEqual([
+      expect.objectContaining({ messageIndex: 2, role: "user", matchedTerms: ["login", "expired"] }),
       expect.objectContaining({ messageIndex: 0, role: "user", matchedTerms: ["login"] }),
-      expect.objectContaining({ messageIndex: 1, role: "assistant", matchedTerms: ["expired"] }),
     ]);
     expect(title).toMatchObject({ messageMatchCount: 0, matchHits: [], metadataMatch: "title" });
     expect(store.searchSessions({ query: "" })[0]).toMatchObject({ messageMatchCount: 0, matchHits: [], metadataMatch: null });
+    store.close();
+  });
+
+  it("prioritizes exact phrases over messages containing all terms", () => {
+    const store = createInMemoryStore();
+    store.upsertIndexedSession(sampleSession({ sessionKey: "codex:phrase", rawId: "phrase" }), [
+      { role: "user", content: "UPSERT is how the latest state is maintained", timestamp: "2026-06-01T10:00:00Z", index: 0 },
+      { role: "assistant", content: "The latest state uses UPSERT and a unique device id", timestamp: "2026-06-01T10:01:00Z", index: 1 },
+      { role: "user", content: "UPSERT is how the latest state is maintained", timestamp: "2026-06-01T10:02:00Z", index: 2 },
+    ]);
+
+    const result = store.searchSessions({ query: "UPSERT is how the latest state is maintained" })[0];
+    expect(result.messageMatchCount).toBe(3);
+    expect(result.matchHits?.map((hit) => hit.messageIndex)).toEqual([0, 2]);
+    expect(result.matchHits?.[0]?.matchedTerms[0]).toBe("upsert is how the latest state is maintained");
     store.close();
   });
 

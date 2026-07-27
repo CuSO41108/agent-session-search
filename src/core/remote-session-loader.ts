@@ -221,12 +221,14 @@ export function loadWslSessionDetailPayload(
   environment: SessionEnvironment,
   payload: RemoteSessionFilePayload,
   summary: SessionSearchResult,
+  options: { includeTraceEvents?: boolean } = {},
 ): LoadedSession | null {
   if (payload.kind === "codex-session" && payloadSource(payload) === "codex-cli") {
     const candidate = loadCodexSessionRows(payload.path, parseJsonlText(payload.content), {
       stat: { mtimeMs: payload.mtimeMs, size: payload.size },
       sourceOverride: "codex-cli",
       title: summary.originalTitle,
+      includeTraceEvents: options.includeTraceEvents,
     });
     return candidate ? scopeWslSession(candidate, environment, "codex-cli") : null;
   }
@@ -240,6 +242,7 @@ export function loadWslSessionDetailPayload(
       isSubagent: summary.isSubagent,
       parentSessionId: summary.parentSessionId,
       source: "claude-cli",
+      includeTraceEvents: options.includeTraceEvents,
     });
     return candidate ? scopeWslSession(candidate, environment, "claude-cli") : null;
   }

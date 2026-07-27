@@ -103,6 +103,8 @@ interface SessionRow {
   ai_summary_basis: number | null;
   is_subagent: 0 | 1;
   parent_session_id: string | null;
+  content_indexed_mtime_ms: number;
+  content_indexed_size: number;
 }
 
 type ProjectAggregateRow = {
@@ -181,9 +183,9 @@ export class SessionsStore {
             session_key, raw_id, source, environment_id, storage_environment_id, project_path, file_path, original_title, first_question,
             timestamp, file_mtime_ms, file_size, pr_url, pr_number, message_count,
             input_tokens, output_tokens, cached_input_tokens, reasoning_output_tokens, total_tokens, indexed_at,
-            is_subagent, parent_session_id
+            content_indexed_mtime_ms, content_indexed_size, is_subagent, parent_session_id
           )
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           ON CONFLICT(session_key) DO UPDATE SET
             raw_id = excluded.raw_id,
             source = excluded.source,
@@ -205,6 +207,8 @@ export class SessionsStore {
             reasoning_output_tokens = excluded.reasoning_output_tokens,
             total_tokens = excluded.total_tokens,
             indexed_at = excluded.indexed_at,
+            content_indexed_mtime_ms = excluded.content_indexed_mtime_ms,
+            content_indexed_size = excluded.content_indexed_size,
             is_subagent = excluded.is_subagent,
             parent_session_id = excluded.parent_session_id
         `,
@@ -231,6 +235,8 @@ export class SessionsStore {
           tokenUsage.reasoningOutputTokens,
           tokenUsage.totalTokens,
           indexedAt,
+          session.fileMtimeMs,
+          session.fileSize,
           session.isSubagent ? 1 : 0,
           session.parentSessionId ?? null,
         );
@@ -397,6 +403,14 @@ export class SessionsStore {
     );
   }
 
+  isSessionContentFresh(sessionKey: string, fileMtimeMs: number, fileSize: number): boolean {
+    if (fileMtimeMs <= 0 && fileSize <= 0) return false;
+    const row = this.db
+      .prepare("SELECT content_indexed_mtime_ms, content_indexed_size FROM sessions WHERE session_key = ?")
+      .get(sessionKey) as { content_indexed_mtime_ms: number; content_indexed_size: number } | undefined;
+    return row !== undefined && row.content_indexed_mtime_ms === fileMtimeMs && row.content_indexed_size === fileSize;
+  }
+
   touchIndexedAtIfMissing(sessionKey: string): void {
     this.db.prepare("UPDATE sessions SET indexed_at = ? WHERE session_key = ? AND indexed_at <= 0").run(Date.now(), sessionKey);
   }
@@ -434,9 +448,9 @@ export class SessionsStore {
             session_key, raw_id, source, environment_id, storage_environment_id, project_path, file_path, original_title, first_question,
             timestamp, file_mtime_ms, file_size, pr_url, pr_number, message_count,
             input_tokens, output_tokens, cached_input_tokens, reasoning_output_tokens, total_tokens, indexed_at,
-            is_subagent, parent_session_id
+            content_indexed_mtime_ms, content_indexed_size, is_subagent, parent_session_id
           )
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           ON CONFLICT(session_key) DO UPDATE SET
             raw_id = excluded.raw_id,
             source = excluded.source,
@@ -484,6 +498,8 @@ export class SessionsStore {
           tokenUsage.reasoningOutputTokens,
           tokenUsage.totalTokens,
           indexedAt,
+          0,
+          0,
           session.isSubagent ? 1 : 0,
           session.parentSessionId ?? null,
         );
@@ -1779,27 +1795,48 @@ export class SessionsStore {
       const sessionKeys = sessions.map((session) => session.sessionKey);
       const keyPlaceholders = sessionKeys.map(() => "?").join(", ");
       const termPredicates = terms.map(() => "lower(messages.content) LIKE ? ESCAPE '\\'").join(" OR ");
+      const phrase = normalizedSearchPhrase(query);
+      const termPatterns = terms.map((term) => `%${escapeLike(term)}%`);
+      const phrasePattern = `%${escapeLike(phrase)}%`;
+      const normalizedSqlContent = "lower(replace(replace(replace(messages.content, char(13), ' '), char(10), ' '), char(9), ' '))";
+      const phrasePredicate = `${normalizedSqlContent} LIKE ? ESCAPE '\\'`;
+      const allTermsPredicate = terms.map(() => "lower(messages.content) LIKE ? ESCAPE '\\'").join(" AND ");
+      const matchedTermCount = terms
+        .map(() => "CASE WHEN lower(messages.content) LIKE ? ESCAPE '\\' THEN 1 ELSE 0 END")
+        .join(" + ");
+      const matchRank = `CASE WHEN ${phrasePredicate} THEN 3 WHEN ${allTermsPredicate} THEN 2 ELSE 1 END`;
       const rows = this.db
         .prepare(
           `
           WITH matching AS (
-            SELECT session_key, message_index, role, content, timestamp
+            SELECT session_key, message_index, role, content, timestamp,
+              ${matchRank} AS match_rank,
+              ${matchedTermCount} AS matched_term_count
             FROM messages
             WHERE session_key IN (${keyPlaceholders})
               AND (${termPredicates})
           ), ranked AS (
             SELECT *,
               COUNT(*) OVER (PARTITION BY session_key) AS match_count,
-              ROW_NUMBER() OVER (PARTITION BY session_key ORDER BY message_index) AS match_rank
+              ROW_NUMBER() OVER (
+                PARTITION BY session_key
+                ORDER BY match_rank DESC, matched_term_count DESC, message_index ASC
+              ) AS match_order
             FROM matching
           )
           SELECT session_key, message_index, role, content, timestamp, match_count
           FROM ranked
-          WHERE match_rank <= 2
-          ORDER BY session_key, message_index
+          WHERE match_order <= 2
+          ORDER BY session_key, match_order
         `,
         )
-        .all(...sessionKeys, ...terms.map((term) => `%${escapeLike(term)}%`)) as Array<{
+        .all(
+          phrasePattern,
+          ...termPatterns,
+          ...termPatterns,
+          ...sessionKeys,
+          ...termPatterns,
+        ) as Array<{
         session_key: string;
         message_index: number;
         role: SessionMessage["role"];
@@ -1812,12 +1849,14 @@ export class SessionsStore {
         const session = sessionsByKey.get(row.session_key);
         if (!session) continue;
         const matchedTerms = terms.filter((term) => row.content.toLocaleLowerCase().includes(term));
+        if (matchedTerms.length === 0) continue;
+        const hasPhraseMatch = phraseMatched(row.content, phrase);
         const hit: SessionMatchHit = {
           messageIndex: row.message_index,
           role: row.role,
           timestamp: row.timestamp,
-          snippet: messageMatchSnippet(row.content, matchedTerms),
-          matchedTerms,
+          snippet: messageMatchSnippet(row.content, terms, phrase),
+          matchedTerms: hasPhraseMatch ? [phrase, ...matchedTerms.filter((term) => term !== phrase)] : matchedTerms,
         };
         session.matchHits?.push(hit);
         session.messageMatchCount = row.match_count;
@@ -2159,10 +2198,22 @@ function allTermsIn(value: string, terms: string[]): boolean {
   return terms.every((term) => normalized.includes(term));
 }
 
-function messageMatchSnippet(content: string, terms: string[]): string {
+function normalizedSearchPhrase(query: string): string {
+  return query.replace(/\s+/gu, " ").trim().toLocaleLowerCase();
+}
+
+function normalizedSearchContent(content: string): string {
+  return content.replace(/\s+/gu, " ").trim().toLocaleLowerCase();
+}
+
+function phraseMatched(content: string, phrase: string): boolean {
+  return phrase.length > 0 && normalizedSearchContent(content).includes(phrase);
+}
+
+function messageMatchSnippet(content: string, terms: string[], phrase = ""): string {
   const normalized = content.replace(/\s+/g, " ").trim();
   const lower = normalized.toLocaleLowerCase();
-  const positions = terms.map((term) => lower.indexOf(term)).filter((index) => index >= 0);
+  const positions = [phrase, ...terms].map((term) => term ? lower.indexOf(term) : -1).filter((index) => index >= 0);
   const firstMatch = positions.length > 0 ? Math.min(...positions) : 0;
   const start = Math.max(0, firstMatch - 70);
   const end = Math.min(normalized.length, firstMatch + 170);
