@@ -42,21 +42,24 @@ Room Runtime 对应当前 `TeamChatRoomAgent` 和 `chat_room_agents` 中的一�
 
 不会增加“同一个 Configured Agent 只能加入一个房间”的全局约束，因为 Configured Agent 是模板。隔离边界是 Room Runtime 实例。
 
-### Runtime Session 与 Runtime Turn
+### Task、Turn、Attempt 与 Runtime Session
 
 每个 Room Runtime 在自己的房间内最多拥有一个当前可续接的 Runtime Session。现有 `(room_id, agent_id)` 主键继续作为 Session 隔离边界。
 
-一次唤醒对应一个 dispatch。一次 dispatch 可以包含一次或多次 execution attempt：
+模型停止输出只代表一次调用结束，不能等同于用户任务已经完成。因此执行层级定义为：
 
 ```text
-Room Message
-  └─ Inbox Mention
-      └─ Dispatch
-          ├─ Execution Attempt 1 ── Native Session / Native Turn
-          └─ Execution Attempt 2 ── Fresh retry / Native Turn
+Task：一个可持续多轮的目标
+  └─ Turn / Dispatch：一次用户 @ 触发的持久逻辑执行
+      ├─ Attempt 1 ── Native Session / Native Turn
+      └─ Attempt 2 ── Fresh retry / Native Turn
 ```
 
-原生 Session 不存在时，当前代码会在尚未产生文本增量的前提下 fresh 重试一次。两次 Runtime 调用属于同一个 dispatch，但必须分别记录。
+现有 `chat_dispatches` 直接作为 Studio Turn 的持久记录；MCP 对外使用 `turnId` 命名，但值就是稳定的 dispatch ID，不再增加一张内容重复的 Turn 表。
+
+首版中，每条新的用户 @ 默认创建一个 Task 和一个 Turn；数据模型保留一对多关系，后续可以增加“继续已有 Task”的显式入口。Task 只有在 Runtime 调用受限的 `studio_task_finish` 并提交状态与证据后才能成为 `completed`、`blocked` 或 `waiting_input`。原生 Turn 正常结束但没有完成声明时，Turn 可以结束，Task 仍保持 `in_progress`。
+
+原生 Session 不存在时，当前代码会在尚未产生文本增量的前提下 fresh 重试一次。两次 Runtime 调用属于同一个 Turn/dispatch，但必须分别记录。一个 Attempt 至多对应一个原生 Turn；原生 Turn 内部可以包含多次工具调用。
 
 ## 方案选择
 
@@ -66,15 +69,15 @@ Room Message
 
 优点是改动小。缺点是 `@`、无目标消息、未读位置、重试和 Runtime Turn 仍混在 dispatch 中，后续无法准确解释“为什么唤醒、看到了什么、实际执行了几次”。
 
-### 方案 B：共享房间上下文、Inbox 与执行 Attempt
+### 方案 B：共享房间上下文、Mention 索引与执行 Attempt
 
 保留现有房间和 dispatch 主干，补充：
 
 - 房间公开消息与唤醒目标分离。
 - 每个 Room Runtime 的房间阅读游标。
-- 持久 Inbox mention。
+- 持久 Mention 注意索引和可恢复的 dispatch 队列。
 - dispatch 下的 execution attempt。
-- 房间上下文和 Inbox MCP。
+- Task、Turn、执行事件与房间上下文 MCP。
 
 这是本次采用的方案。它修正核心语义，又能复用当前 TeamChatService、RuntimeConversation 和 Studio MCP。
 
@@ -141,17 +144,23 @@ Room Runtime 需要其他成员配合时，只能在最终回复或 `studio_post
 
 ### 快照边界
 
-每次 dispatch 开始执行前读取房间当前最大 `sequence`，记为 `room_sequence_at_start`。本次显式上下文只允许包含不超过该序号的消息。
+创建用户 @ 消息时，把该消息自己的 `sequence` 固定为 dispatch 的 `room_snapshot_sequence`。本次显式上下文只允许包含不超过该序号的消息。
 
-这相当于本轮 Runtime 实际看到的房间快照。执行过程中产生的新消息不能被声称为“已看到”。
+快照不能等到 Runtime 真正开始执行时再读取。若同一员工的第二次 @ 已经排队，而第一次执行很慢，使用“开始时最新序号”会让第一次执行提前看到第二个任务并造成重复处理。
+
+例如 `#13 @小王任务A`、`#14 普通背景`、`#15 @小王任务B`：
+
+- Turn A 的快照固定为 13。
+- Turn B 的快照固定为 15。
+- Turn A 成功后，Turn B 才能开始，并只补充游标之后到 15 为止的增量。
 
 ### 续接 Session
 
 `chat_agent_sessions` 增加 `room_context_sequence`：
 
 - 首次执行：从最近一段完整房间公开历史构造上下文，受消息数和字符预算限制。
-- 后续执行：读取 `(room_context_sequence, room_sequence_at_start]` 内的全部公开房间消息。
-- 成功后：把 `room_context_sequence` 更新为本次 `room_sequence_at_start`。
+- 后续执行：读取 `(room_context_sequence, room_snapshot_sequence]` 内的全部公开房间消息。
+- 成功后：把 `room_context_sequence` 更新为本次 `room_snapshot_sequence`。
 - 失败或中止：不推进阅读游标。
 
 不能在回复写入后把游标直接推进到回复序号。执行期间可能插入其他消息；推进到回复序号会错误跳过 Runtime 从未看到的并发消息。
@@ -172,29 +181,28 @@ Room Runtime 需要其他成员配合时，只能在最终回复或 `studio_post
 
 Session 被重置或原生 Session 失效 fresh 重试时，重新提供最近的完整房间公开历史，不再使用定向消息筛选。
 
-## Inbox 与调度
+## Mention、Inbox 视图与持久调度
 
-新增 `chat_member_inbox`，记录某条公开消息为什么需要某个 Room Runtime 注意：
+新增 `chat_message_mentions`，只记录某条公开消息明确 @ 了哪个 Room Runtime：
 
 - `id`
 - `room_id`
 - `message_id`
 - `member_id`
-- `status`：`pending`、`processing`、`handled`、`failed`
-- `created_at`、`updated_at`、`handled_at`
+- `created_at`
 
-同一消息和成员只能创建一条 Inbox item。
+同一消息和成员只能创建一条 Mention。
 
-状态流转：
+不再建立第二套 Inbox 状态机。处理状态来自该 Mention 关联的 dispatch：
 
 ```text
-pending -> processing -> handled
-                      -> failed
+Mention + Dispatch(queued/running/completed/failed/interrupted/skipped)
+  └─ studio_inbox_list 派生出“待处理 @”视图
 ```
 
-创建带结构化 `@` 的用户消息时，消息、Inbox item 和初始 dispatch 应保持一致。dispatch 成功后 Inbox 自动标记 handled；失败或中止时记录失败状态和对应 dispatch 结果。
+创建带结构化 `@` 的用户消息时，消息、Mention、Task、Turn 和初始 dispatch 必须在同一数据库事务中持久化。Inbox 只是查询接口，不复制消息正文，也不提供 `studio_inbox_update`。
 
-同一 Room Runtime 的 dispatch 继续串行，不同 Room Runtime 可以并行。Inbox 不替代队列，它负责持久记录注意事项和处理结果。
+同一 Room Runtime 的 dispatch 按触发消息序号 FIFO 串行，不同 Room Runtime 可以并行。dispatch 在发送消息时就以 `queued` 状态存在；应用启动后会重新领取遗留的 `queued` 项。崩溃留下的 `running` 项会标记为 `interrupted`，避免在无法确认外部副作用时自动重复执行。安全重试属于当前 dispatch，在达到次数或超时上限前阻塞后续 Turn；终态后继续下一项。
 
 ## Execution Attempt 与原生 Turn
 
@@ -206,7 +214,7 @@ pending -> processing -> handled
 - `runtime_id`
 - `runtime_session_ref`：可选的原生 Session 引用
 - `native_turn_id`：Runtime 能提供时保存
-- `room_sequence_at_start`
+- `room_snapshot_sequence`
 - `room_sequence_at_finish`
 - `status`：`running`、`completed`、`failed`、`interrupted`
 - `error`
@@ -221,6 +229,8 @@ Runtime 执行合同增加可选 execution reference：
 - 其他 Runtime没有原生标识时，Attempt ID仍是稳定追踪 ID。
 
 Room Message 和 Runtime Turn 不是一对一。一条消息可以 `@` 多个 Runtime，从而产生多个 dispatch 和多个原生 Turn；一次 dispatch 也可能因 fresh retry 产生两个原生 Turn。
+
+每个 Attempt 还保存有界执行事件。事件包括模型文本增量、工具调用、工具结果摘要和终态；敏感字段、原生 Session 凭据和超大输出在写入前脱敏或截断。其他同房间 Runtime 只能通过 MCP 按需读取这些事件，不会把别人的执行轨迹自动注入默认上下文。
 
 ## Studio MCP
 
@@ -249,15 +259,19 @@ Room Message 和 Runtime Turn 不是一对一。一条消息可以 `@` 多个 Ru
 
 ### `studio_inbox_list`
 
-按状态列出当前 Room Runtime 的 Inbox item。身份从 Studio token 获取，参数不能冒充其他成员。
-
-### `studio_inbox_update`
-
-首版只允许当前 Room Runtime 把自己的 Inbox item 标记为 handled。正常 dispatch 成功仍会自动处理；该工具用于 Runtime 查询旧 item 后显式确认。
+从 Mention 和 dispatch 派生当前 Room Runtime 的待处理/历史 @。身份从 Studio token 获取，参数不能冒充其他成员。
 
 ### `studio_read_thread`
 
 根据 `rootMessageId` 返回当前房间内同一回复链的有界消息，方便理解用户与多个 Runtime 围绕同一问题的讨论。
+
+### `studio_task_finish`
+
+只允许当前 dispatch 更新自己的 Task，提交 `completed`、`blocked` 或 `waiting_input`、结果摘要和可选证据引用。重复调用必须幂等。
+
+### `studio_turn_list`、`studio_turn_get` 与 `studio_turn_events`
+
+允许同一房间 Runtime 按需查询房间中的逻辑 Turn、Attempt、公开回复以及脱敏后的工具/轨迹事件。返回 Studio 自己的稳定 ID；原生 Session ID 不向其他 Runtime 公开。跨房间查询始终拒绝。
 
 所有工具继续使用短期 Studio scope token，并固定到 `{roomId, memberId, dispatchId}`。即使调用者猜到其他房间的消息 ID，也不能跨房间读取。
 
@@ -265,7 +279,7 @@ Room Message 和 Runtime Turn 不是一对一。一条消息可以 `@` 多个 Ru
 
 ## 回复与房间新鲜度
 
-每条 Runtime 回复记录它基于哪个 `room_sequence_at_start` 生成。Runtime 返回结果后、发布该 Runtime 自己的回复之前，读取当前房间最大序号作为 `room_sequence_at_finish`：
+每条 Runtime 回复记录它基于哪个 `room_snapshot_sequence` 生成。Runtime 返回结果后、发布该 Runtime 自己的回复之前，读取当前房间最大序号作为 `room_sequence_at_finish`：
 
 - 两者相同：回复基于最新房间快照。
 - finish 更大：执行期间房间有新消息，回复仍正常发布，但追踪记录可以明确显示它没有看到后续消息。
@@ -277,17 +291,17 @@ Room Message 和 Runtime Turn 不是一对一。一条消息可以 `@` 多个 Ru
 追加迁移，不重建或删除历史表：
 
 1. `chat_agent_sessions` 增加 `room_context_sequence`，按 `last_context_message_id` 对应消息回填。
-2. 新增 `chat_member_inbox`。
-3. 新增 `chat_dispatch_attempts`。
-4. `chat_dispatches` 增加可选 `inbox_item_id`，建立唤醒来源关系。
+2. 新增 `chat_message_mentions`、`chat_tasks`；现有 `chat_dispatches` 作为 Studio Turn。
+3. 新增 `chat_dispatch_attempts` 与 `chat_attempt_events`。
+4. `chat_dispatches` 增加 Mention、Turn 和固定 `room_snapshot_sequence` 关联。
 5. Agent 回复增加可选 `based_on_sequence`，保存生成回复时的房间快照边界。
 
-旧消息没有 Inbox item，不进行猜测性回填。旧 Session 没有有效 `last_context_message_id` 时游标从 0 开始，下一次 fresh/续接按有界完整房间历史处理。
+旧消息没有 Mention，不进行猜测性回填。旧 Session 没有有效 `last_context_message_id` 时游标从 0 开始，下一次 fresh/续接按有界完整房间历史处理。
 
 ## 错误处理
 
-- 目标 ID 不存在或已禁用：公开消息仍保存；无效目标不创建 Inbox 或 dispatch，发送结果向 UI 返回被拒绝的目标 ID。
-- Runtime执行失败：Attempt 和 dispatch 标记 failed，Inbox 标记 failed；房间阅读游标不推进。
+- 目标 ID 不存在或已禁用：公开消息仍保存；无效目标不创建 Mention、Task 或 dispatch，发送结果向 UI 返回被拒绝的目标 ID。
+- Runtime执行失败：Attempt 和 dispatch 标记 failed；Inbox 视图从 dispatch 得到失败状态，房间阅读游标不推进。
 - 用户中止：Attempt 和 dispatch 标记 interrupted；游标不推进。
 - 原生 Session 失效：Attempt 1 失败；仅在没有输出增量、没有中止且错误明确表示会话不可用时，清除旧 Session并创建 Attempt 2 fresh 重试。
 - MCP token 过期或跨房间：拒绝请求，不产生消息或 Inbox 写入。
@@ -333,7 +347,9 @@ Room Message 和 Runtime Turn 不是一对一。一条消息可以 `@` 多个 Ru
 
 - `studio_get_context` 只返回当前房间消息和正确的序号边界。
 - `studio_get_room_state` 不泄露原生 Session 凭据。
-- `studio_inbox_list/update` 不能读取或修改其他成员 Inbox。
+- `studio_inbox_list` 不能读取其他成员 Inbox。
+- `studio_turn_list/get/events` 只能读取当前房间，并隐藏原生 Session 凭据和敏感事件字段。
+- 原生 Turn 正常结束但没有 `studio_task_finish` 时，Task 不得被误标记为 completed。
 - `studio_read_thread` 不能跨房间读取相同或猜测的消息 ID。
 - dispatch结束或 token过期后所有 Studio MCP写入均被拒绝。
 
@@ -341,7 +357,8 @@ Room Message 和 Runtime Turn 不是一对一。一条消息可以 `@` 多个 Ru
 
 - 输入区初始无默认目标，普通发送可用。
 - 选择一个或多个 `@` 目标时提交正确的成员 ID。
-- 同一 Room Runtime仍串行执行，不同 Room Runtime保持并行。
+- 同一 Room Runtime 的持久队列保持 FIFO 串行，不同 Room Runtime 保持并行。
+- 两次连续 @ 的快照分别固定在各自触发消息，重启后 queued 项仍能继续执行。
 - 现有 Session重置、停止执行、workspace reservation 和消息分页行为保持可用。
 
 ## 发布范围
