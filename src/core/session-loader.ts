@@ -764,6 +764,48 @@ function firstClaudeGitBranch(rows: unknown[]): string | null {
   return null;
 }
 
+// CodeBuddy session rows do not currently embed gitBranch. Resolve the active
+// branch from the session cwd's .git metadata so branch tags still appear.
+function readGitBranchFromCwd(cwd: string): string | null {
+  if (!cwd.trim()) return null;
+
+  let current = path.resolve(cwd);
+  for (let depth = 0; depth < 64; depth += 1) {
+    const branch = readGitBranchAt(path.join(current, ".git"));
+    if (branch) return branch;
+    const parent = path.dirname(current);
+    if (parent === current) break;
+    current = parent;
+  }
+  return null;
+}
+
+function readGitBranchAt(gitPath: string): string | null {
+  try {
+    if (!fs.existsSync(gitPath)) return null;
+
+    let gitDir = gitPath;
+    const gitStat = fs.statSync(gitPath);
+    if (gitStat.isFile()) {
+      const content = fs.readFileSync(gitPath, "utf8").trim();
+      const match = /^gitdir:\s*(.+)$/iu.exec(content);
+      if (!match?.[1]) return null;
+      const gitDirRef = match[1].trim();
+      gitDir = path.isAbsolute(gitDirRef) ? gitDirRef : path.resolve(path.dirname(gitPath), gitDirRef);
+    } else if (!gitStat.isDirectory()) {
+      return null;
+    }
+
+    const head = fs.readFileSync(path.join(gitDir, "HEAD"), "utf8").trim();
+    const refMatch = /^ref:\s*refs\/heads\/(.+)$/u.exec(head);
+    if (refMatch?.[1]) return refMatch[1].trim() || null;
+    if (/^[0-9a-f]{40,64}$/iu.test(head)) return "HEAD";
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 function createIndexedSession(input: {
   keyPrefix: "claude" | "codex" | "claude-internal" | "codex-internal" | "tclaude" | "tcodex" | "codebuddy" | "codewiz" | "openclaw" | "hermes" | "opencode" | "zcode" | "cursor" | "trae" | "qoder";
   rawId: string;
@@ -1156,6 +1198,7 @@ export function loadCodeBuddyCliSessionRows(
   const tokenEvents = extractCodeBuddyTokenEvents(rows);
   const traceEvents = extractTraceEvents(rows, "codebuddy");
   const question = firstQuestion(messages);
+  const gitBranch = firstClaudeGitBranch(rows) ?? readGitBranchFromCwd(meta.projectPath);
 
   return {
     session: createIndexedSession({
@@ -1167,6 +1210,7 @@ export function loadCodeBuddyCliSessionRows(
       originalTitle: firstAiTitle(rows) || cleanTitle(question) || "Untitled Session",
       firstQuestion: cleanTitle(question),
       timestamp: meta.timestamp,
+      gitBranch,
       tokenUsage: tokenUsageFromEvents(tokenEvents),
       stat,
     }),

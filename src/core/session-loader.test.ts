@@ -992,7 +992,88 @@ describe("CodeBuddy session loading", () => {
       source: "codebuddy-cli",
       originalTitle: "远程 CodeBuddy",
       projectPath: "/repo",
+      gitBranch: null,
     });
+  });
+
+  it("prefers an embedded gitBranch on CodeBuddy rows when present", () => {
+    const loaded = loadCodeBuddyCliSessionRows(
+      "/home/me/.codebuddy/projects/repo/cb-embedded.jsonl",
+      [
+        {
+          id: "user-1",
+          type: "message",
+          role: "user",
+          content: [{ type: "input_text", text: "带分支元数据" }],
+          sessionId: "cb-embedded",
+          cwd: "/repo",
+          gitBranch: "feat/codebuddy-tags",
+          timestamp: 1_780_000_000_000,
+        },
+      ],
+      { mtimeMs: 1_780_000_000_000, size: 100 },
+    );
+
+    expect(loaded?.session.gitBranch).toBe("feat/codebuddy-tags");
+  });
+
+  it("resolves CodeBuddy gitBranch from the session cwd .git/HEAD when rows omit it", () => {
+    const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), "session-search-codebuddy-git-"));
+    fs.mkdirSync(path.join(repoDir, ".git"), { recursive: true });
+    fs.writeFileSync(path.join(repoDir, ".git", "HEAD"), "ref: refs/heads/fix/codebuddy-branch\n");
+
+    const loaded = loadCodeBuddyCliSessionRows(
+      "/home/me/.codebuddy/projects/repo/cb-git-head.jsonl",
+      [
+        {
+          id: "user-1",
+          type: "message",
+          role: "user",
+          content: [{ type: "input_text", text: "从 cwd 解析分支" }],
+          sessionId: "cb-git-head",
+          cwd: repoDir,
+          timestamp: 1_780_000_000_000,
+        },
+      ],
+      { mtimeMs: 1_780_000_000_000, size: 100 },
+    );
+
+    expect(loaded?.session).toMatchObject({
+      projectPath: repoDir,
+      gitBranch: "fix/codebuddy-branch",
+    });
+
+    fs.rmSync(repoDir, { recursive: true, force: true });
+  });
+
+  it("resolves CodeBuddy gitBranch through a gitdir worktree pointer", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "session-search-codebuddy-worktree-"));
+    const gitDir = path.join(root, "real-git");
+    const worktree = path.join(root, "worktree");
+    fs.mkdirSync(gitDir, { recursive: true });
+    fs.mkdirSync(worktree, { recursive: true });
+    fs.writeFileSync(path.join(gitDir, "HEAD"), "ref: refs/heads/worktree/feature\n");
+    fs.writeFileSync(path.join(worktree, ".git"), `gitdir: ${gitDir}\n`);
+
+    const loaded = loadCodeBuddyCliSessionRows(
+      "/home/me/.codebuddy/projects/repo/cb-worktree.jsonl",
+      [
+        {
+          id: "user-1",
+          type: "message",
+          role: "user",
+          content: [{ type: "input_text", text: "worktree 分支" }],
+          sessionId: "cb-worktree",
+          cwd: worktree,
+          timestamp: 1_780_000_000_000,
+        },
+      ],
+      { mtimeMs: 1_780_000_000_000, size: 100 },
+    );
+
+    expect(loaded?.session.gitBranch).toBe("worktree/feature");
+
+    fs.rmSync(root, { recursive: true, force: true });
   });
 
   it("loads one CodeBuddy CLI jsonl file with the same behavior as the iterator", () => {
