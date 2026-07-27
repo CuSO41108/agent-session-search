@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { CSSProperties, MouseEvent as ReactMouseEvent, ReactElement, RefObject } from "react";
 import { createPortal } from "react-dom";
-import { ChevronDown, ChevronRight, Container, EyeOff, Folder, GitBranch, Laptop, RefreshCw, Search, Server, Star, Tag, Trash2 } from "lucide-react";
+import { ChevronDown, ChevronRight, Container, EyeOff, Folder, GitBranch, Laptop, RefreshCw, Server, Star, Tag, Trash2 } from "lucide-react";
+import appIconUrl from "../../../../assets/app-icon.png";
 import { formatRelativeTime } from "../../../core/format-session";
 import type { IndexStatus } from "../../../core/indexer";
 import type {
@@ -137,9 +138,7 @@ export function Sidebar(props: SidebarProps): ReactElement {
   return (
     <section className="sidebar">
       <div className="brand">
-        <div className="brand-mark">
-          <Search size={17} />
-        </div>
+        <img className="brand-mark" src={appIconUrl} alt="" />
         <div>
           <h1>AgentRecall</h1>
           <p>{t("Codex and Claude Code", "Codex 和 Claude Code")}</p>

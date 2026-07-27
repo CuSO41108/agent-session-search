@@ -321,13 +321,10 @@ select:focus-visible {
 }
 
 .brand-mark {
-  display: grid;
-  place-items: center;
+  display: block;
   width: 26px;
   height: 26px;
   flex: 0 0 auto;
-  border-radius: 7px;
-  color: var(--accent);
 }
 
 .brand h1 {
@@ -4414,11 +4411,11 @@ select:focus-visible {
 }
 
 .update-brand-mark {
+  display: block;
   width: 82px;
   height: 82px;
   margin-bottom: 5px;
-  overflow: visible;
-  filter: drop-shadow(0 15px 19px rgba(44, 89, 212, 0.2));
+  filter: drop-shadow(0 15px 19px rgba(94, 61, 212, 0.24));
 }
 
 .update-app-identity h3 {
