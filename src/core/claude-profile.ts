@@ -16,6 +16,14 @@ export interface ApplyClaudeProfileResult {
   backupPaths: string[];
 }
 
+export interface ClaudeConfigSnapshot {
+  claudeHome: string;
+  settingsPath: string;
+  exists: boolean;
+  /** Route currently written in settings.json, normalized to ClaudeApiConfig fields. */
+  route: Partial<ClaudeApiConfig>;
+}
+
 const CLAUDE_ROUTE_ENV_KEYS = [
   "ANTHROPIC_BASE_URL",
   "ANTHROPIC_AUTH_TOKEN",
@@ -58,6 +66,17 @@ export async function loadClaudeApiConfigDefaults(claudeHome = path.join(os.home
     customApiFormat: preset?.apiFormat ?? "anthropic",
     customApiKeyField: apiKey && !token ? "ANTHROPIC_API_KEY" : (preset?.apiKeyField ?? "ANTHROPIC_AUTH_TOKEN"),
   });
+}
+
+export async function loadClaudeConfigSnapshot(claudeHome = path.join(os.homedir(), ".claude")): Promise<ClaudeConfigSnapshot> {
+  const settingsPath = path.join(claudeHome, "settings.json");
+  const text = await readOptionalFile(settingsPath);
+  return {
+    claudeHome,
+    settingsPath,
+    exists: Boolean(text?.trim()),
+    route: await loadClaudeApiConfigDefaults(claudeHome),
+  };
 }
 
 export async function applyClaudeApiConfig(options: {

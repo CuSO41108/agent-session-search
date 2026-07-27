@@ -41,6 +41,7 @@ export type CodexModelProbeRequest = z.infer<typeof codexModelProbeInput>;
 
 export const PROVIDERS_IPC = {
   getCodexConfig: defineIpcRequest("codex-config:get", z.tuple([])),
+  getClaudeConfig: defineIpcRequest("claude-config:get", z.tuple([])),
   probeCodexModels: defineIpcRequest("codex-config:probe-models", z.tuple([codexModelProbeInput])),
   applyCodexProfile: defineIpcRequest("codex-profile:apply", z.tuple([apiConfigInput])),
   applyClaudeProfile: defineIpcRequest("claude-profile:apply", z.tuple([claudeApiConfigInput])),
