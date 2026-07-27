@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
@@ -5,6 +6,11 @@ import type { ManagedSkill } from "../../core/managed-skill-library";
 import type { SkillSyncSnapshot } from "../../core/skill-sync";
 import { SkillsPage } from "./features/skills/skills-page";
 import { SkillDiscoveryDialog } from "./features/skills/skill-discovery-dialog";
+
+const discoveryDialogSource = readFileSync(
+  new URL("./features/skills/skill-discovery-dialog.tsx", import.meta.url),
+  "utf8",
+);
 
 const managedSkill: ManagedSkill = {
   id: "agent-recall:/library/review/SKILL.md",
@@ -89,5 +95,12 @@ describe("SkillDiscoveryDialog", () => {
     expect(html).toContain("AI 探索");
     expect(html).toMatch(/class="skill-discovery-ai-action"/);
     expect(html).not.toMatch(/class="skill-discovery-ai-action"[^>]*disabled/);
+  });
+
+  it("shows grounded AI descriptions and match reasons", () => {
+    expect(discoveryDialogSource).toContain("skill.description");
+    expect(discoveryDialogSource).toContain("selectedAiMatch?.reason");
+    expect(discoveryDialogSource).toContain("Why it matches");
+    expect(discoveryDialogSource).toContain("匹配原因");
   });
 });

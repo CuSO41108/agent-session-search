@@ -1400,6 +1400,19 @@
   font-size: 9px;
 }
 
+.skill-discovery-list .skill-discovery-description {
+  display: -webkit-box;
+  overflow: hidden;
+  color: var(--text-dim);
+  font-family: inherit;
+  font-size: 10px;
+  line-height: 1.35;
+  text-overflow: initial;
+  white-space: normal;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
 .skill-discovery-more {
   display: block;
   width: calc(100% - 10px);
@@ -1438,6 +1451,25 @@
   margin: 2px 0 0;
   color: var(--text-muted);
   font-size: 9.5px;
+}
+
+.skill-discovery-match-reason {
+  flex: 0 0 auto;
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--accent-line);
+  background: var(--accent-soft);
+}
+
+.skill-discovery-match-reason strong {
+  color: var(--accent-bright);
+  font-size: 10px;
+}
+
+.skill-discovery-match-reason p {
+  margin: 3px 0 0;
+  color: var(--text-dim);
+  font-size: 10.5px;
+  line-height: 1.45;
 }
 
 .skill-discovery-markdown {

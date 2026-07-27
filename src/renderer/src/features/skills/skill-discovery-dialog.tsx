@@ -22,7 +22,7 @@ export function SkillDiscoveryDialog({
   const [input, setInput] = useState("");
   const [query, setQuery] = useState("");
   const [page, setPage] = useState(0);
-  const [skills, setSkills] = useState<SkillsShEntry[]>([]);
+  const [skills, setSkills] = useState<Array<SkillsShEntry | SkillAiSearchResult["skills"][number]>>([]);
   const [total, setTotal] = useState(0);
   const [hasMore, setHasMore] = useState(false);
   const [stale, setStale] = useState(false);
@@ -104,6 +104,9 @@ export function SkillDiscoveryDialog({
   }, [open, selectedId]);
 
   if (!open) return null;
+  const selectedAiMatch = searchMode === "ai"
+    ? aiResult?.skills.find((skill) => skill.id === selectedId) ?? null
+    : null;
 
   const submitSearch = (event: FormEvent) => {
     event.preventDefault();
@@ -217,7 +220,13 @@ export function SkillDiscoveryDialog({
             {skills.map((skill, index) => (
               <button key={skill.id} type="button" className={selectedId === skill.id ? "active" : ""} onClick={() => setSelectedId(skill.id)}>
                 <span className="skill-discovery-rank">{searchMode === "ai" ? <Sparkles size={12} /> : query ? <Search size={12} /> : index < 3 ? <Trophy size={12} /> : index + 1}</span>
-                <span><strong>{skill.name}</strong><small>{skill.source}</small></span>
+                <span>
+                  <strong>{skill.name}</strong>
+                  <small>{skill.source}</small>
+                  {searchMode === "ai" && "description" in skill
+                    ? <small className="skill-discovery-description">{skill.description}</small>
+                    : null}
+                </span>
                 <span className="skill-discovery-installs">{formatCompactNumber(skill.installs)}</span>
               </button>
             ))}
@@ -228,11 +237,17 @@ export function SkillDiscoveryDialog({
             {detailError ? <div className="managed-skill-dialog-error">{detailError}</div> : null}
             {!detailLoading && detail ? (
               <>
-                <header>
-                  <div><h4>{detail.entry.name}</h4><p>{detail.entry.source} · {formatCompactNumber(detail.entry.installs)} {l("installs", "次安装")}</p></div>
-                  <button type="button" className="icon-button" onClick={() => void window.sessionSearch.openExternalLink(detail.entry.url)} title={l("Open skills.sh", "打开 skills.sh")}><ExternalLink size={14} /></button>
-                </header>
-                <div className="skill-discovery-markdown"><Markdown text={detail.markdown} language={language} /></div>
+                 <header>
+                   <div><h4>{detail.entry.name}</h4><p>{detail.entry.source} · {formatCompactNumber(detail.entry.installs)} {l("installs", "次安装")}</p></div>
+                   <button type="button" className="icon-button" onClick={() => void window.sessionSearch.openExternalLink(detail.entry.url)} title={l("Open skills.sh", "打开 skills.sh")}><ExternalLink size={14} /></button>
+                 </header>
+                 {selectedAiMatch ? (
+                   <div className="skill-discovery-match-reason">
+                     <strong>{l("Why it matches", "匹配原因")}</strong>
+                     <p>{selectedAiMatch?.reason}</p>
+                   </div>
+                 ) : null}
+                 <div className="skill-discovery-markdown"><Markdown text={detail.markdown} language={language} /></div>
                 <footer>
                   <span>{l(`${detail.files.length} files`, `${detail.files.length} 个文件`)}</span>
                   <button type="button" className="primary" onClick={() => void importSkill()} disabled={importing}>
