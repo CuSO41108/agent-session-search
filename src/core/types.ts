@@ -522,6 +522,7 @@ export interface CodeBuddyConversationLine {
   content?: Array<{ type?: string; text?: string }>;
   sessionId?: string;
   cwd?: string;
+  gitBranch?: string;
   providerData?: {
     usage?: {
       input_tokens?: number;
