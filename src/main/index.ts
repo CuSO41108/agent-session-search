@@ -832,6 +832,7 @@ function initializeOpenVikingMemory(): void {
   const rootDir = path.join(app.getPath("userData"), "openviking");
   const runtime = new OpenVikingRuntimeService({
     rootDir,
+    codexAuthBootstrapPath: codexAuthPath(process.env, app.getPath("home")),
     allowLocalRuntime: !releaseUpdateRuntime,
   });
   const model = new OpenVikingLocalModelManager({

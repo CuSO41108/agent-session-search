@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import type { CSSProperties, DragEvent as ReactDragEvent, ReactElement } from "react";
 import {
   ArrowRight,
+  BookOpen,
   Check,
   ChevronLeft,
   ChevronRight,
@@ -10,18 +11,22 @@ import {
   GitBranch,
   GripVertical,
   MessageCircleMore,
+  MessagesSquare,
   PlugZap,
   Plus,
   RefreshCw,
+  Sparkles,
   Workflow,
 } from "lucide-react";
 import type {
   AgentChannel,
   AgentRuntime,
-  ConfiguredAgent,
   McpServerDefinition,
 } from "../../../../automation/contracts";
 import { formatRelativeTime } from "../../../../core/format-session";
+import type { InstalledSkill } from "../../../../core/skill-manager";
+import type { OpenVikingMemorySnapshot } from "../../../../core/openviking-memory";
+import type { TeamChatRoomSummary } from "../../../../shared/team-chat";
 import type {
   SessionSearchResult,
   SessionDailyTokenUsage,
@@ -53,14 +58,16 @@ import {
 } from "../../session-ui";
 
 const PERIODS: SessionStatsPeriod[] = ["today", "sevenDay", "thirtyDay", "allTime"];
-const WORKBENCH_CARD_ORDER_STORAGE_KEY = "agent-recall.workbench-card-order.v1";
+const WORKBENCH_CARD_ORDER_STORAGE_KEY = "agent-recall.workbench-card-order.v2";
 
 export const DEFAULT_WORKBENCH_CARD_ORDER = [
   "sessions",
   "workflows",
+  "memories",
+  "chat",
   "runtimes",
   "mcp",
-  "chat",
+  "skills",
 ] as const;
 
 export type WorkbenchCardId = typeof DEFAULT_WORKBENCH_CARD_ORDER[number];
@@ -143,11 +150,18 @@ export interface WorkbenchPageProps {
   onShowWorkflows: () => void;
   runtimes: AgentRuntime[];
   runtimeChannels: AgentChannel[];
-  configuredAgents: ConfiguredAgent[];
   mcpServers: McpServerDefinition[] | null;
+  chatRooms: TeamChatRoomSummary[] | null;
+  memoryEnabled: boolean;
+  memorySnapshot: OpenVikingMemorySnapshot | null;
+  memoryLoading: boolean;
+  skills: InstalledSkill[];
+  skillsLoading: boolean;
   onShowRuntimes: () => void;
   onShowMcp: () => void;
-  onShowChat: () => void;
+  onShowChat: (roomId?: string) => void;
+  onShowMemories: () => void;
+  onShowSkills: () => void;
 }
 
 export function WorkbenchPage({
@@ -181,11 +195,18 @@ export function WorkbenchPage({
   onShowWorkflows,
   runtimes,
   runtimeChannels,
-  configuredAgents,
   mcpServers,
+  chatRooms,
+  memoryEnabled,
+  memorySnapshot,
+  memoryLoading,
+  skills,
+  skillsLoading,
   onShowRuntimes,
   onShowMcp,
   onShowChat,
+  onShowMemories,
+  onShowSkills,
 }: WorkbenchPageProps): ReactElement {
   const l = (en: string, zh: string) => localize(language, en, zh);
   const cacheRate = usageCacheRate(stats.total);
@@ -207,6 +228,16 @@ export function WorkbenchPage({
   const [draggingCard, setDraggingCard] = useState<WorkbenchCardId | null>(null);
   const availableRuntimeCount = runtimes.filter((runtime) => runtime.available).length;
   const enabledMcpCount = mcpServers?.filter((server) => server.enabled).length ?? 0;
+  const activeWorkflowCount = workflows.filter(
+    (item) => item.status === "running" || item.status === "waiting_for_user",
+  ).length;
+  const managedMemoryWorkspaces = memorySnapshot?.workspaces.filter((workspace) => workspace.managed) ?? [];
+  const visibleSkills = [...skills]
+    .sort((left, right) =>
+      (right.usageCount ?? 0) - (left.usageCount ?? 0)
+      || (right.lastUsedAt ?? 0) - (left.lastUsedAt ?? 0)
+      || left.name.localeCompare(right.name))
+    .slice(0, 3);
 
   useEffect(() => {
     try {
@@ -283,6 +314,7 @@ export function WorkbenchPage({
         <button
           type="button"
           className={`workbench-layout-action ${layoutEditing ? "active" : ""}`}
+          style={{ WebkitAppRegion: "no-drag" } as CSSProperties}
           aria-pressed={layoutEditing}
           onClick={() => {
             setLayoutEditing((current) => !current);
@@ -390,15 +422,23 @@ export function WorkbenchPage({
 
         <div className={`workbench-primary-grid ${layoutEditing ? "is-editing" : ""}`}>
         <article
-          className={`workbench-card-slot is-primary ${draggingCard === "sessions" ? "is-dragging" : ""}`}
+          className={`workbench-card-slot is-secondary ${draggingCard === "sessions" ? "is-dragging" : ""}`}
           {...layoutCardProps("sessions")}
         >
         {layoutControls("sessions")}
         <section className="workbench-panel workbench-sessions">
-          <div className="workbench-panel-head">
-            <h2>{l("Sessions", "会话")}</h2>
-            <button onClick={() => onShowSessions(sessionQuery)}>{l("View all", "查看全部")} <ArrowRight size={13} /></button>
-          </div>
+          <header className="workbench-feature-card-head">
+            <span><MessagesSquare size={18} /></span>
+            <div>
+              <h2>{l("Sessions", "会话")}</h2>
+              <small>{sessionQuery.trim()
+                ? l(`${visibleSessions.length} matching sessions`, `${visibleSessions.length} 条匹配会话`)
+                : l(`${visibleSessions.length} recent sessions`, `${visibleSessions.length} 条最近会话`)}</small>
+            </div>
+            <button type="button" onClick={() => onShowSessions(sessionQuery)}>
+              {l("View all", "查看全部")} <ArrowRight size={13} />
+            </button>
+          </header>
           <div className="workbench-session-search">
             <SearchBox
               platform={platform}
@@ -436,15 +476,26 @@ export function WorkbenchPage({
         </article>
 
         <article
-          className={`workbench-card-slot is-primary ${draggingCard === "workflows" ? "is-dragging" : ""}`}
+          className={`workbench-card-slot is-secondary ${draggingCard === "workflows" ? "is-dragging" : ""}`}
           {...layoutCardProps("workflows")}
         >
         {layoutControls("workflows")}
         <section className="workbench-panel workbench-workflows">
-          <div className="workbench-panel-head">
-            <h2>Workflow</h2>
-            <button onClick={onShowWorkflows}>{l("View all", "查看全部")} <ArrowRight size={13} /></button>
-          </div>
+          <header className="workbench-feature-card-head">
+            <span><Workflow size={18} /></span>
+            <div>
+              <h2>Workflow</h2>
+              <small>{workflowsLoading
+                ? l("Loading workflows…", "正在加载工作流…")
+                : l(
+                  `${workflows.length} workflows · ${activeWorkflowCount} active`,
+                  `${workflows.length} 个工作流 · ${activeWorkflowCount} 个进行中`,
+                )}</small>
+            </div>
+            <button type="button" onClick={onShowWorkflows}>
+              {l("View all", "查看全部")} <ArrowRight size={13} />
+            </button>
+          </header>
           {workflowsLoading ? (
             <div className="workbench-empty-state"><RefreshCw className="is-spinning" size={20} /><span>{l("Loading workflows…", "正在加载工作流…")}</span></div>
           ) : workflowsError ? (
@@ -469,6 +520,79 @@ export function WorkbenchPage({
             </div>
           )}
         </section>
+        </article>
+
+        <article
+          className={`workbench-card-slot is-secondary ${draggingCard === "memories" ? "is-dragging" : ""}`}
+          {...layoutCardProps("memories")}
+        >
+          {layoutControls("memories")}
+          <WorkbenchFeatureCard
+            icon={<BookOpen size={18} />}
+            title="Memory"
+            metric={memoryLoading
+              ? l("Loading managed directories…", "正在加载受管理目录…")
+              : !memoryEnabled
+                ? l("Memory is disabled", "Memory 未启用")
+                : memorySnapshot
+                  ? l(
+                    `${managedMemoryWorkspaces.length} managed directories · ${memoryRuntimeStateLabel(memorySnapshot.runtime.state, language)}`,
+                    `${managedMemoryWorkspaces.length} 个受管理目录 · ${memoryRuntimeStateLabel(memorySnapshot.runtime.state, language)}`,
+                  )
+                  : l("Memory is unavailable", "Memory 暂不可用")}
+            description={l(
+              "Manage long-term Agent memory by project directory.",
+              "按项目目录管理可召回的 Agent 长期记忆。",
+            )}
+            rows={(memoryEnabled ? managedMemoryWorkspaces : []).slice(0, 3).map((workspace) => ({
+              id: workspace.id,
+              title: workspace.displayName,
+              detail: `${workspace.importedTurns}/${workspace.totalTurns} ${l("turns", "轮")} · ${
+                memoryImportStateLabel(workspace.importState, language)
+              }`,
+            }))}
+            empty={memoryLoading
+              ? l("Loading Memory…", "正在加载 Memory…")
+              : !memoryEnabled
+                ? l("Enable Memory in settings to manage directories.", "在设置中启用 Memory 后即可管理目录。")
+                : l("No managed directories yet.", "还没有受管理目录。")}
+            action={l("Open Memory", "打开 Memory")}
+            onOpen={onShowMemories}
+          />
+        </article>
+
+        <article
+          className={`workbench-card-slot is-secondary ${draggingCard === "chat" ? "is-dragging" : ""}`}
+          {...layoutCardProps("chat")}
+        >
+          {layoutControls("chat")}
+          <WorkbenchFeatureCard
+            icon={<MessageCircleMore size={18} />}
+            title="Chat"
+            metric={chatRooms === null
+              ? l("Loading chat groups…", "正在加载聊天群…")
+              : l(`${chatRooms.length} chat groups`, `${chatRooms.length} 个聊天群`)}
+            description={l(
+              "Continue a recent group or create a new multi-Agent conversation.",
+              "继续最近的聊天群，或创建新的多 Agent 对话。",
+            )}
+            rows={(chatRooms ?? []).slice(0, 3).map((room) => {
+              const activityAt = Date.parse(room.lastMessageAt ?? room.updatedAt);
+              return {
+                id: room.id,
+                title: room.name,
+                detail: `${room.agentCount} ${l("members", "名员工")} · ${
+                  Number.isFinite(activityAt) ? formatRelativeTime(activityAt) : l("No messages yet", "暂无消息")
+                }`,
+                onOpen: () => onShowChat(room.id),
+              };
+            })}
+            empty={chatRooms === null
+              ? l("Loading chat groups…", "正在加载聊天群…")
+              : l("No chat groups yet.", "还没有聊天群。")}
+            action={l("Open Chat", "打开 Chat")}
+            onOpen={() => onShowChat()}
+          />
         </article>
 
         <article
@@ -530,29 +654,33 @@ export function WorkbenchPage({
         </article>
 
         <article
-          className={`workbench-card-slot is-compact ${draggingCard === "chat" ? "is-dragging" : ""}`}
-          {...layoutCardProps("chat")}
+          className={`workbench-card-slot is-compact ${draggingCard === "skills" ? "is-dragging" : ""}`}
+          {...layoutCardProps("skills")}
         >
-          {layoutControls("chat")}
+          {layoutControls("skills")}
           <WorkbenchFeatureCard
-            icon={<MessageCircleMore size={18} />}
-            title="Chat"
-            metric={l(
-              `${configuredAgents.length} employees available`,
-              `${configuredAgents.length} 个员工可用`,
-            )}
+            icon={<Sparkles size={18} />}
+            title="Skills"
+            metric={skillsLoading
+              ? l("Loading App Skills…", "正在加载本 App Skill…")
+              : l(`${skills.length} App Skills`, `${skills.length} 个本 App Skill`)}
             description={l(
-              "Create a studio and talk to multiple Runtime sessions independently.",
-              "创建工作室，分别与多个 Runtime 会话持续交流。",
+              "Review the reusable capabilities installed in AgentRecall.",
+              "查看 AgentRecall 中已安装的可复用能力及最近使用情况。",
             )}
-            rows={configuredAgents.slice(0, 3).map((agent) => ({
-              id: agent.id,
-              title: agent.name || agent.id,
-              detail: `${agent.runtimeAgentId} · ${agent.modelId}`,
+            rows={visibleSkills.map((skill) => ({
+              id: skill.id,
+              title: skill.name,
+              detail: `${l(
+                `Used ${formatCompactNumber(skill.usageCount ?? 0)} times`,
+                `使用 ${formatCompactNumber(skill.usageCount ?? 0)} 次`,
+              )} · ${skill.agent}`,
             }))}
-            empty={l("Configure a Runtime to start Chat.", "配置 Runtime 后即可开始 Chat。")}
-            action={l("Open Chat", "打开 Chat")}
-            onOpen={onShowChat}
+            empty={skillsLoading
+              ? l("Loading App Skills…", "正在加载本 App Skill…")
+              : l("No App Skills yet.", "本 App 还没有 Skill。")}
+            action={l("Open Skills", "打开 Skills")}
+            onOpen={onShowSkills}
           />
         </article>
         </div>
@@ -575,7 +703,7 @@ function WorkbenchFeatureCard({
   title: string;
   metric: string;
   description: string;
-  rows: Array<{ id: string; title: string; detail: string }>;
+  rows: Array<{ id: string; title: string; detail: string; onOpen?: () => void }>;
   empty: string;
   action: string;
   onOpen: () => void;
@@ -590,7 +718,7 @@ function WorkbenchFeatureCard({
       <p>{description}</p>
       <div className="workbench-feature-list">
         {rows.length > 0 ? rows.map((row) => (
-          <button key={row.id} type="button" onClick={onOpen}>
+          <button key={row.id} type="button" onClick={row.onOpen ?? onOpen}>
             <span><strong>{row.title}</strong><small>{row.detail}</small></span>
             <ArrowRight size={12} />
           </button>
@@ -607,6 +735,30 @@ function workflowStatusLabel(status: WorkbenchWorkflowItem["status"], language: 
   if (status === "failed") return localize(language, "Failed", "失败");
   if (status === "stopped") return localize(language, "Stopped", "已停止");
   return localize(language, "Draft", "草稿");
+}
+
+function memoryRuntimeStateLabel(
+  state: OpenVikingMemorySnapshot["runtime"]["state"],
+  language: LanguageMode,
+): string {
+  if (state === "running") return localize(language, "Running", "运行中");
+  if (state === "starting") return localize(language, "Starting", "启动中");
+  if (state === "installing") return localize(language, "Installing", "安装中");
+  if (state === "stopped") return localize(language, "Stopped", "已停止");
+  if (state === "not-installed") return localize(language, "Not installed", "未安装");
+  return localize(language, "Unavailable", "不可用");
+}
+
+function memoryImportStateLabel(
+  state: OpenVikingMemorySnapshot["workspaces"][number]["importState"],
+  language: LanguageMode,
+): string {
+  if (state === "completed") return localize(language, "Ready", "已就绪");
+  if (state === "running") return localize(language, "Importing", "导入中");
+  if (state === "queued") return localize(language, "Queued", "等待导入");
+  if (state === "paused") return localize(language, "Paused", "已暂停");
+  if (state === "failed") return localize(language, "Failed", "失败");
+  return localize(language, "Not imported", "未导入");
 }
 
 function UsageMetric({ value, label }: { value: string; label: string }): ReactElement {

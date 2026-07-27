@@ -17,8 +17,11 @@ import type { AppUpdateProgress, AppUpdateStatus } from "../../core/app-update-t
 import type { AppSettings, AppSettingsUpdate } from "../../core/platform";
 import type { MigrationTargetSettings } from "../../core/migration-targets";
 import type { McpServerDefinition } from "../../automation/contracts";
+import type { InstalledSkill } from "../../core/skill-manager";
+import type { OpenVikingMemorySnapshot } from "../../core/openviking-memory";
 import type { RemoteHealthReport } from "../../core/remote-health";
 import type { SessionSyncHookStatus } from "../../core/session-sync-queue";
+import type { TeamChatRoomSummary } from "../../shared/team-chat";
 import { OPTIONAL_SESSION_SOURCE_DESCRIPTORS } from "../../core/session-sources";
 import type {
   EnvironmentUpsertInput,
@@ -181,16 +184,49 @@ export function App(): ReactElement {
     [automation.snapshot.workflowStore.runs, automation.snapshot.workflowStore.workflows],
   );
   const [workbenchMcpServers, setWorkbenchMcpServers] = useState<McpServerDefinition[] | null>(null);
+  const [workbenchChatRooms, setWorkbenchChatRooms] = useState<TeamChatRoomSummary[] | null>(null);
+  const [workbenchMemorySnapshot, setWorkbenchMemorySnapshot] = useState<OpenVikingMemorySnapshot | null>(null);
+  const [workbenchMemoryLoading, setWorkbenchMemoryLoading] = useState(true);
+  const [workbenchSkills, setWorkbenchSkills] = useState<InstalledSkill[] | null>(null);
+  const [preferredTeamChatRoomId, setPreferredTeamChatRoomId] = useState<string>();
   useEffect(() => {
     if (activePage !== "workbench") return;
     let active = true;
     setWorkbenchMcpServers(null);
+    setWorkbenchChatRooms(null);
+    setWorkbenchMemorySnapshot(null);
+    setWorkbenchMemoryLoading(true);
+    setWorkbenchSkills(null);
     void automation.api.listMcpServers()
       .then((servers) => {
         if (active) setWorkbenchMcpServers(servers);
       })
       .catch(() => {
         if (active) setWorkbenchMcpServers([]);
+      });
+    void window.sessionSearch.teamChat.listRooms()
+      .then((rooms) => {
+        if (active) setWorkbenchChatRooms(rooms);
+      })
+      .catch(() => {
+        if (active) setWorkbenchChatRooms([]);
+      });
+    void window.sessionSearch.getOpenVikingMemorySnapshot()
+      .then((snapshot) => {
+        if (active) setWorkbenchMemorySnapshot(snapshot);
+      })
+      .catch(() => {
+        if (active) setWorkbenchMemorySnapshot(null);
+      })
+      .finally(() => {
+        if (active) setWorkbenchMemoryLoading(false);
+      });
+    void window.sessionSearch.listSkills()
+      .then((snapshot) => {
+        if (active) setWorkbenchSkills(snapshot.skills);
+      })
+      .catch(() => {
+        if (active) setWorkbenchSkills([]);
       });
     return () => {
       active = false;
@@ -1222,11 +1258,21 @@ export function App(): ReactElement {
               onShowWorkflows={() => void navigateToPage("workflows")}
               runtimes={automation.snapshot.runtimes}
               runtimeChannels={automation.snapshot.channels}
-              configuredAgents={automation.snapshot.configuredAgents}
               mcpServers={workbenchMcpServers}
+              chatRooms={workbenchChatRooms}
+              memoryEnabled={Boolean(appSettings?.openVikingMemoryEnabled)}
+              memorySnapshot={workbenchMemorySnapshot}
+              memoryLoading={workbenchMemoryLoading}
+              skills={workbenchSkills ?? []}
+              skillsLoading={workbenchSkills === null}
               onShowRuntimes={() => void navigateToPage("runtimes")}
               onShowMcp={() => void navigateToPage("mcp")}
-              onShowChat={() => void navigateToPage("team-chat")}
+              onShowChat={(roomId) => {
+                setPreferredTeamChatRoomId(roomId);
+                void navigateToPage("team-chat");
+              }}
+              onShowMemories={() => void navigateToPage("memories")}
+              onShowSkills={() => void navigateToPage("skills")}
             />
           ) : null}
 
@@ -1354,7 +1400,9 @@ export function App(): ReactElement {
 
             {activePage === "workflows" ? <WorkflowFeaturePage language={language} /> : null}
 
-            {activePage === "team-chat" ? <TeamChatPage language={language} /> : null}
+            {activePage === "team-chat" ? (
+              <TeamChatPage language={language} preferredRoomId={preferredTeamChatRoomId} />
+            ) : null}
 
             {activePage === "evaluation" ? (
               <EvaluationFeaturePage language={language} onNavigationGuardChange={setPageNavigationGuard} />

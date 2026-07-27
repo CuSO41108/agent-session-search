@@ -15,21 +15,32 @@
   min-height: 0;
   flex: 1;
   flex-direction: column;
-  gap: 14px;
+  gap: 22px;
   padding: 14px 18px 22px;
   overflow-y: auto;
   scrollbar-gutter: stable;
 }
 
 .workbench-page-head {
+  display: flex;
+  align-items: center;
   justify-content: space-between;
+  gap: 16px;
+}
+
+.workbench-page-head > div {
+  width: auto;
+  min-width: 0;
+  flex: 1;
 }
 
 .workbench-layout-action {
   display: inline-flex;
   min-height: 30px;
+  flex: 0 0 auto;
   align-items: center;
   gap: 6px;
+  margin-left: auto;
   padding: 0 10px;
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -785,8 +796,8 @@
     transform var(--duration-fast) var(--ease-out);
 }
 
-.workbench-card-slot.is-primary {
-  height: 330px;
+.workbench-card-slot.is-secondary {
+  min-height: 210px;
   flex: 1 1 calc(50% - 7px);
 }
 
@@ -901,6 +912,11 @@
   display: flex;
   min-height: 0;
   flex-direction: column;
+}
+
+.workbench-workflows > .workbench-empty-state {
+  min-height: 0;
+  flex: 1;
 }
 
 .workbench-feature-card {
@@ -1369,16 +1385,13 @@
     grid-template-columns: minmax(0, 1fr);
   }
 
-  .workbench-card-slot.is-primary,
+  .workbench-card-slot.is-secondary,
   .workbench-card-slot.is-compact {
     width: 100%;
     height: auto;
   }
 
-  .workbench-card-slot.is-primary {
-    min-height: 330px;
-  }
-
+  .workbench-card-slot.is-secondary,
   .workbench-card-slot.is-compact {
     min-height: 210px;
   }

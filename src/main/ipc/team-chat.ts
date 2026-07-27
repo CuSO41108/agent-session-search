@@ -81,7 +81,10 @@ export function registerTeamChatIpc({ ipc, service, send, ensureReady }: Registe
   handle(TEAM_CHAT_CHANNELS.connectionConnect, () => service.connect());
   handle(TEAM_CHAT_CHANNELS.connectionUseLocal, () => service.useLocalDatabase());
   handle(TEAM_CHAT_CHANNELS.connectionDisconnect, () => service.disconnect(), { requiresReady: false });
-  handle(TEAM_CHAT_CHANNELS.roomsList, () => service.listRooms());
+  handle(TEAM_CHAT_CHANNELS.roomsList, async () => {
+    await service.connect();
+    return service.listRooms();
+  });
   handle(TEAM_CHAT_CHANNELS.roomsGet, (value) => service.getRoom(idSchema.parse(value)));
   handle(TEAM_CHAT_CHANNELS.roomsCreate, (value) => service.createRoom(roomCreateSchema.parse(value)));
   handle(TEAM_CHAT_CHANNELS.roomsUpdate, (value) => service.updateRoom(roomUpdateSchema.parse(value)));

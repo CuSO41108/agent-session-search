@@ -1,7 +1,10 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
+import type { ManagedSkill } from "../../../../core/managed-skill-library";
+import type { OpenVikingMemorySnapshot } from "../../../../core/openviking-memory";
 import type { SessionStats } from "../../../../core/types";
+import type { TeamChatRoomSummary } from "../../../../shared/team-chat";
 import {
   DEFAULT_WORKBENCH_CARD_ORDER,
   WorkbenchPage,
@@ -67,11 +70,18 @@ function props(overrides: Partial<WorkbenchPageProps> = {}): WorkbenchPageProps 
     onShowWorkflows: () => undefined,
     runtimes: [],
     runtimeChannels: [],
-    configuredAgents: [],
     mcpServers: [],
+    chatRooms: [],
     onShowRuntimes: () => undefined,
     onShowMcp: () => undefined,
     onShowChat: () => undefined,
+    memoryEnabled: true,
+    memorySnapshot: null,
+    memoryLoading: false,
+    skills: [],
+    skillsLoading: false,
+    onShowMemories: () => undefined,
+    onShowSkills: () => undefined,
     ...overrides,
   };
 }
@@ -100,22 +110,120 @@ describe("WorkbenchPage quotas", () => {
 });
 
 describe("WorkbenchPage cards", () => {
-  it("shows Session, Workflow, Runtime, MCP, and Chat entries with an explicit layout mode", () => {
+  it("shows the requested capability bands in matching reading order", () => {
     const html = renderToStaticMarkup(createElement(WorkbenchPage, props()));
+    const cardIds = [...html.matchAll(/data-card-id="([^"]+)"/g)].map((match) => match[1]);
 
     expect(html).toContain("调整布局");
-    for (const cardId of DEFAULT_WORKBENCH_CARD_ORDER) {
-      expect(html).toContain(`data-card-id="${cardId}"`);
-    }
+    expect(cardIds).toEqual([
+      "sessions",
+      "workflows",
+      "memories",
+      "chat",
+      "runtimes",
+      "mcp",
+      "skills",
+    ]);
+    expect(html).toContain(">Memory<");
+    expect(html).toContain(">Chat<");
     expect(html).toContain(">Runtime<");
     expect(html).toContain(">MCP<");
-    expect(html).toContain(">Chat<");
+    expect(html).toContain(">Skills<");
+    for (const cardId of ["sessions", "workflows", "memories", "chat"]) {
+      expect(html).toMatch(new RegExp(
+        `class="workbench-card-slot [^"]*is-secondary[^"]*" data-card-id="${cardId}"`,
+      ));
+    }
+    expect(html.match(/workbench-feature-card-head/g)).toHaveLength(7);
+  });
+
+  it("keeps the layout action outside the Electron titlebar drag region", () => {
+    const html = renderToStaticMarkup(createElement(WorkbenchPage, props()));
+
+    expect(html).toContain('style="-webkit-app-region:no-drag"');
+  });
+
+  it("shows existing chat groups instead of configured employees", () => {
+    const rooms: TeamChatRoomSummary[] = [{
+      id: "room-1",
+      name: "发布协作群",
+      workDir: "/repo",
+      archived: false,
+      agentCount: 3,
+      lastMessage: "准备开始发布检查",
+      lastMessageAt: "2026-07-24T08:00:00.000Z",
+      createdAt: "2026-07-24T00:00:00.000Z",
+      updatedAt: "2026-07-24T08:00:00.000Z",
+    }];
+    const html = renderToStaticMarkup(createElement(
+      WorkbenchPage,
+      props({
+        chatRooms: rooms,
+      }),
+    ));
+
+    expect(html).toContain("1 个聊天群");
+    expect(html).toContain("发布协作群");
+    expect(html).toContain("3 名员工");
+    expect(html).not.toContain("个员工可用");
+  });
+
+  it("summarizes managed directories and App Skills", () => {
+    const memorySnapshot: OpenVikingMemorySnapshot = {
+      runtime: { state: "running", version: "0.2.0" },
+      model: { model: "BAAI/bge-small-zh-v1.5", installed: true },
+      workspaces: [{
+        id: "memory-1",
+        userId: "workspace_repo",
+        rootPath: "/repo",
+        identity: "git:repo",
+        displayName: "AgentRecall",
+        managed: true,
+        importState: "completed",
+        importedTurns: 42,
+        totalTurns: 42,
+        createdAt: "2026-07-24T00:00:00.000Z",
+        updatedAt: "2026-07-24T08:00:00.000Z",
+      }],
+    };
+    const skills: ManagedSkill[] = [{
+      id: "design-review",
+      managedId: "design-review",
+      name: "Design Review",
+      description: "Review product interfaces.",
+      agent: "codex",
+      source: "agent-recall",
+      path: "/app-skills/design-review/SKILL.md",
+      directoryPath: "/app-skills/design-review",
+      rootPath: "/app-skills",
+      markdown: "# Design Review",
+      mtimeMs: 1_000,
+      usageCount: 12,
+      lastUsedAt: 900,
+      origin: { kind: "local", label: "Local", sourcePath: "/source/design-review" },
+      installations: [{
+        target: "codex",
+        path: "/codex/skills/design-review",
+        state: "installed",
+      }],
+    }];
+    const html = renderToStaticMarkup(createElement(WorkbenchPage, props({
+      memorySnapshot,
+      skills,
+    })));
+
+    expect(html).toContain("1 个受管理目录");
+    expect(html).toContain("AgentRecall");
+    expect(html).toContain("42/42 轮");
+    expect(html).toContain("1 个本 App Skill");
+    expect(html).toContain("Design Review");
+    expect(html).toContain("使用 12 次");
   });
 
   it("normalizes persisted layouts and moves a card without losing any entries", () => {
     expect(normalizeWorkbenchCardOrder(["chat", "sessions", "unknown", "chat"]))
-      .toEqual(["chat", "sessions", "workflows", "runtimes", "mcp"]);
+      .toEqual(["chat", "sessions", "workflows", "memories", "runtimes", "mcp", "skills"]);
     expect(reorderWorkbenchCard(DEFAULT_WORKBENCH_CARD_ORDER, "chat", "sessions"))
-      .toEqual(["chat", "sessions", "workflows", "runtimes", "mcp"]);
+      .toEqual(["chat", "sessions", "workflows", "memories", "runtimes", "mcp", "skills"]);
   });
 });

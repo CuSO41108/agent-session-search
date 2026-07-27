@@ -75,6 +75,15 @@ describe("registerTeamChatIpc", () => {
     expect(ensureReady).not.toHaveBeenCalled();
   });
 
+  it("opens the managed Chat store before listing groups", async () => {
+    const { invoke, service } = setup();
+
+    await expect(invoke(TEAM_CHAT_CHANNELS.roomsList)).resolves.toEqual([]);
+
+    expect(service.connect).toHaveBeenCalledOnce();
+    expect(service.listRooms).toHaveBeenCalledOnce();
+  });
+
   it("bounds room names and member selection before delegation", async () => {
     const { invoke, service } = setup();
     const member = (index: number) => ({

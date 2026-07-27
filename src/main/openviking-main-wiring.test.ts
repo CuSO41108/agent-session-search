@@ -15,6 +15,9 @@ describe("OpenViking main-process wiring", () => {
     expect(mainSource).toContain("build-openviking-runtime.mjs");
     expect(mainSource).toContain("developmentFallback");
     expect(mainSource).toContain("allowLocalRuntime: !releaseUpdateRuntime");
+    expect(mainSource).toContain(
+      'codexAuthBootstrapPath: codexAuthPath(process.env, app.getPath("home"))',
+    );
     expect(mainSource.indexOf("store = new SessionStore")).toBeLessThan(
       mainSource.indexOf("initializeOpenVikingMemory();"),
     );

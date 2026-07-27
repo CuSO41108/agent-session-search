@@ -63,12 +63,20 @@ function runtimeHarness(root: string, options: {
   platform?: NodeJS.Platform;
   executablePath?: string;
   alive?: boolean;
+  codexAuthBootstrapPath?: string;
 } = {}) {
   const child = new FakeChild();
-  const spawnCalls: Array<{ command: string; args: readonly string[]; cwd?: string }> = [];
+  const spawnCalls: Array<{
+    command: string;
+    args: readonly string[];
+    cwd?: string;
+    env: NodeJS.ProcessEnv;
+  }> = [];
   const healthCheck = vi.fn(async () => undefined);
   const service = new OpenVikingRuntimeService({
     rootDir: root,
+    codexAuthBootstrapPath: options.codexAuthBootstrapPath
+      ?? path.join(root, "synthetic-codex-home", "auth.json"),
     platform: options.platform ?? "darwin",
     arch: options.platform === "win32" ? "x64" : "arm64",
     download: async (_url, destination) => {
@@ -92,7 +100,12 @@ function runtimeHarness(root: string, options: {
     },
     allocatePort: async () => 21933,
     spawnProcess: (command, args, spawnOptions) => {
-      spawnCalls.push({ command, args, cwd: spawnOptions.cwd });
+      spawnCalls.push({
+        command,
+        args,
+        cwd: spawnOptions.cwd,
+        env: spawnOptions.env,
+      });
       return child;
     },
     healthCheck,
@@ -102,6 +115,35 @@ function runtimeHarness(root: string, options: {
 }
 
 describe("OpenVikingRuntimeService", () => {
+  it("imports Codex OAuth into an app-owned OpenViking credential store", async () => {
+    const root = await temporaryRoot();
+    const authFile = path.join(root, "synthetic-codex-home", "auth.json");
+    await mkdir(path.dirname(authFile), { recursive: true });
+    await writeFile(authFile, JSON.stringify({
+      tokens: {
+        access_token: "synthetic-access-token",
+        refresh_token: "synthetic-refresh-token",
+      },
+    }));
+    const { service, spawnCalls } = runtimeHarness(root, {
+      codexAuthBootstrapPath: authFile,
+    });
+    await service.install(manifest());
+
+    await service.start({
+      embedding: { dense: { provider: "local", model: "model", dimension: 512 } },
+      vlm: { provider: "openai-codex", model: "gpt-5.4" },
+    });
+
+    expect(spawnCalls[0].env).toMatchObject({
+      OPENVIKING_CODEX_BOOTSTRAP_PATH: authFile,
+      OPENVIKING_CODEX_AUTH_PATH: path.join(root, "auth", "codex_auth.json"),
+    });
+    const config = await readFile(path.join(root, "ov.conf"), "utf8");
+    expect(config).not.toContain("synthetic-access-token");
+    expect(config).not.toContain("synthetic-refresh-token");
+  });
+
   it("installs, starts and stops an app-owned loopback runtime", async () => {
     const root = await temporaryRoot();
     const { service, child, spawnCalls, healthCheck } = runtimeHarness(root);
@@ -183,6 +225,7 @@ describe("OpenVikingRuntimeService", () => {
     const child = new FakeChild();
     const service = new OpenVikingRuntimeService({
       rootDir: root,
+      codexAuthBootstrapPath: path.join(root, "synthetic-codex-home", "auth.json"),
       platform: "darwin",
       arch: "arm64",
       download: async (_url, destination) => {
@@ -242,6 +285,7 @@ describe("OpenVikingRuntimeService", () => {
     const { service } = runtimeHarness(root);
     const mismatched = new OpenVikingRuntimeService({
       rootDir: root,
+      codexAuthBootstrapPath: path.join(root, "synthetic-codex-home", "auth.json"),
       platform: "darwin",
       arch: "arm64",
       download: async (_url, destination) => writeFile(destination, "tampered"),
@@ -261,6 +305,7 @@ describe("OpenVikingRuntimeService", () => {
     });
     const service = new OpenVikingRuntimeService({
       rootDir: root,
+      codexAuthBootstrapPath: path.join(root, "synthetic-codex-home", "auth.json"),
       platform: "darwin",
       arch: "arm64",
       download: async (_url, destination, ...args: unknown[]) => {
@@ -310,6 +355,7 @@ describe("OpenVikingRuntimeService", () => {
     });
     const service = new OpenVikingRuntimeService({
       rootDir: root,
+      codexAuthBootstrapPath: path.join(root, "synthetic-codex-home", "auth.json"),
       platform: "darwin",
       arch: "arm64",
       allowLocalRuntime: true,
@@ -331,6 +377,7 @@ describe("OpenVikingRuntimeService", () => {
     await writeFile(archivePath, "runtime archive");
     const service = new OpenVikingRuntimeService({
       rootDir: root,
+      codexAuthBootstrapPath: path.join(root, "synthetic-codex-home", "auth.json"),
       platform: "darwin",
       arch: "arm64",
     });

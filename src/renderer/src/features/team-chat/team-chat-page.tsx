@@ -138,7 +138,13 @@ export function TeamChatRoomTitle({
   );
 }
 
-export function TeamChatPage({ language }: { language: LanguageMode }): ReactElement {
+export function TeamChatPage({
+  language,
+  preferredRoomId,
+}: {
+  language: LanguageMode;
+  preferredRoomId?: string;
+}): ReactElement {
   const l = useCallback((en: string, zh: string) => localize(language, en, zh), [language]);
   const api = useMemo(() => window.sessionSearch.teamChat, []);
   const { api: automationApi, snapshot } = useAutomation();
@@ -236,7 +242,7 @@ export function TeamChatPage({ language }: { language: LanguageMode }): ReactEle
     setFeedback(undefined);
     try {
       setConnection(await api.connect());
-      await loadRooms();
+      await loadRooms(preferredRoomId);
     } catch (error) {
       setFeedback(errorMessage(error));
       setConnection(await api.getConnectionStatus().catch((): TeamChatConnectionStatus => ({
@@ -246,7 +252,7 @@ export function TeamChatPage({ language }: { language: LanguageMode }): ReactEle
     } finally {
       setConnectionBusy(false);
     }
-  }, [api, loadRooms]);
+  }, [api, loadRooms, preferredRoomId]);
 
   useEffect(() => {
     let active = true;
@@ -254,7 +260,7 @@ export function TeamChatPage({ language }: { language: LanguageMode }): ReactEle
       if (!active) return;
       setConnection(status);
       if (status.state === "ready") {
-        await loadRooms();
+        await loadRooms(preferredRoomId);
       } else if (status.state === "unconfigured" && status.databaseLabel) {
         await connect();
       }
@@ -264,7 +270,7 @@ export function TeamChatPage({ language }: { language: LanguageMode }): ReactEle
       setFeedback(errorMessage(error));
     });
     return () => { active = false; };
-  }, [api, connect, loadRooms]);
+  }, [api, connect, loadRooms, preferredRoomId]);
 
   useEffect(() => {
     const unsubscribe = api.onEvent((event) => {

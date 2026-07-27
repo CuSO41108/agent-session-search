@@ -73,6 +73,7 @@ interface ExtractArchiveInput {
 
 interface RuntimeServiceOptions {
   rootDir: string;
+  codexAuthBootstrapPath: string;
   platform?: NodeJS.Platform;
   arch?: string;
   allowLocalRuntime?: boolean;
@@ -104,6 +105,7 @@ interface PersistedRuntimeState {
 
 export class OpenVikingRuntimeService {
   private readonly rootDir: string;
+  private readonly codexAuthBootstrapPath: string;
   private readonly platform: NodeJS.Platform;
   private readonly arch: string;
   private readonly allowLocalRuntime: boolean;
@@ -119,6 +121,7 @@ export class OpenVikingRuntimeService {
 
   constructor(options: RuntimeServiceOptions) {
     this.rootDir = path.resolve(options.rootDir);
+    this.codexAuthBootstrapPath = path.resolve(options.codexAuthBootstrapPath);
     this.platform = options.platform ?? process.platform;
     this.arch = options.arch ?? process.arch;
     this.allowLocalRuntime = options.allowLocalRuntime === true;
@@ -254,6 +257,7 @@ export class OpenVikingRuntimeService {
     const port = await this.allocatePort();
     const rootApiKey = await this.loadOrCreateRootApiKey();
     await mkdir(this.resolveOwnedPath("data"), { recursive: true });
+    await mkdir(this.resolveOwnedPath("auth"), { recursive: true });
     const configPath = this.resolveOwnedPath("ov.conf");
     await this.writePrivateJson(configPath, {
       ...config,
@@ -285,6 +289,8 @@ export class OpenVikingRuntimeService {
       env: {
         ...process.env,
         OPENVIKING_CONFIG_FILE: configPath,
+        OPENVIKING_CODEX_AUTH_PATH: this.resolveOwnedPath("auth", "codex_auth.json"),
+        OPENVIKING_CODEX_BOOTSTRAP_PATH: this.codexAuthBootstrapPath,
         OPENVIKING_SERVER_HOST: "127.0.0.1",
       },
       stdio: "ignore",
