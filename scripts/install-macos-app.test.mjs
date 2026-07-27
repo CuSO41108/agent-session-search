@@ -58,7 +58,10 @@ test("installMacosApp creates a launchable wrapper bundle", async () => {
   const launcher = fs.readFileSync(launcherPath, "utf8");
   assert.match(launcher, /exec "\/fake\/node" ".*agent-recall\.cjs"/);
   assert.match(launcher, /exec \/bin\/zsh -lc 'agent-recall'/);
-  assert.equal(fs.statSync(launcherPath).mode & 0o111, 0o111);
+  if (process.platform !== "win32") {
+    // Windows has no Unix execute bits; chmod is a no-op there.
+    assert.equal(fs.statSync(launcherPath).mode & 0o111, 0o111);
+  }
   assert.equal(fs.readFileSync(path.join(appPath, "Contents", "Resources", "AppIcon.icns"), "utf8"), "fake-icns");
 });
 
