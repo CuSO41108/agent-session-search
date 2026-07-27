@@ -149,10 +149,18 @@ function createHarness(options: { settings?: AppSettings; groups?: RemoteSkillGr
     list: vi.fn(async () => discoveredPage),
     getDetail: vi.fn(async () => discoveredDetail),
   };
-  const executeAiSearch = vi.fn(async () => JSON.stringify({
-    queries: ["code review"],
-    interpretation: "寻找代码审查 Skill。",
-  }));
+  const executeAiSearch = vi.fn(async () => executeAiSearch.mock.calls.length === 1
+    ? JSON.stringify({
+        queries: ["code review"],
+        interpretation: "寻找代码审查 Skill。",
+      })
+    : JSON.stringify({
+        recommendations: [{
+          id: discoveredEntry.id,
+          description: "审查代码变更并发现质量问题。",
+          reason: "直接匹配代码审查需求。",
+        }],
+      }));
   const operations: SkillServiceOperations = {
     listInstalledSkills: vi.fn(() => ({ skills: [installedSkill()], roots: [], scannedAt: 1 })),
     skillProjectDirsFromIndexedProjects: vi.fn(() => []),
@@ -274,16 +282,23 @@ describe("SkillService local skills and usage", () => {
     const settings = structuredClone(defaultSettings);
     settings.skillAiRuntimeId = "runtime-claude-team";
     const harness = createHarness({ settings });
-    await expect(harness.service.aiSearchDiscoveredSkills({ query: "帮我找代码审查 Skill", language: "zh" })).resolves.toMatchObject({
+    const result = await harness.service.aiSearchDiscoveredSkills({ query: "帮我找代码审查 Skill", language: "zh" });
+    expect(result).toMatchObject({
       queries: ["code review"],
       interpretation: "寻找代码审查 Skill。",
-      skills: [harness.discoveredEntry],
+      skills: [{
+        ...harness.discoveredEntry,
+        description: "审查代码变更并发现质量问题。",
+        reason: "直接匹配代码审查需求。",
+      }],
     });
+    expect(harness.executeAiSearch).toHaveBeenCalledTimes(2);
     expect(harness.executeAiSearch).toHaveBeenCalledWith(
       "runtime-claude-team",
       expect.stringContaining("帮我找代码审查 Skill"),
     );
     expect(harness.skillsShClient.list).toHaveBeenCalledWith({ page: 0, query: "code review" });
+    expect(harness.skillsShClient.getDetail).toHaveBeenCalledWith(harness.discoveredEntry);
     await expect(harness.service.getDiscoveredSkill(harness.discoveredEntry.id)).resolves.toBe(harness.discoveredDetail);
   });
 

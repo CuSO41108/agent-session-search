@@ -262,6 +262,7 @@ export class SkillService {
     const result = await runSkillAiSearch(
       input,
       (query) => client.list({ page: 0, query }),
+      (skill) => client.getDetail(skill),
       (prompt) => this.dependencies.executeAiSearch!(
         this.dependencies.getSettings().skillAiRuntimeId,
         prompt,
