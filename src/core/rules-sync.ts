@@ -8,7 +8,7 @@ import { assetIdentity } from "./asset-identity";
 // Types
 // ---------------------------------------------------------------------------
 
-export type RulesAgent = "claude" | "qoder";
+export type RulesAgent = "claude" | "qoder" | "codex";
 export type RulesScope = "global" | "project";
 
 export interface AgentRule {
@@ -81,6 +81,11 @@ export function scanLocalRules(options: ScanLocalRulesOptions = {}): AgentRule[]
   const claudeGlobal = readRuleFile(claudeGlobalPath, "claude", "global", "CLAUDE.md", "");
   if (claudeGlobal) rules.push(claudeGlobal);
 
+  // Codex global AGENTS.md
+  const codexGlobalPath = path.join(homeDir, ".codex", "AGENTS.md");
+  const codexGlobal = readRuleFile(codexGlobalPath, "codex", "global", "AGENTS.md", "");
+  if (codexGlobal) rules.push(codexGlobal);
+
   // Per-project rules
   for (const projectDir of projectDirs) {
     const projectBasename = path.basename(projectDir);
@@ -90,10 +95,16 @@ export function scanLocalRules(options: ScanLocalRulesOptions = {}): AgentRule[]
     const claudeProject = readRuleFile(claudeProjectPath, "claude", "project", "CLAUDE.md", projectBasename);
     if (claudeProject) rules.push(claudeProject);
 
-    // Nested CLAUDE.md files (name is relative path from project root)
-    for (const nested of findNestedClaudeMd(projectDir, maxDepth)) {
+    // Root-level AGENTS.md
+    const codexProjectPath = path.join(projectDir, "AGENTS.md");
+    const codexProject = readRuleFile(codexProjectPath, "codex", "project", "AGENTS.md", projectBasename);
+    if (codexProject) rules.push(codexProject);
+
+    // Nested CLAUDE.md / AGENTS.md files (name is relative path from project root)
+    for (const nested of findNestedRuleFiles(projectDir, maxDepth)) {
       const relativePath = path.relative(projectDir, nested).replace(/\\/g, "/");
-      const rule = readRuleFile(nested, "claude", "project", relativePath, projectBasename);
+      const agent = path.basename(nested) === "AGENTS.md" ? "codex" as const : "claude" as const;
+      const rule = readRuleFile(nested, agent, "project", relativePath, projectBasename);
       if (rule) rules.push(rule);
     }
 
@@ -117,10 +128,12 @@ export function scanLocalRules(options: ScanLocalRulesOptions = {}): AgentRule[]
 }
 
 /**
- * Recursively finds CLAUDE.md files in subdirectories of projectDir,
- * skipping the root (already handled) and common build/dependency dirs.
+ * Recursively finds CLAUDE.md and AGENTS.md files in subdirectories of
+ * projectDir, skipping the root (already handled) and common build/dependency dirs.
  */
-function findNestedClaudeMd(projectDir: string, maxDepth: number): string[] {
+const NESTED_RULE_FILE_NAMES = ["CLAUDE.md", "AGENTS.md"];
+
+function findNestedRuleFiles(projectDir: string, maxDepth: number): string[] {
   const results: string[] = [];
   function scan(dir: string, depth: number): void {
     if (depth > maxDepth) return;
@@ -134,9 +147,11 @@ function findNestedClaudeMd(projectDir: string, maxDepth: number): string[] {
       if (!entry.isDirectory()) continue;
       if (SKIP_DIRS.has(entry.name)) continue;
       const subDir = path.join(dir, entry.name);
-      const claudeMd = path.join(subDir, "CLAUDE.md");
-      if (fs.existsSync(claudeMd)) {
-        results.push(claudeMd);
+      for (const fileName of NESTED_RULE_FILE_NAMES) {
+        const ruleFile = path.join(subDir, fileName);
+        if (fs.existsSync(ruleFile)) {
+          results.push(ruleFile);
+        }
       }
       scan(subDir, depth + 1);
     }
@@ -180,7 +195,7 @@ export function buildRulesSyncSetupSql(tableName = AGENT_RECALL_RULES_TABLE): st
   return [
     `create table if not exists public.${tableName} (`,
     "  id uuid primary key default gen_random_uuid(),",
-    "  agent text not null check (agent in ('claude', 'qoder')),",
+    "  agent text not null check (agent in ('claude', 'qoder', 'codex')),",
     "  scope text not null check (scope in ('global', 'project')),",
     "  name text not null,",
     "  content text not null,",
@@ -191,11 +206,17 @@ export function buildRulesSyncSetupSql(tableName = AGENT_RECALL_RULES_TABLE): st
     "  updated_at timestamptz not null default now()",
     ");",
     "",
+    "-- Upgrade tables created before AGENTS.md support to accept the codex agent.",
+    `alter table public.${tableName} drop constraint if exists ${tableName}_agent_check;`,
+    `alter table public.${tableName} add constraint ${tableName}_agent_check`,
+    "  check (agent in ('claude', 'qoder', 'codex'));",
+    "",
     `create unique index if not exists ${tableName}_identity_idx`,
     `  on public.${tableName} (agent, scope, name, project_path);`,
     "",
     `alter table public.${tableName} enable row level security;`,
     "",
+    `drop policy if exists "${tableName}_anon_all" on public.${tableName};`,
     `create policy "${tableName}_anon_all" on public.${tableName}`,
     "  for all to anon using (true) with check (true);",
     "",
@@ -266,7 +287,14 @@ export class SupabaseRulesSyncClient {
       body: JSON.stringify(payload),
     });
     const body = await readResponseBody(response);
-    if (!response.ok) throw new Error(supabaseErrorMessage(response.status, body));
+    if (!response.ok) {
+      const message = supabaseErrorMessage(response.status, body);
+      // Tables created before AGENTS.md support reject agent='codex' via CHECK.
+      if (/violates check constraint/i.test(message) && /agent/i.test(message)) {
+        throw new Error(`${message} Re-run the latest Rules setup SQL to allow AGENTS.md sync.`);
+      }
+      throw new Error(message);
+    }
     const rows = parseRuleRows(body);
     if (rows.length === 0) throw new Error("Supabase did not return the uploaded rule.");
     return rows[0];
@@ -374,6 +402,7 @@ export function restoreRules(remoteRules: RemoteRule[], options: RestoreRulesOpt
 function resolveRulePath(rule: RemoteRule, homeDir: string, projectDirs: string[]): string | null {
   if (rule.scope === "global") {
     if (rule.agent === "claude" && rule.name === "CLAUDE.md") return path.join(homeDir, ".claude", "CLAUDE.md");
+    if (rule.agent === "codex" && rule.name === "AGENTS.md") return path.join(homeDir, ".codex", "AGENTS.md");
     return null;
   }
   // Project scope: match remote project_path (basename) to a local project dir

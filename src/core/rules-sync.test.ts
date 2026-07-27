@@ -68,8 +68,11 @@ describe("rules sync", () => {
   it("builds setup SQL with table, unique index, and RLS", () => {
     const sql = buildRulesSyncSetupSql();
     expect(sql).toContain("create table if not exists public.agent_recall_rules");
-    expect(sql).toContain("agent in ('claude', 'qoder')");
+    expect(sql).toContain("agent in ('claude', 'qoder', 'codex')");
     expect(sql).toContain("scope in ('global', 'project')");
+    expect(sql).toContain("drop constraint if exists agent_recall_rules_agent_check");
+    expect(sql).toContain("add constraint agent_recall_rules_agent_check");
+    expect(sql).toContain('drop policy if exists "agent_recall_rules_anon_all"');
     expect(sql).toContain("agent_recall_rules_identity_idx");
     expect(sql).toContain("(agent, scope, name, project_path)");
     expect(sql).toContain("enable row level security");
@@ -256,5 +259,72 @@ describe("rules sync", () => {
     expect(fs.readFileSync(path.join(projectDir, "packages", "core", "CLAUDE.md"), "utf8")).toBe("# New core rules from remote");
     expect(fs.readFileSync(path.join(projectDir, "packages", "core", "CLAUDE.md.bak"), "utf8")).toBe("# Old core rules");
     fs.rmSync(homeDir, { recursive: true, force: true });
+  });
+
+  it("scans global and project AGENTS.md as codex rules", () => {
+    const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "rules-agents-scan-"));
+    const projectDir = path.join(homeDir, "my-project");
+
+    fs.mkdirSync(path.join(homeDir, ".codex"), { recursive: true });
+    fs.writeFileSync(path.join(homeDir, ".codex", "AGENTS.md"), "# Global agent rules", "utf8");
+
+    fs.mkdirSync(path.join(projectDir, "packages", "core"), { recursive: true });
+    fs.mkdirSync(path.join(projectDir, "node_modules", "dep"), { recursive: true });
+    fs.writeFileSync(path.join(projectDir, "AGENTS.md"), "# Project agent rules", "utf8");
+    fs.writeFileSync(path.join(projectDir, "packages", "core", "AGENTS.md"), "# Core agent rules", "utf8");
+    fs.writeFileSync(path.join(projectDir, "node_modules", "dep", "AGENTS.md"), "# Should be skipped", "utf8");
+
+    const rules = scanLocalRules({ homeDir, projectDirs: [projectDir] });
+    const codexRules = rules.filter((r) => r.agent === "codex");
+    expect(codexRules).toHaveLength(3);
+
+    const codexGlobal = codexRules.find((r) => r.scope === "global");
+    expect(codexGlobal).toMatchObject({ name: "AGENTS.md", projectPath: "", content: "# Global agent rules" });
+    expect(ruleIdentity(codexGlobal!)).toBe("codex:global:AGENTS.md");
+
+    const projectNames = codexRules.filter((r) => r.scope === "project").map((r) => r.name).sort();
+    expect(projectNames).toEqual(["AGENTS.md", "packages/core/AGENTS.md"]);
+    fs.rmSync(homeDir, { recursive: true, force: true });
+  });
+
+  it("keeps CLAUDE.md and AGENTS.md in the same directory as separate rules", () => {
+    const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "rules-mixed-scan-"));
+    const projectDir = path.join(homeDir, "mixed");
+    fs.mkdirSync(path.join(projectDir, "sub"), { recursive: true });
+    fs.writeFileSync(path.join(projectDir, "sub", "CLAUDE.md"), "Claude sub", "utf8");
+    fs.writeFileSync(path.join(projectDir, "sub", "AGENTS.md"), "Agents sub", "utf8");
+
+    const rules = scanLocalRules({ homeDir, projectDirs: [projectDir] });
+    expect(rules.find((r) => r.agent === "claude" && r.name === "sub/CLAUDE.md")).toBeDefined();
+    expect(rules.find((r) => r.agent === "codex" && r.name === "sub/AGENTS.md")).toBeDefined();
+    fs.rmSync(homeDir, { recursive: true, force: true });
+  });
+
+  it("restores a global codex AGENTS.md rule to ~/.codex/AGENTS.md", () => {
+    const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "rules-agents-restore-"));
+    const remoteRule = makeRemoteRule({ agent: "codex", name: "AGENTS.md", content: "# Restored agent rules" });
+    const result = restoreRules([remoteRule], { homeDir });
+    expect(result.restored).toEqual(["AGENTS.md"]);
+    expect(fs.readFileSync(path.join(homeDir, ".codex", "AGENTS.md"), "utf8")).toBe("# Restored agent rules");
+    fs.rmSync(homeDir, { recursive: true, force: true });
+  });
+
+  it("suggests re-running setup SQL when upload hits the stale agent check constraint", async () => {
+    const fetchImpl = (async () =>
+      new Response(
+        JSON.stringify({ message: 'new row for relation "agent_recall_rules" violates check constraint "agent_recall_rules_agent_check"' }),
+        { status: 400 },
+      )) as typeof fetch;
+    const client = new SupabaseRulesSyncClient({ url: "https://example.supabase.co", anonKey: "anon", fetchImpl });
+    const rule: AgentRule = {
+      agent: "codex",
+      scope: "global",
+      name: "AGENTS.md",
+      content: "# Rules",
+      contentHash: "hash",
+      projectPath: "",
+      filePath: "/tmp/AGENTS.md",
+    };
+    await expect(client.uploadRule(rule)).rejects.toThrow(/Re-run the latest Rules setup SQL/);
   });
 });

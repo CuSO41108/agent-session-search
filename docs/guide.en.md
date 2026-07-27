@@ -104,7 +104,7 @@ Supabase sync is designed for personal projects. It does not create tables autom
 
 Click the database icon in the toolbar to open the Digital Assets panel, which manages Rules and Memories sync across devices:
 
-- **Rules sync**: Scans local Claude `CLAUDE.md` (global) and Qoder `.qoder/rules/*.md` (project-level), uploads/downloads via Supabase.
+- **Rules sync**: Scans local Claude `CLAUDE.md` (global and project-level, including nested files), Codex `AGENTS.md` (global `~/.codex/AGENTS.md` and project-level, including nested files), and Qoder `.qoder/rules/*.md` (project-level), uploads/downloads via Supabase. If your rules table was created before AGENTS.md support, re-run the latest Rules setup SQL once to allow the new agent type.
 - **Memories sync**: Scans local Qoder long-term memories (`~/.qoder/memories/`) and Codex memories (`~/.codex/memories_1.sqlite`), uploads/downloads via Supabase.
 
 Each tab shows local assets (with sync status: synced / modified / not synced) and remote assets, supporting upload all, per-item upload, and remote deletion. Reuses the Supabase URL and anon key from Skills sync settings. Enable the "Rules sync" and "Memories sync" toggles in Settings to get started.

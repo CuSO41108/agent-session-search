@@ -79,7 +79,7 @@ agent-recall
 
 - **远程同步**：配置同一个 Supabase URL 与 anon key 后，另一台设备可以搜索、查看云端会话，并恢复到 Claude Code、Codex、CodeBuddy、CodeWiz 或 Cursor；支持手动上传，也可以安装 Claude Code / Codex Hook 自动记录待同步会话。同步按个人项目设计，删除云端副本不会影响本地会话。
 - **MCP 工具**：内置 `agent-recall-mcp`，让 Claude Code、Codex、CodeBuddy 等在对话中搜索和读取历史会话，并管理标签、收藏、可见性或执行跨 Agent 迁移。
-- **Skills 与数字资产**：查看、筛选和管理本机 Codex / Claude Code Skills，并通过 Supabase 在多台机器间同步 Skills、Rules（如 `CLAUDE.md`、Qoder rules）和 Memories（Qoder / Codex 记忆）。
+- **Skills 与数字资产**：查看、筛选和管理本机 Codex / Claude Code Skills，并通过 Supabase 在多台机器间同步 Skills、Rules（如 `CLAUDE.md`、`AGENTS.md`、Qoder rules）和 Memories（Qoder / Codex 记忆）。
 
 这些能力复用应用内的同一份 Supabase 配置，适合个人跨设备使用。
 
