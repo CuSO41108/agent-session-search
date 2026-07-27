@@ -752,12 +752,12 @@ function isCodexAgentWorking(sessionFile: string): boolean {
 }
 
 function codexAgentWorkingStateFromLine(line: string): boolean | null {
-  if (!line.includes("task_started") && !line.includes("task_complete")) return null;
+  if (!line.includes("task_started") && !line.includes("task_complete") && !line.includes("turn_aborted")) return null;
   try {
     const row = JSON.parse(line) as { type?: unknown; payload?: { type?: unknown } };
     if (row.type !== "event_msg") return null;
     if (row.payload?.type === "task_started") return true;
-    if (row.payload?.type === "task_complete") return false;
+    if (row.payload?.type === "task_complete" || row.payload?.type === "turn_aborted") return false;
   } catch {
     return null;
   }

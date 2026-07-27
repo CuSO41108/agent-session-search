@@ -180,15 +180,17 @@ describe("live session detection", () => {
     fs.rmSync(root, { recursive: true, force: true });
   });
 
-  it("maps only Codex Desktop sessions whose agents are working", async () => {
+  it("maps only Codex Desktop sessions whose agents have unfinished tasks", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "session-search-codex-app-live-"));
     const sessionsDir = path.join(root, "Test User", ".codex", "sessions", "2026", "07", "27");
     const firstSessionId = "019e82e1-b60d-7b12-95c3-d33e1d05f0a9";
     const secondSessionId = "019e82e1-b60d-7b12-95c3-d33e1d05f0b0";
     const thirdSessionId = "019e82e1-b60d-7b12-95c3-d33e1d05f0b1";
+    const fourthSessionId = "019e82e1-b60d-7b12-95c3-d33e1d05f0b2";
     const firstSessionFile = path.join(sessionsDir, `rollout-2026-07-27T10-00-00-${firstSessionId}.jsonl`);
     const secondSessionFile = path.join(sessionsDir, `rollout-2026-07-27T10-05-00-${secondSessionId}.jsonl`);
     const thirdSessionFile = path.join(sessionsDir, `rollout-2026-07-27T10-10-00-${thirdSessionId}.jsonl`);
+    const fourthSessionFile = path.join(sessionsDir, `rollout-2026-07-27T10-15-00-${fourthSessionId}.jsonl`);
     fs.mkdirSync(sessionsDir, { recursive: true });
     fs.writeFileSync(firstSessionFile, [
       JSON.stringify({ type: "session_meta", payload: { id: firstSessionId } }),
@@ -206,6 +208,10 @@ describe("live session detection", () => {
       JSON.stringify({ type: "event_msg", payload: { type: "task_started" } }),
       JSON.stringify({ type: "event_msg", payload: { type: "task_complete" } }),
       JSON.stringify({ type: "event_msg", payload: { type: "task_started" } }),
+    ].join("\n") + "\n");
+    fs.writeFileSync(fourthSessionFile, [
+      JSON.stringify({ type: "event_msg", payload: { type: "task_started" } }),
+      JSON.stringify({ type: "event_msg", payload: { type: "turn_aborted" } }),
     ].join("\n") + "\n");
     const lsofCalls: string[] = [];
     try {
@@ -231,6 +237,7 @@ describe("live session detection", () => {
                 `codex 603 user 44u REG 1,4 0 1 ${secondSessionFile}`,
                 `codex 603 user 47u REG 1,4 0 1 ${thirdSessionFile}`,
                 `codex 603 user 48u REG 1,4 0 1 ${thirdSessionFile}`,
+                `codex 603 user 49u REG 1,4 0 1 ${fourthSessionFile}`,
               ].join("\n");
             }
             return "COMMAND PID USER FD TYPE DEVICE SIZE/OFF NODE NAME\n";
