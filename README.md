@@ -132,7 +132,6 @@ npm run package:smoke
 
 - [Install.md](./Install.md)：安装、更新、卸载和环境说明。
 - [docs/README.en.md](./docs/README.en.md)：英文 README。
-- [start.sh](./start.sh)：macOS 一键启动脚本。
 
 ## 开源协议
 

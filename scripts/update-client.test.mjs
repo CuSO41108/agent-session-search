@@ -30,6 +30,7 @@ async function electronFixtureExec(command, args, options) {
 
 const require = createRequire(import.meta.url);
 const mutableFsPromises = require("node:fs/promises");
+const launcherSource = await readFile(new URL("../bin/agent-recall.cjs", import.meta.url), "utf8");
 const updateClientSource = await readFile(new URL("../bin/update-client.cjs", import.meta.url), "utf8");
 const {
   DEFAULT_NPM_REGISTRY,
@@ -263,8 +264,19 @@ test("skips the same update version until a newer version is released", async ()
   assert.equal(newer.manifest.version, "0.3.0");
 });
 
-test("terminal launcher does not prompt again for a skipped update version", async () => {
-  const launcherSource = await readFile(new URL("../bin/agent-recall.cjs", import.meta.url), "utf8");
+test("terminal launcher marks npm-installed launches as release builds", () => {
+  assert.match(launcherSource, /environment\.AGENT_RECALL_RELEASE_BUILD = "1"/);
+  assert.match(launcherSource, /environment\.AGENT_RECALL_SOURCE_BUILD !== "1"/);
+});
+
+test("terminal launcher continues with a validated Electron runtime after repair errors", () => {
+  assert.match(launcherSource, /isElectronRuntimeReady/);
+  assert.match(launcherSource, /try \{\s*await ensureElectronRuntimeForLaunch\(/);
+  assert.match(launcherSource, /if \(!isElectronRuntimeReady\(packagePath\)\) throw error;/);
+  assert.match(launcherSource, /继续启动应用/);
+});
+
+test("terminal launcher does not prompt again for a skipped update version", () => {
   assert.match(launcherSource, /!result\.updateSkipped && !result\.promptSnoozed/);
   assert.match(launcherSource, /\[1\] 更新\s+\[2\] 跳过\s+\[3\] 跳过，直至下个版本/);
 });
