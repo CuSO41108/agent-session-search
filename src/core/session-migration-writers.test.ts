@@ -32,10 +32,8 @@ const NOW = new Date("2026-06-23T06:07:08.901Z");
 const TARGETS = [
   { target: "claude", root: ".claude", source: "claude-cli", family: "claude" },
   { target: "tclaude", root: ".tclaude", source: "tclaude-cli", family: "claude" },
-  { target: "claude-internal", root: ".claude-internal", source: "claude-internal", family: "claude" },
   { target: "codex", root: ".codex", source: "codex-cli", family: "codex" },
   { target: "tcodex", root: ".tcodex", source: "tcodex-cli", family: "codex" },
-  { target: "codex-internal", root: ".codex-internal", source: "codex-internal", family: "codex" },
   { target: "codebuddy", root: ".codebuddy", source: "codebuddy-cli", family: "codebuddy" },
   { target: "cursor", root: ".cursor", source: "cursor-agent", family: "cursor" },
 ] as const satisfies readonly {
@@ -125,7 +123,7 @@ function loadWrittenSession(
       : undefined;
     return loadCursorTranscriptFile(filePath, undefined, workspacePathMap);
   }
-  if (target === "codex" || target === "tcodex" || target === "codex-internal") {
+  if (target === "codex" || target === "tcodex") {
     return loadCodexSessionRows(filePath, rows, { sourceOverride: source });
   }
   return loadClaudeCliSessionRows(filePath, rows, { source });
@@ -284,7 +282,6 @@ describe("writeMigratedSession", () => {
   it.each([
     ["codex", "openai"],
     ["tcodex", "tencent"],
-    ["codex-internal", "openai"],
   ] as const)("writes the resumable $target model provider", async (target, modelProvider) => {
     const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), `migration-writer-provider-${target}-`));
     try {
@@ -306,7 +303,6 @@ describe("writeMigratedSession", () => {
   it.each([
     ["codex", ".codex"],
     ["tcodex", ".tcodex"],
-    ["codex-internal", ".codex-internal"],
   ] as const)("updates the native session index for $target", async (target, root) => {
     const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), `migration-writer-index-${target}-`));
     try {
@@ -483,7 +479,6 @@ describe("writeMigratedSession", () => {
   it.each([
     ["codex", ".codex", "custom-codex"],
     ["tcodex", ".tcodex", "custom-tcodex"],
-    ["codex-internal", ".codex-internal", "custom-codex-internal"],
   ] as const)("uses the active provider from the $target config", async (target, root, modelProvider) => {
     const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), `migration-writer-configured-provider-${target}-`));
     try {
@@ -511,7 +506,7 @@ describe("writeMigratedSession", () => {
   it("ignores profile-scoped Codex providers when no active provider is configured", async () => {
     const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "migration-writer-profile-provider-"));
     try {
-      const targetHome = path.join(homeDir, ".codex-internal");
+      const targetHome = path.join(homeDir, ".codex");
       fs.mkdirSync(targetHome, { recursive: true });
       fs.writeFileSync(
         path.join(targetHome, "config.toml"),
@@ -519,7 +514,7 @@ describe("writeMigratedSession", () => {
       );
 
       const result = await writeMigratedSession({
-        target: "codex-internal",
+        target: "codex",
         session: portable(),
         homeDir,
         now: NOW,
@@ -628,7 +623,6 @@ describe("writeMigratedSession", () => {
   it.each([
     ["claude", ".claude", "configured-claude-model"],
     ["tclaude", ".tclaude", "configured-tclaude-model"],
-    ["claude-internal", ".claude-internal", "configured-claude-internal-model"],
   ] as const)("uses the routed model from the $target settings", async (target, root, model) => {
     const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), `migration-writer-configured-model-${target}-`));
     try {
@@ -679,12 +673,12 @@ describe("writeMigratedSession", () => {
   it("falls back when the Claude settings are malformed", async () => {
     const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "migration-writer-malformed-claude-settings-"));
     try {
-      const targetHome = path.join(homeDir, ".claude-internal");
+      const targetHome = path.join(homeDir, ".claude");
       fs.mkdirSync(targetHome, { recursive: true });
       fs.writeFileSync(path.join(targetHome, "settings.json"), "{\n");
 
       const result = await writeMigratedSession({
-        target: "claude-internal",
+        target: "claude",
         session: portable(),
         homeDir,
         now: NOW,
@@ -893,7 +887,7 @@ async function expectTamperedSessionRejected(
         session: portable(),
         homeDir,
         now: NOW,
-        idFactory: idFactory(target === "codex" || target === "tcodex" || target === "codex-internal" || target === "cursor"
+        idFactory: idFactory(target === "codex" || target === "tcodex" || target === "cursor"
           ? [SESSION_ID]
           : [SESSION_ID, ...MESSAGE_IDS]),
         beforeValidate: (filePath) => {

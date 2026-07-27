@@ -1054,8 +1054,6 @@ async function runIndexSync(): Promise<IndexStatus> {
     batchSize: 50,
     timeBudgetMs: 8,
     loadOptions: {
-      includeClaudeInternal: settings.includeClaudeInternal,
-      includeCodexInternal: settings.includeCodexInternal,
       includeTclaude: settings.includeTclaude,
       includeTcodex: settings.includeTcodex,
       includeCodeBuddyCli: settings.includeCodeBuddyCli,
@@ -2069,7 +2067,7 @@ function registerIpc(): void {
     if (!exportPath) return { exported: false };
 
     let codexRequest: CodexRequestExport | null = null;
-    const isCodexSession = ["codex-cli", "codex-app", "codex-internal", "tcodex-cli"].includes(session.source);
+    const isCodexSession = ["codex-cli", "codex-app", "tcodex-cli"].includes(session.source);
     if (isCodexSession && isLocalSessionEnvironment(session)) {
       if (format === "openai_responses") {
         codexRequest = await resolveCodexResponsesRequest({

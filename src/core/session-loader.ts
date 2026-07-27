@@ -25,8 +25,6 @@ const require = createRequire(import.meta.url);
 const { DatabaseSync } = require("node:sqlite") as { DatabaseSync: new (path: string, options?: { readOnly?: boolean }) => import("node:sqlite").DatabaseSync };
 
 const CODEX_APP_ORIGINATORS = new Set(["Codex Desktop", "codex_work_desktop"]);
-const CLAUDE_INTERNAL_DIR = ".claude-internal";
-const CODEX_INTERNAL_DIR = ".codex-internal";
 const TCLAUDE_DIR = ".tclaude";
 const TCODEX_DIR = ".tcodex";
 const CODEBUDDY_DIR = ".codebuddy";
@@ -36,8 +34,6 @@ const TRAE_DIR_NAMES = [".trae", ".trae-cn"] as const;
 
 export interface SessionLoadOptions {
   homeDir?: string;
-  includeClaudeInternal?: boolean;
-  includeCodexInternal?: boolean;
   includeTclaude?: boolean;
   includeTcodex?: boolean;
   includeCodeBuddyCli?: boolean;
@@ -807,7 +803,7 @@ function readGitBranchAt(gitPath: string): string | null {
 }
 
 function createIndexedSession(input: {
-  keyPrefix: "claude" | "codex" | "claude-internal" | "codex-internal" | "tclaude" | "tcodex" | "codebuddy" | "codewiz" | "openclaw" | "hermes" | "opencode" | "zcode" | "cursor" | "trae" | "qoder";
+  keyPrefix: "claude" | "codex" | "tclaude" | "tcodex" | "codebuddy" | "codewiz" | "openclaw" | "hermes" | "opencode" | "zcode" | "cursor" | "trae" | "qoder";
   rawId: string;
   source: SessionSource;
   projectPath: string;
@@ -898,7 +894,7 @@ export function loadCodexSessionRows(
   const question = firstQuestion(messages);
   const source: SessionSource = options.sourceOverride || (CODEX_APP_ORIGINATORS.has(meta.originator || "") ? "codex-app" : "codex-cli");
   const session = createIndexedSession({
-    keyPrefix: source === "codex-internal" ? "codex-internal" : source === "tcodex-cli" ? "tcodex" : "codex",
+    keyPrefix: source === "tcodex-cli" ? "tcodex" : "codex",
     rawId: meta.id,
     source,
     projectPath: meta.projectPath,
@@ -1009,7 +1005,7 @@ export function loadClaudeCliSessionRows(
   const gitBranch = firstClaudeGitBranch(rows);
   return {
     session: createIndexedSession({
-      keyPrefix: options.source === "claude-internal" ? "claude-internal" : options.source === "tclaude-cli" ? "tclaude" : "claude",
+      keyPrefix: options.source === "tclaude-cli" ? "tclaude" : "claude",
       rawId,
       source: options.source ?? "claude-cli",
       projectPath: options.cwd || embeddedCwd || "",
@@ -2566,8 +2562,6 @@ export function* loadDefaultSessionsIterator(options: SessionLoadOptions = {}): 
     for (const dirName of TRAE_DIR_NAMES) yield* loadTraeSessionsIterator(path.join(homeDir, dirName), options);
   }
   if (options.includeQoder) yield* loadQoderSessionsIterator(path.join(homeDir, QODER_DIR), options);
-  if (options.includeClaudeInternal) yield* loadClaudeCliSessionsIterator(path.join(homeDir, CLAUDE_INTERNAL_DIR), "claude-internal", options);
-  if (options.includeCodexInternal) yield* loadCodexSessionsIterator(path.join(homeDir, CODEX_INTERNAL_DIR), "codex-internal", options);
   if (options.includeTclaude) yield* loadClaudeCliSessionsIterator(path.join(homeDir, TCLAUDE_DIR), "tclaude-cli", options);
   if (options.includeTcodex) yield* loadCodexSessionsIterator(path.join(homeDir, TCODEX_DIR), "tcodex-cli", options);
   if (options.includeCodeBuddyCli) yield* loadCodeBuddyCliSessionsIterator(path.join(homeDir, CODEBUDDY_DIR), options);

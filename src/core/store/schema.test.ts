@@ -356,4 +356,42 @@ describe("session store schema", () => {
       db.close();
     }
   });
+
+  it("removes claude-internal and codex-internal sessions, their FTS rows, and orphaned tags exactly once", () => {
+    const db = new DatabaseSync(":memory:");
+    try {
+      migrateSessionStore(db);
+      db.prepare("DELETE FROM data_migrations WHERE id = 'remove-claude-codex-internal-sources-v1'").run();
+      const insert = db.prepare(`
+        INSERT INTO sessions (
+          session_key, raw_id, source, project_path, file_path,
+          original_title, first_question, timestamp, file_mtime_ms, file_size
+        ) VALUES (?, ?, ?, '/repo', ?, 'Title', 'Question', 1, ?, 10)
+      `);
+      insert.run("claude-internal:one", "one", "claude-internal", "/tmp/claude-internal.jsonl", 123);
+      insert.run("codex-internal:two", "two", "codex-internal", "/tmp/codex-internal.jsonl", 456);
+      insert.run("claude:unchanged", "unchanged", "claude-cli", "/tmp/claude.jsonl", 789);
+      db.prepare(
+        "INSERT INTO session_fts (session_key, title, first_question, content_text, project_path) VALUES ('claude-internal:one', 'Title', 'Question', '', '/repo')",
+      ).run();
+      db.prepare("INSERT INTO tags (name) VALUES ('only-on-internal')").run();
+      const orphanTag = db.prepare("SELECT id FROM tags WHERE name = 'only-on-internal'").get() as { id: number };
+      db.prepare("INSERT INTO session_tags (session_key, tag_id) VALUES ('claude-internal:one', ?)").run(orphanTag.id);
+      db.prepare("INSERT INTO tags (name) VALUES ('shared')").run();
+      const sharedTag = db.prepare("SELECT id FROM tags WHERE name = 'shared'").get() as { id: number };
+      db.prepare("INSERT INTO session_tags (session_key, tag_id) VALUES ('claude:unchanged', ?)").run(sharedTag.id);
+
+      migrateSessionStore(db);
+
+      expect(db.prepare("SELECT session_key FROM sessions WHERE source IN ('claude-internal', 'codex-internal')").all()).toEqual([]);
+      expect(db.prepare("SELECT 1 FROM session_fts WHERE session_key = 'claude-internal:one'").get()).toBeUndefined();
+      expect(db.prepare("SELECT name FROM tags WHERE name = 'only-on-internal'").get()).toBeUndefined();
+      expect(db.prepare("SELECT name FROM tags WHERE name = 'shared'").get()).toEqual({ name: "shared" });
+      expect(db.prepare("SELECT session_key FROM sessions WHERE session_key = 'claude:unchanged'").get()).toEqual({
+        session_key: "claude:unchanged",
+      });
+    } finally {
+      db.close();
+    }
+  });
 });

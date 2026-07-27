@@ -142,8 +142,6 @@ const FILE_MANAGER_LABEL = IS_MAC ? "Finder" : RUNTIME_PLATFORM === "win32" ? "E
 const DEFAULT_MIGRATION_TARGET_SETTINGS = {
   includeTclaude: false,
   includeTcodex: false,
-  includeClaudeInternal: false,
-  includeCodexInternal: false,
 } satisfies MigrationTargetSettings;
 
 type ViewMode = "default" | "favorites" | "hidden";

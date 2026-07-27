@@ -1494,12 +1494,12 @@ describe("SessionStore", () => {
     const store = createInMemoryStore();
     store.upsertIndexedSession(sampleSession({ sessionKey: "claude:regular", rawId: "regular", source: "claude-cli" }), messages);
     store.upsertIndexedSession(
-      sampleSession({ sessionKey: "claude-internal:internal", rawId: "internal", source: "claude-internal" }),
+      sampleSession({ sessionKey: "tclaude:personal", rawId: "personal", source: "tclaude-cli" }),
       messages,
     );
     store.upsertIndexedSession(sampleSession({ sessionKey: "codex:regular", rawId: "codex-regular", source: "codex-cli" }), messages);
     store.upsertIndexedSession(
-      sampleSession({ sessionKey: "codex-internal:internal", rawId: "codex-internal", source: "codex-internal" }),
+      sampleSession({ sessionKey: "tcodex:personal", rawId: "codex-personal", source: "tcodex-cli" }),
       messages,
     );
     store.upsertIndexedSession(
@@ -1509,23 +1509,23 @@ describe("SessionStore", () => {
 
     expect(store.searchSessions({ source: "claude" }).map((session) => session.source)).toEqual(["claude-cli"]);
     expect(store.searchSessions({ source: "codex" }).map((session) => session.source)).toEqual(["codex-cli"]);
-    expect(store.searchSessions({ source: "claude-internal" }).map((session) => session.sessionKey)).toEqual(["claude-internal:internal"]);
-    expect(store.searchSessions({ source: "codex-internal" }).map((session) => session.sessionKey)).toEqual(["codex-internal:internal"]);
+    expect(store.searchSessions({ source: "tclaude-cli" }).map((session) => session.sessionKey)).toEqual(["tclaude:personal"]);
+    expect(store.searchSessions({ source: "tcodex-cli" }).map((session) => session.sessionKey)).toEqual(["tcodex:personal"]);
     expect(store.searchSessions({ source: "codebuddy-cli" }).map((session) => session.sessionKey)).toEqual(["codebuddy:regular"]);
   });
 
   it("deletes indexed sessions by source and removes unused tags", () => {
     const store = createInMemoryStore();
-    store.upsertIndexedSession(sampleSession({ sessionKey: "claude-internal:one", rawId: "one", source: "claude-internal" }), messages);
-    store.addTag("claude-internal:one", "internal");
+    store.upsertIndexedSession(sampleSession({ sessionKey: "tclaude:one", rawId: "one", source: "tclaude-cli" }), messages);
+    store.addTag("tclaude:one", "personal");
     store.upsertIndexedSession(sampleSession({ sessionKey: "codebuddy:one", rawId: "codebuddy-one", source: "codebuddy-cli" }), messages);
     store.addTag("codebuddy:one", "codebuddy");
     store.upsertIndexedSession(sampleSession({ sessionKey: "zcode:one", rawId: "zcode-one", source: "zcode-cli" }), messages);
     store.addTag("zcode:one", "zcode");
 
-    store.deleteSessionsBySource(["claude-internal", "codebuddy-cli", "zcode-cli"]);
+    store.deleteSessionsBySource(["tclaude-cli", "codebuddy-cli", "zcode-cli"]);
 
-    expect(store.searchSessions({ source: "claude-internal" })).toEqual([]);
+    expect(store.searchSessions({ source: "tclaude-cli" })).toEqual([]);
     expect(store.searchSessions({ source: "codebuddy-cli" })).toEqual([]);
     expect(store.searchSessions({ source: "zcode-cli" })).toEqual([]);
     expect(store.listTags()).toEqual([]);

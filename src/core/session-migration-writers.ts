@@ -501,10 +501,8 @@ export function targetFilePathForRemoteEnvironment(
 const TARGET_ROOTS: Record<MigrationTarget, string> = {
   claude: ".claude",
   tclaude: ".tclaude",
-  "claude-internal": ".claude-internal",
   codex: ".codex",
   tcodex: ".tcodex",
-  "codex-internal": ".codex-internal",
   codebuddy: ".codebuddy",
   codewiz: path.join(".local", "share", "codewiz"),
   cursor: ".cursor",

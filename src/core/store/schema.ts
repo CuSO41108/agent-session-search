@@ -281,7 +281,7 @@ export function migrateSessionStore(db: SessionStoreDatabase): void {
   if (addedSubagentColumn) {
     db
       .prepare(
-        "UPDATE sessions SET file_mtime_ms = 0 WHERE source IN ('claude-cli', 'claude-app', 'claude-internal', 'tclaude-cli', 'codex-cli', 'codex-app', 'codex-internal', 'tcodex-cli')",
+        "UPDATE sessions SET file_mtime_ms = 0 WHERE source IN ('claude-cli', 'claude-app', 'tclaude-cli', 'codex-cli', 'codex-app', 'tcodex-cli')",
       )
       .run();
   }
@@ -292,6 +292,7 @@ export function migrateSessionStore(db: SessionStoreDatabase): void {
   runCursorComposerMetadataMigration(db);
   runCursorRuntimeEnvironmentMigration(db);
   runCursorEmptyComposerShellsMigration(db);
+  runRemoveClaudeCodexInternalSourcesMigration(db);
   addColumnIfMissing(db, "skill_sync_bindings", "remote_version", "INTEGER NOT NULL DEFAULT 1");
   addColumnIfMissing(db, "skill_sync_bindings", "portable_identity", "TEXT NOT NULL DEFAULT ''");
   addColumnIfMissing(db, "skill_sync_bindings", "last_content_hash", "TEXT NOT NULL DEFAULT ''");
@@ -359,11 +360,9 @@ function runSessionRelationBranchMetadataMigration(db: SessionStoreDatabase): vo
   const reparsedSources = [
     "claude-cli",
     "claude-app",
-    "claude-internal",
     "tclaude-cli",
     "codex-cli",
     "codex-app",
-    "codex-internal",
     "tcodex-cli",
   ];
   const placeholders = reparsedSources.map(() => "?").join(", ");
@@ -497,6 +496,34 @@ function runCursorEmptyComposerShellsMigration(db: SessionStoreDatabase): void {
   }
 }
 
+
+// claude-internal / codex-internal support was removed; delete any sessions
+// indexed from those internal-tooling sources along with their FTS rows and
+// any tags left orphaned once those sessions are gone.
+function runRemoveClaudeCodexInternalSourcesMigration(db: SessionStoreDatabase): void {
+  const migrationId = "remove-claude-codex-internal-sources-v1";
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    const applied = db.prepare("SELECT 1 FROM data_migrations WHERE id = ?").get(migrationId);
+    if (!applied) {
+      db.prepare(
+        `
+          DELETE FROM session_fts
+          WHERE session_key IN (
+            SELECT session_key FROM sessions WHERE source IN ('claude-internal', 'codex-internal')
+          )
+        `,
+      ).run();
+      db.prepare("DELETE FROM sessions WHERE source IN ('claude-internal', 'codex-internal')").run();
+      db.prepare("DELETE FROM tags WHERE NOT EXISTS (SELECT 1 FROM session_tags WHERE session_tags.tag_id = tags.id)").run();
+      db.prepare("INSERT INTO data_migrations (id, applied_at) VALUES (?, ?)").run(migrationId, Date.now());
+    }
+    db.exec("COMMIT");
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
+}
 
 function upgradeFtsTokenizer(db: SessionStoreDatabase): void {
   const row = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='session_fts'").get() as

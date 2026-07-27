@@ -645,8 +645,8 @@ describe("Codex session loading", () => {
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
-  it("loads Codex internal sessions with a separate source and session key namespace", () => {
-    const codexDir = fs.mkdtempSync(path.join(os.tmpdir(), "session-search-codex-internal-"));
+  it("loads TCodex sessions with a separate source and session key namespace", () => {
+    const codexDir = fs.mkdtempSync(path.join(os.tmpdir(), "session-search-tcodex-"));
     const sessionDir = path.join(codexDir, "sessions", "2026", "06", "01");
     fs.mkdirSync(sessionDir, { recursive: true });
     fs.writeFileSync(
@@ -655,7 +655,7 @@ describe("Codex session loading", () => {
         JSON.stringify({
           type: "session_meta",
           timestamp: "2026-06-01T10:00:00Z",
-          payload: { id: "codex-internal-1", cwd: "/internal", git: { branch: "feat/internal" } },
+          payload: { id: "tcodex-1", cwd: "/internal", git: { branch: "feat/internal" } },
         }),
         JSON.stringify({
           type: "response_item",
@@ -665,13 +665,13 @@ describe("Codex session loading", () => {
       ].join("\n"),
     );
 
-    const loaded = loadCodexSessions(codexDir, "codex-internal");
+    const loaded = loadCodexSessions(codexDir, "tcodex-cli");
 
     expect(loaded).toHaveLength(1);
     expect(loaded[0].session).toMatchObject({
-      sessionKey: "codex-internal:codex-internal-1",
-      rawId: "codex-internal-1",
-      source: "codex-internal",
+      sessionKey: "tcodex:tcodex-1",
+      rawId: "tcodex-1",
+      source: "tcodex-cli",
       projectPath: "/internal",
       gitBranch: "feat/internal",
     });
@@ -731,11 +731,11 @@ describe("Claude session loading", () => {
           message: { role: "user", content: "真实问题" },
         },
       ],
-      { rawId: "claude-title", source: "claude-internal" },
+      { rawId: "claude-title", source: "tclaude-cli" },
     );
 
     expect(loaded?.session).toMatchObject({
-      source: "claude-internal",
+      source: "tclaude-cli",
       originalTitle: "Claude 标题 ✨",
     });
     expect(loaded?.messages.map((message) => message.content)).toEqual(["真实问题"]);
@@ -781,31 +781,31 @@ describe("Claude session loading", () => {
     fs.rmSync(claudeDir, { recursive: true, force: true });
   });
 
-  it("loads Claude internal sessions with a separate source and session key namespace", () => {
-    const claudeDir = fs.mkdtempSync(path.join(os.tmpdir(), "session-search-claude-internal-"));
+  it("loads TClaude sessions with a separate source and session key namespace", () => {
+    const claudeDir = fs.mkdtempSync(path.join(os.tmpdir(), "session-search-tclaude-"));
     const projectDir = path.join(claudeDir, "projects", "-repo");
     fs.mkdirSync(projectDir, { recursive: true });
     fs.writeFileSync(
-      path.join(projectDir, "claude-internal-1.jsonl"),
+      path.join(projectDir, "tclaude-1.jsonl"),
       [
         JSON.stringify({
           type: "user",
           timestamp: "2026-06-01T10:00:00Z",
           cwd: "/repo",
-          sessionId: "claude-internal-1",
+          sessionId: "tclaude-1",
           gitBranch: "feat/internal",
           message: { role: "user", content: "内部 Claude 会话" },
         }),
       ].join("\n"),
     );
 
-    const loaded = loadClaudeCliSessions(claudeDir, "claude-internal");
+    const loaded = loadClaudeCliSessions(claudeDir, "tclaude-cli");
 
     expect(loaded).toHaveLength(1);
     expect(loaded[0].session).toMatchObject({
-      sessionKey: "claude-internal:claude-internal-1",
-      rawId: "claude-internal-1",
-      source: "claude-internal",
+      sessionKey: "tclaude:tclaude-1",
+      rawId: "tclaude-1",
+      source: "tclaude-cli",
       projectPath: "/repo",
       gitBranch: "feat/internal",
     });

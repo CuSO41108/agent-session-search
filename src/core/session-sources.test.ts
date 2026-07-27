@@ -11,10 +11,8 @@ import type { SessionSource } from "./types";
 const ALL_SOURCES = [
   "claude-cli",
   "claude-app",
-  "claude-internal",
   "codex-cli",
   "codex-app",
-  "codex-internal",
   "tclaude-cli",
   "tcodex-cli",
   "codebuddy-cli",
@@ -48,8 +46,6 @@ describe("session source capability registry", () => {
 
   it("owns optional settings, live families, portable agents, and remote collector gates", () => {
     expect(OPTIONAL_SESSION_SOURCE_DESCRIPTORS.map(({ optionalSetting }) => optionalSetting)).toEqual([
-      "includeClaudeInternal",
-      "includeCodexInternal",
       "includeTclaude",
       "includeTcodex",
       "includeCodeBuddyCli",
