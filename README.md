@@ -25,44 +25,15 @@
 
 AgentRecall 帮你把分散在不同 AI Coding Agent 里的本地会话找回来：统一索引、搜索、查看上下文，并在需要时继续或迁移会话。它优先面向个人本地使用，支持 macOS 与 Windows。
 
-## 快速开始
-
-准备 **Node.js 22.13+**，安装最新 Release：
-
-```bash
-npm install -g https://github.com/zszz3/AgentRecall/releases/latest/download/agent-recall.tgz
-agent-recall
-```
-
-国内网络可使用 npm 与 Electron 镜像：
-
-```bash
-ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/ \
-npm install -g https://github.com/zszz3/AgentRecall/releases/latest/download/agent-recall.tgz \
-  --registry=https://registry.npmmirror.com
-```
-
-| 系统 | 启动命令 | 默认快捷键 |
-| --- | --- | --- |
-| macOS | `agent-recall` | `⌥ Option + Space` |
-| Windows | `agent-recall` | `Ctrl + Alt + Space` |
-
-启动后应用会常驻菜单栏或系统托盘。设置、主题、语言和快捷键都可以在应用内调整。macOS 上执行 `agent-recall install-app` 可以生成本地 `AgentRecall.app`，之后直接从 Launchpad / Spotlight / Dock 打开。完整安装、更新、回滚和卸载说明见 [Install.md](./Install.md)。
-
-常用更新命令：
-
-```bash
-agent-recall --check-update
-agent-recall --update
-```
-
 ## 核心能力
 
-- **统一搜索会话**：索引 Claude Code、Codex 以及可选的 CodeBuddy、CodeWiz、Cursor Agent、Qoder、Trae、WSL、SSH 等来源，支持关键词、标签、收藏、隐藏、时间范围和来源筛选。
-- **查看完整上下文**：在详情页查看消息、工具调用、Markdown、代码块、附件和 AI 摘要，并可导出 Markdown 或常见模型请求 JSON。
-- **继续和迁移会话**：从搜索结果快速启动原 Agent，也可在支持的本地 Agent 之间迁移会话。
-- **跨设备恢复**：可使用自己的 Supabase 项目同步会话快照，在另一台设备搜索、查看并恢复会话。
-- **用量与额度概览**：统计各 Agent token 使用量，并查看 Claude Code / Codex 的额度状态。
+| 能力 | 说明 |
+| --- | --- |
+| 统一搜索 | 跨 Claude Code、Codex 及十余种可选来源索引会话，支持关键词、标签、收藏、时间范围和来源筛选 |
+| 完整上下文 | 查看消息、工具调用、Markdown、代码块、附件和 AI 摘要，可导出 Markdown 或常见模型请求 JSON |
+| 继续与迁移 | 从搜索结果一键回到原 Agent 继续对话，或在支持的本地 Agent 之间迁移会话 |
+| 跨设备恢复 | 通过你自己的 Supabase 项目同步会话快照，在另一台设备搜索、查看并恢复 |
+| 用量与额度 | 统计各 Agent 的 token 使用量，查看 Claude Code / Codex 的额度状态 |
 
 ## 支持的数据源
 
@@ -76,31 +47,45 @@ agent-recall --update
 
 不同来源的可用能力略有差异；应用会在界面中按来源展示可用的查看、恢复、迁移和统计操作。
 
-## 远程同步
+## 快速开始
 
-远程同步使用你自己的 Supabase 项目保存会话快照和附件。配置同一个 Supabase URL 与 anon key 后，另一台设备可以：
+准备 **Node.js 22.13+**，安装最新 Release：
 
-- 搜索和查看云端会话；
-- 恢复到 Claude Code、Codex、CodeBuddy、CodeWiz 或 Cursor；
-- 手动上传，或安装 Claude Code / Codex Hook 后自动记录待同步会话。
+```bash
+npm install -g https://github.com/zszz3/AgentRecall/releases/latest/download/agent-recall.tgz
+agent-recall
+```
 
-同步按个人项目设计，不提供多用户隔离。删除云端副本不会删除本地会话，恢复也会创建新的本地副本。
+也可以把下面这段话直接贴给你的 AI Agent（Claude Code、Codex 等），让它帮你安装：
 
-## MCP 工具
+> 请帮我安装 AgentRecall：先确认 Node.js 22.13 或更高版本可用，然后执行 `npm install -g https://github.com/zszz3/AgentRecall/releases/latest/download/agent-recall.tgz`。如果 npm 或 Electron 下载缓慢，追加 `--registry=https://registry.npmmirror.com` 并设置环境变量 `ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/` 后重试。安装完成后运行 `agent-recall` 确认能正常启动；遇到问题请阅读 https://github.com/zszz3/AgentRecall/blob/main/Install.md 排查。
 
-应用内置 `agent-recall-mcp`，可让 Claude Code、Codex、CodeBuddy 等在对话中搜索和读取历史会话，并管理标签、收藏、可见性或执行跨 Agent 迁移。首次打开应用后会写入数据库指针；也可用 `AGENT_RECALL_DB` 指定数据库路径。
+| 系统 | 启动命令 | 默认快捷键 |
+| --- | --- | --- |
+| macOS | `agent-recall` | `⌥ Option + Space` |
+| Windows | `agent-recall` | `Ctrl + Alt + Space` |
 
-## Skills 与数字资产
+启动后应用会常驻菜单栏或系统托盘，设置、主题、语言和快捷键都可以在应用内调整。macOS 上执行 `agent-recall install-app` 可以生成本地 `AgentRecall.app`，之后直接从 Launchpad / Spotlight / Dock 打开。更新执行 `agent-recall --update` 即可；完整安装、更新、回滚、卸载和国内镜像说明见 [Install.md](./Install.md)。
 
-AgentRecall 也提供轻量的 Skills、Rules 和 Memories 管理能力：
+## 隐私与安全
 
-- 查看、筛选和管理本机 Codex / Claude Code Skills；
-- 使用 Supabase 在多台机器间同步用户 Skills；
-- 同步 Rules（如 `CLAUDE.md`、Qoder rules）和 Memories（Qoder / Codex 记忆）。
+- 会话索引与元数据只保存在本机 SQLite 数据库中，不经过任何第三方服务器。
+- 各 Agent 的原始会话文件仅作为只读输入；恢复与迁移都会创建新副本，不改写原始会话。
+- 跨设备同步完全可选，使用你自己的 Supabase 项目；应用只在本地保存 Project URL 与 anon key。
+- 不收集任何遥测或使用数据。
+- 代码完全开源，行为可审计。
 
-这些能力复用应用内的 Supabase 配置，适合个人跨设备使用。
+## 进阶能力
 
-## 开发者本地运行
+- **远程同步**：配置同一个 Supabase URL 与 anon key 后，另一台设备可以搜索、查看云端会话，并恢复到 Claude Code、Codex、CodeBuddy、CodeWiz 或 Cursor；支持手动上传，也可以安装 Claude Code / Codex Hook 自动记录待同步会话。同步按个人项目设计，删除云端副本不会影响本地会话。
+- **MCP 工具**：内置 `agent-recall-mcp`，让 Claude Code、Codex、CodeBuddy 等在对话中搜索和读取历史会话，并管理标签、收藏、可见性或执行跨 Agent 迁移。
+- **Skills 与数字资产**：查看、筛选和管理本机 Codex / Claude Code Skills，并通过 Supabase 在多台机器间同步 Skills、Rules（如 `CLAUDE.md`、Qoder rules）和 Memories（Qoder / Codex 记忆）。
+
+这些能力复用应用内的同一份 Supabase 配置，适合个人跨设备使用。
+
+## 参与贡献
+
+欢迎提交 Issue 和 PR。本地开发：
 
 ```bash
 git clone https://github.com/zszz3/AgentRecall.git
@@ -109,35 +94,7 @@ npm ci
 npm run dev
 ```
 
-常用命令：
-
-| 命令 | 用途 |
-| --- | --- |
-| `npm run dev` | 启动 Electron 开发版 |
-| `npm test` | 运行自动化测试 |
-| `npm run typecheck` | 检查 TypeScript 类型 |
-| `npm run build` | 生成生产构建 |
-| `npm run release-note:check` | 检查当前分支的用户更新说明 |
-
-验证正式安装包可运行：
-
-```bash
-npm run build
-npm run package:smoke
-```
-
-更多安装和故障排查见 [Install.md](./Install.md)。
-
-## 仓库文档
-
-- [Install.md](./Install.md)：安装、更新、卸载和环境说明。
-- [docs/README.en.md](./docs/README.en.md)：英文 README。
-
-## 开源协议
-
-本项目基于 [MIT License](./LICENSE) 开源。
-
-## 贡献者
+提交前请阅读 [CONTRIBUTING.md](./CONTRIBUTING.md)，并确保 `npm test`、`npm run typecheck` 与 `npm run release-note:check` 通过。
 
 ### Collaborators
 
@@ -201,123 +158,17 @@ npm run package:smoke
 </table>
 <!-- readme: collaborators -end -->
 
-### Contributors
-
-<!-- readme: contributors -start -->
-<table>
-	<tbody>
-		<tr>
-            <td align="center">
-                <a href="https://github.com/Blue-Berrys">
-                    <img src="https://avatars.githubusercontent.com/u/75206464?v=4" width="80;" alt="Blue-Berrys"/>
-                    <br />
-                    <sub><b>Blue-Berrys</b></sub>
-                </a>
-            </td>
-            <td align="center">
-                <a href="https://github.com/zszz3">
-                    <img src="https://avatars.githubusercontent.com/u/91608029?v=4" width="80;" alt="zszz3"/>
-                    <br />
-                    <sub><b>zszz3</b></sub>
-                </a>
-            </td>
-            <td align="center">
-                <a href="https://github.com/mesakurax">
-                    <img src="https://avatars.githubusercontent.com/u/140772694?v=4" width="80;" alt="mesakurax"/>
-                    <br />
-                    <sub><b>mesakurax</b></sub>
-                </a>
-            </td>
-            <td align="center">
-                <a href="https://github.com/LANSGANBS">
-                    <img src="https://avatars.githubusercontent.com/u/144577410?v=4" width="80;" alt="LANSGANBS"/>
-                    <br />
-                    <sub><b>LANSGANBS</b></sub>
-                </a>
-            </td>
-            <td align="center">
-                <a href="https://github.com/MeloMei">
-                    <img src="https://avatars.githubusercontent.com/u/225048942?v=4" width="80;" alt="MeloMei"/>
-                    <br />
-                    <sub><b>MeloMei</b></sub>
-                </a>
-            </td>
-            <td align="center">
-                <a href="https://github.com/G-Pegasus">
-                    <img src="https://avatars.githubusercontent.com/u/87853009?v=4" width="80;" alt="G-Pegasus"/>
-                    <br />
-                    <sub><b>G-Pegasus</b></sub>
-                </a>
-            </td>
-		</tr>
-		<tr>
-            <td align="center">
-                <a href="https://github.com/MSHLD">
-                    <img src="https://avatars.githubusercontent.com/u/102949095?v=4" width="80;" alt="MSHLD"/>
-                    <br />
-                    <sub><b>MSHLD</b></sub>
-                </a>
-            </td>
-            <td align="center">
-                <a href="https://github.com/275145">
-                    <img src="https://avatars.githubusercontent.com/u/79244504?v=4" width="80;" alt="275145"/>
-                    <br />
-                    <sub><b>275145</b></sub>
-                </a>
-            </td>
-            <td align="center">
-                <a href="https://github.com/wlh26">
-                    <img src="https://avatars.githubusercontent.com/u/145627315?v=4" width="80;" alt="wlh26"/>
-                    <br />
-                    <sub><b>wlh26</b></sub>
-                </a>
-            </td>
-            <td align="center">
-                <a href="https://github.com/CuSO41108">
-                    <img src="https://avatars.githubusercontent.com/u/177388097?v=4" width="80;" alt="CuSO41108"/>
-                    <br />
-                    <sub><b>CuSO41108</b></sub>
-                </a>
-            </td>
-            <td align="center">
-                <a href="https://github.com/vinkiYu">
-                    <img src="https://avatars.githubusercontent.com/u/239156258?v=4" width="80;" alt="vinkiYu"/>
-                    <br />
-                    <sub><b>vinkiYu</b></sub>
-                </a>
-            </td>
-            <td align="center">
-                <a href="https://github.com/wanglongze123">
-                    <img src="https://avatars.githubusercontent.com/u/278380769?v=4" width="80;" alt="wanglongze123"/>
-                    <br />
-                    <sub><b>wanglongze123</b></sub>
-                </a>
-            </td>
-		</tr>
-		<tr>
-            <td align="center">
-                <a href="https://github.com/forbbiden1">
-                    <img src="https://avatars.githubusercontent.com/u/153357541?v=4" width="80;" alt="forbbiden1"/>
-                    <br />
-                    <sub><b>forbbiden1</b></sub>
-                </a>
-            </td>
-            <td align="center">
-                <a href="https://github.com/puppyben1">
-                    <img src="https://avatars.githubusercontent.com/u/136492871?v=4" width="80;" alt="puppyben1"/>
-                    <br />
-                    <sub><b>puppyben1</b></sub>
-                </a>
-            </td>
-		</tr>
-	<tbody>
-</table>
-<!-- readme: contributors -end -->
-
 ## Star History
 
 <a href="https://www.star-history.com/?repos=zszz3%2FAgentRecall&type=date&legend=top-left">
   <img src="./assets/star-history.svg" alt="AgentRecall Star History Chart" width="900" />
 </a>
 
-有任何问题，请提交issue。如果觉得我们的项目还不错，欢迎star✨。
+## 开源协议
+
+本项目基于 [MIT License](./LICENSE) 开源。
+
+> [!NOTE]
+> AgentRecall 是独立的开源项目，与 Anthropic、OpenAI、Cursor 等公司均无关联。Claude、Codex 等名称与商标归其各自所有者所有。
+
+有任何问题，请提交 Issue。如果觉得项目对你有帮助，欢迎 Star。
