@@ -7,7 +7,7 @@ import {
   defaultClaudeApiConfig,
   normalizeClaudeApiConfig,
 } from "./api-config";
-import { applyClaudeApiConfig, loadClaudeApiConfigDefaults } from "./claude-profile";
+import { applyClaudeApiConfig, loadClaudeApiConfigDefaults, loadClaudeConfigSnapshot } from "./claude-profile";
 
 async function withClaudeHome<T>(run: (claudeHome: string) => Promise<T>): Promise<T> {
   const claudeHome = await mkdtemp(path.join(tmpdir(), "agent-recall-claude-"));
@@ -82,6 +82,41 @@ describe("Claude Code provider switching", () => {
         customOpusModel: "kimi-k2.6",
         customApiKeyField: "ANTHROPIC_AUTH_TOKEN",
       });
+    });
+  });
+
+  it("loads a Claude config snapshot with the manual route and settings path", async () => {
+    await withClaudeHome(async (claudeHome) => {
+      await writeFile(
+        path.join(claudeHome, "settings.json"),
+        JSON.stringify({
+          env: {
+            ANTHROPIC_BASE_URL: "https://api.example.com/anthropic",
+            ANTHROPIC_AUTH_TOKEN: "sk-manual",
+            ANTHROPIC_MODEL: "custom-model",
+          },
+        }),
+      );
+
+      const snapshot = await loadClaudeConfigSnapshot(claudeHome);
+      expect(snapshot.claudeHome).toBe(claudeHome);
+      expect(snapshot.settingsPath).toBe(path.join(claudeHome, "settings.json"));
+      expect(snapshot.exists).toBe(true);
+      expect(snapshot.route).toMatchObject({
+        activeProvider: "custom",
+        customProviderName: "api.example.com",
+        customBaseUrl: "https://api.example.com/anthropic",
+        customApiKey: "sk-manual",
+        customModel: "custom-model",
+      });
+    });
+  });
+
+  it("loads an empty Claude config snapshot when settings.json is missing", async () => {
+    await withClaudeHome(async (claudeHome) => {
+      const snapshot = await loadClaudeConfigSnapshot(claudeHome);
+      expect(snapshot.exists).toBe(false);
+      expect(snapshot.route).toEqual({});
     });
   });
 

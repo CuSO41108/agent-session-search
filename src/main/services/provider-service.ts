@@ -6,7 +6,7 @@ import {
   type ApiConfig,
   type ClaudeApiConfig,
 } from "../../core/api-config";
-import { applyClaudeApiConfig, loadClaudeApiConfigDefaults, type ApplyClaudeProfileResult } from "../../core/claude-profile";
+import { applyClaudeApiConfig, loadClaudeApiConfigDefaults, loadClaudeConfigSnapshot, type ApplyClaudeProfileResult, type ClaudeConfigSnapshot } from "../../core/claude-profile";
 import { CodexChatProxy, type CodexChatProxyOptions, type CodexChatProxyStatus } from "../../core/codex-chat-proxy";
 import {
   applyCodexApiConfig,
@@ -40,6 +40,7 @@ export interface CodexChatProxyPort {
 export interface ProviderServiceOperations {
   loadCodexProfileDefaults: typeof loadCodexProfileDefaults;
   loadClaudeApiConfigDefaults: typeof loadClaudeApiConfigDefaults;
+  loadClaudeConfigSnapshot: typeof loadClaudeConfigSnapshot;
   loadCodexConfigSnapshot: typeof loadCodexConfigSnapshot;
   probeCodexModels: typeof probeCodexModels;
   applyCodexApiConfig: typeof applyCodexApiConfig;
@@ -58,6 +59,7 @@ export interface ProviderServiceDependencies {
 const defaultOperations: ProviderServiceOperations = {
   loadCodexProfileDefaults,
   loadClaudeApiConfigDefaults,
+  loadClaudeConfigSnapshot,
   loadCodexConfigSnapshot,
   probeCodexModels,
   applyCodexApiConfig,
@@ -161,6 +163,10 @@ export class ProviderService {
 
   getCodexConfig(): Promise<CodexConfigSnapshot> {
     return this.operations.loadCodexConfigSnapshot();
+  }
+
+  getClaudeConfig(): Promise<ClaudeConfigSnapshot> {
+    return this.operations.loadClaudeConfigSnapshot();
   }
 
   probeCodexModels(input: CodexModelProbeRequest): Promise<CodexModelProbeResult> {

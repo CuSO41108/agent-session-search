@@ -52,6 +52,12 @@ function createHarness(settings: AppSettings = cloneSettings()) {
   const operations: ProviderServiceOperations = {
     loadCodexProfileDefaults: vi.fn(async () => ({})),
     loadClaudeApiConfigDefaults: vi.fn(async () => ({})),
+    loadClaudeConfigSnapshot: vi.fn(async () => ({
+      claudeHome: "/tmp/claude",
+      settingsPath: "/tmp/claude/settings.json",
+      exists: false,
+      route: {},
+    })),
     loadCodexConfigSnapshot: vi.fn(async () => ({
       codexHome: "/tmp/codex",
       configPath: "/tmp/codex/config.toml",
@@ -308,5 +314,15 @@ describe("ProviderService Claude profile", () => {
     const config: Partial<ClaudeApiConfig> = { activeProvider: "official" };
     await harness.service.applyClaudeProfile(config);
     expect(harness.operations.applyClaudeApiConfig).toHaveBeenCalledWith({ apiConfig: config });
+  });
+
+  it("exposes the current Claude settings.json route as a config snapshot", async () => {
+    const harness = createHarness();
+    await expect(harness.service.getClaudeConfig()).resolves.toMatchObject({
+      settingsPath: "/tmp/claude/settings.json",
+      exists: false,
+      route: {},
+    });
+    expect(harness.operations.loadClaudeConfigSnapshot).toHaveBeenCalledTimes(1);
   });
 });

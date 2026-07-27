@@ -1,5 +1,5 @@
 import type { ApiConfig, ClaudeApiConfig } from "../../core/api-config";
-import type { ApplyClaudeProfileResult } from "../../core/claude-profile";
+import type { ApplyClaudeProfileResult, ClaudeConfigSnapshot } from "../../core/claude-profile";
 import type { CodexChatProxyStatus } from "../../core/codex-chat-proxy";
 import type { ApplyCodexProfileResult, CodexConfigSnapshot, CodexModelProbeResult } from "../../core/codex-profile";
 import { PROVIDERS_IPC, type CodexModelProbeRequest, type ProviderKeyTarget } from "../../shared/ipc/providers";
@@ -7,6 +7,7 @@ import { combineIpcDisposers, registerIpcHandler, type IpcMainRegistrar } from "
 
 export interface ProvidersIpcService {
   getCodexConfig(): Promise<CodexConfigSnapshot>;
+  getClaudeConfig(): Promise<ClaudeConfigSnapshot>;
   probeCodexModels(input: CodexModelProbeRequest): Promise<CodexModelProbeResult>;
   applyCodexProfile(apiConfig: Partial<ApiConfig>): Promise<ApplyCodexProfileResult>;
   applyClaudeProfile(apiConfig: Partial<ClaudeApiConfig>): Promise<ApplyClaudeProfileResult>;
@@ -18,6 +19,7 @@ export interface ProvidersIpcService {
 export function registerProvidersIpc(ipc: IpcMainRegistrar, service: ProvidersIpcService): () => void {
   return combineIpcDisposers([
     registerIpcHandler(ipc, PROVIDERS_IPC.getCodexConfig, () => service.getCodexConfig()),
+    registerIpcHandler(ipc, PROVIDERS_IPC.getClaudeConfig, () => service.getClaudeConfig()),
     registerIpcHandler(ipc, PROVIDERS_IPC.probeCodexModels, (_event, input) => service.probeCodexModels(input)),
     registerIpcHandler(ipc, PROVIDERS_IPC.applyCodexProfile, (_event, input) => service.applyCodexProfile(input)),
     registerIpcHandler(ipc, PROVIDERS_IPC.applyClaudeProfile, (_event, input) => service.applyClaudeProfile(input)),

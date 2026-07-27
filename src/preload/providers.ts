@@ -1,6 +1,6 @@
 import type { IpcRenderer } from "electron";
 import type { ApiConfig, ClaudeApiConfig } from "../core/api-config";
-import type { ApplyClaudeProfileResult } from "../core/claude-profile";
+import type { ApplyClaudeProfileResult, ClaudeConfigSnapshot } from "../core/claude-profile";
 import type { CodexChatProxyStatus } from "../core/codex-chat-proxy";
 import type { ApplyCodexProfileResult, CodexConfigSnapshot, CodexModelProbeResult } from "../core/codex-profile";
 import { PROVIDERS_IPC, type ProviderKeyTarget } from "../shared/ipc/providers";
@@ -11,6 +11,8 @@ export function createProvidersApi(ipc: ProvidersIpcRenderer) {
   return {
     getCodexConfig: (): Promise<CodexConfigSnapshot> =>
       ipc.invoke(PROVIDERS_IPC.getCodexConfig.channel),
+    getClaudeConfig: (): Promise<ClaudeConfigSnapshot> =>
+      ipc.invoke(PROVIDERS_IPC.getClaudeConfig.channel),
     probeCodexModels: (input: { baseUrl: string; apiKey: string; providerId?: string }): Promise<CodexModelProbeResult> =>
       ipc.invoke(PROVIDERS_IPC.probeCodexModels.channel, input),
     applyCodexProfile: (apiConfig: ApiConfig): Promise<ApplyCodexProfileResult> =>

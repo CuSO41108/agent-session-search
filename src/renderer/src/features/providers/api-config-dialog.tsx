@@ -12,6 +12,7 @@ import {
   type ClaudeApiProviderPresetId,
 } from "../../../../core/api-config";
 import type { AppSettings, AppSettingsUpdate } from "../../../../core/platform";
+import type { ClaudeConfigSnapshot } from "../../../../core/claude-profile";
 import type { CodexConfigSnapshot } from "../../../../core/codex-profile";
 import type { SettingsFeedback } from "../../app-types";
 import { localize, type LanguageMode } from "../../language";
@@ -105,6 +106,8 @@ export function ApiConfigDialog({
   const [draftSummarySource, setDraftSummarySource] = useState<AppSettings["summarySource"]>(() => buildSummarySourceFromSettings(settings));
   const [codexConfig, setCodexConfig] = useState<CodexConfigSnapshot | null>(null);
   const [codexConfigError, setCodexConfigError] = useState("");
+  const [claudeConfig, setClaudeConfig] = useState<ClaudeConfigSnapshot | null>(null);
+  const [claudeConfigError, setClaudeConfigError] = useState("");
   const [selectedCodexConfigProviderId, setSelectedCodexConfigProviderId] = useState("");
   const [codexModelOptions, setCodexModelOptions] = useState<string[]>([]);
   const [codexModelMenuOpen, setCodexModelMenuOpen] = useState(false);
@@ -234,6 +237,15 @@ export function ApiConfigDialog({
     }
   };
 
+  const refreshClaudeConfig = async () => {
+    setClaudeConfigError("");
+    try {
+      setClaudeConfig(await window.sessionSearch.getClaudeConfig());
+    } catch (error) {
+      setClaudeConfigError(error instanceof Error ? error.message : String(error));
+    }
+  };
+
   const selectClaudeApiPreset = async (presetId: ClaudeApiProviderPresetId) => {
     const selectionId = ++claudeApiPresetSelectionRef.current;
     const preset = CLAUDE_API_PROVIDER_PRESETS.find((item) => item.id === presetId) ?? CLAUDE_API_PROVIDER_PRESETS[0];
@@ -241,12 +253,22 @@ export function ApiConfigDialog({
     if (selectionId !== claudeApiPresetSelectionRef.current) return;
     setDraftClaudeApiConfig((current) => {
       if (preset.id === "custom") {
+        // Seed empty fields from the manual route in ~/.claude/settings.json so a
+        // hand-configured third-party provider becomes the Custom baseline.
+        const route = claudeConfig?.route.activeProvider === "custom" ? claudeConfig.route : null;
         return {
           ...current,
           activeProvider: "custom",
           customProviderId: "custom",
-          customProviderName: current.customProviderName || preset.providerName,
-          customApiKey: apiKey,
+          customProviderName: current.customProviderName || route?.customProviderName || preset.providerName,
+          customBaseUrl: current.customBaseUrl || route?.customBaseUrl || "",
+          customApiKey: apiKey || route?.customApiKey || current.customApiKey,
+          customModel: current.customModel || route?.customModel || "",
+          customHaikuModel: current.customHaikuModel || route?.customHaikuModel || "",
+          customSonnetModel: current.customSonnetModel || route?.customSonnetModel || "",
+          customOpusModel: current.customOpusModel || route?.customOpusModel || "",
+          customApiFormat: route?.customApiFormat ?? current.customApiFormat,
+          customApiKeyField: route?.customApiKeyField ?? current.customApiKeyField,
         };
       }
       return {
@@ -306,6 +328,7 @@ export function ApiConfigDialog({
 
   useEffect(() => {
     if (apiTarget === "codex") void refreshCodexConfig();
+    if (apiTarget === "claude") void refreshClaudeConfig();
   }, [apiTarget]);
 
   const runCodexAction = (action: "save" | "apply") => {
@@ -350,7 +373,10 @@ export function ApiConfigDialog({
     if (apiTarget === "codex") {
       runCodexAction("apply");
     }
-    else if (apiTarget === "claude") onApplyToClaude(draftClaudeApiConfig);
+    else if (apiTarget === "claude") {
+      onApplyToClaude(draftClaudeApiConfig);
+      window.setTimeout(() => void refreshClaudeConfig(), 600);
+    }
   };
 
   return (
@@ -636,6 +662,26 @@ export function ApiConfigDialog({
                   )}
                 </p>
               </header>
+              <div className="codex-config-visualizer">
+                <div>
+                  <span>{l("Active route", "当前路由")}</span>
+                  <strong>
+                    {claudeConfig?.route.activeProvider === "custom"
+                      ? claudeConfig.route.customProviderName || l("Custom route", "自定义路径")
+                      : l("Official", "官方认证")}
+                  </strong>
+                  <em>
+                    {claudeConfig?.route.activeProvider === "custom"
+                      ? claudeConfig.route.customModel || claudeConfig.route.customBaseUrl || ""
+                      : l("Default Anthropic route", "默认 Anthropic 路由")}
+                  </em>
+                </div>
+                <div>
+                  <span>{l("Config file", "配置文件")}</span>
+                  <strong>{claudeConfig?.settingsPath ?? "~/.claude/settings.json"}</strong>
+                  <em>{claudeConfigError || (claudeConfig?.exists ? l("Detected", "已检测到") : l("Not created yet", "尚未创建"))}</em>
+                </div>
+              </div>
               <div
                 className="api-provider-switch api-provider-switch--compact"
                 role="group"
