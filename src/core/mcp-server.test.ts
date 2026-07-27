@@ -376,7 +376,7 @@ describe("MCP migrate_session tool", () => {
   const migrateSession = mcp.migrateSession as (db: Db, args: Record<string, unknown>) => Promise<MigrationResult>;
   const migrationTargetSchema = mcp.migrationTargetSchema as (zod: typeof z) => Promise<ReturnType<typeof z.enum>>;
 
-  it("uses the nine-target schema for the real migrate_session tool contract", async () => {
+  it("uses the seven-target schema for the real migrate_session tool contract", async () => {
     const schema = await migrationTargetSchema(z);
     expect(schema.parse("codewiz")).toBe("codewiz");
     expect(schema.parse("tclaude")).toBe("tclaude");
@@ -389,8 +389,6 @@ describe("MCP migrate_session tool", () => {
       "cursor",
       "tclaude",
       "tcodex",
-      "claude-internal",
-      "codex-internal",
     ]);
   });
 

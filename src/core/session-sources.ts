@@ -1,8 +1,6 @@
 import type { LiveSessionFamily, MigrationAgent, MigrationTarget, SessionFormat, SessionSource } from "./types";
 
 export type OptionalSessionSourceSetting =
-  | "includeClaudeInternal"
-  | "includeCodexInternal"
   | "includeTclaude"
   | "includeTcodex"
   | "includeCodeBuddyCli"
@@ -77,11 +75,6 @@ export const SESSION_SOURCE_REGISTRY = {
     optionalSetting: null, pendingKey: null, remoteCollectorOptional: false, liveFamily: "claude", migrationAgent: "claude",
     resumeTarget: "claude", remoteFamily: "claude", nativeAppFamily: "claude", capabilities: fullCapabilities(),
   },
-  "claude-internal": {
-    id: "claude-internal", label: "Claude Code Internal", format: "claude", family: "claude", uiFamily: "claude", statsGroup: null,
-    optionalSetting: "includeClaudeInternal", pendingKey: "claude", remoteCollectorOptional: false, liveFamily: "claude", migrationAgent: "claude",
-    resumeTarget: "claude-internal", remoteFamily: "claude", nativeAppFamily: "claude", capabilities: fullCapabilities(),
-  },
   "codex-cli": {
     id: "codex-cli", label: "Codex", format: "codex", family: "codex", uiFamily: "codex", statsGroup: "codex",
     optionalSetting: null, pendingKey: null, remoteCollectorOptional: false, liveFamily: "codex", migrationAgent: "codex",
@@ -91,11 +84,6 @@ export const SESSION_SOURCE_REGISTRY = {
     id: "codex-app", label: "Codex", format: "codex", family: "codex", uiFamily: "codex", statsGroup: "codex",
     optionalSetting: null, pendingKey: null, remoteCollectorOptional: false, liveFamily: "codex", migrationAgent: "codex",
     resumeTarget: "codex", remoteFamily: "codex", nativeAppFamily: "codex", capabilities: fullCapabilities(),
-  },
-  "codex-internal": {
-    id: "codex-internal", label: "Codex Internal", format: "codex", family: "codex", uiFamily: "codex", statsGroup: null,
-    optionalSetting: "includeCodexInternal", pendingKey: "codex", remoteCollectorOptional: false, liveFamily: "codex", migrationAgent: "codex",
-    resumeTarget: "codex-internal", remoteFamily: "codex", nativeAppFamily: "codex", capabilities: fullCapabilities(),
   },
   "tclaude-cli": {
     id: "tclaude-cli", label: "TClaude", format: "claude", family: "tclaude", uiFamily: "other", statsGroup: null,

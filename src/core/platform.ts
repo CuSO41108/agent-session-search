@@ -46,9 +46,6 @@ export interface ResumeProcessSpec {
   command: string;
   args: string[];
   cwd?: string;
-  // Child-process environment overrides only. Execution boundaries must merge
-  // this map over process.env rather than treating it as a complete env.
-  env?: Record<string, string>;
   displayCommand: string;
 }
 
@@ -74,9 +71,6 @@ export interface AppSettings {
   cursorBinary: string;
   tclaudeBinary: string;
   tcodexBinary: string;
-  claudeInternalBinary: string;
-  includeClaudeInternal: boolean;
-  includeCodexInternal: boolean;
   includeTclaude: boolean;
   includeTcodex: boolean;
   includeCodeBuddyCli: boolean;
@@ -135,9 +129,6 @@ export const defaultSettings: AppSettings = {
   cursorBinary: "cursor-agent",
   tclaudeBinary: "tclaude",
   tcodexBinary: "tcodex",
-  claudeInternalBinary: "claude-internal",
-  includeClaudeInternal: false,
-  includeCodexInternal: false,
   includeTclaude: false,
   includeTcodex: false,
   includeCodeBuddyCli: false,
@@ -223,7 +214,6 @@ export function migrationBinary(target: MigrationTarget, settings: AppSettings):
   if (target === "claude") return settings.claudeBinary;
   if (target === "tclaude") return settings.tclaudeBinary;
   if (target === "tcodex") return settings.tcodexBinary;
-  if (target === "claude-internal") return settings.claudeInternalBinary;
   if (target === "codebuddy") return settings.codeBuddyBinary;
   if (target === "codewiz") return settings.codeWizBinary;
   if (target === "cursor") return settings.cursorBinary;
@@ -234,8 +224,6 @@ function migrationTargetDisplayName(target: MigrationTarget): string {
   if (target === "claude") return "Claude";
   if (target === "tclaude") return "TClaude";
   if (target === "tcodex") return "TCodex";
-  if (target === "claude-internal") return "Claude Internal";
-  if (target === "codex-internal") return "Codex Internal";
   if (target === "codebuddy") return "CodeBuddy";
   if (target === "codewiz") return "CodeWiz";
   if (target === "cursor") return "Cursor";
@@ -243,7 +231,7 @@ function migrationTargetDisplayName(target: MigrationTarget): string {
 }
 
 function migrationResumeArgs(target: MigrationTarget, sessionId: string): string[] {
-  return target === "codex" || target === "tcodex" || target === "codex-internal"
+  return target === "codex" || target === "tcodex"
     ? ["resume", sessionId]
     : target === "codewiz"
       ? ["--session", sessionId]
@@ -292,24 +280,14 @@ const MIGRATION_CLI_VERSION_RULES: Record<MigrationTarget, VersionRule[]> = {
     { label: "@tencent/tcodex", pattern: /^\s*@tencent\/tcodex\s*:?[ \t]*v?(\d+\.\d+\.\d+)[ \t]*$/im, minimum: version(0, 0, 13) },
     { label: "@openai/codex", pattern: /^\s*@openai\/codex\s*:?[ \t]*v?(\d+\.\d+\.\d+)[ \t]*$/im, minimum: version(0, 142, 4) },
   ],
-  "claude-internal": [
-    { label: "claude-internal", pattern: /^\s*claude-internal\s*:?[ \t]*v?(\d+\.\d+\.\d+)[ \t]*$/im, minimum: version(1, 1, 9) },
-    { label: "claude", pattern: /^\s*claude\s*:?[ \t]*v?(\d+\.\d+\.\d+)[ \t]*$/im, minimum: version(2, 1, 154) },
-  ],
-  "codex-internal": [{ label: "codex", pattern: /^\s*(?:codex(?:-cli)?|Codex(?: CLI)?)\s*:?[ \t]*v?(\d+\.\d+\.\d+)[ \t]*$/im, minimum: version(0, 141, 0) }],
 };
-
-function migrationCodexHome(homeDir: string, platform: NodeJS.Platform): string {
-  const platformPath = platform === "win32" ? path.win32 : path.posix;
-  return platformPath.join(homeDir, ".codex-internal");
-}
 
 function migrationTargetForResumeSource(source: SessionSource): MigrationTarget | null {
   return sessionSourceDescriptor(source).resumeTarget;
 }
 
 function legacyMigratedCodexProvider(session: SessionSearchResult, target: MigrationTarget): string | null {
-  if (target !== "codex" && target !== "tcodex" && target !== "codex-internal") return null;
+  if (target !== "codex" && target !== "tcodex") return null;
   let descriptor: number | null = null;
   try {
     descriptor = openSync(session.filePath, "r");
@@ -329,7 +307,6 @@ function legacyMigratedCodexProvider(session: SessionSearchResult, target: Migra
       return null;
     }
     if (target === "tcodex") return "tencent";
-    if (target === "codex-internal") return "codebuddy";
     return "openai";
   } catch {
     return null;
@@ -342,8 +319,6 @@ function buildResumeRuntimeProcessSpec(
   session: SessionSearchResult,
   settings: AppSettings,
   skipPermissions: boolean,
-  platform: NodeJS.Platform,
-  homeDir: string,
 ): Omit<ResumeProcessSpec, "displayCommand"> {
   const target = migrationTargetForResumeSource(session.source);
   if (!target) {
@@ -354,9 +329,9 @@ function buildResumeRuntimeProcessSpec(
   const legacyProvider = legacyMigratedCodexProvider(session, target);
   if (legacyProvider) args.splice(1, 0, "-c", `model_provider=${JSON.stringify(legacyProvider)}`);
   if (skipPermissions) {
-    if (target === "claude" || target === "tclaude" || target === "claude-internal") {
+    if (target === "claude" || target === "tclaude") {
       args.push("--dangerously-skip-permissions");
-    } else if (target === "codex" || target === "tcodex" || target === "codex-internal") {
+    } else if (target === "codex" || target === "tcodex") {
       args.push("--dangerously-bypass-approvals-and-sandbox");
     }
   }
@@ -365,7 +340,6 @@ function buildResumeRuntimeProcessSpec(
     command: migrationBinary(target, settings),
     args,
     cwd: session.projectPath || undefined,
-    env: target === "codex-internal" ? { CODEX_HOME: migrationCodexHome(homeDir, platform) } : undefined,
   };
 }
 
@@ -415,7 +389,7 @@ function buildResumeShellCommand(
   settings: AppSettings,
   opts: Required<Pick<ResumeOptions, "withCwd" | "skipPermissions" | "platform">> & { shell: ShellKind; homeDir?: string },
 ): string {
-  const spec = buildResumeRuntimeProcessSpec(session, settings, opts.skipPermissions, opts.platform, opts.homeDir ?? homedir());
+  const spec = buildResumeRuntimeProcessSpec(session, settings, opts.skipPermissions);
   return buildMigrationResumeShellCommand(spec, session.projectPath ?? "", opts.shell, opts.withCwd);
 }
 
@@ -425,28 +399,11 @@ function buildMigrationResumeShellCommand(
   shell: ShellKind,
   withCwd = true,
 ): string {
-  const codexHome = spec.env?.CODEX_HOME;
   if (shell === "cmd" && requiresEncodedCmdCommand(spec, projectPath, withCwd)) {
     return buildEncodedCmdCommand(spec, projectPath, withCwd);
   }
 
-  const invocation = buildShellCommand(spec.command, spec.args, projectPath, {
-    shell,
-    withCwd: withCwd && !spec.env?.CODEX_HOME,
-  });
-  if (!codexHome) return invocation;
-
-  if (shell === "posix") {
-    const scopedInvocation = `CODEX_HOME=${shellTokenQuote(codexHome, shell)} ${buildShellCommand(spec.command, spec.args, projectPath, { shell, withCwd: false })}`;
-    return withCwd && projectPath ? `${buildCdPrefix(projectPath, shell)}${scopedInvocation}` : scopedInvocation;
-  }
-  if (shell === "powershell") {
-    const command = buildShellCommand(spec.command, spec.args, projectPath, { shell, withCwd });
-    return `$__assHadCodexHome = Test-Path Env:CODEX_HOME; $__assCodexHome = $env:CODEX_HOME; try { $env:CODEX_HOME = ${powershellQuote(codexHome)}; ${command} } finally { if ($__assHadCodexHome) { $env:CODEX_HOME = $__assCodexHome } else { Remove-Item Env:CODEX_HOME -ErrorAction SilentlyContinue } }`;
-  }
-
-  const command = buildShellCommand(spec.command, spec.args, projectPath, { shell, withCwd });
-  return `setlocal & set "CODEX_HOME=${codexHome.replace(/"/g, '""')}" & ${command} & endlocal`;
+  return buildShellCommand(spec.command, spec.args, projectPath, { shell, withCwd });
 }
 
 function requiresEncodedCmdCommand(
@@ -454,7 +411,7 @@ function requiresEncodedCmdCommand(
   projectPath: string,
   withCwd: boolean,
 ): boolean {
-  const values = [spec.command, ...spec.args, spec.env?.CODEX_HOME, withCwd ? projectPath : undefined];
+  const values = [spec.command, ...spec.args, withCwd ? projectPath : undefined];
   // `%NAME%` is expanded by cmd.exe even inside quotes, while `!NAME!` is
   // expanded when delayed expansion is enabled by the parent shell. Embedded
   // quotes/newlines can also escape the token boundary. Avoid cmd's parser for
@@ -468,9 +425,6 @@ function buildEncodedCmdCommand(
   withCwd: boolean,
 ): string {
   const statements = ["$ErrorActionPreference = 'Stop'"];
-  if (spec.env?.CODEX_HOME) {
-    statements.push(`$env:CODEX_HOME = ${powershellQuote(spec.env.CODEX_HOME)}`);
-  }
   if (withCwd && projectPath) {
     statements.push(`Set-Location -LiteralPath ${powershellQuote(projectPath)}`);
   }
@@ -497,19 +451,18 @@ export function getResumeCommand(
   settings: AppSettings = defaultSettings,
   opts: ResumeOptions = {},
 ): string {
-  const { withCwd = true, skipPermissions = false, platform = process.platform, homeDir = homedir() } = opts;
+  const { withCwd = true, skipPermissions = false, platform = process.platform } = opts;
   const sshArgs = resolveSshArgs(opts);
   const wslDistribution = resolveWslDistribution(opts);
   const shell = localShellKind(platform, settings);
   if (wslDistribution) {
-    const spec = buildResumeRuntimeProcessSpec(session, settings, skipPermissions, "linux", homeDir);
+    const spec = buildResumeRuntimeProcessSpec(session, settings, skipPermissions);
     const innerCommand = buildMigrationResumeShellCommand(spec, session.projectPath ?? "", "posix", withCwd);
     return shell === "powershell"
       ? formatPowershellWslDisplay(wslDistribution, innerCommand)
       : formatWslDisplayCommand(wslDistribution, innerCommand, platform);
   }
-  const runtimePlatform = sshArgs ? "linux" : platform;
-  const spec = buildResumeRuntimeProcessSpec(session, settings, skipPermissions, runtimePlatform, homeDir);
+  const spec = buildResumeRuntimeProcessSpec(session, settings, skipPermissions);
   if (sshArgs) {
     // The remote command body always targets a POSIX shell; only the outer ssh
     // invocation is quoted for the local terminal (cmd carets vs PowerShell).
@@ -720,7 +673,7 @@ export function getResumeProcessSpec(
   const sshArgs = resolveSshArgs(opts);
   const wslDistribution = resolveWslDistribution(opts);
   if (wslDistribution) {
-    const spec = buildResumeRuntimeProcessSpec(session, settings, skipPermissions, "linux", homeDir);
+    const spec = buildResumeRuntimeProcessSpec(session, settings, skipPermissions);
     const innerCommand = buildMigrationResumeShellCommand(spec, session.projectPath ?? "", "posix", true);
     return {
       command: "wsl.exe",
@@ -734,8 +687,7 @@ export function getResumeProcessSpec(
       }),
     };
   }
-  const runtimePlatform = sshArgs ? "linux" : platform;
-  const spec = buildResumeRuntimeProcessSpec(session, settings, skipPermissions, runtimePlatform, homeDir);
+  const spec = buildResumeRuntimeProcessSpec(session, settings, skipPermissions);
 
   if (sshArgs) {
     const innerCommand = buildMigrationResumeShellCommand(spec, session.projectPath ?? "", "posix", true);
@@ -768,14 +720,10 @@ export function getMigrationResumeProcessSpec(
 ): ResumeProcessSpec {
   const platform = options.platform ?? process.platform;
   const shell = localShellKind(platform, settings);
-  const env = target === "codex-internal"
-    ? { CODEX_HOME: migrationCodexHome(options.homeDir ?? homedir(), platform) }
-    : undefined;
   const spec = {
     command: migrationBinary(target, settings),
     args: migrationResumeArgs(target, sessionId),
     cwd: projectPath || undefined,
-    env,
   };
   const commands = buildMigrationResumeCommands(spec, projectPath, true);
   const displayCommand = shell === "powershell" ? commands.powershell : shell === "cmd" ? commands.cmd : commands.posix;
@@ -796,26 +744,19 @@ export function getSafeMigrationResumeCommand(
   const platform = options.platform ?? process.platform;
   const command = migrationBinary(target, settings);
   const args = migrationResumeArgs(target, sessionId);
-  const codexHome = target === "codex-internal"
-    ? migrationCodexHome(options.homeDir ?? homedir(), platform)
-    : null;
 
   if (platform !== "win32") {
     const invocation = [safePosixMigrationToken(command), ...args.map(safePosixMigrationToken)].join(" ");
-    const scoped = codexHome ? `CODEX_HOME=${safePosixMigrationToken(codexHome)} ${invocation}` : invocation;
-    return projectPath ? `cd ${safePosixMigrationToken(projectPath)} && ${scoped}` : scoped;
+    return projectPath ? `cd ${safePosixMigrationToken(projectPath)} && ${invocation}` : invocation;
   }
 
   if (settings.defaultTerminal === "PowerShell") {
     const invocation = `& ${[command, ...args].map(safePowerShellMigrationToken).join(" ")}`;
-    const located = projectPath ? `Set-Location -LiteralPath ${safePowerShellMigrationToken(projectPath)}; ${invocation}` : invocation;
-    if (!codexHome) return located;
-    return `$__assHadCodexHome = Test-Path Env:CODEX_HOME; $__assCodexHome = $env:CODEX_HOME; try { $env:CODEX_HOME = ${safePowerShellMigrationToken(codexHome)}; ${located} } finally { if ($__assHadCodexHome) { $env:CODEX_HOME = $__assCodexHome } else { Remove-Item Env:CODEX_HOME -ErrorAction SilentlyContinue } }`;
+    return projectPath ? `Set-Location -LiteralPath ${safePowerShellMigrationToken(projectPath)}; ${invocation}` : invocation;
   }
 
-  if ([command, ...args, projectPath, codexHome].some((value) => value != null && /[%!"\r\n&|<>^]/.test(value))) {
+  if ([command, ...args, projectPath].some((value) => value != null && /[%!"\r\n&|<>^]/.test(value))) {
     const statements = ["$ErrorActionPreference = 'Stop'"];
-    if (codexHome) statements.push(`$env:CODEX_HOME = ${safePowerShellMigrationToken(codexHome)}`);
     if (projectPath) statements.push(`Set-Location -LiteralPath ${safePowerShellMigrationToken(projectPath)}`);
     statements.push(`& ${[command, ...args].map(safePowerShellMigrationToken).join(" ")}`);
     const encoded = Buffer.from(statements.join("; "), "utf16le").toString("base64");
@@ -823,10 +764,7 @@ export function getSafeMigrationResumeCommand(
   }
 
   const invocation = [command, ...args].map(safeCmdMigrationToken).join(" ");
-  const located = projectPath ? `cd /d ${safeCmdMigrationToken(projectPath)} && ${invocation}` : invocation;
-  return codexHome
-    ? `setlocal & set "CODEX_HOME=${codexHome.replace(/[%!"]/g, (value) => value === "%" ? "%%" : value === "!" ? "^!" : '""')}" & ${located} & endlocal`
-    : located;
+  return projectPath ? `cd /d ${safeCmdMigrationToken(projectPath)} && ${invocation}` : invocation;
 }
 
 function safePosixMigrationToken(value: string): string {
@@ -1413,13 +1351,9 @@ export async function inspectMigrationCli(
     }
     return;
   }
-  const platform = options.platform ?? process.platform;
-  const env = target === "codex-internal"
-    ? { CODEX_HOME: migrationCodexHome(options.homeDir ?? homedir(), platform) }
-    : undefined;
   let versionOutput: string;
   try {
-    versionOutput = await runner(binary, ["--version"], env);
+    versionOutput = await runner(binary, ["--version"]);
   } catch (error) {
     throw new Error(migrationCliVersionErrorMessage(target, binary, error));
   }

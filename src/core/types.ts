@@ -1,10 +1,8 @@
 export type SessionSource =
   | "claude-cli"
   | "claude-app"
-  | "claude-internal"
   | "codex-cli"
   | "codex-app"
-  | "codex-internal"
   | "tclaude-cli"
   | "tcodex-cli"
   | "codebuddy-cli"
@@ -87,7 +85,7 @@ export interface SessionMessageEvent {
 }
 
 export type MigrationAgent = "claude" | "codex" | "codebuddy" | "codewiz" | "cursor";
-export type MigrationTarget = MigrationAgent | "tclaude" | "tcodex" | "claude-internal" | "codex-internal";
+export type MigrationTarget = MigrationAgent | "tclaude" | "tcodex";
 export type SessionMigrationStrategy = "complete" | "ai-compressed" | "locally-truncated";
 export type SessionMigrationStage = "reading" | "compressing" | "writing" | "indexing" | "launching";
 

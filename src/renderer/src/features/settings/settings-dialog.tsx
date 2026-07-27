@@ -538,32 +538,6 @@ export function SettingsDialog({
                 </label>
                 <label className="settings-field settings-toggle">
                   <div className="settings-field-text">
-                    <span className="settings-field-title">Include ~/.claude-internal</span>
-                    <span className="settings-field-sub">{l("Indexes Claude Code Internal sessions and allows migration to that CLI.", "索引 Claude Code Internal 会话，并允许迁移到该 CLI。")}</span>
-                  </div>
-                  <input
-                    type="checkbox"
-                    className="switch"
-                    checked={Boolean(settings?.includeClaudeInternal)}
-                    disabled={!settings || saving}
-                    onChange={(event) => onSettingsChange({ includeClaudeInternal: event.currentTarget.checked })}
-                  />
-                </label>
-                <label className="settings-field settings-toggle">
-                  <div className="settings-field-text">
-                    <span className="settings-field-title">Include ~/.codex-internal</span>
-                    <span className="settings-field-sub">{l("Indexes Codex Internal sessions and allows migration to that CLI.", "索引 Codex Internal 会话，并允许迁移到该 CLI。")}</span>
-                  </div>
-                  <input
-                    type="checkbox"
-                    className="switch"
-                    checked={Boolean(settings?.includeCodexInternal)}
-                    disabled={!settings || saving}
-                    onChange={(event) => onSettingsChange({ includeCodexInternal: event.currentTarget.checked })}
-                  />
-                </label>
-                <label className="settings-field settings-toggle">
-                  <div className="settings-field-text">
                     <span className="settings-field-title">Include ~/.tclaude</span>
                     <span className="settings-field-sub">{l("Indexes TClaude CLI sessions and allows migration to that CLI.", "索引 TClaude CLI 会话，并允许迁移到该 CLI。")}</span>
                   </div>

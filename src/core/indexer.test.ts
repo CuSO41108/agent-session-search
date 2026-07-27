@@ -216,10 +216,8 @@ describe("indexer", () => {
   it.each([
     { target: "claude", source: "claude-cli" },
     { target: "tclaude", source: "tclaude-cli" },
-    { target: "claude-internal", source: "claude-internal" },
     { target: "codex", source: "codex-cli" },
     { target: "tcodex", source: "tcodex-cli" },
-    { target: "codex-internal", source: "codex-internal" },
     { target: "codebuddy", source: "codebuddy-cli" },
     { target: "codewiz", source: "codewiz-cli" },
     { target: "cursor", source: "cursor-agent" },

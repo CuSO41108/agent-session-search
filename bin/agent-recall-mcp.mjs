@@ -492,11 +492,11 @@ async function runServer() {
         "典型场景：用户说「把这个会话迁移到 Claude/Codex/CodeBuddy」「把当前对话搬过去」「迁移会话」时调用此工具。" +
         "流程：先用 search_sessions 找到源会话的 sessionKey，再调用本工具传入 sessionKey 和 target。" +
         "迁移完成后返回 resumeCommand（如 cd /repo && claude --resume <id>），launched 恒为 false，需要用户自行在终端执行该命令。" +
-        "四个可选目标 tclaude、tcodex、claude-internal、codex-internal 必须先在 Settings > Optional sources 中启用。" +
+        "两个可选目标 tclaude、tcodex 必须先在 Settings > Optional sources 中启用。" +
         "仅支持本地会话（environmentKind=local），远程会话不可迁移。",
       inputSchema: {
         sessionKey: z.string().describe("要迁移的源会话 sessionKey，可通过 search_sessions 获取。"),
-        target: migrateTargetSchema.describe("目标 Agent：claude、codex、codebuddy、codewiz、cursor、tclaude、tcodex、claude-internal 或 codex-internal。四个可选目标需先在 Settings > Optional sources 启用。"),
+        target: migrateTargetSchema.describe("目标 Agent：claude、codex、codebuddy、codewiz、cursor、tclaude 或 tcodex。两个可选目标需先在 Settings > Optional sources 启用。"),
       },
     },
     async (args) => {
