@@ -82,6 +82,23 @@ describe("ManagedSkillLibrary local import", () => {
     expect(() => library.importLocalSkill(sourceSkillPath, [])).toThrow(/different content/i);
   });
 
+  it.each([
+    [".codebuddy", "CodeBuddy"],
+    [".qoder", "Qoder"],
+    [".trae", "Trae"],
+  ])("keeps the %s source label when importing a local Skill", (agentDirectory, expectedLabel) => {
+    const { homeDir, library } = createHarness();
+    const sourceSkillPath = writeSkill(
+      path.join(homeDir, agentDirectory, "skills", "review-code"),
+      "review-code",
+      "Review code changes",
+    );
+
+    expect(library.importLocalSkill(sourceSkillPath, [])).toMatchObject({
+      skill: { origin: { kind: "local", label: expectedLabel } },
+    });
+  });
+
   it("refuses arbitrary paths that are outside the current import candidates", () => {
     const { homeDir, library } = createHarness();
     const arbitrarySkill = writeSkill(path.join(homeDir, "downloads", "unknown"), "unknown", "Unknown");
@@ -140,6 +157,8 @@ describe("ManagedSkillLibrary target installation", () => {
     library.importLocalSkill(sourceSkillPath, []);
     const codexTarget = path.join(codexHome, "skills", "review-code");
     const claudeTarget = path.join(homeDir, ".claude", "skills", "review-code");
+    const codebuddyTarget = path.join(homeDir, ".codebuddy", "skills", "review-code");
+    const qoderTarget = path.join(homeDir, ".qoder", "skills", "review-code");
     const traeTarget = path.join(homeDir, ".trae", "skills", "review-code");
     const managedDirectory = path.join(libraryRoot, "review-code");
 
@@ -148,14 +167,20 @@ describe("ManagedSkillLibrary target installation", () => {
     expect(existsSync(claudeTarget)).toBe(false);
     rmSync(path.dirname(codexTarget), { recursive: true, force: true });
 
-    const installed = library.updateTargets("review-code", ["codex", "claude"]);
+    const installed = library.updateTargets("review-code", ["codex", "claude", "codebuddy", "qoder"]);
     expect(lstatSync(codexTarget).isSymbolicLink()).toBe(true);
     expect(lstatSync(claudeTarget).isSymbolicLink()).toBe(true);
+    expect(lstatSync(codebuddyTarget).isSymbolicLink()).toBe(true);
+    expect(lstatSync(qoderTarget).isSymbolicLink()).toBe(true);
     expect(realpathSync(codexTarget)).toBe(realpathSync(managedDirectory));
     expect(realpathSync(claudeTarget)).toBe(realpathSync(managedDirectory));
+    expect(realpathSync(codebuddyTarget)).toBe(realpathSync(managedDirectory));
+    expect(realpathSync(qoderTarget)).toBe(realpathSync(managedDirectory));
     expect(installed.installations).toEqual([
       expect.objectContaining({ target: "codex", state: "installed" }),
       expect.objectContaining({ target: "claude", state: "installed" }),
+      expect.objectContaining({ target: "codebuddy", state: "installed" }),
+      expect.objectContaining({ target: "qoder", state: "installed" }),
       expect.objectContaining({ target: "trae", state: "not-installed" }),
     ]);
 
@@ -168,6 +193,8 @@ describe("ManagedSkillLibrary target installation", () => {
     const removed = library.updateTargets("review-code", []);
     expect(existsSync(codexTarget)).toBe(false);
     expect(existsSync(claudeTarget)).toBe(false);
+    expect(existsSync(codebuddyTarget)).toBe(false);
+    expect(existsSync(qoderTarget)).toBe(false);
     expect(removed.installations.every((target) => target.state === "not-installed")).toBe(true);
   });
 

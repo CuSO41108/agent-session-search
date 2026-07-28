@@ -4,7 +4,7 @@ import * as path from "node:path";
 import { randomUUID } from "node:crypto";
 import { skillSyncFilesFromMetadata, type RemoteSkill, type SkillSyncFile } from "./skill-sync";
 
-export type SkillAgent = "codex" | "claude" | "qoder";
+export type SkillAgent = "codex" | "claude" | "codebuddy" | "qoder" | "trae";
 export type SkillPortableScope = "agent-recall" | "codex-user" | "claude-user" | "qoder-user" | "shared";
 export type SkillSource =
   | "agent-recall"
@@ -15,8 +15,12 @@ export type SkillSource =
   | "claude-user"
   | "claude-project"
   | "claude-plugin"
+  | "codebuddy-user"
+  | "codebuddy-project"
   | "qoder-user"
-  | "qoder-project";
+  | "qoder-project"
+  | "trae-user"
+  | "trae-project";
 
 export interface InstalledSkill {
   id: string;
@@ -109,7 +113,9 @@ export function listInstalledSkills(options: SkillManagerOptions = {}): Installe
     { agent: "codex", source: "codex-system", path: path.join(codexHome, "skills", ".system") },
     { agent: "codex", source: "codex-shared", path: path.join(homeDir, ".agents", "skills") },
     { agent: "claude", source: "claude-user", path: path.join(homeDir, ".claude", "skills") },
+    { agent: "codebuddy", source: "codebuddy-user", path: path.join(homeDir, ".codebuddy", "skills") },
     { agent: "qoder", source: "qoder-user", path: path.join(homeDir, ".qoder", "skills") },
+    { agent: "trae", source: "trae-user", path: path.join(homeDir, ".trae", "skills") },
     ...projectDirs.map((projectDir): SkillRootConfig => ({
       agent: "codex",
       source: "codex-project",
@@ -121,9 +127,19 @@ export function listInstalledSkills(options: SkillManagerOptions = {}): Installe
       path: path.join(projectDir, ".claude", "skills"),
     })),
     ...projectDirs.map((projectDir): SkillRootConfig => ({
+      agent: "codebuddy",
+      source: "codebuddy-project",
+      path: path.join(projectDir, ".codebuddy", "skills"),
+    })),
+    ...projectDirs.map((projectDir): SkillRootConfig => ({
       agent: "qoder",
       source: "qoder-project",
       path: path.join(projectDir, ".qoder", "skills"),
+    })),
+    ...projectDirs.map((projectDir): SkillRootConfig => ({
+      agent: "trae",
+      source: "trae-project",
+      path: path.join(projectDir, ".trae", "skills"),
     })),
   ];
   const roots: SkillRootConfig[] = [
@@ -209,7 +225,7 @@ function isCandidateProjectDir(projectDir: string, homeDir: string): boolean {
   const normalized = normalizePathKey(projectDir);
   const normalizedHome = normalizePathKey(homeDir);
   if (normalized === normalizedHome) return false;
-  return ![".codex", ".claude", ".agents", ".qoder"].some((dirName) => normalized === path.join(normalizedHome, dirName) || normalized.startsWith(`${path.join(normalizedHome, dirName)}${path.sep}`));
+  return ![".codex", ".claude", ".agents", ".codebuddy", ".qoder", ".trae"].some((dirName) => normalized === path.join(normalizedHome, dirName) || normalized.startsWith(`${path.join(normalizedHome, dirName)}${path.sep}`));
 }
 
 export function deleteInstalledSkill(skillPath: string, options: SkillManagerOptions = {}): DeleteInstalledSkillResult {
@@ -543,7 +559,8 @@ function walkForNestedSkillProjectDirs(rootDir: string, maxDepth: number): strin
 }
 
 function hasProjectSkillRoot(projectDir: string): boolean {
-  return [".claude", ".codex"].some((agentDir) => fs.existsSync(path.join(projectDir, agentDir, "skills")));
+  return [".claude", ".codex", ".codebuddy", ".qoder", ".trae"]
+    .some((agentDir) => fs.existsSync(path.join(projectDir, agentDir, "skills")));
 }
 
 function shouldSkipProjectSkillSearchDir(name: string): boolean {

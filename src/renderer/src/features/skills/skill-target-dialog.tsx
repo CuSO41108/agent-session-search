@@ -4,9 +4,11 @@ import { Check, Link2, ShieldAlert, X } from "lucide-react";
 import type { ManagedSkill, SkillInstallTarget } from "../../../../core/managed-skill-library";
 import { localize, type LanguageMode } from "../../language";
 
-const TARGET_LABELS: Partial<Record<SkillInstallTarget, string>> = {
+const TARGET_LABELS: Record<SkillInstallTarget, string> = {
   codex: "Codex",
   claude: "Claude Code",
+  codebuddy: "CodeBuddy",
+  qoder: "Qoder",
   trae: "Trae",
 };
 
@@ -75,7 +77,7 @@ export function SkillTargetDialog({
           {skill.installations.map((installation) => {
             const checked = selected.has(installation.target);
             const conflict = installation.state === "conflict";
-            const label = TARGET_LABELS[installation.target] ?? installation.target;
+            const label = TARGET_LABELS[installation.target];
             return (
               <button
                 key={installation.target}
@@ -99,7 +101,7 @@ export function SkillTargetDialog({
                 </span>
                 <span>
                   <strong>{label}</strong>
-                  <small>{conflict ? l("Path conflict", "路径冲突") : checked ? l("Will be installed", "将安装") : l("Not installed", "不安装")}</small>
+                  <small>{conflict ? l("Path conflict", "路径冲突") : checked ? l("Selected", "已选择") : l("Not selected", "未选择")}</small>
                 </span>
               </button>
             );

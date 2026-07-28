@@ -13,7 +13,7 @@ export interface SkillUsageStat {
   lastUsedAt: number;
 }
 
-export type SkillUsageAgent = "codex" | "claude" | "qoder";
+export type SkillUsageAgent = "codex" | "claude" | "codebuddy" | "qoder" | "trae";
 export type SkillUsageSourceKind = "claude-hook" | "codex-session";
 
 export interface SkillUsageEvent {

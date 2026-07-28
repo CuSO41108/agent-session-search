@@ -251,7 +251,7 @@ export function SkillDiscoveryDialog({
                 <footer>
                   <span>{l(`${detail.files.length} files`, `${detail.files.length} 个文件`)}</span>
                   <button type="button" className="primary" onClick={() => void importSkill()} disabled={importing}>
-                    <Download size={13} />{importing ? l("Adding…", "正在加入…") : l("Add to Skill library", "加入 Skill 库")}
+                    <Download size={13} />{importing ? l("Adding…", "正在加入…") : l("Add", "加入")}
                   </button>
                 </footer>
               </>

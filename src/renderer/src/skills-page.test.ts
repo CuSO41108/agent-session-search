@@ -11,6 +11,10 @@ const discoveryDialogSource = readFileSync(
   new URL("./features/skills/skill-discovery-dialog.tsx", import.meta.url),
   "utf8",
 );
+const targetDialogSource = readFileSync(
+  new URL("./features/skills/skill-target-dialog.tsx", import.meta.url),
+  "utf8",
+);
 
 const managedSkill: ManagedSkill = {
   id: "agent-recall:/library/review/SKILL.md",
@@ -102,5 +106,20 @@ describe("SkillDiscoveryDialog", () => {
     expect(discoveryDialogSource).toContain("selectedAiMatch?.reason");
     expect(discoveryDialogSource).toContain("Why it matches");
     expect(discoveryDialogSource).toContain("匹配原因");
+  });
+
+  it("uses a compact label for adding a discovered Skill", () => {
+    expect(discoveryDialogSource).toContain('l("Add", "加入")');
+    expect(discoveryDialogSource).not.toContain('l("Add to Skill library", "加入 Skill 库")');
+    expect(discoveryDialogSource).toContain('l("Adding…", "正在加入…")');
+  });
+});
+
+describe("SkillTargetDialog", () => {
+  it("describes target choices as selected or not selected", () => {
+    expect(targetDialogSource).toContain('l("Selected", "已选择")');
+    expect(targetDialogSource).toContain('l("Not selected", "未选择")');
+    expect(targetDialogSource).not.toContain('l("Will be installed", "将安装")');
+    expect(targetDialogSource).not.toContain('l("Not installed", "不安装")');
   });
 });

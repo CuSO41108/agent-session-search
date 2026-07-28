@@ -453,10 +453,20 @@ describe("skill manager", () => {
     expect(() => installRemoteSkillLocally(base, { homeDir: os.tmpdir() })).toThrow(/project|plugin/i);
   });
 
-  it("lists Qoder user and project skills alongside Codex and Claude", () => {
-    const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "session-search-skills-qoder-"));
+  it("lists CodeBuddy, Qoder, and Trae user and project skills", () => {
+    const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "session-search-skills-extra-agents-"));
     const projectDir = path.join(homeDir, "project");
     const codexHome = path.join(homeDir, ".codex");
+    writeSkill(
+      path.join(homeDir, ".codebuddy", "skills"),
+      "codebuddy-helper",
+      ["---", "name: codebuddy-helper", "description: CodeBuddy user skill", "---", "", "# CodeBuddy Help"].join("\n"),
+    );
+    writeSkill(
+      path.join(projectDir, ".codebuddy", "skills"),
+      "codebuddy-project-guide",
+      ["---", "name: codebuddy-project-guide", "description: CodeBuddy project conventions", "---", "", "# CodeBuddy Project"].join("\n"),
+    );
     writeSkill(
       path.join(homeDir, ".qoder", "skills"),
       "qoder-helper",
@@ -468,6 +478,16 @@ describe("skill manager", () => {
       ["---", "name: qoder-project-guide", "description: Qoder project conventions", "---", "", "# Qoder Project"].join("\n"),
     );
     writeSkill(
+      path.join(homeDir, ".trae", "skills"),
+      "trae-helper",
+      ["---", "name: trae-helper", "description: Trae user skill", "---", "", "# Trae Help"].join("\n"),
+    );
+    writeSkill(
+      path.join(projectDir, ".trae", "skills"),
+      "trae-project-guide",
+      ["---", "name: trae-project-guide", "description: Trae project conventions", "---", "", "# Trae Project"].join("\n"),
+    );
+    writeSkill(
       path.join(homeDir, ".claude", "skills"),
       "claude-helper",
       ["---", "name: claude-helper", "description: Claude user skill", "---", "", "# Claude Help"].join("\n"),
@@ -477,13 +497,21 @@ describe("skill manager", () => {
 
     expect(snapshot.skills.map((skill) => ({ name: skill.name, agent: skill.agent, source: skill.source }))).toEqual([
       { name: "claude-helper", agent: "claude", source: "claude-user" },
+      { name: "codebuddy-helper", agent: "codebuddy", source: "codebuddy-user" },
+      { name: "codebuddy-project-guide", agent: "codebuddy", source: "codebuddy-project" },
       { name: "qoder-helper", agent: "qoder", source: "qoder-user" },
       { name: "qoder-project-guide", agent: "qoder", source: "qoder-project" },
+      { name: "trae-helper", agent: "trae", source: "trae-user" },
+      { name: "trae-project-guide", agent: "trae", source: "trae-project" },
     ]);
     expect(snapshot.roots).toEqual(
       expect.arrayContaining([
+        expect.objectContaining({ source: "codebuddy-user", exists: true, skillCount: 1 }),
+        expect.objectContaining({ source: "codebuddy-project", exists: true, skillCount: 1 }),
         expect.objectContaining({ source: "qoder-user", exists: true, skillCount: 1 }),
         expect.objectContaining({ source: "qoder-project", exists: true, skillCount: 1 }),
+        expect.objectContaining({ source: "trae-user", exists: true, skillCount: 1 }),
+        expect.objectContaining({ source: "trae-project", exists: true, skillCount: 1 }),
       ]),
     );
 

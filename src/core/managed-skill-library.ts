@@ -10,7 +10,7 @@ import {
   type SkillSource,
 } from "./skill-manager";
 
-export type SkillInstallTarget = "codex" | "claude" | "trae";
+export type SkillInstallTarget = "codex" | "claude" | "codebuddy" | "qoder" | "trae";
 export type ManagedSkillOriginKind = "local" | "skills-sh" | "remote";
 export type ManagedSkillTargetState = "installed" | "not-installed" | "conflict";
 
@@ -72,7 +72,7 @@ export interface ManagedSkillLibraryOptions {
   now?: () => number;
 }
 
-const INSTALL_TARGETS: SkillInstallTarget[] = ["codex", "claude", "trae"];
+const INSTALL_TARGETS: SkillInstallTarget[] = ["codex", "claude", "codebuddy", "qoder", "trae"];
 
 export class ManagedSkillLibrary {
   private readonly libraryRoot: string;
@@ -358,7 +358,10 @@ export class ManagedSkillLibrary {
 
   private installTargetPath(managedId: string, target: SkillInstallTarget): string {
     if (target === "codex") return path.join(this.codexHome, "skills", managedId);
-    return path.join(this.homeDir, target === "claude" ? ".claude" : ".trae", "skills", managedId);
+    if (target === "claude") return path.join(this.homeDir, ".claude", "skills", managedId);
+    if (target === "codebuddy") return path.join(this.homeDir, ".codebuddy", "skills", managedId);
+    if (target === "qoder") return path.join(this.homeDir, ".qoder", "skills", managedId);
+    return path.join(this.homeDir, ".trae", "skills", managedId);
   }
 }
 
@@ -368,6 +371,9 @@ export function managedSkillLinkType(platform: NodeJS.Platform): "dir" | "juncti
 
 function localSkillSourceLabel(source: SkillSource): string {
   if (source.startsWith("claude")) return "Claude Code";
+  if (source.startsWith("codebuddy")) return "CodeBuddy";
+  if (source.startsWith("qoder")) return "Qoder";
+  if (source.startsWith("trae")) return "Trae";
   if (source === "codex-shared") return "Shared";
   return "Codex";
 }
