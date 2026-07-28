@@ -1,111 +1,19 @@
-name: Publish Merged Main
+name: Publish Daily Release
 
 on:
-  push:
-    branches:
-      - main
+  schedule:
+    - cron: "0 2 * * *"
+  workflow_dispatch:
 
 permissions:
   contents: write
-  pull-requests: read
 
 concurrency:
-  group: publish-merged-main
+  group: publish-release
   cancel-in-progress: false
 
 jobs:
-  openviking-runtime:
-    strategy:
-      fail-fast: true
-      matrix:
-        include:
-          - runner: macos-15
-            platform: darwin
-            arch: arm64
-            python_url: https://github.com/astral-sh/python-build-standalone/releases/download/20260510/cpython-3.12.13%2B20260510-aarch64-apple-darwin-install_only_stripped.tar.gz
-            python_sha256: 55bc1a5edbc8ac4da0081f4f5731ed2d1ed10c57cb37a820b2a0dbc7cad742e9
-          - runner: macos-15-intel
-            platform: darwin
-            arch: x64
-            python_url: https://github.com/astral-sh/python-build-standalone/releases/download/20260510/cpython-3.12.13%2B20260510-x86_64-apple-darwin-install_only_stripped.tar.gz
-            python_sha256: 6bab7fa97d4f2ddba86da0e05acff66c53b5edaca1df8edcf00ddca785a9c59b
-          - runner: windows-2025
-            platform: win32
-            arch: x64
-            python_url: https://github.com/astral-sh/python-build-standalone/releases/download/20260510/cpython-3.12.13%2B20260510-x86_64-pc-windows-msvc-install_only_stripped.tar.gz
-            python_sha256: 24168aff2e7d93784c6a436124c4ebb79b076a4e289bde4902c08333507b71d0
-    runs-on: ${{ matrix.runner }}
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-        with:
-          fetch-depth: 0
-
-      - name: Detect merged MR and release note
-        id: merged
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          BEFORE_SHA: ${{ github.event.before }}
-          MERGED_SHA: ${{ github.sha }}
-        run: |
-          pr_number="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${MERGED_SHA}/pulls" --jq '[.[] | select(.merged_at != null and .base.ref == "main")][0].number // empty')"
-          if [ -z "$pr_number" ]; then
-            echo "This main push is not associated with a merged MR; skipping application release."
-            echo "publish=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          note_file="$(git diff --name-only --diff-filter=A "$BEFORE_SHA" "$MERGED_SHA" -- .release-notes | grep -Ev '/README\.md$' | head -1)"
-          echo "publish=true" >> "$GITHUB_OUTPUT"
-          echo "note_file=$note_file" >> "$GITHUB_OUTPUT"
-
-      - name: Set up Node.js
-        if: steps.merged.outputs.publish == 'true'
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        with:
-          node-version: 22
-
-      - name: Compute idempotent release version
-        if: steps.merged.outputs.publish == 'true'
-        id: version
-        env:
-          GH_TOKEN: ${{ github.token }}
-          NOTE_FILE: ${{ steps.merged.outputs.note_file }}
-          MERGED_SHA: ${{ github.sha }}
-        run: node scripts/compute-release-version.mjs
-
-      - name: Install runtime build dependencies
-        if: steps.merged.outputs.publish == 'true' && steps.version.outputs.release_required == 'true'
-        run: npm ci
-
-      - name: Build isolated OpenViking runtime
-        if: steps.merged.outputs.publish == 'true' && steps.version.outputs.release_required == 'true'
-        shell: bash
-        env:
-          BUILD_HOME: ${{ runner.temp }}/openviking-build-home
-          OUTPUT_DIR: ${{ runner.temp }}/openviking-release
-          PYTHON_URL: ${{ matrix.python_url }}
-          PYTHON_SHA256: ${{ matrix.python_sha256 }}
-        run: |
-          node scripts/build-openviking-runtime.mjs \
-            --version 0.4.11 \
-            --platform "${{ matrix.platform }}" \
-            --arch "${{ matrix.arch }}" \
-            --build-home "$BUILD_HOME" \
-            --output-dir "$OUTPUT_DIR" \
-            --python-url "$PYTHON_URL" \
-            --python-sha256 "$PYTHON_SHA256"
-
-      - name: Upload OpenViking runtime artifact
-        if: steps.merged.outputs.publish == 'true' && steps.version.outputs.release_required == 'true'
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: openviking-runtime-${{ matrix.platform }}-${{ matrix.arch }}
-          path: ${{ runner.temp }}/openviking-release/openviking-runtime-*
-          if-no-files-found: error
-
   release:
-    needs: openviking-runtime
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
@@ -113,127 +21,258 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Detect merged MR and release note
-        id: merged
-        env:
-          GH_TOKEN: ${{ github.token }}
-          BEFORE_SHA: ${{ github.event.before }}
-          MERGED_SHA: ${{ github.sha }}
-        run: |
-          pr_number="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${MERGED_SHA}/pulls" --jq '[.[] | select(.merged_at != null and .base.ref == "main")][0].number // empty')"
-          if [ -z "$pr_number" ]; then
-            echo "This main push is not associated with a merged MR; skipping application release."
-            echo "publish=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          mapfile -t notes < <(git diff --name-only --diff-filter=A "$BEFORE_SHA" "$MERGED_SHA" -- .release-notes | grep -Ev '/README\.md$' || true)
-          if [ "${#notes[@]}" -ne 1 ]; then
-            echo "Expected exactly one added release note for merged MR #${pr_number}; found ${#notes[@]}." >&2
-            exit 1
-          fi
-          node scripts/release-notes.mjs check-file "${notes[0]}"
-          echo "publish=true" >> "$GITHUB_OUTPUT"
-          echo "pr_number=$pr_number" >> "$GITHUB_OUTPUT"
-          echo "note_file=${notes[0]}" >> "$GITHUB_OUTPUT"
-
       - name: Set up Node.js
-        if: steps.merged.outputs.publish == 'true'
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
 
-      - name: Compute idempotent release version
-        if: steps.merged.outputs.publish == 'true'
-        id: version
+      - name: Detect pending release notes
+        id: pending
         env:
           GH_TOKEN: ${{ github.token }}
-          NOTE_FILE: ${{ steps.merged.outputs.note_file }}
+          RELEASE_SHA: ${{ github.sha }}
+          V2_BOOTSTRAP_TAG: v0.34.2
+        run: |
+          published_tags_output="$(
+            gh api --paginate "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
+              --jq '.[] | select(.draft == false and .prerelease == false) | .tag_name'
+          )"
+          mapfile -t published_tags <<< "$published_tags_output"
+          latest_v1_tag=""
+          latest_v2_tag=""
+          for tag in "${published_tags[@]}"; do
+            if [ -z "$latest_v1_tag" ] && [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              latest_v1_tag="$tag"
+            elif [ -z "$latest_v2_tag" ] && [[ "$tag" =~ ^v2-[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              latest_v2_tag="$tag"
+            fi
+            if [ -n "$latest_v1_tag" ] && [ -n "$latest_v2_tag" ]; then
+              break
+            fi
+          done
+          if [ -z "$latest_v1_tag" ]; then
+            echo "No published stable V1 release exists; refusing to infer the release range." >&2
+            exit 1
+          fi
+          git rev-parse "$latest_v1_tag" >/dev/null 2>&1 || {
+            echo "Published V1 release tag $latest_v1_tag does not exist in the checkout." >&2
+            exit 1
+          }
+          if [ -z "$latest_v2_tag" ]; then
+            git rev-parse "$V2_BOOTSTRAP_TAG" >/dev/null 2>&1 || {
+              echo "V2 bootstrap tag $V2_BOOTSTRAP_TAG does not exist." >&2
+              exit 1
+            }
+            latest_v2_tag="$V2_BOOTSTRAP_TAG"
+          fi
+          git rev-parse "$latest_v2_tag" >/dev/null 2>&1 || {
+            echo "Published V2 release tag $latest_v2_tag does not exist in the checkout." >&2
+            exit 1
+          }
+
+          mapfile -t v1_candidates < <(git diff --name-only --diff-filter=A "$latest_v1_tag" "$RELEASE_SHA" -- .release-notes | grep -Ev '/README\.md$' || true)
+          mapfile -t v2_candidates < <(git diff --name-only --diff-filter=A "$latest_v2_tag" "$RELEASE_SHA" -- .release-notes | grep -Ev '/README\.md$' || true)
+          declare -a v1_notes=()
+          declare -a v2_notes=()
+          declare -A checked_notes=()
+
+          for note in "${v1_candidates[@]}" "${v2_candidates[@]}"; do
+            [ -n "$note" ] || continue
+            if [ -z "${checked_notes[$note]+x}" ]; then
+              node scripts/release-notes.mjs check-file "$note"
+              checked_notes["$note"]=1
+            fi
+          done
+          for note in "${v1_candidates[@]}"; do
+            target="$(node scripts/release-notes.mjs target "$note")"
+            if [ "$target" = "v1" ] || [ "$target" = "both" ]; then
+              v1_notes+=("$note")
+            fi
+          done
+          for note in "${v2_candidates[@]}"; do
+            target="$(node scripts/release-notes.mjs target "$note")"
+            if [ "$target" = "v2" ] || [ "$target" = "both" ]; then
+              v2_notes+=("$note")
+            fi
+          done
+
+          if [ "${#v1_notes[@]}" -eq 0 ] && [ "${#v2_notes[@]}" -eq 0 ]; then
+            echo "No unreleased user-facing changes; skipping application release."
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            echo "v1_publish=false" >> "$GITHUB_OUTPUT"
+            echo "v2_publish=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "publish=true" >> "$GITHUB_OUTPUT"
+          if [ "${#v1_notes[@]}" -gt 0 ]; then
+            v1_note_file="$RUNNER_TEMP/agent-recall-v1-note.md"
+            node scripts/release-notes.mjs combine --target v1 "${v1_notes[@]}" > "$v1_note_file"
+            echo "v1_publish=true" >> "$GITHUB_OUTPUT"
+            echo "v1_note_file=$v1_note_file" >> "$GITHUB_OUTPUT"
+          else
+            echo "v1_publish=false" >> "$GITHUB_OUTPUT"
+          fi
+          if [ "${#v2_notes[@]}" -gt 0 ]; then
+            v2_note_file="$RUNNER_TEMP/agent-recall-v2-note.md"
+            node scripts/release-notes.mjs combine --target v2 "${v2_notes[@]}" > "$v2_note_file"
+            echo "v2_publish=true" >> "$GITHUB_OUTPUT"
+            echo "v2_note_file=$v2_note_file" >> "$GITHUB_OUTPUT"
+          else
+            echo "v2_publish=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Compute V1 release version
+        if: steps.pending.outputs.v1_publish == 'true'
+        id: v1_version
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NOTE_FILE: ${{ steps.pending.outputs.v1_note_file }}
           MERGED_SHA: ${{ github.sha }}
+        working-directory: apps/main-1.0
+        run: node scripts/compute-release-version.mjs
+
+      - name: Compute V2 release version
+        if: steps.pending.outputs.v2_publish == 'true'
+        id: v2_version
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NOTE_FILE: ${{ steps.pending.outputs.v2_note_file }}
+          MERGED_SHA: ${{ github.sha }}
+        working-directory: apps/main-2.0
         run: node scripts/compute-release-version.mjs
 
       - name: Install dependencies
-        if: steps.merged.outputs.publish == 'true' && steps.version.outputs.release_required == 'true'
-        run: npm ci
+        if: steps.pending.outputs.publish == 'true'
+        run: |
+          npm ci
+          npm run setup
 
       - name: Test and build
-        if: steps.merged.outputs.publish == 'true' && steps.version.outputs.release_required == 'true'
+        if: steps.pending.outputs.publish == 'true'
         run: |
           npm test
           npm run typecheck
           npm run build
 
       - name: Build release assets
-        if: steps.merged.outputs.publish == 'true' && steps.version.outputs.release_required == 'true'
-        id: assets
+        if: steps.pending.outputs.publish == 'true'
         env:
-          NOTE_FILE: ${{ steps.merged.outputs.note_file }}
-          VERSION: ${{ steps.version.outputs.version }}
+          V1_NOTE_FILE: ${{ steps.pending.outputs.v1_note_file }}
+          V1_VERSION: ${{ steps.v1_version.outputs.version }}
+          V1_RELEASE_REQUIRED: ${{ steps.v1_version.outputs.release_required }}
+          V2_NOTE_FILE: ${{ steps.pending.outputs.v2_note_file }}
+          V2_VERSION: ${{ steps.v2_version.outputs.version }}
+          V2_RELEASE_REQUIRED: ${{ steps.v2_version.outputs.release_required }}
         run: |
-          mkdir -p release
-          package_file="$(npm pack --pack-destination release | tail -1)"
-          node scripts/create-release-assets.mjs \
-            --note "$NOTE_FILE" \
-            --version "$VERSION" \
-            --package "release/$package_file" \
-            --repository "$GITHUB_REPOSITORY" \
-            --output release
-          node scripts/create-release-assets.mjs \
-            --validate \
-            --version "$VERSION" \
-            --repository "$GITHUB_REPOSITORY" \
-            --output release
-          echo "package_file=$package_file" >> "$GITHUB_OUTPUT"
+          if [ "$V1_RELEASE_REQUIRED" = "true" ]; then
+            mkdir -p release/v1
+            v1_package_file="$(cd apps/main-1.0 && node scripts/pack-release.mjs --pack-destination "$GITHUB_WORKSPACE/release/v1")"
+            node apps/main-1.0/scripts/create-release-assets.mjs \
+              --note "$V1_NOTE_FILE" \
+              --version "$V1_VERSION" \
+              --package "$GITHUB_WORKSPACE/release/v1/$v1_package_file" \
+              --repository "$GITHUB_REPOSITORY" \
+              --output "$GITHUB_WORKSPACE/release/v1"
+            node apps/main-1.0/scripts/create-release-assets.mjs \
+              --validate \
+              --version "$V1_VERSION" \
+              --repository "$GITHUB_REPOSITORY" \
+              --output "$GITHUB_WORKSPACE/release/v1"
+          fi
 
-      - name: Download OpenViking runtime artifacts
-        if: steps.merged.outputs.publish == 'true' && steps.version.outputs.release_required == 'true'
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-        with:
-          pattern: openviking-runtime-*
-          path: release
-          merge-multiple: true
+          if [ "$V2_RELEASE_REQUIRED" = "true" ]; then
+            mkdir -p release/v2
+            v2_package_file="$(cd apps/main-2.0 && node scripts/pack-release.mjs --pack-destination "$GITHUB_WORKSPACE/release/v2")"
+            node apps/main-2.0/scripts/create-release-assets.mjs \
+              --note "$V2_NOTE_FILE" \
+              --version "$V2_VERSION" \
+              --package "$GITHUB_WORKSPACE/release/v2/$v2_package_file" \
+              --repository "$GITHUB_REPOSITORY" \
+              --output "$GITHUB_WORKSPACE/release/v2"
+            node apps/main-2.0/scripts/create-release-assets.mjs \
+              --validate \
+              --version "$V2_VERSION" \
+              --repository "$GITHUB_REPOSITORY" \
+              --output "$GITHUB_WORKSPACE/release/v2"
+          fi
 
-      - name: Verify OpenViking runtime artifacts
-        if: steps.merged.outputs.publish == 'true' && steps.version.outputs.release_required == 'true'
-        run: node scripts/verify-openviking-runtime-assets.mjs release 0.4.11
-
-      - name: Create tag and GitHub Release
-        if: steps.merged.outputs.publish == 'true' && steps.version.outputs.release_required == 'true'
+      - name: Publish V1 GitHub Release
+        if: steps.pending.outputs.v1_publish == 'true' && steps.v1_version.outputs.release_required == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ steps.version.outputs.tag }}
-          VERSION: ${{ steps.version.outputs.version }}
+          V1_TAG: ${{ steps.v1_version.outputs.tag }}
+          V1_VERSION: ${{ steps.v1_version.outputs.version }}
           MERGED_SHA: ${{ github.sha }}
         run: |
-          if ! git rev-parse "$TAG" >/dev/null 2>&1; then
+          if ! git rev-parse "$V1_TAG" >/dev/null 2>&1; then
             git config user.name "github-actions[bot]"
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git tag -a "$TAG" "$MERGED_SHA" -m "AgentRecall $TAG"
-            git push origin "$TAG"
+            git tag -a "$V1_TAG" "$MERGED_SHA" -m "AgentRecall $V1_TAG"
+            git push origin "$V1_TAG"
           fi
-          if release_is_draft="$(gh release view "$TAG" --json isDraft --jq '.isDraft' 2>/dev/null)"; then
+          if release_is_draft="$(gh release view "$V1_TAG" --json isDraft --jq '.isDraft' 2>/dev/null)"; then
             if [ "$release_is_draft" != "true" ]; then
-              echo "Release $TAG already exists and is published; refusing to overwrite it."
+              echo "Release $V1_TAG already exists and is published; refusing to overwrite it."
               exit 1
             fi
-            gh release edit "$TAG" --title "AgentRecall $TAG" --notes-file release/release-notes.md
+            gh release edit "$V1_TAG" --title "AgentRecall $V1_TAG" --notes-file release/v1/release-notes.md --latest
           else
-            gh release create "$TAG" --draft --verify-tag --title "AgentRecall $TAG" --notes-file release/release-notes.md
+            gh release create "$V1_TAG" --draft --verify-tag --title "AgentRecall $V1_TAG" --notes-file release/v1/release-notes.md --latest
           fi
-          gh release upload "$TAG" release/*.tgz release/*.sha256 release/update.json release/openviking-runtime-*.tar.gz release/openviking-runtime-*.tar.gz.json --clobber
+          gh release upload "$V1_TAG" release/v1/*.tgz release/v1/*.sha256 release/v1/update.json --clobber
           verify_directory="$(mktemp -d)"
-          gh release download "$TAG" \
-            --pattern "agent-recall-${VERSION}.tgz" \
-            --pattern "agent-recall-${VERSION}.tgz.sha256" \
+          trap 'rm -rf "$verify_directory"' EXIT
+          gh release download "$V1_TAG" \
+            --pattern "agent-recall-${V1_VERSION}.tgz" \
+            --pattern "agent-recall-${V1_VERSION}.tgz.sha256" \
             --pattern "agent-recall.tgz" \
             --pattern "agent-recall.tgz.sha256" \
             --pattern "update.json" \
-            --pattern "openviking-runtime-*" \
             --dir "$verify_directory"
-          node scripts/create-release-assets.mjs \
+          node apps/main-1.0/scripts/create-release-assets.mjs \
             --validate \
-            --version "$VERSION" \
+            --version "$V1_VERSION" \
             --repository "$GITHUB_REPOSITORY" \
             --output "$verify_directory"
-          node scripts/verify-openviking-runtime-assets.mjs "$verify_directory" 0.4.11
-          gh release edit "$TAG" --draft=false
+          gh release edit "$V1_TAG" --draft=false --latest
+
+      - name: Publish V2 GitHub Release
+        if: steps.pending.outputs.v2_publish == 'true' && steps.v2_version.outputs.release_required == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          V2_TAG: ${{ steps.v2_version.outputs.tag }}
+          V2_VERSION: ${{ steps.v2_version.outputs.version }}
+          MERGED_SHA: ${{ github.sha }}
+        run: |
+          if ! git rev-parse "$V2_TAG" >/dev/null 2>&1; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git tag -a "$V2_TAG" "$MERGED_SHA" -m "agent-recall-v2 v${V2_VERSION}"
+            git push origin "$V2_TAG"
+          fi
+          if release_is_draft="$(gh release view "$V2_TAG" --json isDraft --jq '.isDraft' 2>/dev/null)"; then
+            if [ "$release_is_draft" != "true" ]; then
+              echo "Release $V2_TAG already exists and is published; refusing to overwrite it."
+              exit 1
+            fi
+            gh release edit "$V2_TAG" --title "agent-recall-v2 v${V2_VERSION}" --notes-file release/v2/release-notes-v2.md --latest=false
+          else
+            gh release create "$V2_TAG" --draft --verify-tag --title "agent-recall-v2 v${V2_VERSION}" --notes-file release/v2/release-notes-v2.md --latest=false
+          fi
+          gh release upload "$V2_TAG" release/v2/*.tgz release/v2/*.sha256 release/v2/update-v2.json --clobber
+          verify_directory="$(mktemp -d)"
+          trap 'rm -rf "$verify_directory"' EXIT
+          gh release download "$V2_TAG" \
+            --pattern "agent-recall-v2-${V2_VERSION}.tgz" \
+            --pattern "agent-recall-v2-${V2_VERSION}.tgz.sha256" \
+            --pattern "agent-recall-v2.tgz" \
+            --pattern "agent-recall-v2.tgz.sha256" \
+            --pattern "update-v2.json" \
+            --dir "$verify_directory"
+          node apps/main-2.0/scripts/create-release-assets.mjs \
+            --validate \
+            --version "$V2_VERSION" \
+            --repository "$GITHUB_REPOSITORY" \
+            --output "$verify_directory"
+          gh release edit "$V2_TAG" --draft=false --latest=false

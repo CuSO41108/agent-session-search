@@ -16,7 +16,7 @@ git diff --check
 ## 当前验收状态
 
 - `npm run test:workflow-transaction`：47 个测试文件、494 项测试通过。
-- `npm run test:workflow-performance`：8 个测试文件、183 项 Hub 与运行时回归测试通过。
+- `npm run test:workflow-performance`：8 个测试文件、184 项 Hub 与运行时回归测试通过。
 - `npm run test:scripts`：91 项脚本、更新和打包辅助测试通过；测试使用隔离目录和合成数据。
 - `npm run typecheck`、`git diff --check` 与 `npm run release-note:check` 通过；本事务治理分支相对共同基线只新增并维护一份发布说明。
 - `test:workflow-performance` 首次运行有一项暂停/恢复时序断言失败；该项独立复现和完整性能套件重跑均通过。

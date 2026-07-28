@@ -1,0 +1,141 @@
+# AgentRecall User Guide
+
+This guide collects the detailed reference material behind the [English README](./README.en.md): exact file paths per source, remote sync behavior, Supabase setup, Skills sync, digital assets, and installation notes.
+
+## Supported Sources in Detail
+
+| Source | Local files |
+| --- | --- |
+| Codex CLI | `~/.codex/sessions/**/*.jsonl` |
+| Codex Desktop | `~/.codex/sessions/**/*.jsonl`, detected by session metadata |
+| Claude Code CLI | `~/.claude/projects/*/*.jsonl` plus optional `~/.claude/sessions/*.json` metadata |
+| Claude Desktop app | `~/Library/Application Support/Claude/claude-code-sessions/**/local_*.json` plus Claude Code project logs |
+| TClaude CLI | Optional in settings; reads `~/.tclaude/projects/*/*.jsonl` (a Claude Code fork sharing the same format); supports Resume |
+| TCodex CLI | Optional in settings; reads `~/.tcodex/sessions/**/*.jsonl` (a Codex fork sharing the same format); supports Resume |
+| CodeBuddy CLI | Optional in settings; reads `~/.codebuddy/projects/**/*.jsonl` |
+| CodeWiz | Optional in settings; reads `~/.local/share/codewiz/opencode.db` (shares the OpenCode session format); also available as a migration and remote-restore target |
+| OpenClaw | Optional in settings; reads `~/.openclaw/agents/*/sessions/*.jsonl`, legacy `~/.clawdbot/agents/*/sessions/*.jsonl`, excluding `*.trajectory.jsonl` |
+| Hermes | Optional in settings; reads `~/.hermes/state.db` |
+| OpenCode | Optional in settings; reads `~/.local/share/opencode/opencode.db` |
+| ZCode | Optional in settings; reads `~/.zcode/cli/db/db.sqlite`, including tool records and token statistics; a single local session can be permanently deleted after explicit confirmation |
+| Cursor Agent | Optional in settings; reads `~/.cursor/projects/**/agent-transcripts/**/*.jsonl` |
+| Trae | Optional in settings; reads `~/.trae/memory/projects/**/session_memory_*.jsonl` and `~/.trae-cn/memory/projects/**/session_memory_*.jsonl`; open-state detection reads Trae's local workspace state database |
+| Qoder | Optional in settings; reads `~/.qoder/cache/projects/*/conversation-history/*/*.jsonl`; supports live detection and remote sync |
+| SSH remote environment | Reads the same Codex / Claude Code session paths under the remote user's home directory over SSH |
+| WSL environment | Windows only; reads Codex / Claude Code session paths inside a selected WSL distribution and supports search, details, and Resume |
+
+Codex title metadata is read from `~/.codex/session_index.jsonl` when that file exists. If no upstream title is available, the app uses the first meaningful user question as the default title.
+
+CodeBuddy CLI, CodeWiz, TClaude, TCodex, OpenClaw, Hermes, OpenCode, ZCode, Cursor Agent, Trae, and Qoder are off by default and can be selected from Settings -> Optional sources. Once enabled, they support local indexing, search, details, and source filtering. Because TClaude / TCodex share the Claude Code / Codex formats, they additionally support Resume and one-click launch (invoking the `tclaude` / `tcodex` commands respectively). WSL environments support only Codex and Claude Code search, details, and Resume; WSL session migration is not supported yet. ZCode also includes local tool-call records and time-ranged token statistics; it does not support Resume, migration, SSH, remote sync, opening ZCode, or quota lookup. Deleting a ZCode session removes only the explicitly selected session and its related records, never the shared database file. For the other sources, Resume, SSH remote sync, and provider-specific usage stats are intentionally separate follow-up work. Trae and Qoder also support open-state detection.
+
+## Remote Session Sync
+
+Remote session sync saves local sessions into your own Supabase project. After configuring the same Supabase URL and anon key on another device, you can open the Session sync window, search, filter by source, inspect details, and restore a remote session into any supported local agent. For example, device A can upload a Codex session, and device B can view it and restore it into Claude Code, Codex, CodeBuddy, CodeWiz, or Cursor.
+
+This version is designed for **single-user, user-controlled sync**:
+
+- There is no user isolation or app login. It assumes you control the Supabase project and anon key.
+- Manual upload is available by default. You can also install Claude Code and Codex session hooks in Settings. After each response, a hook only records the pending session; the tray app updates the cloud copy using a stable content revision. Pending work is processed the next time the app starts if it was not running.
+- Re-uploading the same local session updates the latest remote snapshot. If the content has not changed, the upload is skipped. Remote sessions do not keep version history.
+- Automatic sync never overwrites a conflict. If both the local and cloud copies changed, resolve the conflict in the Session sync window. Turning off remote session sync or removing hooks only removes this app's hooks and does not delete cloud data.
+- The Session sync window compares all syncable local sessions with cloud copies and labels them as Local only, Upload available, Synced, Cloud newer, Cloud only, or Conflict. The comparison uses stable content revisions instead of device paths, upload times, or file modification times.
+- Batch upload skips conflicts. Only an explicit overwrite action can replace a changed cloud copy. You can select visible sessions for batch upload or cloud deletion; deleting a cloud copy never deletes the local session, and restore always creates a new local copy.
+- Remote details include the session metadata, messages, tool calls / trace events, tags, AI summary, and the other information currently supported by the detail view.
+- Restore uses the stored portable session and asks you to choose a local project directory on the current device as the target project path.
+
+### Configure Supabase
+
+1. Create or select a project in the [Supabase Dashboard](https://supabase.com/dashboard).
+2. Copy the Project URL and anon key from Project Settings -> API.
+3. In the app, open Settings -> Remote sync and paste the Supabase URL and anon key.
+4. Under First-time setup, click Copy latest SQL and then Open SQL Editor. The app opens the SQL Editor for the configured project.
+5. Paste and run the SQL, return to the app, and enable remote sync. If Session sync or Skills later reports that the schema or permissions need an update, run the latest SQL offered there and click Refresh.
+6. To enable automatic sync, click Install hooks. Codex prompts you to review its hook the first time; run `/hooks` in Codex and confirm that you trust it. Existing Claude Code and Codex hook configuration remains unchanged.
+
+The first-time script initializes both session and Skill sync. For session sync it creates:
+
+- Table: `public.agent_session_remote_sessions`
+- Storage bucket: `agent-session-remote`
+- Storage object paths:
+  - `sessions/{id}/detail.json`: used by the remote detail view
+  - `sessions/{id}/portable.json`: used for cross-device and cross-agent restore
+
+The script is idempotent and can be run more than once. It creates anon-role read/write policies suitable for a personal project. Those policies are convenient for single-user sync, but they are not a multi-user isolation model. If you plan to share the project with other users or expose it more broadly, adjust the RLS policies for your own Supabase security model first.
+
+### Upload Sessions
+
+Open the Session sync window from the top toolbar, select sessions marked Local only or Upload available, then click Upload to cloud. The window compares all syncable local sessions, independent of the main window's current search, filters, or selection.
+
+If the same session has already been uploaded:
+
+- Unchanged content: the app reports that the remote session is already up to date.
+- Changed content: the app updates the remote table row and the `detail.json` / `portable.json` objects in Storage.
+
+### Search, Inspect, and Restore Remote Sessions
+
+Click the cloud icon in the top toolbar to open Session sync:
+
+- Search remote sessions by title, project path, summary, tags, and full text.
+- Use Source to filter uploaded sessions by Claude, Codex, CodeBuddy, CodeWiz, or Cursor.
+- Click View to open a read-only remote detail view.
+- Choose the target agent under Restore to, then click Restore on a session row.
+- On first restore, choose a local project directory on the current device. The app writes the session into the target agent's local session directory and attempts to launch that agent so you can continue working.
+
+## Skills Management and Sync
+
+The Skills window lists installed Codex / Claude Code skills, lets you filter by source, inspect usage counts, preview `SKILL.md`, copy paths, reveal skill folders, and delete non-system skills.
+
+To sync your personal skills between machines, enable Settings -> Skills -> Supabase skill sync:
+
+1. Create or select a project in the [Supabase Dashboard](https://supabase.com/dashboard).
+2. Copy the Project URL and anon key from Project Settings -> API.
+3. Paste them into Settings -> Skills. First-time setup offers the same combined script used by session sync and opens the configured project's SQL Editor directly.
+4. Run the SQL and enable sync. If the table, Storage bucket, columns, or permissions later need an update, the Local view offers the latest Skill SQL, an Open SQL Editor action, and an in-place Refresh action.
+5. In the Local view, select a local skill and click Upload. A stable fingerprint identifies skills by agent and name. Each upload that actually changes the content adds a new version (v1, v2, …); uploads with unchanged content are skipped, and if the latest remote version came from a different same-named skill you are asked to confirm before appending a version.
+6. On another machine, configure the same Supabase URL and anon key, open the Remote view, pick a version from the dropdown to preview any point in history (the newest is tagged latest), then click Install locally / Update local to install that version.
+
+Sync uploads the full skill directory's regular files, including `SKILL.md`, `references/`, `scripts/`, examples, and other supporting files. Downloads restore them into the local user skill root. Codex skills install into `$CODEX_HOME/skills` or `~/.codex/skills`; Claude Code skills install into `~/.claude/skills`.
+
+If you created the `agent_recall_skills` table with an earlier version, re-run the Copy setup SQL script once after upgrading to enable version history. The script is idempotent: it adds the `content_hash` column and changes the unique constraint from `local_fingerprint` to `(local_fingerprint, version)`.
+
+Supabase sync is designed for personal projects. It does not create tables automatically and does not require a service role key. The app stores only the Project URL and anon key locally, then uses the Supabase REST API to access the `agent_recall_skills` table. The copied setup SQL grants anon read/write access through RLS for personal sync convenience; adjust the RLS policy first if you plan to share the project with other users or expose it more broadly.
+
+## Digital Assets Panel
+
+Click the database icon in the toolbar to open the Digital Assets panel, which manages Rules and Memories sync across devices:
+
+- **Rules sync**: Scans local Claude `CLAUDE.md` (global and project-level, including nested files), Codex `AGENTS.md` (global `~/.codex/AGENTS.md` and project-level, including nested files), and Qoder `.qoder/rules/*.md` (project-level), uploads/downloads via Supabase. If your rules table was created before AGENTS.md support, re-run the latest Rules setup SQL once to allow the new agent type.
+- **Memories sync**: Scans local Qoder long-term memories (`~/.qoder/memories/`) and Codex memories (`~/.codex/memories_1.sqlite`), uploads/downloads via Supabase.
+
+Each tab shows local assets (with sync status: synced / modified / not synced) and remote assets, supporting upload all, per-item upload, and remote deletion. Reuses the Supabase URL and anon key from Skills sync settings. Enable the "Rules sync" and "Memories sync" toggles in Settings to get started.
+
+## Installation Notes
+
+The first installation downloads the Electron runtime for the current operating system. Once installed, run `agent-recall` from any terminal to launch it. The app stays in the background with a menu bar icon on macOS or a system tray icon on Windows. If the global shortcut conflicts with another launcher, change or disable it in Settings. The app uses a single-instance lock, so launching it again focuses the existing window instead of opening another instance.
+
+On macOS, Settings can also be opened with `Cmd+,`. Use Appearance to switch the color theme and English / Chinese UI.
+
+For daily use, you do not need to reinstall dependencies or rebuild. Just run:
+
+```bash
+agent-recall
+```
+
+If a new terminal says `agent-recall: command not found`, the global command was probably installed under nvm's Node 22 directory while the current shell is using another Node version. Run:
+
+```bash
+nvm use 22
+agent-recall
+```
+
+Or set Node 22 as your nvm default once:
+
+```bash
+nvm alias default 22
+```
+
+If you do not use nvm and have Node.js 22.13+ installed system-wide, daily startup does not need any nvm command.
+
+The terminal checks the latest GitHub Release automatically. When an update is available, it shows the release's new features and bug fixes and asks whether to install it. The same version, release notes, and **Update now** action are available under **Settings -> About**. Use `agent-recall --check-update` to check without launching the app or `agent-recall --update` to install immediately. If an automatic update fails, the external updater attempts to reopen the installed version and uses an operating-system dialog to offer actions for copying the manual installation command or opening the latest Release page.
+
+See [Install.md](../Install.md) for updating, uninstalling, installing from a fresh clone, and network mirror tips.

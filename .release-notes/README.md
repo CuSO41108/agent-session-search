@@ -14,6 +14,8 @@ Every independent development branch adds exactly one Markdown file in this dire
 - 描述已经解决的用户可见问题。
 ```
 
-At least one section must contain a bullet. Omit an empty section. The text is published to GitHub Releases and displayed unchanged by the terminal and App update interfaces.
+At least one section must contain a bullet. Omit an empty section. Pending bullets are aggregated into the next GitHub Release and displayed unchanged by the terminal and App update interfaces.
 
 Write this as product copy for users, not as an engineering log. Keep only user-visible features and fixes. Do not mention MRs/PRs, branches, `main`, CI, GitHub Actions, commits, release mechanics, refactors, test counts, internal services, database details, or local paths. Remove internal-only changes. Rewrite useful outcomes to omit private identifiers, hosts, paths, table names, credentials, and organizational details. A few appropriate emoji are welcome when they help users scan the text.
+
+V1 release notes need no routing marker. For a note that only affects the 2.0 preview, add `<!-- release-target: v2 -->` immediately after the title. Use `<!-- release-target: both -->` when the same user-visible change affects both apps. The routing comment is never shown in public release notes.
