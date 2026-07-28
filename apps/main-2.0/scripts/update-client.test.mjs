@@ -204,8 +204,8 @@ function manifest(version = "0.2.0") {
     releaseUrl: `https://github.com/zszz3/AgentRecall/releases/tag/v${version}`,
     notes: { features: ["终端显示更新。"], fixes: ["修复重启失败。"] },
     package: {
-      name: `agent-recall-${version}.tgz`,
-      url: `https://github.com/zszz3/AgentRecall/releases/download/v${version}/agent-recall-${version}.tgz`,
+      name: `agent-recall-v2-${version}.tgz`,
+      url: `https://github.com/zszz3/AgentRecall/releases/download/v${version}/agent-recall-v2-${version}.tgz`,
       sha256: "a".repeat(64),
       checksumUrl: "",
     },
@@ -227,7 +227,7 @@ test("snoozes the terminal prompt for the same cached version", async () => {
   const fetchImpl = async () => {
     request += 1;
     return request === 1
-      ? new Response(JSON.stringify({ tag_name: "v0.2.0", assets: [{ name: "update.json", browser_download_url: "https://download.example/update.json" }] }), { status: 200 })
+      ? new Response(JSON.stringify({ tag_name: "v0.2.0", assets: [{ name: "update-v2.json", browser_download_url: "https://download.example/update-v2.json" }] }), { status: 200 })
       : new Response(JSON.stringify(value), { status: 200 });
   };
   await checkForUpdate({ currentVersion: "0.1.0", cachePath, fetchImpl, force: true, now });
@@ -244,7 +244,7 @@ test("skips the same update version until a newer version is released", async ()
   const nextManifest = manifest("0.3.0");
   let value = firstManifest;
   const fetchImpl = async (url) => String(url).includes("api.github.com")
-    ? new Response(JSON.stringify({ tag_name: `v${value.version}`, assets: [{ name: "update.json", browser_download_url: "https://download.example/update.json" }] }), { status: 200 })
+    ? new Response(JSON.stringify({ tag_name: `v${value.version}`, assets: [{ name: "update-v2.json", browser_download_url: "https://download.example/update-v2.json" }] }), { status: 200 })
     : new Response(JSON.stringify(value), { status: 200 });
 
   await checkForUpdate({ currentVersion: "0.1.0", cachePath, fetchImpl, force: true, now: 1 });
@@ -303,7 +303,7 @@ test("rejects untrusted release package URLs", () => {
 test("accepts release package URLs from the renamed GitHub repository", () => {
   const value = manifest("0.5.0");
   value.releaseUrl = "https://github.com/zszz3/AgentRecall/releases/tag/v0.5.0";
-  value.package.url = "https://github.com/zszz3/AgentRecall/releases/download/v0.5.0/agent-recall-0.5.0.tgz";
+  value.package.url = "https://github.com/zszz3/AgentRecall/releases/download/v0.5.0/agent-recall-v2-0.5.0.tgz";
   assert.equal(parseUpdateManifest(value).package.url, value.package.url);
 });
 
@@ -314,7 +314,7 @@ test("checks GitHub latest release and formats the same notes for terminal outpu
   const fetchImpl = async (url) => {
     requests.push(String(url));
     if (requests.length === 1) {
-      return new Response(JSON.stringify({ tag_name: "v0.2.0", assets: [{ name: "update.json", browser_download_url: "https://download.example/update.json" }] }), {
+      return new Response(JSON.stringify({ tag_name: "v0.2.0", assets: [{ name: "update-v2.json", browser_download_url: "https://download.example/update-v2.json" }] }), {
         status: 200,
         headers: { etag: '"release-etag"' },
       });
@@ -358,7 +358,7 @@ test("falls back to the direct latest manifest when the GitHub release API fails
   assert.equal(result.error, null);
   assert.deepEqual(requests, [
     "https://api.github.com/repos/zszz3/AgentRecall/releases/latest",
-    "https://github.com/zszz3/AgentRecall/releases/latest/download/update.json",
+    "https://github.com/zszz3/AgentRecall/releases/latest/download/update-v2.json",
   ]);
 });
 
@@ -366,11 +366,11 @@ test("provides an actionable manual fallback when automatic installation fails",
   const command = manualInstallCommand();
   assert.equal(
     command,
-    "npm install -g https://github.com/zszz3/AgentRecall/releases/latest/download/agent-recall.tgz",
+    "npm install -g https://github.com/zszz3/AgentRecall/releases/latest/download/agent-recall-v2.tgz",
   );
   const message = formatManualUpdateFallback();
   assert.match(message, /自动更新未完成/);
-  assert.match(message, /npm install -g https:\/\/github\.com\/zszz3\/AgentRecall\/releases\/latest\/download\/agent-recall\.tgz/);
+  assert.match(message, /npm install -g https:\/\/github\.com\/zszz3\/AgentRecall\/releases\/latest\/download\/agent-recall-v2\.tgz/);
   assert.match(message, /https:\/\/github\.com\/zszz3\/AgentRecall\/releases\/latest/);
 });
 
@@ -394,7 +394,7 @@ test("shows a macOS-native fallback without requiring Electron", () => {
   assert.equal(calls[0].command, "osascript");
   assert.equal(calls[0].options.env.AGENT_RECALL_UPDATE_ERROR, "Electron download failed");
   assert.equal(calls[1].command, "pbcopy");
-  assert.match(calls[1].options.input, /npm install -g .*agent-recall\.tgz/);
+  assert.match(calls[1].options.input, /npm install -g .*agent-recall-v2\.tgz/);
 });
 
 test("shows a Windows-native fallback without requiring Electron", () => {

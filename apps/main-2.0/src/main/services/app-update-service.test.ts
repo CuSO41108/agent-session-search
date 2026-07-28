@@ -24,8 +24,8 @@ function manifest(version = "0.2.0"): AppUpdateManifest {
     releaseUrl: `https://github.com/zszz3/AgentRecall/releases/tag/v${version}`,
     notes: { features: [], fixes: ["修复更新检查。"] },
     package: {
-      name: `agent-recall-${version}.tgz`,
-      url: `https://github.com/zszz3/AgentRecall/releases/download/v${version}/agent-recall-${version}.tgz`,
+      name: `agent-recall-v2-${version}.tgz`,
+      url: `https://github.com/zszz3/AgentRecall/releases/download/v${version}/agent-recall-v2-${version}.tgz`,
       sha256: "a".repeat(64),
       checksumUrl: "",
     },

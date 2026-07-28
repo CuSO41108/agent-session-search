@@ -15,8 +15,8 @@ const GITHUB_REPOSITORY = "zszz3/AgentRecall";
 const TRUSTED_GITHUB_REPOSITORIES = new Set([GITHUB_REPOSITORY.toLowerCase(), "zszz3/agentrecall"]);
 const LATEST_RELEASE_API = `https://api.github.com/repos/${GITHUB_REPOSITORY}/releases/latest`;
 const LATEST_RELEASE_URL = `https://github.com/${GITHUB_REPOSITORY}/releases/latest`;
-const LATEST_PACKAGE_URL = `${LATEST_RELEASE_URL}/download/agent-recall.tgz`;
-const UPDATE_ASSET_NAME = "update.json";
+const LATEST_PACKAGE_URL = `${LATEST_RELEASE_URL}/download/agent-recall-v2.tgz`;
+const UPDATE_ASSET_NAME = "update-v2.json";
 const LATEST_UPDATE_MANIFEST_URL = `https://github.com/${GITHUB_REPOSITORY}/releases/latest/download/${UPDATE_ASSET_NAME}`;
 const UPDATE_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 const UPDATE_REQUEST_TIMEOUT_MS = 5_000;
@@ -254,7 +254,7 @@ async function checkForUpdate(options = {}) {
       if (!releaseResponse.ok) throw new Error(`GitHub release check failed (${releaseResponse.status}).`);
       const release = await releaseResponse.json();
       const asset = Array.isArray(release.assets) ? release.assets.find((item) => item?.name === UPDATE_ASSET_NAME) : null;
-      if (!asset?.browser_download_url) throw new Error("Latest GitHub Release does not contain update.json.");
+      if (!asset?.browser_download_url) throw new Error(`Latest GitHub Release does not contain ${UPDATE_ASSET_NAME}.`);
       manifestResponse = await fetchWithTimeout(fetchImpl, asset.browser_download_url, {
         headers: { "User-Agent": "agent-recall-updater" },
       }, options.timeoutMs ?? UPDATE_REQUEST_TIMEOUT_MS);
@@ -277,7 +277,7 @@ async function checkForUpdate(options = {}) {
       }
     }
     const manifest = parseUpdateManifest(await manifestResponse.json());
-    if (releaseTag && releaseTag !== manifest.tag) throw new Error("GitHub Release tag does not match update.json.");
+    if (releaseTag && releaseTag !== manifest.tag) throw new Error(`GitHub Release tag does not match ${UPDATE_ASSET_NAME}.`);
     const sameSnoozedVersion = cached?.snoozedVersion === manifest.version;
     const sameSkippedVersion = cached?.skippedVersion === manifest.version;
     const cache = {

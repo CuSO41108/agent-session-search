@@ -5,11 +5,13 @@ import { fileURLToPath } from "node:url";
 
 import { readReleaseNote, renderReleaseNotes } from "./release-notes.mjs";
 
-export const LATEST_PACKAGE_NAME = "agent-recall.tgz";
+export const LATEST_PACKAGE_NAME = "agent-recall-v2.tgz";
+export const UPDATE_MANIFEST_NAME = "update-v2.json";
+export const RELEASE_NOTES_NAME = "release-notes-v2.md";
 export const UPDATE_MANIFEST_REPOSITORY = "zszz3/AgentRecall";
 
 function releasePackageName(version) {
-  return `agent-recall-${version}.tgz`;
+  return `agent-recall-v2-${version}.tgz`;
 }
 
 function manifestRepositoryFor(repository) {
@@ -65,8 +67,8 @@ export async function createReleaseAssets({
     writeFile(path.join(outputDirectory, LATEST_PACKAGE_NAME), packageBytes),
     writeFile(path.join(outputDirectory, latestChecksumName), `${sha256}  ${LATEST_PACKAGE_NAME}\n`, "utf8"),
     writeFile(path.join(outputDirectory, checksumName), `${sha256}  ${packageName}\n`, "utf8"),
-    writeFile(path.join(outputDirectory, "update.json"), `${JSON.stringify(manifest, null, 2)}\n`, "utf8"),
-    writeFile(path.join(outputDirectory, "release-notes.md"), renderReleaseNotes(note), "utf8"),
+    writeFile(path.join(outputDirectory, UPDATE_MANIFEST_NAME), `${JSON.stringify(manifest, null, 2)}\n`, "utf8"),
+    writeFile(path.join(outputDirectory, RELEASE_NOTES_NAME), renderReleaseNotes(note), "utf8"),
   ]);
   return manifest;
 }
@@ -100,45 +102,45 @@ export async function validateReleaseAssets({ outputDirectory, version, reposito
   const releaseBaseUrl = `https://github.com/${manifestRepository}/releases`;
   const assetBaseUrl = `${releaseBaseUrl}/download/${tag}`;
   const assets = new Map();
-  for (const name of [packageName, checksumName, LATEST_PACKAGE_NAME, latestChecksumName, "update.json"]) {
+  for (const name of [packageName, checksumName, LATEST_PACKAGE_NAME, latestChecksumName, UPDATE_MANIFEST_NAME]) {
     assets.set(name, await readReleaseAsset(outputDirectory, name));
   }
 
   let manifest;
   try {
-    manifest = JSON.parse(assets.get("update.json").toString("utf8"));
+    manifest = JSON.parse(assets.get(UPDATE_MANIFEST_NAME).toString("utf8"));
   } catch {
-    throw new Error("Invalid update.json release asset.");
+    throw new Error(`Invalid ${UPDATE_MANIFEST_NAME} release asset.`);
   }
   if (!manifest || typeof manifest !== "object" || Array.isArray(manifest)) {
-    throw new Error("Invalid update.json release asset.");
+    throw new Error(`Invalid ${UPDATE_MANIFEST_NAME} release asset.`);
   }
   if (manifest.schemaVersion !== 1 || manifest.version !== version || manifest.tag !== tag) {
-    throw new Error("update.json version does not match the release version.");
+    throw new Error(`${UPDATE_MANIFEST_NAME} version does not match the release version.`);
   }
   if (manifest.releaseUrl !== `${releaseBaseUrl}/tag/${tag}`) {
-    throw new Error("update.json release URL does not match the release.");
+    throw new Error(`${UPDATE_MANIFEST_NAME} release URL does not match the release.`);
   }
   if (typeof manifest.title !== "string" || manifest.title.trim().length === 0) {
-    throw new Error("update.json title is invalid.");
+    throw new Error(`${UPDATE_MANIFEST_NAME} title is invalid.`);
   }
   if (!Array.isArray(manifest.notes?.features) || !Array.isArray(manifest.notes?.fixes)) {
-    throw new Error("update.json release notes are invalid.");
+    throw new Error(`${UPDATE_MANIFEST_NAME} release notes are invalid.`);
   }
   const packageManifest = manifest.package;
   if (!packageManifest || typeof packageManifest !== "object" || Array.isArray(packageManifest) || packageManifest.name !== packageName) {
-    throw new Error(`update.json package name does not match ${packageName}.`);
+    throw new Error(`${UPDATE_MANIFEST_NAME} package name does not match ${packageName}.`);
   }
   if (packageManifest.url !== `${assetBaseUrl}/${packageName}`) {
-    throw new Error("update.json package URL does not match the release asset.");
+    throw new Error(`${UPDATE_MANIFEST_NAME} package URL does not match the release asset.`);
   }
   if (packageManifest.checksumUrl !== `${assetBaseUrl}/${checksumName}`) {
-    throw new Error("update.json checksum URL does not match the release asset.");
+    throw new Error(`${UPDATE_MANIFEST_NAME} checksum URL does not match the release asset.`);
   }
 
   const packageBytes = assets.get(packageName);
   const sha256 = createHash("sha256").update(packageBytes).digest("hex");
-  if (packageManifest.sha256 !== sha256) throw new Error(`update.json checksum does not match ${packageName}.`);
+  if (packageManifest.sha256 !== sha256) throw new Error(`${UPDATE_MANIFEST_NAME} checksum does not match ${packageName}.`);
   if (checksumFromAsset(assets.get(checksumName), packageName) !== sha256) {
     throw new Error(`Checksum asset does not match ${packageName}.`);
   }
