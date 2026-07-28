@@ -1,4 +1,4 @@
-# AgentRecall 1.0 / 2.0 Monorepo Design
+# AgentRecall V1 / V2 Monorepo Design
 
 ## 目标
 
@@ -102,7 +102,7 @@
 ### V2 预览版
 
 - npm 包名改为 `agent-recall-v2`，并保持 `private: true`。
-- 产品名改为 `AgentRecall 2`，使 Electron userData 和单实例锁与 V1 分离。
+- 产品名改为 `agent-recall-v2`，使 Electron userData 和单实例锁与 V1 分离。
 - 内置 PostgreSQL 继续位于 V2 自己的 `<Electron userData>/postgres/` 下。
 - V2 的数据库连接指针、CLI、MCP Server 名称和显式安装命令使用 `agent-recall-v2` 命名空间，防止覆盖 V1 集成。
 - V2 不读取、复制或迁移 V1 的 SQLite 数据，也不自动复制旧 `AgentRecall` userData。

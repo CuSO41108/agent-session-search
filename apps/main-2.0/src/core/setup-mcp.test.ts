@@ -11,9 +11,17 @@ const { applyClaudeConfig, applyCodexConfig, removeCodexBlock } = require(path.r
 
 describe("setup-mcp Claude config", () => {
   it("adds the server while preserving existing config", () => {
-    const next = applyClaudeConfig({ projects: { a: 1 } }, "/abs/server.mjs", false);
+    const next = applyClaudeConfig({
+      projects: { a: 1 },
+      mcpServers: {
+        "agent-recall": { command: "node", args: ["/abs/v1.mjs"] },
+      },
+    }, "/abs/server.mjs", false);
     expect(next).toMatchObject({ projects: { a: 1 } });
-    expect(next.mcpServers).toEqual({ "agent-recall": { command: "node", args: ["/abs/server.mjs"] } });
+    expect(next.mcpServers).toEqual({
+      "agent-recall": { command: "node", args: ["/abs/v1.mjs"] },
+      "agent-recall-v2": { command: "node", args: ["/abs/server.mjs"] },
+    });
   });
 
   it("removes only our server", () => {
@@ -30,10 +38,16 @@ describe("setup-mcp Claude config", () => {
 
 describe("setup-mcp Codex config", () => {
   it("appends the block and is idempotent", () => {
-    const once = applyCodexConfig("[other]\nx = 1\n", "/abs/server.mjs", false);
+    const once = applyCodexConfig(
+      "[other]\nx = 1\n\n[mcp_servers.agent_recall]\ncommand = \"node\"\nargs = [\"/abs/v1.mjs\"]\n",
+      "/abs/server.mjs",
+      false,
+    );
+    expect(once).toContain("[mcp_servers.agent_recall_v2]");
     expect(once).toContain("[mcp_servers.agent_recall]");
     expect(once).toContain('args = ["/abs/server.mjs"]');
     const twice = applyCodexConfig(once, "/abs/server.mjs", false);
+    expect(twice.match(/\[mcp_servers\.agent_recall_v2\]/g)).toHaveLength(1);
     expect(twice.match(/\[mcp_servers\.agent_recall\]/g)).toHaveLength(1);
     expect(twice).toContain("[other]");
   });
@@ -41,7 +55,7 @@ describe("setup-mcp Codex config", () => {
   it("removes the block without touching other tables", () => {
     const withBlock = applyCodexConfig("[other]\nx = 1\n", "/abs/server.mjs", false);
     const removed = applyCodexConfig(withBlock, "/abs/server.mjs", true);
-    expect(removed).not.toContain("mcp_servers.agent_recall");
+    expect(removed).not.toContain("mcp_servers.agent_recall_v2");
     expect(removed).toContain("[other]");
     expect(removeCodexBlock(removed)).toBe(removed);
   });

@@ -40,6 +40,26 @@ afterEach(async () => {
 });
 
 describe("bootstrapApplicationPaths", () => {
+  it("keeps the V2 preview in its own user-data directory", () => {
+    const root = testRoot();
+    const home = path.join(root, "home");
+    const appData = path.join(root, "appdata");
+    const temp = path.join(root, "temp");
+    const { app } = fakeApp({
+      home,
+      appData,
+      userData: new Error("resolve from product identity"),
+      temp,
+    });
+
+    expect(bootstrapApplicationPaths({
+      app,
+      productName: "agent-recall-v2",
+      env: {},
+      warn: vi.fn(),
+    }).userData).toBe(path.join(appData, "agent-recall-v2"));
+  });
+
   it("registers validated Electron paths before application services are constructed", () => {
     const root = testRoot();
     const paths = {

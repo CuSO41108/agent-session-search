@@ -8,7 +8,7 @@ import path from "node:path";
 // therefore writes its resolved PostgreSQL URL to a private pointer file that
 // standalone tools (the MCP server) read to find the live database.
 
-const POINTER_DIR = ".agent-recall";
+const POINTER_DIR = ".agent-recall-v2";
 const POINTER_FILE = "database-url";
 
 export function databaseUrlPointerPath(home: string = homedir()): string {

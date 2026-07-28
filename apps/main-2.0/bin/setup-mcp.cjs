@@ -8,8 +8,8 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 
-const SERVER_NAME = "agent-recall";
-const CODEX_SECTION = "mcp_servers.agent_recall";
+const SERVER_NAME = "agent-recall-v2";
+const CODEX_SECTION = "mcp_servers.agent_recall_v2";
 
 function homeDir() {
   return process.env.AGENT_RECALL_TEST_HOME || os.homedir();

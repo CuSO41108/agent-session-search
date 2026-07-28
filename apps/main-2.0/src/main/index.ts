@@ -177,10 +177,10 @@ import type {
 } from "../core/types";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const PRODUCT_NAME = "AgentRecall";
+const PRODUCT_NAME = "agent-recall-v2";
 const TRAY_ICON_RELATIVE_PATH = path.join("assets", "tray-iconTemplate.png");
 const APP_ICON_RELATIVE_PATH = path.join("assets", "app-icon.png");
-const releaseUpdateRuntime = app.isPackaged || process.env.AGENT_RECALL_RELEASE_BUILD === "1";
+const releaseUpdateRuntime = false;
 
 const OPTIONAL_SOURCE_SETTINGS = OPTIONAL_SESSION_SOURCE_DESCRIPTORS.map((descriptor) => ({
   key: descriptor.optionalSetting,
@@ -274,14 +274,11 @@ function ensureAgentRecallMcpPreference(): boolean {
 }
 
 app.setName(PRODUCT_NAME);
-app.setAppUserModelId("dev.zszz3.agent-recall");
+app.setAppUserModelId("dev.zszz3.agent-recall-v2");
 bootstrapApplicationPaths({
   app,
   productName: PRODUCT_NAME,
-  legacyProductNames: [
-    ["Agent", "Session", "Search"].join("-"),
-    ["agent", "session", "search"].join("-"),
-  ],
+  legacyProductNames: [],
 });
 
 let mainWindow: BrowserWindow | null = null;

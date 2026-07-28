@@ -1,4 +1,4 @@
-# AgentRecall 1.0 / 2.0 Monorepo Implementation Plan
+# AgentRecall V1 / V2 Monorepo Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -255,10 +255,10 @@ and:
 ```ts
 expect(bootstrapApplicationPaths({
   app,
-  productName: "AgentRecall 2",
+  productName: "agent-recall-v2",
   env: {},
 })).toMatchObject({
-  userData: path.join(appData, "AgentRecall 2"),
+  userData: path.join(appData, "agent-recall-v2"),
 });
 ```
 
@@ -284,7 +284,7 @@ Set:
 ```json
 {
   "name": "agent-recall-v2",
-  "productName": "AgentRecall 2",
+  "productName": "agent-recall-v2",
   "private": true
 }
 ```
@@ -296,7 +296,7 @@ Rename exposed V2 bin keys to `agent-recall-v2`, `agent-recall-v2-mcp`, `agent-r
 In `apps/main-2.0/src/main/index.ts`:
 
 ```ts
-const PRODUCT_NAME = "AgentRecall 2";
+const PRODUCT_NAME = "agent-recall-v2";
 const releaseUpdateRuntime = false;
 ```
 
@@ -346,7 +346,7 @@ Run:
 ```bash
 git add apps/main-2.0 package.json scripts/monorepo-layout.test.mjs
 git diff --cached --check
-git commit -m "feat: isolate the AgentRecall 2 preview app"
+git commit -m "feat: isolate the agent-recall-v2 preview app"
 ```
 
 ### Task 4: Separate Repository Release Tooling from App Tooling
@@ -511,7 +511,7 @@ git commit -m "fix: preserve Studio room employee controls"
 Preserve V1 feature, install, privacy, and usage content. Add one short section linking to:
 
 ```md
-## AgentRecall 2.0 开发版
+## agent-recall-v2 开发版
 
 2.0 开发版与 1.0 稳定版独立运行、独立保存数据。
 开发和功能说明见 [`apps/main-2.0/README.md`](./apps/main-2.0/README.md)。
@@ -530,7 +530,7 @@ Keep stable installation commands unchanged because the published V1 package rem
 
 - [ ] **Step 3: Make each app README self-contained**
 
-V1 app docs describe SQLite and V1 commands. V2 app docs describe PostgreSQL, `npm run setup:v2`, `npm run dev:v2`, product name `AgentRecall 2`, and explicitly state there is no V1 data import.
+V1 app docs describe SQLite and V1 commands. V2 app docs describe PostgreSQL, `npm run setup:v2`, `npm run dev:v2`, product name `agent-recall-v2`, and explicitly state there is no V1 data import.
 
 - [ ] **Step 4: Verify documentation links**
 
@@ -737,7 +737,7 @@ node -e "const a=require('./apps/main-1.0/package.json'); const b=require('./app
 Expected:
 
 ```text
-agent-recall AgentRecall agent-recall-v2 AgentRecall 2
+agent-recall AgentRecall agent-recall-v2 agent-recall-v2
 ```
 
 - [ ] **Step 7: Run repository checks**
