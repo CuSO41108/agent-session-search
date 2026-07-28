@@ -196,7 +196,12 @@ export function ApiConfigDialog({
       const hydrationKey = `${snapshot.configPath}:${snapshot.activeProviderId}:${snapshot.activeModel}:${snapshot.providers.map((provider) => `${provider.id}:${provider.baseUrl}`).join("|")}`;
       if (hydrationKey !== codexConfigHydrationRef.current) {
         codexConfigHydrationRef.current = hydrationKey;
-        hydrateDraftFromCodexConfig(snapshot);
+        // A Custom provider saved in-app is the draft baseline. Hydrating over it
+        // from config.toml would flip a saved-but-not-applied Custom draft back to
+        // Official (or overwrite its fields) every time the dialog reopens; the
+        // snapshot then only drives the "Active config" visualizer.
+        const savedCustom = settings?.apiConfig?.activeProvider === "custom" && hasCustomProviderValues(settings.apiConfig);
+        if (!savedCustom) hydrateDraftFromCodexConfig(snapshot);
       }
     } catch (error) {
       setCodexConfigError(error instanceof Error ? error.message : String(error));
