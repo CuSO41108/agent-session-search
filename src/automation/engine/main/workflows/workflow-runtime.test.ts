@@ -34,7 +34,7 @@ import {
   type WorkflowRunStateUpdate,
   workflowV2LlmNodePrompt,
 } from "./workflow-runtime";
-import type { WorkflowV2RecoveryOperationBroker } from "./workflow-runtime-ports";
+import type { WorkflowRuntimeDependencies, WorkflowV2RecoveryOperationBroker } from "./workflow-runtime-ports";
 
 const AGENTS = [
   { id: "agent-a", modelId: "model-a" },
@@ -262,6 +262,7 @@ async function workflowV2RuntimeFixture(input: {
   markWorkflowNodeConversationWaiting?: (conversationId: string, question: string) => WorkflowNodeConversation;
   store?: WorkflowV2StorePort;
   recoveryBroker?: WorkflowV2RecoveryOperationBroker;
+  generateRecoveryRecommendation?: WorkflowRuntimeDependencies["generateWorkflowV2RecoveryRecommendation"];
   executeScript: (request: ExecuteWorkflowV2ScriptRequest) => Promise<WorkflowV2WorkerOutput>;
 }): Promise<{
   runtime: WorkflowRuntime;
@@ -293,6 +294,7 @@ async function workflowV2RuntimeFixture(input: {
     title: "Workflow V2 runtime",
     status: "draft",
     revision: 1,
+    confirmedRevision: 1,
     configuredAgentId: "agent-a",
     modelId: "model-a",
     reviewerConfiguredAgentId: "agent-a",
@@ -401,6 +403,7 @@ async function workflowV2RuntimeFixture(input: {
     stopWorkflowNodeConversations: async () => undefined,
     ...(input.store ? { createWorkflowV2Store: () => input.store! } : {}),
     ...(input.recoveryBroker ? { createWorkflowV2RecoveryOperationBroker: () => input.recoveryBroker! } : {}),
+    ...(input.generateRecoveryRecommendation ? { generateWorkflowV2RecoveryRecommendation: input.generateRecoveryRecommendation } : {}),
   });
 
   return {
@@ -2244,6 +2247,37 @@ describe("WorkflowRuntime Workflow V2 bridge", () => {
     expect(fixture.updates.at(-1)).toMatchObject({ transaction: { status: "waiting_for_user" }, operations: [{ state: "compensated" }] });
   });
 
+  test("re-inspects operations and asks the Manager Agent when recovery is refreshed", async () => {
+    const definition = workflowV2Definition();
+    let durable!: WorkflowV2PersistedRunState;
+    const operations: WorkflowOperationRecord[] = [{ operationId: "operation-unknown", transactionId: "transaction-recovery", runId: "run-v2-intervention", nodeId: "draft", attempt: 1, kind: "http", target: "https://example.test", idempotencyKey: "key", adapterId: "http", prepared: { plan: {}, value: {} }, state: "unknown", reversible: true, createdAt: 1_100, updatedAt: 1_200 }];
+    const inspect = vi.fn(async () => { operations[0]!.state = "applied"; return "applied" as const; });
+    const generate = vi.fn(async ({ recovery }: Parameters<NonNullable<WorkflowRuntimeDependencies["generateWorkflowV2RecoveryRecommendation"]>>[0]) => ({ ...recovery.managerRecommendation, rationale: "Manager reviewed durable node, operation, and conflict evidence." }));
+    const fixture = await workflowV2RuntimeFixture({
+      definition,
+      store: { persistRunState: async (state) => { durable = structuredClone(state); }, appendEvents: async () => undefined, readRunState: async () => structuredClone(durable), readOperations: async () => structuredClone(operations), inspectWorkspaceTransaction: async () => ({ created: [], modified: ["result.txt"], deleted: [] }), inspectWorkspaceConflicts: async () => [{ path: "result.txt", baseline: { exists: true, sha256: "baseline" }, isolated: { exists: true, sha256: "isolated" }, current: { exists: true, sha256: "current" } }] },
+      recoveryBroker: { canInspectOperation: () => true, canCompensateOperation: () => false, inspect, compensateRun: async () => ({ compensated: [], skipped: [] }) },
+      generateRecoveryRecommendation: generate,
+      executeScript: async () => { throw new Error("refresh must not execute workflow nodes"); },
+    });
+    let runState = createWorkflowV2RunState({ definition });
+    runState = transitionWorkflowV2NodeState(runState, { nodeId: "draft", status: "running", now: 1_100 });
+    runState = transitionWorkflowV2NodeState(runState, { nodeId: "draft", status: "paused", now: 1_200, error: "Needs recovery" });
+    durable = { schemaVersion: WORKFLOW_V2_STORAGE_SCHEMA_VERSION, workflowId: definition.workflowId, runId: "run-v2-intervention", graphVersion: definition.graphVersion, savedAt: 1_200, eventCount: 0, plan: fixture.workflow.workflowV2Plan!, runState, workerOutputs: [], nodeControl: Object.fromEntries(definition.nodes.map((node) => [node.id, { extensionCount: 0 }])), transaction: { transactionId: "transaction-recovery", mode: "strict_atomic", status: "recovery_required", baselineId: "baseline", operationCount: 1, unknownOperationCount: 1, irreversibleOperationCount: 0, startedAt: 1_000, updatedAt: 1_200, retentionUntil: 604_801_200 } };
+    const run = workflowV2InterventionRun(fixture.workflow, "waiting_for_user", "paused");
+    run.recovery = { generatedAt: 1_200, transactionId: "transaction-recovery", status: "recovery_required", blockers: [], conflicts: ["result.txt"], conflictDetails: [], changedPaths: [], pendingNodeIds: [], uncertainNodeIds: [], cancelledNodeIds: [], cancellingNodeIds: [], notStartedNodeIds: [], availableActions: ["keep_state", "abandon"], managerRecommendation: { source: "rules", generatedAt: 1_200, transactionId: "transaction-recovery", recommendedAction: "keep_state", rationale: "fallback", compensationOperationIds: [], manualSteps: [], riskComparison: [], conflictCandidates: [] } };
+    fixture.setRuns([run]);
+    const result = await fixture.runtime.refreshWorkflowV2Recovery({ workflowId: definition.workflowId, runId: run.runId });
+    expect(result.ok).toBe(true);
+    expect(inspect).toHaveBeenCalledOnce();
+    expect(generate).toHaveBeenCalledOnce();
+    expect(fixture.updates.at(-1)).toMatchObject({ operations: [{ state: "applied" }], recovery: { managerRecommendation: { rationale: expect.stringContaining("Manager reviewed") }, conflicts: ["result.txt"] } });
+    expect(durable.recovery).toMatchObject({
+      conflicts: ["result.txt"],
+      managerRecommendation: { rationale: expect.stringContaining("Manager reviewed") },
+    });
+  });
+
   test("bounds an oversized script timeout to the platform timer range", async () => {
     const scriptDefinition: WorkflowV2Definition = {
       workflowId: "workflow-v2-runtime",
@@ -2626,5 +2660,25 @@ describe("WorkflowRuntime Workflow V2 bridge", () => {
       "node_started",
       "node_paused",
     ]);
+  });
+
+  test("removes public operation receipts after durable run materials are cleaned up", async () => {
+    const cleanupRunMaterials = vi.fn(async () => undefined);
+    const fixture = await workflowV2RuntimeFixture({
+      store: {
+        persistRunState: async () => undefined,
+        appendEvents: async () => undefined,
+        cleanupRunMaterials,
+      },
+      executeScript: async () => ({ nodeId: "verify", summary: "not used", outputs: { verified: true }, proposals: [] }),
+    });
+
+    await expect(fixture.runtime.cleanupWorkflowV2RunMaterials({
+      workflowId: fixture.workflow.workflowId,
+      runId: "run-v2-runtime",
+    })).resolves.toMatchObject({ ok: true });
+
+    expect(cleanupRunMaterials).toHaveBeenCalledWith(fixture.workflow.workflowId, "run-v2-runtime");
+    expect(fixture.updates.at(-1)).toEqual({ operations: null, recovery: null });
   });
 });

@@ -184,6 +184,7 @@ describe("WorkflowRunCenter", () => {
       notStartedNodeIds: [],
       availableActions: ["rollback_savepoint", "keep_state", "abandon"],
       managerRecommendation: {
+        source: "agent",
         generatedAt: 4_000,
         transactionId: "transaction-1",
         recommendedAction: "keep_state",
@@ -213,15 +214,19 @@ describe("WorkflowRunCenter", () => {
     recoveryRun.progress[0]!.scriptReceipt = { exitCode: 1, signal: null, timedOut: false, stderrSummary: "warning", stdoutDigest: "digest", operationDigest: "operation-digest", effectState: "unknown" };
     recoveryRun.progress[0]!.intervention = { nodeId: "research", source: "supervision_pause", reason: "Review evidence", allowedActions: ["continue", "replan"], requestedAt: 3_900 };
 
-    const html = renderToStaticMarkup(<WorkflowRunCenter runs={[recoveryRun]} open selectedRunId={recoveryRun.runId} writableRunId={recoveryRun.runId} language="zh" onSelectRun={() => undefined} onClose={() => undefined} onResolveRecovery={() => undefined} onResolveIntervention={() => undefined} />);
+    const html = renderToStaticMarkup(<WorkflowRunCenter runs={[recoveryRun]} open selectedRunId={recoveryRun.runId} writableRunId={recoveryRun.runId} language="zh" onSelectRun={() => undefined} onClose={() => undefined} onResolveRecovery={() => undefined} onRefreshRecovery={() => undefined} onResolveConflict={() => undefined} onResolveIntervention={() => undefined} />);
 
     expect(html).toContain("事务与恢复");
     expect(html).toContain("recovery_required");
+    expect(html).toContain("已提交</b>0");
+    expect(html).toContain("已补偿</b>0");
     expect(html).toContain("operation-1: unknown");
     expect(html).toContain("回滚到保存点");
     expect(html).toContain("查看 Manager Agent 候选结果");
     expect(html).toContain("候选结果只读");
     expect(html).toContain("safe-preview");
+    expect(html).toContain("nodeId · research · attempt #1");
+    expect(html).toContain("回滚依据（必填）");
     expect(html).toContain("节点验收 · degraded");
     expect(html).toContain("脚本执行凭据 · unknown");
     expect(html).toContain("stderr · warning");
@@ -236,6 +241,10 @@ describe("WorkflowRunCenter", () => {
     expect(html).toContain("用户当前工作区");
     expect(html).toContain("workflow result");
     expect(html).toContain("user edit");
+    expect(html).toContain("重新检查恢复事实");
+    expect(html).toContain("手动合并");
+    expect(html).toContain("最终写入前差异确认");
+    expect(html).toContain("确认并写入");
   });
 
   test("renders node execution telemetry for runtime, channel, model, attempts, tokens, cost, and duration", () => {

@@ -804,6 +804,26 @@ describe("workflow-v2 executor", () => {
     expect(result.workerOutputs[0]?.summary).toBe("script recovered");
   });
 
+  test("never automatically retries a non-idempotent script even when onError requests retry", async () => {
+    const retryDefinition = definition();
+    const script = createWorkflowV2InlineScriptSpec({ language: "typescript", code: "return { verification: true };" });
+    script.idempotency = "non_idempotent";
+    retryDefinition.nodes = [{ id: "script", kind: "verify", title: "Non-idempotent script", execModel: "script", executionMode: "script", script, outputFields: [{ key: "verification", required: true }], onError: "retry", maxRetry: 3 }];
+    retryDefinition.edges = [];
+    const plan = await buildWorkflowV2Plan({ definition: retryDefinition, approvedBy: "tester", now: 2_200 });
+    let attempts = 0;
+
+    const result = await executeWorkflowV2Plan({
+      plan,
+      runLlmNode: async () => { throw new Error("llm runner should not be called"); },
+      executeScript: async () => { attempts += 1; throw new Error("remote effect may have completed"); },
+    });
+
+    expect(attempts).toBe(1);
+    expect(result.runState.status).toBe("paused");
+    expect(result.runState.nodes.script).toMatchObject({ status: "paused", intervention: { reason: expect.stringContaining("Automatic retry is disabled") } });
+  });
+
   test("fails fast when the frozen plan cannot make progress", async () => {
     const validPlan = await buildWorkflowV2Plan({
       definition: definition(),

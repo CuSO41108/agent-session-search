@@ -123,6 +123,7 @@ export function updateWorkflowRunState(input: {
     lastError: input.update.lastError ?? input.run.lastError,
     finishedAt: input.run.finishedAt,
   };
+  if (input.update.operations === null) delete nextRun.operations;
   if (input.update.recovery === null) delete nextRun.recovery;
 
   const nextWorkflow = input.cloneDraft({

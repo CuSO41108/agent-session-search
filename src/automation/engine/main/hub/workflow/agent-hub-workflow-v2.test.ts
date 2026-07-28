@@ -1,7 +1,10 @@
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
+import os from "node:os";
+import path from "node:path";
 import { AgentHub } from "../agent-hub";
 import type { WorkflowDraftState } from "../../../shared/types";
 import { finishWorkflowRunState, startWorkflowRunState, updateWorkflowRunState } from "./agent-hub-workflow-run-state";
+import { WorkflowV2FileStore } from "../../workflows/v2/workflow-v2-store";
 
 const workflowForRunState = (): WorkflowDraftState => ({
   workflowId: "workflow-run-state", sourceType: "user" as const, topologyLocked: false, title: "Workflow",
@@ -13,6 +16,12 @@ const workflowForRunState = (): WorkflowDraftState => ({
 });
 
 describe("workflow-v2 planner boundary", () => {
+  test("defaults newly created workflows to strict atomic transactions", () => {
+    const hub = new AgentHub({ codex: "missing-codex-for-test", claude: "missing-claude-for-test" });
+
+    expect(hub.createWorkflowDraft().workflowDraft?.definition.transactionPolicy?.defaultMode).toBe("strict_atomic");
+  });
+
   test("keeps a waiting interactive run non-terminal with the same run id", () => {
     const workflow = workflowForRunState();
     const started = startWorkflowRunState({ workflow, request: { workflowId: workflow.workflowId }, runId: "run-1", cloneDraft: structuredClone, now: 2 });
@@ -27,6 +36,61 @@ describe("workflow-v2 planner boundary", () => {
     const finished = finishWorkflowRunState({ workflow: started.nextWorkflow, run: started.nextRun, request: { workflowId: workflow.workflowId, runId: "run-1", status: "completed" }, cloneDraft: structuredClone, now: 4 });
     expect(finished.nextRun.finishedAt).toBe(4);
   });
+
+  test("clears operation receipts when run material cleanup requests a null operation set", () => {
+    const workflow = workflowForRunState();
+    const started = startWorkflowRunState({ workflow, request: { workflowId: workflow.workflowId }, runId: "run-1", cloneDraft: structuredClone, now: 2 });
+    started.nextRun.operations = [{
+      operationId: "operation-1",
+      transactionId: "transaction-1",
+      runId: "run-1",
+      nodeId: "node-1",
+      attempt: 1,
+      kind: "other",
+      target: "test-target",
+      idempotencyKey: "idempotency-1",
+      adapterId: "test-adapter",
+      prepared: { plan: {}, value: {} },
+      state: "applied",
+      reversible: false,
+      receipt: { private: "material" },
+      createdAt: 2,
+      updatedAt: 2,
+    }];
+
+    const cleaned = updateWorkflowRunState({
+      workflow: started.nextWorkflow,
+      run: started.nextRun,
+      update: { workflowId: workflow.workflowId, runId: "run-1", operations: null },
+      cloneDraft: structuredClone,
+      now: 3,
+    });
+
+    expect(cleaned.nextRun).not.toHaveProperty("operations");
+  });
+
+  test("clears public operation receipts when expired durable materials are removed at startup", async () => {
+    const hub = new AgentHub({ codex: "missing-codex-for-test", claude: "missing-claude-for-test" });
+    const workflow = workflowForRunState();
+    const started = startWorkflowRunState({ workflow, request: { workflowId: workflow.workflowId }, runId: "run-expired", cloneDraft: structuredClone, now: 2 });
+    started.nextRun.operations = [{
+      operationId: "operation-expired", transactionId: "transaction-expired", runId: "run-expired", nodeId: "node-1", attempt: 1,
+      kind: "http", target: "https://example.test", idempotencyKey: "expired", state: "applied", reversible: false,
+      receipt: { private: "expired material" }, createdAt: 2, updatedAt: 2,
+    }];
+    (hub as any).storagePath = path.join(os.tmpdir(), "agent-recall-expired-materials", "state.json");
+    (hub as any).workflowStore.workflows.set(workflow.workflowId, started.nextWorkflow);
+    (hub as any).workflowStore.runs.set(started.nextRun.runId, started.nextRun);
+    const cleanup = vi.spyOn(WorkflowV2FileStore.prototype, "cleanupExpiredRuns").mockResolvedValue([{ workflowId: workflow.workflowId, runId: started.nextRun.runId }]);
+
+    try {
+      await expect((hub as any).reconcileRestoredWorkflowV2Runs()).resolves.toBe(true);
+      expect(hub.snapshot().workflowStore.runs[0]).not.toHaveProperty("operations");
+    } finally {
+      cleanup.mockRestore();
+    }
+  });
+
   test("freezes the user's approval mode choice into the run plan", () => {
     const workflow = workflowForRunState();
     const policy = { defaultMode: "controlled" as const, approvalMode: "user_choice" as const, checkpoints: [], externalEffects: "broker_only" as const, onConflict: "user_or_manager" as const, onUnknown: "pause" as const, retentionDays: 7 };

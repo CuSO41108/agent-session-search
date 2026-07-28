@@ -14,8 +14,11 @@ export function startWorkflowRun(input: { request: RunWorkflowRequest; deps: Wor
   const hasRunningRun = snapshot.workflowStore.runs.some((run) => run.workflowId === workflow.workflowId && !isWorkflowRunTerminalStatus(run.status));
   if ((!isWorkflowRunTerminalStatus(workflow.status) && workflow.status !== "draft") || hasRunningRun) return { ok: false, workflowId: workflow.workflowId, error: "Workflow is already running." };
   if (!workflow.workflowV2Plan) return { ok: false, workflowId: workflow.workflowId, error: "Workflow V2 plan is required. Legacy workflow execution is no longer supported." };
-  const configuredApprovalMode = workflow.workflowV2Plan.definition.transactionPolicy?.approvalMode;
-  const requestedApprovalMode = input.request.transactionApprovalMode;
+  if (workflow.confirmedRevision !== workflow.revision) return { ok: false, workflowId: workflow.workflowId, revision: workflow.revision, error: "Workflow must be confirmed before starting a run." };
+  const transactionPolicy = workflow.workflowV2Plan.definition.transactionPolicy;
+  const configuredApprovalMode = transactionPolicy?.defaultMode === "direct" ? undefined : transactionPolicy?.approvalMode;
+  const requestedApprovalMode = input.request.transactionApprovalMode
+    ?? (configuredApprovalMode === "user_choice" && (input.request.triggerSource === "scheduled" || input.request.triggerSource === "mcp") ? "batch" : undefined);
   if (configuredApprovalMode === "user_choice" && requestedApprovalMode !== "batch" && requestedApprovalMode !== "per_operation") {
     return { ok: false, workflowId: workflow.workflowId, error: "Choose batch or per-operation approval before starting this workflow." };
   }

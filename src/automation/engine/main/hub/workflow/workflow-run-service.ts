@@ -5,6 +5,8 @@ import type {
   ReviseWorkflowV2RunRequest,
   ResolveWorkflowV2InterventionRequest,
   ResolveWorkflowV2RecoveryRequest,
+  RefreshWorkflowV2RecoveryRequest,
+  ResolveWorkflowV2ConflictRequest,
   RunWorkflowRequest,
   StartWorkflowNodeRequest,
   StopWorkflowRunRequest,
@@ -53,6 +55,14 @@ export class WorkflowRunService {
 
   resolveRecovery(input: ResolveWorkflowV2RecoveryRequest): Promise<WorkflowOperationResult> {
     return this.deps.runtime.resolveWorkflowV2Recovery(input);
+  }
+
+  refreshRecovery(input: RefreshWorkflowV2RecoveryRequest): Promise<WorkflowOperationResult> {
+    return this.deps.runtime.refreshWorkflowV2Recovery(input);
+  }
+
+  resolveConflict(input: ResolveWorkflowV2ConflictRequest): Promise<WorkflowOperationResult> {
+    return this.deps.runtime.resolveWorkflowV2Conflict(input);
   }
 
   cleanupMaterials(input: CleanupWorkflowV2RunRequest): Promise<WorkflowOperationResult> {

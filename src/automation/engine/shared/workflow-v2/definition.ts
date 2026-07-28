@@ -38,6 +38,7 @@ export interface WorkflowV2ScriptAuthorization {
   capabilities: WorkflowV2ScriptCapability[];
   capabilityDigest: string;
   operationDigest: string;
+  attempt?: number;
   approvalRequestId?: string;
 }
 export interface WorkflowV2ScriptParameterDef {

@@ -16,6 +16,7 @@
 - [阶段四：Agent/脚本节点接入](./phase-04-node-integration.md)
 - [阶段五：恢复、冲突与用户界面](./phase-05-recovery-and-ui.md)
 - [阶段六：故障注入、迁移与发布](./phase-06-validation-and-rollout.md)
+- [阶段六验证结果](./phase-06-validation-results.md)
 
 ## 2. 问题定义
 

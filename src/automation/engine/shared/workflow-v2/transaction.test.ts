@@ -18,9 +18,11 @@ describe("workflow transaction contracts", () => {
     expect(createStrictWorkflowTransactionPolicy().defaultMode).toBe("strict_atomic");
     expect(createDirectWorkflowTransactionPolicy().defaultMode).toBe("direct");
     expect(workflowTransactionPreflightError(undefined)).toBeUndefined();
-    expect(workflowTransactionPreflightError(createStrictWorkflowTransactionPolicy())).toContain("workspace isolation");
-    expect(workflowTransactionPreflightError(createStrictWorkflowTransactionPolicy(), { workspaceIsolation: true })).toBeUndefined();
-    expect(workflowTransactionPreflightError({ ...createDirectWorkflowTransactionPolicy(), defaultMode: "controlled" })).toContain("operation broker");
+    expect(workflowTransactionPreflightError(createStrictWorkflowTransactionPolicy())).toContain("durable transaction ledger");
+    expect(workflowTransactionPreflightError(createStrictWorkflowTransactionPolicy(), { durableLedger: true })).toContain("recovery approval surface");
+    expect(workflowTransactionPreflightError(createStrictWorkflowTransactionPolicy(), { durableLedger: true, recoveryApproval: true })).toContain("workspace isolation");
+    expect(workflowTransactionPreflightError(createStrictWorkflowTransactionPolicy(), { workspaceIsolation: true, durableLedger: true, recoveryApproval: true })).toBeUndefined();
+    expect(workflowTransactionPreflightError({ ...createDirectWorkflowTransactionPolicy(), defaultMode: "controlled" }, { durableLedger: true, recoveryApproval: true })).toContain("operation broker");
     expect(isWorkflowTransactionState({
       transactionId: "transaction-1",
       mode: "direct",

@@ -109,6 +109,37 @@ describe("workflow-v2 storage contracts", () => {
     };
 
     expect(isWorkflowV2PersistedRunState(persisted)).toBe(true);
+    const recovery = {
+      generatedAt: 2,
+      transactionId: "transaction-1",
+      status: "recovery_required" as const,
+      blockers: ["operation-1: unknown"],
+      conflicts: [],
+      conflictDetails: [],
+      changedPaths: [],
+      pendingNodeIds: [],
+      uncertainNodeIds: ["node-1"],
+      cancelledNodeIds: [],
+      cancellingNodeIds: [],
+      notStartedNodeIds: [],
+      availableActions: ["keep_state" as const, "abandon" as const],
+      managerRecommendation: {
+        source: "agent" as const,
+        generatedAt: 2,
+        transactionId: "transaction-1",
+        recommendedAction: "keep_state" as const,
+        rationale: "Keep durable evidence available for review.",
+        compensationOperationIds: [],
+        manualSteps: [],
+        riskComparison: [{ action: "keep_state" as const, risk: "low" as const, detail: "No mutation." }],
+        conflictCandidates: [],
+      },
+    };
+    expect(isWorkflowV2PersistedRunState({ ...persisted, recovery })).toBe(true);
+    expect(isWorkflowV2PersistedRunState({
+      ...persisted,
+      recovery: { ...recovery, managerRecommendation: { ...recovery.managerRecommendation, source: "prompt-only" } },
+    })).toBe(false);
     expect(isWorkflowV2PersistedRunState({
       ...persisted,
       nodeControl: { "node-1": { extensionCount: 0, hookVariables: { risk: Number.NaN } } },

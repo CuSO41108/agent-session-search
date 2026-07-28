@@ -15,6 +15,7 @@ import {
   buildWorkflowV2RecoveryPlan,
   createWorkflowV2NodeCacheFingerprint,
   materializeWorkflowV2Recovery,
+  parseWorkflowV2RecoveryManagerRecommendation,
 } from "./workflow-v2-recovery";
 
 function definition(): WorkflowV2Definition {
@@ -156,7 +157,9 @@ describe("workflow-v2 recovery", () => {
       { nodeId: "first", summary: "Prepared", outputs: { value: "context" }, proposals: [] },
       { nodeId: "second", summary: "Answered", outputs: { answer_markdown: "# Final answer\n\nUseful result." }, proposals: [] },
     ], "completed");
-    expect(report).toBe("# Final answer\n\nUseful result.");
+    expect(report).toContain("# Final answer\n\nUseful result.");
+    expect(report).toContain("## Node timeline");
+    expect(report).toContain("## File diff");
     expect(report).not.toContain("Node outputs");
   });
 
@@ -167,7 +170,8 @@ describe("workflow-v2 recovery", () => {
       { nodeId: "first", summary: "Prepared", outputs: { value: "context" }, proposals: [] },
       { nodeId: "second", summary: "Echoed", outputs: { output: "原样内容" }, proposals: [] },
     ], "completed");
-    expect(report).toBe("原样内容");
+    expect(report).toContain("原样内容");
+    expect(report).toContain("## Node timeline");
   });
 
   test("includes recovery decisions, external operation states, and manual steps in reports", async () => {
@@ -201,6 +205,17 @@ describe("workflow-v2 recovery", () => {
     expect(report).toContain("## Recovery decisions");
     expect(report).toContain("keep_state by operator");
     expect(report).toContain("## Manual steps");
+  });
+
+  test("accepts only Manager Agent recommendations bound to the current recovery facts", async () => {
+    const state = await persisted();
+    const preview = buildWorkflowV2RecoveryPreview({
+      transaction: { transactionId: "transaction-1", mode: "strict_atomic", status: "recovery_required", baselineId: "baseline-1", currentSavepointId: "savepoint-1", operationCount: 0, unknownOperationCount: 0, irreversibleOperationCount: 0, startedAt: 1_000, updatedAt: 1_500, retentionUntil: 2_000 },
+      operations: [], runState: state.runState, workspaceDiff: { created: [], modified: ["both.txt"], deleted: [], conflicts: ["both.txt"] }, conflictDetails: [{ path: "both.txt", baseline: { exists: true, sha256: "baseline" }, isolated: { exists: true, sha256: "isolated" }, current: { exists: true, sha256: "current" } }], canRollbackSavepoint: true,
+    });
+    const recommendation = parseWorkflowV2RecoveryManagerRecommendation(JSON.stringify({ recommendedAction: "keep_state", rationale: "Preserve evidence.", rollbackTarget: "savepoint-1", compensationOperationIds: [], manualSteps: ["Review both.txt"], riskComparison: preview.availableActions.map((action) => ({ action, risk: action === "keep_state" ? "low" : "medium", detail: `${action} risk.` })), conflictCandidates: [{ path: "both.txt", resolution: "manual", rationale: "Both sides changed." }] }), preview);
+    expect(recommendation).toMatchObject({ transactionId: "transaction-1", recommendedAction: "keep_state", conflictCandidates: [{ path: "both.txt", resolution: "manual" }] });
+    expect(() => parseWorkflowV2RecoveryManagerRecommendation(JSON.stringify({ recommendedAction: "continue", rationale: "unsafe", compensationOperationIds: [], manualSteps: [], riskComparison: [], conflictCandidates: [] }), preview)).toThrow("unavailable action");
   });
 
   test("appends transactional acceptance evidence to the completed user report", async () => {

@@ -31,6 +31,13 @@ export interface ResolvedWorkflowTransactionPolicy {
   compatibilityWarning?: string;
 }
 
+export interface WorkflowTransactionCapabilities {
+  workspaceIsolation?: boolean;
+  externalOperationBroker?: boolean;
+  durableLedger?: boolean;
+  recoveryApproval?: boolean;
+}
+
 export function createStrictWorkflowTransactionPolicy(): WorkflowTransactionPolicy {
   return {
     defaultMode: "strict_atomic",
@@ -59,10 +66,16 @@ export function resolveWorkflowTransactionPolicy(policy: WorkflowTransactionPoli
 
 export function workflowTransactionPreflightError(
   policy: WorkflowTransactionPolicy | undefined,
-  capabilities: { workspaceIsolation?: boolean; externalOperationBroker?: boolean } = {},
+  capabilities: WorkflowTransactionCapabilities = {},
 ): string | undefined {
   const mode = resolveWorkflowTransactionPolicy(policy).policy.defaultMode;
   if (mode === "direct") return undefined;
+  if (!capabilities.durableLedger) {
+    return `Workflow ${mode} mode is unavailable until a writable durable transaction ledger is installed.`;
+  }
+  if (!capabilities.recoveryApproval) {
+    return `Workflow ${mode} mode is unavailable until a recovery approval surface is installed.`;
+  }
   if (mode === "strict_atomic") {
     return capabilities.workspaceIsolation
       ? undefined
@@ -183,6 +196,7 @@ export interface WorkflowRecoveryPreview {
 }
 
 export interface WorkflowRecoveryManagerRecommendation {
+  source: "rules" | "agent";
   generatedAt: number;
   transactionId: string;
   recommendedAction: WorkflowRecoveryAction;
@@ -217,6 +231,22 @@ export interface WorkflowRecoveryDecisionRecord {
   reason: string;
   operationIds: string[];
   decidedAt: number;
+}
+
+export function isWorkflowRecoveryPreview(value: unknown): value is WorkflowRecoveryPreview {
+  if (!isRecord(value) || !timestamp(value.generatedAt) || !nonEmpty(value.transactionId) || !transactionStatuses.has(value.status as WorkflowTransactionStatus)) return false;
+  const stringArrays = [value.blockers, value.conflicts, value.changedPaths, value.pendingNodeIds, value.uncertainNodeIds, value.cancelledNodeIds, value.cancellingNodeIds, value.notStartedNodeIds];
+  if (stringArrays.some((items) => !Array.isArray(items) || !items.every((item) => typeof item === "string"))) return false;
+  if (!Array.isArray(value.availableActions) || !value.availableActions.every((action) => recoveryActions.has(action as WorkflowRecoveryAction))) return false;
+  if (!Array.isArray(value.conflictDetails) || !value.conflictDetails.every((conflict) => isRecord(conflict) && nonEmpty(conflict.path) && isRecord(conflict.baseline) && isRecord(conflict.isolated) && isRecord(conflict.current))) return false;
+  if (!isRecord(value.managerRecommendation)) return false;
+  const manager = value.managerRecommendation;
+  if (manager.source !== "rules" && manager.source !== "agent") return false;
+  if (!timestamp(manager.generatedAt) || manager.transactionId !== value.transactionId || !recoveryActions.has(manager.recommendedAction as WorkflowRecoveryAction) || typeof manager.rationale !== "string") return false;
+  if (manager.rollbackTarget !== undefined && !nonEmpty(manager.rollbackTarget)) return false;
+  if (!Array.isArray(manager.compensationOperationIds) || !manager.compensationOperationIds.every(nonEmpty) || !Array.isArray(manager.manualSteps) || !manager.manualSteps.every((step) => typeof step === "string")) return false;
+  if (!Array.isArray(manager.riskComparison) || !manager.riskComparison.every((item) => isRecord(item) && recoveryActions.has(item.action as WorkflowRecoveryAction) && (item.risk === "low" || item.risk === "medium" || item.risk === "high") && typeof item.detail === "string")) return false;
+  return Array.isArray(manager.conflictCandidates) && manager.conflictCandidates.every((item) => isRecord(item) && nonEmpty(item.path) && (item.resolution === "isolated" || item.resolution === "current" || item.resolution === "manual") && typeof item.rationale === "string");
 }
 
 export type WorkflowCommitPlanStepKind = "reversible_external" | "workspace" | "irreversible_external";
@@ -325,6 +355,15 @@ export function isWorkflowOperationRecord(value: unknown): value is WorkflowOper
     && value.createdAt <= value.updatedAt;
 }
 
+export function isWorkflowRecoveryDecisionRecord(value: unknown): value is WorkflowRecoveryDecisionRecord {
+  if (!isRecord(value)) return false;
+  return [value.decisionId, value.transactionId, value.actor, value.reason].every(nonEmpty)
+    && recoveryActions.has(value.action as WorkflowRecoveryAction)
+    && Array.isArray(value.operationIds)
+    && value.operationIds.every(nonEmpty)
+    && timestamp(value.decidedAt);
+}
+
 export function canTransitionWorkflowOperation(from: WorkflowOperationState, to: WorkflowOperationState): boolean {
   return from === to || operationTransitions[from].has(to);
 }
@@ -350,6 +389,7 @@ const transactionStatuses = new Set<WorkflowTransactionStatus>(["active", "waiti
 const operationKinds = new Set<WorkflowOperationKind>(["file", "http", "message", "git", "database", "other"]);
 const commitPlanStepKinds = new Set<WorkflowCommitPlanStepKind>(["reversible_external", "workspace", "irreversible_external"]);
 const operationStates = new Set<WorkflowOperationState>(["planned", "applying", "applied", "compensating", "compensated", "unknown"]);
+const recoveryActions = new Set<WorkflowRecoveryAction>(["continue", "rollback_savepoint", "compensate_all", "keep_state", "abandon"]);
 const operationTransitions: Record<WorkflowOperationState, ReadonlySet<WorkflowOperationState>> = {
   planned: new Set(["applying"]),
   applying: new Set(["applied", "unknown"]),

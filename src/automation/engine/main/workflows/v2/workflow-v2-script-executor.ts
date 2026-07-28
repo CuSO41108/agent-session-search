@@ -1,11 +1,15 @@
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
+import { createRequire } from "node:module";
+import { runInNewContext } from "node:vm";
 import type { WorkflowV2ScriptExecutionReceipt, WorkflowV2ScriptWorkerOutput } from "../../../shared/workflow-v2/packets";
 import { sanitizeWorkflowTransactionValue } from "../../../shared/workflow-v2/transaction";
 import type { ExecuteWorkflowV2ScriptRequest } from "../workflow-runtime-ports";
 import { workflowV2ScriptCapabilityDigest, workflowV2ScriptOperationDigest } from "./workflow-v2-script-analysis";
 
-function assertAuthorized(input: ExecuteWorkflowV2ScriptRequest): void {
+const workflowScriptRequire = createRequire(import.meta.url);
+
+export function assertWorkflowV2ScriptAuthorized(input: ExecuteWorkflowV2ScriptRequest): void {
   if (input.authorization.nodeId !== input.node.id) throw new Error("Script authorization does not belong to this node.");
   if (input.authorization.decision !== "auto_allow" && input.authorization.decision !== "allow_once") throw new Error("Script execution is not authorized.");
   if (input.authorization.capabilityDigest !== workflowV2ScriptCapabilityDigest(input.authorization.capabilities)) throw new Error("Script authorization capability digest does not match its capabilities.");
@@ -21,7 +25,7 @@ function assertAuthorized(input: ExecuteWorkflowV2ScriptRequest): void {
   if (input.authorization.operationDigest !== operationDigest) throw new Error("Script authorization does not match the concrete operation.");
 }
 
-function validateOutput(input: ExecuteWorkflowV2ScriptRequest, output: Record<string, unknown>): void {
+export function validateWorkflowV2ScriptOutput(input: ExecuteWorkflowV2ScriptRequest, output: Record<string, unknown>): void {
   const schema = input.node.script.outputSchema;
   for (const key of schema?.required ?? []) {
     if (!(key in output) || output[key] === undefined || output[key] === null) throw new Error(`Workflow V2 script output is missing required field ${key}.`);
@@ -59,14 +63,21 @@ async function executeCommand(input: ExecuteWorkflowV2ScriptRequest): Promise<{ 
   const executable = input.node.script.executable;
   if (executable.kind !== "command") throw new Error("Expected command executable.");
   return new Promise((resolve, reject) => {
-    const child = spawn(executable.command, executable.args ?? [], { cwd: input.workDir, shell: false, windowsHide: true, signal: input.signal });
+    if (input.signal.aborted) {
+      reject(input.signal.reason instanceof Error ? input.signal.reason : new Error("Workflow V2 script was aborted."));
+      return;
+    }
+    const child = spawn(executable.command, executable.args ?? [], { cwd: input.workDir, shell: false, windowsHide: true, detached: process.platform !== "win32" });
     let stdout = "";
     let stderr = "";
     let spawnError: Error | undefined;
+    const abort = () => terminateWorkflowV2ScriptProcessTree(child.pid);
+    input.signal.addEventListener("abort", abort, { once: true });
     child.stdout.on("data", (chunk) => { stdout += String(chunk); });
     child.stderr.on("data", (chunk) => { stderr += String(chunk); });
     child.on("error", (error) => { spawnError = error; });
     child.on("close", (code, signal) => {
+      input.signal.removeEventListener("abort", abort);
       const receipt = scriptReceipt(input, { code, signal, stdout, stderr, timedOut: isTimeoutAbort(input.signal) });
       const expectedExitCode = input.node.expectedExitCode ?? 0;
       if (spawnError || code !== expectedExitCode) {
@@ -82,8 +93,69 @@ async function executeCommand(input: ExecuteWorkflowV2ScriptRequest): Promise<{ 
   });
 }
 
+function terminateWorkflowV2ScriptProcessTree(pid: number | undefined): void {
+  if (!pid) return;
+  if (process.platform === "win32") {
+    const killer = spawn("taskkill", ["/pid", String(pid), "/T", "/F"], { shell: false, windowsHide: true, stdio: "ignore" });
+    killer.unref();
+    return;
+  }
+  try {
+    process.kill(-pid, "SIGKILL");
+  } catch {
+    try { process.kill(pid, "SIGKILL"); } catch { /* Process already exited. */ }
+  }
+}
+
+class WorkflowV2InlineScriptTimeoutError extends Error {
+  constructor() {
+    super("Workflow V2 inline script timed out.");
+    this.name = "WorkflowV2InlineScriptTimeoutError";
+  }
+}
+
+async function executeInlineTypeScript(input: ExecuteWorkflowV2ScriptRequest, code: string): Promise<Record<string, unknown>> {
+  if (input.signal.aborted) throw input.signal.reason instanceof Error ? input.signal.reason : new Error("Workflow V2 script was aborted.");
+  const timeoutMs = Math.max(1, Math.min(input.timeoutMs, 30_000));
+  const value = runInNewContext(
+    `"use strict"; (function(inputs) { ${code}\n})(inputs)`,
+    {
+      inputs: structuredClone(input.inputs),
+      process,
+      require: workflowScriptRequire,
+      Buffer,
+      console,
+      setTimeout,
+      clearTimeout,
+      setInterval,
+      clearInterval,
+      URL,
+      URLSearchParams,
+      TextEncoder,
+      TextDecoder,
+      structuredClone,
+    },
+    { timeout: timeoutMs, contextCodeGeneration: { strings: false, wasm: false } },
+  ) as unknown;
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  let onAbort: (() => void) | undefined;
+  try {
+    const deadline = new Promise<never>((_resolve, reject) => {
+      timeout = setTimeout(() => reject(new WorkflowV2InlineScriptTimeoutError()), timeoutMs);
+    });
+    const aborted = new Promise<never>((_resolve, reject) => {
+      onAbort = () => reject(input.signal.reason instanceof Error ? input.signal.reason : new Error("Workflow V2 script was aborted."));
+      input.signal.addEventListener("abort", onAbort, { once: true });
+    });
+    return await Promise.race([Promise.resolve(value), deadline, aborted]) as Record<string, unknown>;
+  } finally {
+    if (timeout) clearTimeout(timeout);
+    if (onAbort) input.signal.removeEventListener("abort", onAbort);
+  }
+}
+
 export async function executeWorkflowV2Script(input: ExecuteWorkflowV2ScriptRequest): Promise<WorkflowV2ScriptWorkerOutput> {
-  assertAuthorized(input);
+  assertWorkflowV2ScriptAuthorized(input);
   const executable = input.node.script.executable;
   let outputs: Record<string, unknown>;
   let receipt: WorkflowV2ScriptExecutionReceipt;
@@ -92,16 +164,19 @@ export async function executeWorkflowV2Script(input: ExecuteWorkflowV2ScriptRequ
   } else {
     try {
       outputs = executable.language === "typescript"
-        ? await Promise.resolve(new Function("inputs", executable.code)(structuredClone(input.inputs))) as Record<string, unknown>
+        ? await executeInlineTypeScript(input, executable.code)
         : (() => { throw new Error(`Inline ${executable.language} execution is not available.`); })();
       receipt = scriptReceipt(input, { code: 0, signal: null, stdout: JSON.stringify(outputs), stderr: "", timedOut: false });
     } catch (error) {
-      const failedReceipt = scriptReceipt(input, { code: 1, signal: null, stdout: "", stderr: error instanceof Error ? error.message : String(error), timedOut: false });
+      const timedOut = error instanceof WorkflowV2InlineScriptTimeoutError
+        || (typeof error === "object" && error !== null && "code" in error && error.code === "ERR_SCRIPT_EXECUTION_TIMEOUT")
+        || isTimeoutAbort(input.signal);
+      const failedReceipt = scriptReceipt(input, { code: 1, signal: null, stdout: "", stderr: error instanceof Error ? error.message : String(error), timedOut });
       throw new WorkflowV2ScriptExecutionError(error instanceof Error ? error.message : String(error), failedReceipt);
     }
   }
   try {
-    validateOutput(input, outputs);
+    validateWorkflowV2ScriptOutput(input, outputs);
   } catch (error) {
     throw new WorkflowV2ScriptExecutionError(error instanceof Error ? error.message : String(error), receipt);
   }

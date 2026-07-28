@@ -93,6 +93,8 @@ export interface WorkflowController {
   onSubmitScriptInput?: (nodeId: string, values: Record<string, unknown>) => MaybePromise;
   onResolveIntervention?: (nodeId: string, action: WorkflowV2InterventionAction, reason?: string) => MaybePromise;
   onResolveRecovery?: (runId: string, action: WorkflowRecoveryAction, reason: string) => MaybePromise;
+  onRefreshRecovery?: (runId: string) => MaybePromise;
+  onResolveConflict?: (runId: string, input: { path: string; resolution: "isolated" | "current" | "manual"; expectedCurrentSha256?: string; content?: string; reason: string }) => MaybePromise;
   onCleanupRunMaterials?: (runId: string) => MaybePromise;
   onSendNodeMessage?: (conversationId: string, message: string) => MaybePromise;
   onCompleteNodeConversation?: (conversationId: string) => MaybePromise;

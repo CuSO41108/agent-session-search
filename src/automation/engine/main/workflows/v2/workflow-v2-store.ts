@@ -136,6 +136,10 @@ export class WorkflowV2FileStore {
     return this.enqueueValue(() => this.workspaceTransaction(input.workflowId, input.runId).inspectConflictPreview(input.paths));
   }
 
+  resolveWorkspaceConflict(input: { workflowId: string; runId: string; path: string; resolution: "isolated" | "current" | "manual"; expectedCurrentSha256?: string; content?: string }): Promise<WorkflowWorkspaceConflictPreview> {
+    return this.enqueueValue(() => this.workspaceTransaction(input.workflowId, input.runId).resolveConflict(input));
+  }
+
   inspectWorkspaceSavepointDiff(input: { workflowId: string; runId: string; savepointId: string }): Promise<WorkflowWorkspaceDiffResult> {
     return this.enqueueValue(() => this.workspaceTransaction(input.workflowId, input.runId).inspectDiffSinceSavepoint(input.savepointId));
   }

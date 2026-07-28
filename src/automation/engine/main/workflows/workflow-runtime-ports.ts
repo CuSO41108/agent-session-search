@@ -19,7 +19,7 @@ import type {
   WorkflowV2PersistedRunState,
 } from "../../shared/workflow-v2/storage";
 import type { WorkflowCommitPlan, WorkflowOperationRecord, WorkflowOperationState } from "../../shared/workflow-v2/transaction";
-import type { WorkflowRecoveryDecisionRecord, WorkflowRecoveryPreview, WorkflowTransactionState } from "../../shared/workflow-v2/transaction";
+import type { WorkflowRecoveryDecisionRecord, WorkflowRecoveryManagerRecommendation, WorkflowRecoveryPreview, WorkflowTransactionState } from "../../shared/workflow-v2/transaction";
 import type { WorkflowWorkspaceCommitResult, WorkflowWorkspaceConflictPreview, WorkflowWorkspaceDiffResult, WorkflowWorkspacePreparation, WorkflowWorkspaceRollbackResult } from "./v2/workflow-v2-workspace-transaction";
 
 export interface WorkflowRunStateUpdate {
@@ -32,7 +32,7 @@ export interface WorkflowRunStateUpdate {
   finalReport?: string;
   lastError?: string;
   transaction?: WorkflowTransactionState;
-  operations?: WorkflowOperationRecord[];
+  operations?: WorkflowOperationRecord[] | null;
   recovery?: WorkflowRecoveryPreview | null;
   recoveryDecisions?: WorkflowRecoveryDecisionRecord[];
 }
@@ -83,6 +83,7 @@ export interface WorkflowV2StorePort {
   rollbackWorkspaceTransaction?: (input: { workflowId: string; runId: string }) => Promise<WorkflowWorkspaceRollbackResult>;
   inspectWorkspaceTransaction?: (input: { workflowId: string; runId: string }) => Promise<WorkflowWorkspaceDiffResult>;
   inspectWorkspaceConflicts?: (input: { workflowId: string; runId: string; paths: readonly string[] }) => Promise<WorkflowWorkspaceConflictPreview[]>;
+  resolveWorkspaceConflict?: (input: { workflowId: string; runId: string; path: string; resolution: "isolated" | "current" | "manual"; expectedCurrentSha256?: string; content?: string }) => Promise<WorkflowWorkspaceConflictPreview>;
   inspectWorkspaceSavepointDiff?: (input: { workflowId: string; runId: string; savepointId: string }) => Promise<WorkflowWorkspaceDiffResult>;
   persistCommitPlan?: (plan: WorkflowCommitPlan) => Promise<WorkflowCommitPlan>;
   readCommitPlan?: (workflowId: string, runId: string) => Promise<WorkflowCommitPlan | undefined>;
@@ -162,4 +163,5 @@ export interface WorkflowRuntimeDependencies {
   stopWorkflowNodeConversations: (workflowId: string, runId: string) => Promise<void>;
   createWorkflowV2Store?: () => WorkflowV2StorePort | undefined;
   createWorkflowV2RecoveryOperationBroker?: (store: WorkflowV2StorePort) => WorkflowV2RecoveryOperationBroker | undefined;
+  generateWorkflowV2RecoveryRecommendation?: (input: { workflowId: string; runId: string; recovery: WorkflowRecoveryPreview; evidence: unknown }) => Promise<WorkflowRecoveryManagerRecommendation | undefined>;
 }

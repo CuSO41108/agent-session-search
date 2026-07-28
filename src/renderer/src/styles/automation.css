@@ -1305,6 +1305,7 @@
 .workflow-run-center-recovery-actions > div { display:flex; flex-wrap:wrap; gap:.45rem; }
 .workflow-approval-mode { display:flex; align-items:center; gap:.45rem; color:var(--text-muted); font-size:.75rem; }
 .workflow-approval-mode select { min-height:2rem; border:1px solid var(--border-subtle); border-radius:.45rem; background:var(--surface-muted); color:var(--text-primary); padding:0 .5rem; }
+.workflow-transaction-compatibility-warning { max-width:18rem; color:var(--warning-text, #b7791f); font-size:.75rem; line-height:1.35; }
 .workflow-run-center-manager-candidate { padding:.7rem; border:1px solid var(--border-subtle); border-radius:.6rem; }
 .workflow-run-center-manager-candidate > div { display:grid; gap:.3rem; margin:.5rem 0; }
 .workflow-run-center-manager-candidate > div span { color:var(--text-muted); font-size:.75rem; }

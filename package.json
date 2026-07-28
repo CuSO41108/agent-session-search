@@ -37,6 +37,7 @@
     "test": "vitest run && npm run test:scripts",
     "test:scripts": "node --test scripts/*.test.mjs",
     "test:workflow-performance": "vitest run src/automation/engine/main/hub/agent-hub.test.ts src/automation/engine/main/workflows/v2/workflow-v2-conversation-manager.test.ts src/main/services/automation-service.test.ts src/renderer/src/features/automation/automation-change.test.ts src/renderer/src/features/automation/automation-store.test.ts src/automation/engine/renderer/src/pages/workflow/WorkflowPage.test.tsx src/automation/engine/renderer/src/pages/workflow/WorkflowRunCenter.test.tsx src/automation/engine/renderer/src/pages/workflow/WorkflowDraftEditorDialog.test.tsx",
+    "test:workflow-transaction": "vitest run src/automation/engine/shared/workflow-v2 src/automation/engine/main/workflows/v2 src/automation/engine/main/workflows/workflow-runtime.test.ts src/automation/engine/main/hub/agent-hub-workflow-activation.test.ts src/automation/engine/main/hub/workflow/agent-hub-workflow-clone.test.ts src/automation/engine/main/hub/workflow/agent-hub-workflow-restore.test.ts src/automation/engine/main/hub/workflow/agent-hub-workflow-v2.test.ts src/automation/engine/renderer/src/pages/workflow/WorkflowPage.test.tsx src/automation/engine/renderer/src/pages/workflow/WorkflowRunCenter.test.tsx",
     "test:watch": "vitest",
     "package:smoke": "node scripts/package-smoke.mjs",
     "release-note:check": "node scripts/release-notes.mjs check-range",

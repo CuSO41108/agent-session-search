@@ -12,7 +12,7 @@ import {
 } from "../../../shared/workflow-v2/storage";
 import { createWorkflowV2RunState } from "../../../shared/workflow-v2/state";
 import type { RuntimeConversation } from "../../../shared/types";
-import type { WorkflowConflictPreview, WorkflowOperationRecord, WorkflowRecoveryDecisionRecord, WorkflowRecoveryPreview, WorkflowTransactionState } from "../../../shared/workflow-v2/transaction";
+import type { WorkflowConflictPreview, WorkflowOperationRecord, WorkflowRecoveryDecisionRecord, WorkflowRecoveryManagerRecommendation, WorkflowRecoveryPreview, WorkflowTransactionState } from "../../../shared/workflow-v2/transaction";
 import type { ExecuteWorkflowV2Checkpoint } from "./workflow-v2-executor";
 import { transitionWorkflowV2NodeState } from "./workflow-v2-scheduler";
 
@@ -143,6 +143,15 @@ export function buildWorkflowV2FinalReport(
   operations: readonly WorkflowOperationRecord[] = [],
 ): string {
   const outputByNodeId = new Map(workerOutputs.map((output) => [output.nodeId, output]));
+  const changedPaths = [...new Set(workerOutputs.flatMap((output) => output.acceptance?.changedPaths ?? []))].sort();
+  const nodeTimelineReport = [
+    "## Node timeline",
+    ...plan.definition.nodes.map((node, index) => {
+      const output = outputByNodeId.get(node.id);
+      return `- ${index + 1}. ${node.title} (${node.id}): ${output ? `${output.acceptance?.outcome ?? "completed"}; ${output.summary}` : "no completed output"}`;
+    }),
+  ].join("\n");
+  const fileDiffReport = ["## File diff", ...(changedPaths.length ? changedPaths.map((changedPath) => `- changed: ${changedPath}`) : ["- No governed file changes recorded."])].join("\n");
   const transactionReport = workflowV2NodeTransactionReport(plan.definition.nodes, outputByNodeId);
   const recoveryDecisionReport = recoveryDecisions.length > 0 ? [
     "## Recovery decisions",
@@ -152,8 +161,12 @@ export function buildWorkflowV2FinalReport(
     "## External operations",
     ...operations.map((operation) => `- ${operation.operationId}: ${operation.kind} ${operation.state}; target=${operation.target}; reversible=${operation.reversible}; receipt=${operation.receipt === undefined ? "missing" : "recorded"}${operation.error ? `; error=${operation.error}` : ""}`),
     ...(operations.some((operation) => operation.state === "unknown") ? ["", "## Manual steps", "- Verify every unknown operation in the external system before retrying, continuing, or compensating."] : []),
+    "",
+    "## Compensation results",
+    ...operations.filter((operation) => operation.state === "compensated" || operation.state === "compensating" || operation.state === "unknown").map((operation) => `- ${operation.operationId}: ${operation.state}${operation.error ? `; ${operation.error}` : ""}`),
+    ...(operations.every((operation) => operation.state !== "compensated" && operation.state !== "compensating" && operation.state !== "unknown") ? ["- No compensation or unknown external state recorded."] : []),
   ].join("\n") : "";
-  const governanceReport = [transactionReport, operationReport, recoveryDecisionReport].filter(Boolean).join("\n\n");
+  const governanceReport = [nodeTimelineReport, fileDiffReport, transactionReport, operationReport, recoveryDecisionReport].filter(Boolean).join("\n\n");
   if (status === "completed") {
     const terminalNodeIds = new Set(plan.definition.nodes.map((node) => node.id));
     for (const edge of plan.definition.edges) terminalNodeIds.delete(edge.fromNodeId);
@@ -262,6 +275,7 @@ export function buildWorkflowV2RecoveryPreview(input: {
     notStartedNodeIds,
     availableActions,
     managerRecommendation: {
+      source: "rules",
       generatedAt,
       transactionId: input.transaction.transactionId,
       recommendedAction,
@@ -291,6 +305,54 @@ export function buildWorkflowV2RecoveryPreview(input: {
       conflictCandidates,
     },
   };
+}
+
+export function parseWorkflowV2RecoveryManagerRecommendation(content: string, preview: WorkflowRecoveryPreview): WorkflowRecoveryManagerRecommendation {
+  const normalized = content.trim().replace(/^```(?:json)?\s*/iu, "").replace(/\s*```$/u, "");
+  const value = JSON.parse(normalized) as Record<string, unknown>;
+  const recommendedAction = value.recommendedAction;
+  if (typeof recommendedAction !== "string" || !preview.availableActions.includes(recommendedAction as WorkflowRecoveryManagerRecommendation["recommendedAction"])) throw new Error("Manager recovery recommendation selected an unavailable action.");
+  if (typeof value.rationale !== "string" || !value.rationale.trim()) throw new Error("Manager recovery recommendation requires a rationale.");
+  const compensationOperationIds = stringArray(value.compensationOperationIds);
+  const allowedCompensationIds = new Set(preview.managerRecommendation.compensationOperationIds);
+  if (compensationOperationIds.some((operationId) => !allowedCompensationIds.has(operationId))) throw new Error("Manager recovery recommendation contains an ineligible compensation operation.");
+  const manualSteps = stringArray(value.manualSteps);
+  if (value.rollbackTarget !== undefined && (typeof value.rollbackTarget !== "string" || value.rollbackTarget !== preview.managerRecommendation.rollbackTarget)) throw new Error("Manager recovery recommendation selected an unavailable rollback target.");
+  const conflictPaths = new Set(preview.conflicts);
+  const conflictCandidates = Array.isArray(value.conflictCandidates) ? value.conflictCandidates.map((candidate) => {
+    if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) throw new Error("Manager conflict candidate is malformed.");
+    const item = candidate as Record<string, unknown>;
+    if (typeof item.path !== "string" || !conflictPaths.has(item.path)) throw new Error("Manager conflict candidate does not belong to the recovery preview.");
+    if (item.resolution !== "isolated" && item.resolution !== "current" && item.resolution !== "manual") throw new Error("Manager conflict candidate resolution is invalid.");
+    if (typeof item.rationale !== "string" || !item.rationale.trim()) throw new Error("Manager conflict candidate requires a rationale.");
+    return { path: item.path, resolution: item.resolution as "isolated" | "current" | "manual", rationale: item.rationale };
+  }) : [];
+  const riskComparison = Array.isArray(value.riskComparison) ? value.riskComparison.map((risk) => {
+    if (!risk || typeof risk !== "object" || Array.isArray(risk)) throw new Error("Manager risk comparison is malformed.");
+    const item = risk as Record<string, unknown>;
+    if (typeof item.action !== "string" || !preview.availableActions.includes(item.action as WorkflowRecoveryManagerRecommendation["recommendedAction"])) throw new Error("Manager risk comparison contains an unavailable action.");
+    if (item.risk !== "low" && item.risk !== "medium" && item.risk !== "high") throw new Error("Manager risk comparison level is invalid.");
+    if (typeof item.detail !== "string" || !item.detail.trim()) throw new Error("Manager risk comparison requires detail.");
+    return { action: item.action as WorkflowRecoveryManagerRecommendation["recommendedAction"], risk: item.risk as "low" | "medium" | "high", detail: item.detail };
+  }) : [];
+  if (new Set(riskComparison.map((item) => item.action)).size !== preview.availableActions.length || preview.availableActions.some((action) => !riskComparison.some((item) => item.action === action))) throw new Error("Manager risk comparison must cover every available recovery action.");
+  return {
+    source: "agent",
+    generatedAt: Date.now(),
+    transactionId: preview.transactionId,
+    recommendedAction: recommendedAction as WorkflowRecoveryManagerRecommendation["recommendedAction"],
+    rationale: value.rationale.trim(),
+    ...(typeof value.rollbackTarget === "string" && value.rollbackTarget.trim() ? { rollbackTarget: value.rollbackTarget.trim() } : {}),
+    compensationOperationIds,
+    manualSteps,
+    riskComparison,
+    conflictCandidates,
+  };
+}
+
+function stringArray(value: unknown): string[] {
+  if (!Array.isArray(value) || !value.every((item) => typeof item === "string" && item.trim())) throw new Error("Manager recovery recommendation requires string arrays.");
+  return value.map((item) => item.trim());
 }
 
 function workflowV2NodeTransactionReport(

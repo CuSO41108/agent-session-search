@@ -174,6 +174,18 @@ export function useWorkflowFeatureController({
         }
         await onRefresh();
       },
+      onRefreshRecovery: async (runId) => {
+        if (!draft.workflowId) return;
+        const result = await workflows.refreshRecovery({ workflowId: draft.workflowId, runId });
+        if (!result.ok) throw new Error(result.error ?? "Workflow recovery could not be refreshed.");
+        await onRefresh();
+      },
+      onResolveConflict: async (runId, input) => {
+        if (!draft.workflowId) return;
+        const result = await workflows.resolveConflict({ workflowId: draft.workflowId, runId, path: input.path, resolution: input.resolution, ...(input.expectedCurrentSha256 ? { expectedCurrentSha256: input.expectedCurrentSha256 } : {}), ...(input.content !== undefined ? { content: input.content } : {}), actor: "desktop-user", reason: input.reason });
+        if (!result.ok) throw new Error(result.error ?? "Workflow conflict could not be resolved.");
+        await onRefresh();
+      },
       onCleanupRunMaterials: async (runId) => {
         if (!draft.workflowId) return;
         const result = await workflows.cleanupRunMaterials({ workflowId: draft.workflowId, runId });

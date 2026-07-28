@@ -83,6 +83,19 @@ describe("WorkflowPage input ownership", () => {
     expect(html).toContain("Batch approval");
     expect(html).toContain("Per-operation approval");
   });
+  test("warns before starting a legacy workflow that maps to direct mode", () => {
+    const value = controller(true);
+    value.status = "draft";
+    value.running = false;
+    value.activeRunId = undefined;
+    value.runProgress = [];
+    value.revision = 1;
+    value.confirmedRevision = 1;
+    value.workflowV2Plan = { workflowId: "workflow", graphVersion: 1, objective: "Answer", approvedBy: "test", frozenAt: 1, definition: value.definition, nodes: [], acceptanceCriteria: [], roleDefaults: { orchestrator: { role: "orchestrator", modelProfile: "expert" }, executor: { role: "executor", modelProfile: "fast" }, reviewer: { role: "reviewer", modelProfile: "expert" } }, budget: { context: { maxContextTokens: 1_000, maxEvidenceItems: 10 } } };
+
+    value.language = "zh";
+    expect(renderToStaticMarkup(<WorkflowPage controller={value} />)).toContain("兼容 direct 模式：此旧 Workflow 不保证回滚");
+  });
   test("does not render the legacy inline gate input for an awaiting node", () => {
     const value = controller(true);
     value.runProgress = [{ nodeId: "answer", title: "Answer", status: "awaiting_input", detail: "Provide more context" }];

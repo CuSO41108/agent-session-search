@@ -1128,7 +1128,7 @@ export class WorkflowV2RunExecutor {
         createdAt: Date.now(),
         updatedAt: Date.now(),
       };
-      const scriptOperationTracked = operationLedgerEnabled;
+      const scriptOperationTracked = operationLedgerEnabled && request.node.script.effectMode !== "brokered_external";
       if (scriptOperationTracked) await planNodeOperation(scriptOperation);
       this.runRegistry.get(runId)?.abortControllerByNodeId?.set(request.node.id, controller);
       const telemetry: WorkflowRunNodeTelemetry = { attempt, startedAt: Date.now() };
@@ -1146,6 +1146,7 @@ export class WorkflowV2RunExecutor {
             capabilities: [...governance.capabilities],
             capabilityDigest: governance.capabilityDigest,
             operationDigest,
+            attempt,
             ...(approvalGrant ? { approvalRequestId: approvalGrant.requestId } : {}),
           },
         });
@@ -1176,7 +1177,7 @@ export class WorkflowV2RunExecutor {
             ? { outcome: "degraded", issues: [...output.acceptance.issues, { code: "script_stderr", severity: "warning" as const, detail: receipt.stderrSummary }] }
             : {}),
           changedPaths: workspaceDiff ? [...workspaceDiff.created, ...workspaceDiff.modified, ...workspaceDiff.deleted].sort() : [],
-          operationIds: scriptOperationTracked ? [scriptOperation.operationId] : [],
+          operationIds: [...new Set([...(output.acceptance.operationIds ?? []), ...(scriptOperationTracked ? [scriptOperation.operationId] : [])])],
         };
         if (scriptOperationTracked) await completeNodeOperation(scriptOperation.operationId, output.scriptReceipt);
       } catch (error) {

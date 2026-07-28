@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from "vitest";
-import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { access, mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import type { WorkflowV2Plan } from "../../../shared/workflow-v2/planning";
@@ -73,6 +74,69 @@ describe("WorkflowV2WorkspaceTransaction", () => {
     await expect(transaction.prepare({ workflowId: "workflow-1", runId: "run-1", sourceDir, baselineId: "baseline-1" })).rejects.toThrow("must be outside");
   });
 
+  test("fails closed when disk capacity is insufficient or cannot be verified", async () => {
+    const root = await temporaryRoot("workflow-v2-disk-");
+    const source = path.join(root, "source");
+    const transactionRoot = path.join(root, "transaction");
+    await mkdir(source, { recursive: true });
+    await writeFile(path.join(source, "input.txt"), "input", "utf8");
+    const lowSpace = new WorkflowV2WorkspaceTransaction(transactionRoot, async () => ({ bavail: 1, bsize: 1 } as never));
+    const unavailable = new WorkflowV2WorkspaceTransaction(`${transactionRoot}-unavailable`, async () => { throw new Error("statfs unavailable"); });
+
+    await expect(lowSpace.prepare({ workflowId: "workflow", runId: "run", sourceDir: source, baselineId: "baseline" })).rejects.toThrow("insufficient disk space");
+    await expect(unavailable.prepare({ workflowId: "workflow", runId: "run", sourceDir: source, baselineId: "baseline" })).rejects.toThrow("could not be verified");
+  });
+
+  test("rejects resume after an isolated workspace disappears", async () => {
+    const root = await temporaryRoot("workflow-v2-missing-isolation-");
+    const source = path.join(root, "source");
+    await mkdir(source, { recursive: true });
+    await writeFile(path.join(source, "input.txt"), "baseline", "utf8");
+    const transaction = new WorkflowV2WorkspaceTransaction(path.join(root, "transaction"));
+    const prepared = await transaction.prepare({ workflowId: "workflow", runId: "run", sourceDir: source, baselineId: "baseline" });
+    await rm(prepared.workspaceDir, { recursive: true, force: true });
+
+    await expect(transaction.prepare({ workflowId: "workflow", runId: "run", sourceDir: source, baselineId: "baseline" })).rejects.toThrow("directory");
+  });
+
+  test("cleans an interrupted baseline staging directory before freezing a new baseline", async () => {
+    const root = await temporaryRoot("workflow-v2-baseline-crash-");
+    const source = path.join(root, "source");
+    await mkdir(source, { recursive: true });
+    await writeFile(path.join(source, "input.txt"), "baseline", "utf8");
+    const stagingKey = createHash("sha256").update("workflow\0run").digest("hex").slice(0, 16);
+    const abandonedStaging = path.join(root, `.transaction-workspace-${stagingKey}.staging`);
+    await mkdir(abandonedStaging, { recursive: true });
+    await writeFile(path.join(abandonedStaging, "partial.txt"), "partial snapshot", "utf8");
+    const transaction = new WorkflowV2WorkspaceTransaction(path.join(root, "transaction"));
+
+    const prepared = await transaction.prepare({ workflowId: "workflow", runId: "run", sourceDir: source, baselineId: "baseline" });
+
+    expect(await readFile(path.join(prepared.workspaceDir, "input.txt"), "utf8")).toBe("baseline");
+    await expect(access(abandonedStaging)).rejects.toThrow();
+  });
+
+  test("resumes file commit safely before, during, and after a crash boundary", async () => {
+    const root = await temporaryRoot("workflow-v2-commit-resume-");
+    const source = path.join(root, "source");
+    await mkdir(source, { recursive: true });
+    await writeFile(path.join(source, "first.txt"), "baseline", "utf8");
+    await writeFile(path.join(source, "second.txt"), "baseline", "utf8");
+    const transaction = new WorkflowV2WorkspaceTransaction(path.join(root, "transaction"));
+    const prepared = await transaction.prepare({ workflowId: "workflow", runId: "run", sourceDir: source, baselineId: "baseline" });
+    await writeFile(path.join(prepared.workspaceDir, "first.txt"), "workflow-first", "utf8");
+    await writeFile(path.join(prepared.workspaceDir, "second.txt"), "workflow-second", "utf8");
+
+    // Fault injection: the first atomic rename completed, then the process died.
+    await writeFile(path.join(source, "first.txt"), "workflow-first", "utf8");
+    const resumed = await transaction.commit();
+    expect(resumed).toEqual({ applied: ["first.txt", "second.txt"], conflicts: [] });
+    expect(await readFile(path.join(source, "second.txt"), "utf8")).toBe("workflow-second");
+
+    const afterCommitCrash = await transaction.commit();
+    expect(afterCommitCrash).toEqual({ applied: ["first.txt", "second.txt"], conflicts: [] });
+  });
+
   test("refuses to commit links introduced inside the isolated workspace", async () => {
     const root = await temporaryRoot("workflow-workspace-link-");
     const sourceDir = path.join(root, "source");
@@ -108,6 +172,23 @@ describe("WorkflowV2WorkspaceTransaction", () => {
 
     expect(await readFile(path.join(prepared.workspaceDir, "file.txt"), "utf8")).toBe("baseline");
     await expect(readFile(path.join(prepared.workspaceDir, "metadata.json"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  test("replaces an interrupted savepoint staging copy without accepting partial contents", async () => {
+    const root = await temporaryRoot("workflow-v2-savepoint-crash-");
+    const sourceDir = path.join(root, "source");
+    await mkdir(sourceDir, { recursive: true });
+    await writeFile(path.join(sourceDir, "file.txt"), "baseline", "utf8");
+    const transaction = new WorkflowV2WorkspaceTransaction(path.join(root, "transaction"));
+    await transaction.prepare({ workflowId: "workflow", runId: "run", sourceDir, baselineId: "baseline" });
+    const staging = path.join(transaction.paths().snapshotsDir, ".node-1-attempt-1.staging");
+    await mkdir(staging, { recursive: true });
+    await writeFile(path.join(staging, "partial.txt"), "partial", "utf8");
+
+    await transaction.createSavepoint({ savepointId: "node-1-attempt-1", nodeId: "node-1", attempt: 1, now: 10 });
+
+    await expect(access(staging)).rejects.toThrow();
+    expect(await readFile(path.join(transaction.paths().snapshotsDir, "node-1-attempt-1", "contents", "file.txt"), "utf8")).toBe("baseline");
   });
 
   test("applies non-conflicting workspace changes and preserves concurrent user edits", async () => {
@@ -193,6 +274,23 @@ describe("WorkflowV2WorkspaceTransaction", () => {
       isolated: expect.objectContaining({ preview: "token=[REDACTED]\nvalue=workflow" }),
       current: expect.objectContaining({ preview: "token=[REDACTED]\nvalue=user" }),
     })]);
+  });
+
+  test("revalidates and applies a confirmed per-file conflict resolution", async () => {
+    const root = await temporaryRoot("workflow-workspace-resolve-conflict-");
+    const sourceDir = path.join(root, "source");
+    await mkdir(sourceDir, { recursive: true });
+    await writeFile(path.join(sourceDir, "result.txt"), "baseline", "utf8");
+    const transaction = new WorkflowV2WorkspaceTransaction(path.join(root, "transaction"));
+    const prepared = await transaction.prepare({ workflowId: "workflow-1", runId: "run-1", sourceDir, baselineId: "baseline-1" });
+    await writeFile(path.join(prepared.workspaceDir, "result.txt"), "workflow", "utf8");
+    await writeFile(path.join(sourceDir, "result.txt"), "user", "utf8");
+    const [preview] = await transaction.inspectConflictPreview(["result.txt"]);
+    await expect(transaction.resolveConflict({ path: "result.txt", resolution: "manual", expectedCurrentSha256: "stale", content: "merged" })).rejects.toThrow("changed after preview");
+    const resolved = await transaction.resolveConflict({ path: "result.txt", resolution: "manual", expectedCurrentSha256: preview!.current.sha256, content: "merged" });
+    expect(resolved.current.sha256).toBe(resolved.isolated.sha256);
+    expect(await readFile(path.join(sourceDir, "result.txt"), "utf8")).toBe("merged");
+    expect(await readFile(path.join(prepared.workspaceDir, "result.txt"), "utf8")).toBe("merged");
   });
 });
 

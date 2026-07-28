@@ -65,6 +65,8 @@ export const AUTOMATION_CHANNELS = {
   workflowStopRun: "automation:workflow:stop-run",
   workflowResolveIntervention: "automation:workflow:resolve-intervention",
   workflowResolveRecovery: "automation:workflow:resolve-recovery",
+  workflowRefreshRecovery: "automation:workflow:refresh-recovery",
+  workflowResolveConflict: "automation:workflow:resolve-conflict",
   workflowCleanupRunMaterials: "automation:workflow:cleanup-run-materials",
   workflowSendNodeMessage: "automation:workflow:send-node-message",
   workflowCompleteNodeConversation: "automation:workflow:complete-node-conversation",

@@ -108,7 +108,10 @@ export interface WorkflowWorkspaceConflictPreview {
 }
 
 export class WorkflowV2WorkspaceTransaction {
-  constructor(private readonly transactionRoot: string) {}
+  constructor(
+    private readonly transactionRoot: string,
+    private readonly statfsImpl: typeof statfs = statfs,
+  ) {}
 
   async prepare(input: { workflowId: string; runId: string; sourceDir: string; baselineId: string; now?: number }): Promise<WorkflowWorkspacePreparation> {
     const sourceDir = await existingDirectory(input.sourceDir);
@@ -125,7 +128,7 @@ export class WorkflowV2WorkspaceTransaction {
     }
     await mkdir(paths.rootDir, { recursive: true });
     const manifest = await buildManifest({ workflowId: input.workflowId, runId: input.runId, sourceDir, baselineId: input.baselineId, now: input.now ?? Date.now() });
-    await assertSufficientSpace(path.dirname(paths.rootDir), manifest.files.reduce((sum, file) => sum + file.size, 0));
+    await assertSufficientSpace(path.dirname(paths.rootDir), manifest.files.reduce((sum, file) => sum + file.size, 0), this.statfsImpl);
     const stagingKey = createHash("sha256").update(`${input.workflowId}\0${input.runId}`).digest("hex").slice(0, 16);
     const stagingRoot = path.join(path.dirname(paths.rootDir), `.transaction-workspace-${stagingKey}.staging`);
     await assertInside(path.dirname(paths.rootDir), stagingRoot);
@@ -325,6 +328,47 @@ export class WorkflowV2WorkspaceTransaction {
     }));
   }
 
+  async resolveConflict(input: { path: string; resolution: "isolated" | "current" | "manual"; expectedCurrentSha256?: string; content?: string }): Promise<WorkflowWorkspaceConflictPreview> {
+    const [before] = await this.inspectConflictPreview([input.path]);
+    if (!before) throw new Error(`Workflow conflict ${input.path} was not found.`);
+    if (before.current.sha256 !== input.expectedCurrentSha256) {
+      throw new Error(`Workflow conflict ${input.path} changed after preview; refresh and confirm the new diff.`);
+    }
+    if (input.resolution === "manual" && input.content === undefined) throw new Error("Manual workflow conflict resolution requires final content.");
+    const paths = this.paths();
+    const manifest = await readManifest(paths.manifestPath);
+    if (!manifest) throw new Error("Workflow workspace baseline manifest was not found.");
+    const sourceDir = await existingDirectory(manifest.sourceDir);
+    const target = safeJoin(sourceDir, input.path);
+    const isolatedTarget = safeJoin(paths.workspaceDir, input.path);
+    await assertNoSymlinkSegments(sourceDir, target);
+    await assertNoSymlinkSegments(paths.workspaceDir, isolatedTarget);
+    const isolated = safeJoin(paths.workspaceDir, input.path);
+    const currentContent = before.current.exists ? await readFile(target) : undefined;
+    const observedCurrentSha256 = currentContent ? createHash("sha256").update(currentContent).digest("hex") : undefined;
+    if (observedCurrentSha256 !== input.expectedCurrentSha256) throw new Error(`Workflow conflict ${input.path} changed during confirmation; refresh and confirm the new diff.`);
+    const content = input.resolution === "manual" ? Buffer.from(input.content!, "utf8") : input.resolution === "current" ? currentContent : before.isolated.exists ? await readFile(isolated) : undefined;
+    const destinations = input.resolution === "current" ? [isolatedTarget] : [target, isolatedTarget];
+    for (const destination of destinations) {
+      if (content) {
+        await mkdir(path.dirname(destination), { recursive: true });
+        const temporary = `${destination}.${createHash("sha256").update(`${input.path}:${Date.now()}:${destination}`).digest("hex").slice(0, 12)}.tmp`;
+        try {
+          await writeFile(temporary, content);
+          await rename(temporary, destination);
+        } finally {
+          await rm(temporary, { force: true });
+        }
+      } else {
+        await rm(destination, { force: true });
+      }
+    }
+    const [after] = await this.inspectConflictPreview([input.path]);
+    if (!after) throw new Error(`Workflow conflict ${input.path} could not be re-inspected.`);
+    await writeJson(path.join(paths.reportsDir, "last-conflict-resolution.json"), { path: input.path, resolution: input.resolution, before, after, resolvedAt: Date.now() });
+    return after;
+  }
+
   async rollbackCommitted(): Promise<WorkflowWorkspaceRollbackResult> {
     const paths = this.paths();
     const manifest = await readManifest(paths.manifestPath);
@@ -505,12 +549,13 @@ async function readGitMetadata(sourceDir: string): Promise<WorkflowWorkspaceBase
   }
 }
 
-async function assertSufficientSpace(sourceDir: string, bytes: number): Promise<void> {
+async function assertSufficientSpace(sourceDir: string, bytes: number, inspectFilesystem: typeof statfs): Promise<void> {
   try {
-    const disk = await statfs(sourceDir);
+    const disk = await inspectFilesystem(sourceDir);
     if (disk.bavail * disk.bsize < Math.max(bytes * 3, 16 * 1024 * 1024)) throw new Error("Workflow workspace transaction preflight failed: insufficient disk space.");
   } catch (error) {
     if (error instanceof Error && error.message.includes("insufficient disk")) throw error;
+    throw new Error(`Workflow workspace transaction preflight failed: disk capacity could not be verified (${error instanceof Error ? error.message : String(error)}).`);
   }
 }
 

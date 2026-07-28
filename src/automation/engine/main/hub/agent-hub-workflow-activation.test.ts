@@ -231,7 +231,9 @@ describe("AgentHub workflow materialization", () => {
     });
     expect(hub.confirmWorkflow({ workflowId, expectedRevision: materialized.revision! })).toMatchObject({ ok: true });
 
-    expect(hub.runWorkflow({ workflowId })).toMatchObject({ ok: false, error: expect.stringContaining("strict_atomic mode is unavailable") });
+    expect(hub.runWorkflow({ workflowId, transactionApprovalMode: "batch" })).toMatchObject({ ok: false, error: expect.stringContaining("strict_atomic mode is unavailable") });
+    expect(hub.runWorkflow({ workflowId, triggerSource: "scheduled" })).toMatchObject({ ok: false, error: expect.stringContaining("strict_atomic mode is unavailable") });
+    expect(hub.runWorkflow({ workflowId, triggerSource: "mcp" })).toMatchObject({ ok: false, error: expect.stringContaining("strict_atomic mode is unavailable") });
     expect(hub.snapshot().workflowStore.runs).toHaveLength(0);
   });
 

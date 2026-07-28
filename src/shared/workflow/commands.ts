@@ -219,6 +219,22 @@ export interface ResolveWorkflowV2RecoveryRequest {
   reason: string;
 }
 
+export interface RefreshWorkflowV2RecoveryRequest {
+  workflowId: string;
+  runId: string;
+}
+
+export interface ResolveWorkflowV2ConflictRequest {
+  workflowId: string;
+  runId: string;
+  path: string;
+  resolution: "isolated" | "current" | "manual";
+  expectedCurrentSha256?: string;
+  content?: string;
+  actor: string;
+  reason: string;
+}
+
 export interface CleanupWorkflowV2RunRequest {
   workflowId: string;
   runId: string;

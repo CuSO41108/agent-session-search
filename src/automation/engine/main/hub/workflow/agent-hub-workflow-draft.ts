@@ -7,7 +7,7 @@ import type {
   WorkflowV2Definition,
 } from "../../../shared/types";
 import { cloneWorkflowV2Plan } from "../../../shared/workflow-v2/planning";
-import { createDirectWorkflowTransactionPolicy } from "../../../shared/workflow-v2/transaction";
+import { createStrictWorkflowTransactionPolicy } from "../../../shared/workflow-v2/transaction";
 
 function emptyWorkflowDefinition(workflowId: string): WorkflowV2Definition {
   return {
@@ -16,7 +16,7 @@ function emptyWorkflowDefinition(workflowId: string): WorkflowV2Definition {
     objective: "",
     nodes: [],
     edges: [],
-    transactionPolicy: createDirectWorkflowTransactionPolicy(),
+    transactionPolicy: createStrictWorkflowTransactionPolicy(),
   };
 }
 
@@ -142,7 +142,7 @@ export function createWorkflowDraftState(input: {
 }): WorkflowDraftState {
   const now = input.now ?? Date.now();
   const definition = structuredClone(input.request.definition);
-  definition.transactionPolicy ??= createDirectWorkflowTransactionPolicy();
+  definition.transactionPolicy ??= createStrictWorkflowTransactionPolicy();
   const objective = input.request.objective.trim() || definition.objective;
   definition.objective = objective;
   return input.cloneDraft({
