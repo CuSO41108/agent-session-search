@@ -5,9 +5,11 @@ import { test } from "node:test";
 import {
   bumpVersion,
   combineReleaseNotes,
+  combineReleaseNotesForTarget,
   findAddedReleaseNoteFiles,
   parseReleaseNote,
   releaseBumpFor,
+  renderDualReleaseNotes,
   renderReleaseNotes,
 } from "./release-notes.mjs";
 
@@ -43,6 +45,29 @@ test("routes V1 and V2 notes without publishing V2 notes in V1 releases", () => 
     ["Stable fix.", "Shared fix."],
   );
   assert.doesNotMatch(renderReleaseNotes(v2), /release-target/);
+});
+
+test("renders separate V1 and V2 sections from the same pending notes", () => {
+  const v1 = parseReleaseNote("# Stable\n\n## 新增功能\n\n- Stable feature.\n");
+  const v2 = parseReleaseNote("# Preview\n\n<!-- release-target: v2 -->\n\n## Bug 修复\n\n- Preview fix.\n");
+  const both = parseReleaseNote("# Shared\n\n<!-- release-target: both -->\n\n## Bug 修复\n\n- Shared fix.\n");
+
+  const rendered = renderDualReleaseNotes([v1, v2, both]);
+
+  assert.match(rendered, /^# AgentRecall 更新/m);
+  assert.match(rendered, /## AgentRecall 1\.0[\s\S]*### 新增功能[\s\S]*- Stable feature\.[\s\S]*### Bug 修复[\s\S]*- Shared fix\./);
+  assert.match(rendered, /## agent-recall-v2[\s\S]*### Bug 修复[\s\S]*- Preview fix\.[\s\S]*- Shared fix\./);
+  assert.doesNotMatch(rendered, /Preview fix\.[\s\S]*## agent-recall-v2/);
+});
+
+test("uses an explicit synchronization note when one release target has no changes", () => {
+  const v1 = parseReleaseNote("# Stable\n\n## Bug 修复\n\n- Stable fix.\n");
+
+  assert.deepEqual(combineReleaseNotesForTarget([v1], "v2", { includeEmpty: true }), {
+    title: "agent-recall-v2 更新",
+    features: [],
+    fixes: ["本次随统一版本同步发布，暂无单独的用户可见变化。"],
+  });
 });
 
 test("repository guidance treats release notes as sanitized product copy", async () => {
