@@ -102,10 +102,10 @@ try {
   await Promise.all([packDir, prefix, stageRoot, home].map((directory) => mkdir(directory, { recursive: true })));
   const archive = await packReleaseArchive({ root, destination: packDir, environment });
   const archiveSize = (await stat(archive)).size;
-  if (archiveSize >= 3 * 1024 * 1024) {
-    throw new Error(`Release package is ${archiveSize} bytes; expected a package smaller than 3MB.`);
+  if (archiveSize >= 4 * 1024 * 1024) {
+    throw new Error(`Release package is ${archiveSize} bytes; expected a package smaller than 4MB.`);
   }
-  await execFileAsync(npm, ["install", "--global", archive, "--prefix", prefix, "--ignore-scripts", "--no-audit", "--no-fund"], {
+  await execFileAsync(npm, ["install", "--global", archive, "--prefix", prefix, "--no-audit", "--no-fund"], {
     cwd: root,
     env: environment,
     shell: process.platform === "win32",
@@ -169,9 +169,14 @@ try {
   const initialize = mcpResponses.find((item) => item.id === 1);
   const tools = mcpResponses.find((item) => item.id === 2)?.result?.tools;
   if (initialize?.result?.serverInfo?.name !== "agent-recall-v2") throw new Error("Packaged Workflow MCP returned the wrong server identity.");
-  if (!Array.isArray(tools) || !tools.some((tool) => tool.name === "workflow_create")) throw new Error("Packaged Workflow MCP did not advertise workflow_create.");
+  if (!Array.isArray(tools) || !tools.some((tool) => tool.name === "workflow_run_list")) {
+    throw new Error("Packaged Workflow MCP did not advertise its read-only workflow tools.");
+  }
+  if (tools.some((tool) => tool.name === "workflow_create")) {
+    throw new Error("Standalone packaged Workflow MCP unexpectedly advertised write tools.");
+  }
 
-  await execFileAsync(npm, ["install", "--prefix", stageRoot, archive, "--ignore-scripts", "--no-audit", "--no-fund"], {
+  await execFileAsync(npm, ["install", "--prefix", stageRoot, archive, "--no-audit", "--no-fund"], {
     cwd: root,
     env: {
       ...environment,

@@ -15,9 +15,17 @@ test("keeps V1 and V2 as independent app packages", () => {
 });
 
 test("exposes explicit root commands for both apps", () => {
+  assert.match(root.scripts["setup:v1"], /setup-app\.mjs apps\/main-1\.0/);
+  assert.match(root.scripts["setup:v2"], /setup-app\.mjs apps\/main-2\.0/);
   assert.match(root.scripts["dev:v1"], /apps\/main-1\.0/);
   assert.match(root.scripts["dev:v2"], /apps\/main-2\.0/);
   assert.match(root.scripts.test, /test:repo/);
   assert.match(root.scripts.test, /test:v1/);
   assert.match(root.scripts.test, /test:v2/);
+});
+
+test("installs app dependencies without changing the user's Claude statusline", async () => {
+  const setupScript = await readFile("scripts/setup-app.mjs", "utf8");
+  assert.match(setupScript, /AGENT_RECALL_SKIP_STATUSLINE_INSTALL:\s*"1"/);
+  assert.doesNotMatch(setupScript, /--ignore-scripts/);
 });
