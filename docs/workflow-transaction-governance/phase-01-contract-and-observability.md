@@ -40,6 +40,7 @@ interface WorkflowTransactionState {
   status: WorkflowTransactionStatus;
   baselineId: string;
   currentSavepointId?: string;
+  currentSavepointOperationIds?: string[];
   operationCount: number;
   unknownOperationCount: number;
   irreversibleOperationCount: number;

@@ -10,7 +10,8 @@ export function runWorkflowV2TaskWithOutputPolicy(input: {
   request: RunTaskRequest;
   allowOutputWrite: boolean;
   allowedFileWriteRoot?: string;
-  runTask: (request: RunTaskRequest, approvalPolicy?: { allowedFileWriteRoot: string }) => Promise<AppSnapshot>;
+  runTask: (request: RunTaskRequest, approvalPolicy?: { allowedFileWriteRoot: string; workspaceOnly?: boolean }) => Promise<AppSnapshot>;
+  workspaceOnly?: boolean;
 }): Promise<AppSnapshot> {
   const allowedFileWriteRoot = input.allowedFileWriteRoot
     ? path.resolve(input.allowedFileWriteRoot)
@@ -22,6 +23,6 @@ export function runWorkflowV2TaskWithOutputPolicy(input: {
   if (input.allowOutputWrite) mkdirSync(allowedFileWriteRoot, { recursive: true });
   return input.runTask(
     input.request,
-    input.allowOutputWrite ? { allowedFileWriteRoot } : undefined,
+    input.allowOutputWrite ? { allowedFileWriteRoot, ...(input.workspaceOnly ? { workspaceOnly: true } : {}) } : undefined,
   );
 }

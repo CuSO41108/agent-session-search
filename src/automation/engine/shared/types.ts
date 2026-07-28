@@ -77,6 +77,7 @@ export type {
   ResolveWorkflowV2RecoveryRequest,
   RefreshWorkflowV2RecoveryRequest,
   ResolveWorkflowV2ConflictRequest,
+  ResolveWorkflowV2UnknownOperationRequest,
   CleanupWorkflowV2RunRequest,
   AnswerWorkflowGateRequest,
   FinishWorkflowRunRequest,

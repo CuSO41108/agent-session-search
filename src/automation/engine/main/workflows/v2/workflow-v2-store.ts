@@ -38,11 +38,15 @@ import {
   type WorkflowOperationState,
 } from "../../../shared/workflow-v2/transaction";
 
+const storeWriteChains = new Map<string, Promise<void>>();
+
 export class WorkflowV2FileStore {
-  private writeChain: Promise<void> = Promise.resolve();
+  private readonly writeKey: string;
 
   constructor(private readonly rootDir: string) {
     if (!path.isAbsolute(rootDir)) throw new Error("Workflow V2 storage root must be an absolute path.");
+    const resolved = path.resolve(rootDir);
+    this.writeKey = process.platform === "win32" ? resolved.toLowerCase() : resolved;
   }
 
   layout(workflowId: string, runId: string): WorkflowV2StorageLayout {
@@ -151,20 +155,23 @@ export class WorkflowV2FileStore {
       await this.assertOperationTransactionIdentity(plan.workflowId, plan.runId, plan.transactionId);
       const sanitized = sanitizeWorkflowTransactionValue(plan);
       if (!isWorkflowCommitPlan(sanitized)) throw new Error("Workflow commit plan became malformed after sanitization.");
-      const existingContent = await readOptionalFile(layout.commitPlanPath);
+      const archivedPlanPath = path.join(layout.runDir, "commit-plans", `${createHash("sha256").update(plan.commitPlanId).digest("hex")}.json`);
+      const existingContent = await readOptionalFile(archivedPlanPath);
       if (existingContent !== undefined) {
         const existing = parseJson(existingContent, `Workflow commit plan ${plan.commitPlanId}`);
         if (!isWorkflowCommitPlan(existing)) throw new Error("Stored workflow commit plan is malformed.");
         if (canonicalJson(existing) !== canonicalJson(sanitized)) throw new Error("Workflow commit plan is immutable and conflicts with the stored plan.");
+        await atomicWriteJson(layout.commitPlanPath, existing);
         return structuredClone(existing);
       }
+      await atomicWriteJson(archivedPlanPath, sanitized);
       await atomicWriteJson(layout.commitPlanPath, sanitized);
       return structuredClone(sanitized);
     });
   }
 
   async readCommitPlan(workflowId: string, runId: string): Promise<WorkflowCommitPlan | undefined> {
-    await this.writeChain;
+    await this.pendingWrites();
     const content = await readOptionalFile(this.layout(workflowId, runId).commitPlanPath);
     if (content === undefined) return undefined;
     const parsed = parseJson(content, `Workflow commit plan ${runId}`);
@@ -234,7 +241,7 @@ export class WorkflowV2FileStore {
   }
 
   async readOperations(workflowId: string, runId: string): Promise<WorkflowOperationRecord[]> {
-    await this.writeChain;
+    await this.pendingWrites();
     return structuredClone(await readOperationRecordsFile(this.layout(workflowId, runId).operationLogPath));
   }
 
@@ -249,7 +256,14 @@ export class WorkflowV2FileStore {
     evidence?: unknown;
   }): Promise<WorkflowOperationRecord> {
     return this.enqueueValue(async () => {
-      if (!input.actor.trim() || !input.reason.trim()) throw new Error("Workflow unknown operation resolution requires actor and reason.");
+      const actorText = input.actor.trim();
+      const reasonText = input.reason.trim();
+      if (!actorText || actorText.length > 256 || !reasonText || reasonText.length > 2_000) {
+        throw new Error("Workflow unknown operation resolution requires a bounded actor and reason.");
+      }
+      const actor = sanitizeWorkflowTransactionValue(actorText);
+      const reason = sanitizeWorkflowTransactionValue(reasonText);
+      if (typeof actor !== "string" || typeof reason !== "string") throw new Error("Workflow unknown operation resolution audit text is malformed.");
       const layout = this.layout(input.workflowId, input.runId);
       const operations = await readOperationRecordsFile(layout.operationLogPath);
       const index = operations.findIndex((item) => item.operationId === input.operationId);
@@ -266,8 +280,8 @@ export class WorkflowV2FileStore {
         receipt: {
           ...(current.receipt !== undefined ? { originalReceipt: current.receipt } : {}),
           recoveryResolution: {
-            actor: input.actor,
-            reason: input.reason,
+            actor,
+            reason,
             verifiedState: input.verifiedState,
             resolvedAt: input.updatedAt,
             ...(input.evidence !== undefined ? { evidence: input.evidence } : {}),
@@ -295,7 +309,7 @@ export class WorkflowV2FileStore {
   }
 
   async readRunState(workflowId: string, runId: string): Promise<WorkflowV2PersistedRunState | undefined> {
-    await this.writeChain;
+    await this.pendingWrites();
     const layout = this.layout(workflowId, runId);
     const content = await readOptionalFile(layout.runStatePath);
     if (content === undefined) return undefined;
@@ -309,7 +323,7 @@ export class WorkflowV2FileStore {
   }
 
   async readEvents(workflowId: string, runId: string): Promise<WorkflowV2DurableEvent[]> {
-    await this.writeChain;
+    await this.pendingWrites();
     const layout = this.layout(workflowId, runId);
     return readDurableEventsFile(layout.eventLogPath);
   }
@@ -401,7 +415,7 @@ export class WorkflowV2FileStore {
     nodeId: string;
     executionId: string;
   }): Promise<WorkflowV2NodeCompletionSubmission | undefined> {
-    await this.writeChain;
+    await this.pendingWrites();
     const ledger = await this.readNodeCompletionLedgerFile(input);
     const submission = [...(ledger?.submissions ?? [])].reverse().find((candidate) => candidate.status === "submitted");
     return submission ? structuredClone(submission) : undefined;
@@ -519,9 +533,18 @@ export class WorkflowV2FileStore {
   }
 
   private enqueueValue<T>(operation: () => Promise<T>): Promise<T> {
-    const pending = this.writeChain.then(operation);
-    this.writeChain = pending.then(() => undefined, () => undefined);
+    const previous = this.pendingWrites();
+    const pending = previous.then(operation);
+    const settled = pending.then(() => undefined, () => undefined);
+    storeWriteChains.set(this.writeKey, settled);
+    void settled.then(() => {
+      if (storeWriteChains.get(this.writeKey) === settled) storeWriteChains.delete(this.writeKey);
+    });
     return pending;
+  }
+
+  private pendingWrites(): Promise<void> {
+    return storeWriteChains.get(this.writeKey) ?? Promise.resolve();
   }
 
   private workspaceTransaction(workflowId: string, runId: string): WorkflowV2WorkspaceTransaction {

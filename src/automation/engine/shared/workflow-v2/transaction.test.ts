@@ -4,6 +4,7 @@ import {
   createDirectWorkflowTransactionPolicy,
   createStrictWorkflowTransactionPolicy,
   isWorkflowTransactionState,
+  renewWorkflowTransactionRetention,
   resolveWorkflowTransactionPolicy,
   sanitizeWorkflowOperationRecord,
   workflowTransactionPreflightError,
@@ -55,6 +56,11 @@ describe("workflow transaction contracts", () => {
       "Workflow transaction checkpoint <invalid> must have a title.",
       "Workflow transaction checkpoint <invalid> contains an invalid node id.",
     ]));
+    expect(workflowTransactionPolicyValidationErrors({
+      ...policy,
+      defaultMode: "controlled",
+      checkpoints: [{ id: "review", title: "Review", afterNodeIds: ["build"], kind: "commit", approval: "required" }],
+    }, new Set(["build"]))).toContain("Workflow transaction checkpoints require strict_atomic mode.");
   });
 
   test("redacts credentials from operation summaries, receipts, errors, and targets", () => {
@@ -91,5 +97,18 @@ describe("workflow transaction contracts", () => {
     expect(canTransitionWorkflowOperation("planned", "applying")).toBe(true);
     expect(canTransitionWorkflowOperation("planned", "applied")).toBe(false);
     expect(canTransitionWorkflowOperation("unknown", "applied")).toBe(false);
+  });
+
+  test("renews material retention from the latest transaction activity", () => {
+    const transaction = {
+      transactionId: "transaction-1", mode: "strict_atomic" as const, status: "committed" as const, baselineId: "baseline-1",
+      operationCount: 0, unknownOperationCount: 0, irreversibleOperationCount: 0,
+      startedAt: 1_000, updatedAt: 10_000, retentionUntil: 20_000,
+    };
+
+    const renewed = renewWorkflowTransactionRetention(transaction, 7, 30_000);
+
+    expect(renewed.retentionUntil).toBe(30_000 + 7 * 24 * 60 * 60 * 1_000);
+    expect(transaction.retentionUntil).toBe(20_000);
   });
 });

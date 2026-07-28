@@ -357,7 +357,7 @@ export function reconcileWorkflowV2RunFromDurableState(input: {
       ? "failed"
       : "waiting_for_user";
   const finalReport = status === "completed" || status === "failed"
-    ? buildWorkflowV2FinalReport(input.persisted.plan, input.persisted.workerOutputs, durableStatus, input.persisted.recoveryDecisions, input.operations)
+    ? input.persisted.finalReport ?? buildWorkflowV2FinalReport(input.persisted.plan, input.persisted.workerOutputs, durableStatus, input.persisted.recoveryDecisions, input.operations)
     : undefined;
   const lastError = status === "failed"
     ? progress.find((item) => item.status === "failed")?.detail ?? "Workflow V2 run failed before app restart."

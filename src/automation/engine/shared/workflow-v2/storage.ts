@@ -84,6 +84,7 @@ export interface WorkflowV2PersistedRunState {
   transaction?: WorkflowTransactionState;
   recoveryDecisions?: WorkflowRecoveryDecisionRecord[];
   recovery?: WorkflowRecoveryPreview;
+  finalReport?: string;
 }
 
 export interface WorkflowV2DurableEvent {
@@ -158,6 +159,7 @@ export function isWorkflowV2PersistedRunState(value: unknown): value is Workflow
   }
   if (value.recoveryDecisions !== undefined && (!Array.isArray(value.recoveryDecisions) || !value.recoveryDecisions.every(isWorkflowRecoveryDecisionRecord))) return false;
   if (value.recovery !== undefined && !isWorkflowRecoveryPreview(value.recovery)) return false;
+  if (value.finalReport !== undefined && !isNonEmptyString(value.finalReport)) return false;
   const nodeIds = new Set(value.runState.nodeOrder);
   return Object.entries(value.nodeControl)
     .every(([nodeId, control]) => nodeIds.has(nodeId) && isDurableNodeControlState(control));

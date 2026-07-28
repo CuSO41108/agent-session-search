@@ -12,8 +12,9 @@ import {
 } from "../../../shared/workflow-v2/storage";
 import { createWorkflowV2RunState } from "../../../shared/workflow-v2/state";
 import type { RuntimeConversation } from "../../../shared/types";
-import type { WorkflowConflictPreview, WorkflowOperationRecord, WorkflowRecoveryDecisionRecord, WorkflowRecoveryManagerRecommendation, WorkflowRecoveryPreview, WorkflowTransactionState } from "../../../shared/workflow-v2/transaction";
+import { sanitizeWorkflowTransactionValue, type WorkflowConflictPreview, type WorkflowOperationRecord, type WorkflowRecoveryDecisionRecord, type WorkflowRecoveryManagerRecommendation, type WorkflowRecoveryPreview, type WorkflowTransactionState } from "../../../shared/workflow-v2/transaction";
 import type { ExecuteWorkflowV2Checkpoint } from "./workflow-v2-executor";
+import type { WorkflowWorkspaceDiffResult } from "./workflow-v2-workspace-transaction";
 import { transitionWorkflowV2NodeState } from "./workflow-v2-scheduler";
 
 export function createWorkflowV2NodeCacheFingerprint(input: {
@@ -141,6 +142,7 @@ export function buildWorkflowV2FinalReport(
   status: "completed" | "failed" | "paused" | "running",
   recoveryDecisions: readonly WorkflowRecoveryDecisionRecord[] = [],
   operations: readonly WorkflowOperationRecord[] = [],
+  workspaceDiff?: WorkflowWorkspaceDiffResult,
 ): string {
   const outputByNodeId = new Map(workerOutputs.map((output) => [output.nodeId, output]));
   const changedPaths = [...new Set(workerOutputs.flatMap((output) => output.acceptance?.changedPaths ?? []))].sort();
@@ -151,20 +153,32 @@ export function buildWorkflowV2FinalReport(
       return `- ${index + 1}. ${node.title} (${node.id}): ${output ? `${output.acceptance?.outcome ?? "completed"}; ${output.summary}` : "no completed output"}`;
     }),
   ].join("\n");
-  const fileDiffReport = ["## File diff", ...(changedPaths.length ? changedPaths.map((changedPath) => `- changed: ${changedPath}`) : ["- No governed file changes recorded."])].join("\n");
+  const actualFileChanges = workspaceDiff ? [
+    ...workspaceDiff.created.map((changedPath) => `- created: ${changedPath}`),
+    ...workspaceDiff.modified.map((changedPath) => `- modified: ${changedPath}`),
+    ...workspaceDiff.deleted.map((changedPath) => `- deleted: ${changedPath}`),
+  ] : changedPaths.map((changedPath) => `- changed: ${changedPath}`);
+  const fileDiffReport = ["## File diff", ...(actualFileChanges.length ? actualFileChanges : ["- No governed file changes recorded."])].join("\n");
   const transactionReport = workflowV2NodeTransactionReport(plan.definition.nodes, outputByNodeId);
   const recoveryDecisionReport = recoveryDecisions.length > 0 ? [
     "## Recovery decisions",
-    ...recoveryDecisions.map((decision) => `- ${decision.action} by ${decision.actor} at ${new Date(decision.decidedAt).toISOString()}: ${decision.reason} [operations: ${decision.operationIds.join(", ") || "none"}]`),
+    ...recoveryDecisions.map((decision) => `- ${decision.action} by ${workflowV2ReportText(decision.actor)} at ${new Date(decision.decidedAt).toISOString()}: ${workflowV2ReportText(decision.reason)} [operations: ${decision.operationIds.join(", ") || "none"}]`),
   ].join("\n") : "";
+  const compensationOperations = operations
+    .filter((operation) => operation.state === "compensated" || operation.state === "compensating" || operation.state === "unknown")
+    .sort((left, right) => left.updatedAt - right.updatedAt || left.operationId.localeCompare(right.operationId));
+  const manualOperationSteps = [
+    ...operations.filter((operation) => operation.state === "unknown").map((operation) => `- Verify ${operation.operationId} in the external system before retrying, continuing, or compensating.`),
+    ...operations.filter((operation) => operation.state === "applied" && !operation.reversible).map((operation) => `- Manually reconcile ${operation.operationId}; the applied external operation is irreversible and cannot be automatically compensated.`),
+  ];
   const operationReport = operations.length > 0 ? [
     "## External operations",
-    ...operations.map((operation) => `- ${operation.operationId}: ${operation.kind} ${operation.state}; target=${operation.target}; reversible=${operation.reversible}; receipt=${operation.receipt === undefined ? "missing" : "recorded"}${operation.error ? `; error=${operation.error}` : ""}`),
-    ...(operations.some((operation) => operation.state === "unknown") ? ["", "## Manual steps", "- Verify every unknown operation in the external system before retrying, continuing, or compensating."] : []),
+    ...operations.map((operation) => `- ${operation.operationId}: ${operation.kind} ${operation.state}; target=${operation.target}; reversible=${operation.reversible}; request=${workflowV2ReportValue(operation.requestSummary)}; receipt=${workflowV2ReportValue(operation.receipt)}${operation.error ? `; error=${operation.error}` : ""}`),
+    ...(manualOperationSteps.length > 0 ? ["", "## Manual steps", ...manualOperationSteps] : []),
     "",
     "## Compensation results",
-    ...operations.filter((operation) => operation.state === "compensated" || operation.state === "compensating" || operation.state === "unknown").map((operation) => `- ${operation.operationId}: ${operation.state}${operation.error ? `; ${operation.error}` : ""}`),
-    ...(operations.every((operation) => operation.state !== "compensated" && operation.state !== "compensating" && operation.state !== "unknown") ? ["- No compensation or unknown external state recorded."] : []),
+    ...compensationOperations.map((operation, index) => `- ${index + 1}. ${operation.operationId}: ${operation.state}; updated=${new Date(operation.updatedAt).toISOString()}${operation.error ? `; ${operation.error}` : ""}`),
+    ...(compensationOperations.length === 0 ? ["- No compensation or unknown external state recorded."] : []),
   ].join("\n") : "";
   const governanceReport = [nodeTimelineReport, fileDiffReport, transactionReport, operationReport, recoveryDecisionReport].filter(Boolean).join("\n\n");
   if (status === "completed") {
@@ -195,6 +209,22 @@ export function buildWorkflowV2FinalReport(
   ].join("\n");
 }
 
+export function workflowV2ReportValue(value: unknown): string {
+  if (value === undefined) return "missing";
+  try {
+    const serialized = JSON.stringify(sanitizeWorkflowTransactionValue(value));
+    if (serialized === undefined) return "unavailable";
+    return serialized.length > 2_000 ? `${serialized.slice(0, 2_000)}...[truncated]` : serialized;
+  } catch {
+    return "unavailable";
+  }
+}
+
+function workflowV2ReportText(value: string): string {
+  const sanitized = sanitizeWorkflowTransactionValue(value);
+  return typeof sanitized === "string" ? sanitized : "[REDACTED]";
+}
+
 export function buildWorkflowV2RecoveryPreview(input: {
   transaction: WorkflowTransactionState;
   operations: readonly WorkflowOperationRecord[];
@@ -204,6 +234,9 @@ export function buildWorkflowV2RecoveryPreview(input: {
   canCompensate?: boolean;
   compensableOperationIds?: readonly string[];
   canRollbackSavepoint?: boolean;
+  canRollbackWorkspace?: boolean;
+  workspaceAvailable?: boolean;
+  operationLedgerAvailable?: boolean;
   conflictDetails?: readonly WorkflowConflictPreview[];
   now?: number;
 }): WorkflowRecoveryPreview {
@@ -229,31 +262,52 @@ export function buildWorkflowV2RecoveryPreview(input: {
     ...(input.workspaceDiff?.modified ?? []),
     ...(input.workspaceDiff?.deleted ?? []),
   ])].sort();
+  const workspaceUnavailable = input.transaction.mode === "strict_atomic" && input.workspaceAvailable === false;
+  const operationLedgerUnavailable = input.operationLedgerAvailable === false;
+  const savepointOperationIds = new Set(input.transaction.currentSavepointOperationIds ?? []);
+  const savepointLedgerBoundaryKnown = input.transaction.currentSavepointOperationIds !== undefined || input.operations.length === 0;
+  const postSavepointOperationIds = savepointLedgerBoundaryKnown
+    ? input.operations.filter((operation) => !savepointOperationIds.has(operation.operationId)).map((operation) => operation.operationId)
+    : input.operations.map((operation) => operation.operationId);
   if (conflicts.length > 0) blockers.push(`Workspace conflicts: ${conflicts.join(", ")}`);
+  if (workspaceUnavailable) blockers.push("The isolated workflow workspace is unavailable or cannot be inspected; continuation is blocked.");
+  if (operationLedgerUnavailable) blockers.push("The external operation ledger is unavailable or malformed; continuation is blocked.");
+  if (input.transaction.currentSavepointId && postSavepointOperationIds.length > 0) {
+    blockers.push(`Savepoint rollback cannot proceed while later external operations remain in the ledger: ${postSavepointOperationIds.join(", ")}.`);
+  }
+  if (input.transaction.pendingCheckpointId) blockers.push(`Checkpoint ${input.transaction.pendingCheckpointId} requires approval before the frozen run can continue.`);
   if (input.transaction.status === "recovery_required" && blockers.length === 0) {
     blockers.push("The transaction requires recovery review before execution can continue.");
   }
   const hasReversibleAppliedOperation = input.operations.some((operation) => operation.state === "applied" && operation.reversible);
+  const hasContinuationTarget = Boolean(input.transaction.pendingCheckpointId)
+    || input.runState.nodeOrder.some((nodeId) => {
+      const status = input.runState.nodes[nodeId]?.status;
+      return status !== "completed" && status !== "skipped";
+    });
   const generatedAt = input.now ?? Date.now();
   const availableActions = [
-    ...(uncertainOperations.length === 0 && conflicts.length === 0 ? ["continue" as const] : []),
-    ...(input.transaction.currentSavepointId && input.canRollbackSavepoint ? ["rollback_savepoint" as const] : []),
-    ...(hasReversibleAppliedOperation && input.canCompensate ? ["compensate_all" as const] : []),
+    ...(hasContinuationTarget && uncertainOperations.length === 0 && conflicts.length === 0 && !workspaceUnavailable && !operationLedgerUnavailable ? ["continue" as const] : []),
+    ...(input.transaction.currentSavepointId && input.canRollbackSavepoint && postSavepointOperationIds.length === 0 ? ["rollback_savepoint" as const] : []),
+    ...((hasReversibleAppliedOperation && input.canCompensate) || (changedPaths.length > 0 && input.canRollbackWorkspace) ? ["compensate_all" as const] : []),
     "keep_state" as const,
     "abandon" as const,
   ];
   const reversibleAppliedOperations = input.operations.filter((operation) => operation.state === "applied" && operation.reversible);
+  const irreversibleAppliedOperations = input.operations.filter((operation) => operation.state === "applied" && !operation.reversible);
   const compensationOperationIds = reversibleAppliedOperations
     .filter((operation) => !input.compensableOperationIds || input.compensableOperationIds.includes(operation.operationId))
     .sort((left, right) => right.updatedAt - left.updatedAt || right.createdAt - left.createdAt)
     .map((operation) => operation.operationId);
-  const recommendedAction = uncertainOperations.length > 0 || conflicts.length > 0
+  const recommendedAction = uncertainOperations.length > 0 || conflicts.length > 0 || workspaceUnavailable || operationLedgerUnavailable
     ? "keep_state" as const
     : availableActions.includes("compensate_all")
       ? "compensate_all" as const
       : availableActions.includes("rollback_savepoint")
         ? "rollback_savepoint" as const
-        : "continue" as const;
+        : availableActions.includes("continue")
+          ? "continue" as const
+          : "keep_state" as const;
   const conflictCandidates = (input.conflictDetails ?? []).map((conflict) => {
     if (conflict.isolated.sha256 === conflict.current.sha256) return { path: conflict.path, resolution: "isolated" as const, rationale: "Both sides already contain the same content." };
     if (conflict.current.sha256 === conflict.baseline.sha256) return { path: conflict.path, resolution: "isolated" as const, rationale: "Only the isolated workflow result changed from the baseline." };
@@ -286,11 +340,12 @@ export function buildWorkflowV2RecoveryPreview(input: {
           : recommendedAction === "rollback_savepoint"
             ? "A verified savepoint is available and no unresolved external state blocks a rollback preview."
             : "No unknown external operation or workspace conflict currently blocks continuation.",
-      ...(input.transaction.currentSavepointId ? { rollbackTarget: input.transaction.currentSavepointId } : {}),
+      ...(input.transaction.currentSavepointId && availableActions.includes("rollback_savepoint") ? { rollbackTarget: input.transaction.currentSavepointId } : {}),
       compensationOperationIds,
       manualSteps: [
         ...uncertainOperations.map((operation) => `Verify ${operation.operationId} with its provider receipt before retrying or compensating.`),
         ...reversibleAppliedOperations.filter((operation) => !compensationOperationIds.includes(operation.operationId)).map((operation) => `Re-authorize or manually reverse ${operation.operationId}; its persisted adapter state cannot execute compensation safely.`),
+        ...irreversibleAppliedOperations.map((operation) => `Manually reconcile ${operation.operationId}; the applied external operation is irreversible and cannot be included in automatic compensation.`),
         ...conflictCandidates.filter((candidate) => candidate.resolution === "manual").map((candidate) => `Manually merge ${candidate.path} from the three-way conflict preview and confirm the resulting diff.`),
       ],
       riskComparison: availableActions.map((action) => ({

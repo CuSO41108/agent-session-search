@@ -15,6 +15,7 @@ import type {
   ResolveWorkflowV2RecoveryRequest,
   RefreshWorkflowV2RecoveryRequest,
   ResolveWorkflowV2ConflictRequest,
+  ResolveWorkflowV2UnknownOperationRequest,
   CleanupWorkflowV2RunRequest,
   WorkflowOperationResult,
   CompleteWorkflowNodeConversationRequest,
@@ -50,6 +51,7 @@ export interface WorkflowService {
   resolveRecovery: (request: ResolveWorkflowV2RecoveryRequest) => Promise<WorkflowOperationResult>;
   refreshRecovery: (request: RefreshWorkflowV2RecoveryRequest) => Promise<WorkflowOperationResult>;
   resolveConflict: (request: ResolveWorkflowV2ConflictRequest) => Promise<WorkflowOperationResult>;
+  resolveUnknownOperation: (request: ResolveWorkflowV2UnknownOperationRequest) => Promise<WorkflowOperationResult>;
   cleanupRunMaterials: (request: CleanupWorkflowV2RunRequest) => Promise<WorkflowOperationResult>;
   sendNodeMessage: (request: SendWorkflowNodeMessageRequest) => Promise<AppSnapshot>;
   completeNodeConversation: (request: CompleteWorkflowNodeConversationRequest) => Promise<WorkflowOperationResult>;
@@ -83,6 +85,7 @@ export function workflowService(): WorkflowService {
     resolveRecovery: (request) => api.resolveWorkflowV2Recovery(request),
     refreshRecovery: (request) => api.refreshWorkflowV2Recovery(request),
     resolveConflict: (request) => api.resolveWorkflowV2Conflict(request),
+    resolveUnknownOperation: (request) => api.resolveWorkflowV2UnknownOperation(request),
     cleanupRunMaterials: (request) => api.cleanupWorkflowV2RunMaterials(request),
     sendNodeMessage: (request) => api.sendWorkflowNodeMessage(request),
     completeNodeConversation: (request) => api.completeWorkflowNodeConversation(request),

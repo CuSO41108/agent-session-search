@@ -7,7 +7,7 @@ import type {
   WorkflowTransactionStatus,
 } from "../../../shared/workflow-v2/transaction";
 import type { WorkflowV2StorePort } from "../workflow-runtime-ports";
-import { WorkflowV2OperationBroker } from "./workflow-v2-operation-broker";
+import type { WorkflowV2RecoveryOperationBroker } from "../workflow-runtime-ports";
 
 export interface WorkflowCommitCoordinatorResult {
   status: Extract<WorkflowTransactionStatus, "committed" | "waiting_for_user" | "rolled_back" | "partially_rolled_back" | "recovery_required">;
@@ -20,7 +20,7 @@ export interface WorkflowCommitCoordinatorResult {
 export class WorkflowV2CommitCoordinator {
   constructor(
     private readonly store: WorkflowV2StorePort,
-    private readonly broker: WorkflowV2OperationBroker,
+    private readonly broker: WorkflowV2RecoveryOperationBroker,
   ) {}
 
   async createPlan(input: {
@@ -62,7 +62,8 @@ export class WorkflowV2CommitCoordinator {
     if (input.includeWorkspace) {
       if (!this.store.inspectWorkspaceTransaction) throw new Error("Workflow commit coordinator requires workspace diff inspection.");
       const diff = await this.store.inspectWorkspaceTransaction({ workflowId: input.workflowId, runId: input.runId });
-      appendStep(steps, { stepId: "workspace", kind: "workspace", evidenceDigest: digest(diff) });
+      if (!diff.evidenceDigest?.trim()) throw new Error("Workflow commit coordinator requires content-bound workspace evidence.");
+      appendStep(steps, { stepId: "workspace", kind: "workspace", evidenceDigest: diff.evidenceDigest });
     }
     for (const operation of irreversible) appendOperationStep(steps, operation, "irreversible_external");
     if (steps.length === 0) throw new Error("Workflow commit plan must contain at least one step.");
@@ -89,6 +90,7 @@ export class WorkflowV2CommitCoordinator {
     if (!plan) throw new Error("Workflow commit plan was not found.");
     const expectedDigest = workflowCommitPlanDigest(plan);
     if (expectedDigest !== plan.planDigest) throw new Error("Workflow commit plan digest does not match its immutable steps.");
+    await this.assertCurrentPlanEvidence(plan);
     const appliedOperationIds: string[] = [];
     const reversibleAppliedIds: string[] = [];
     const workspaceApplied: string[] = [];
@@ -99,17 +101,17 @@ export class WorkflowV2CommitCoordinator {
       for (const step of plan.steps) {
         if (step.kind === "workspace") {
           if (!this.store.commitWorkspaceTransaction) throw new Error("Workflow commit coordinator requires workspace commit support.");
+          await this.assertWorkspaceStepEvidence(plan, step);
           workspaceCommitStarted = true;
           const result = await this.store.commitWorkspaceTransaction({ workflowId: plan.workflowId, runId: plan.runId });
           if (result.conflicts.length > 0) {
-            const compensation = await this.broker.compensateRun({ workflowId: plan.workflowId, runId: plan.runId, operationIds: reversibleAppliedIds, ...(input.signal ? { signal: input.signal } : {}) });
-            const status = compensation.failed ? "recovery_required" : compensation.skipped.length > 0 ? "partially_rolled_back" : "waiting_for_user";
-            return { status, appliedOperationIds, workspaceApplied, conflicts: result.conflicts, ...(compensation.failed ? { error: compensation.failed.error } : {}) };
+            return { status: "waiting_for_user", appliedOperationIds, workspaceApplied, conflicts: result.conflicts };
           }
           workspaceApplied.push(...result.applied);
           continue;
         }
         if (!step.operationId) throw new Error(`Workflow commit step ${step.stepId} is missing operationId.`);
+        if (!this.broker.applyPrepared) throw new Error("Workflow commit coordinator requires external operation apply support.");
         if (step.kind === "irreversible_external" && !plan.approval) throw new Error("Irreversible workflow commit steps require approval bound to the commit plan.");
         try {
           await this.broker.applyPrepared({ workflowId: plan.workflowId, runId: plan.runId, operationId: step.operationId, ...(input.signal ? { signal: input.signal } : {}) });
@@ -156,6 +158,30 @@ export class WorkflowV2CommitCoordinator {
   private assertStoreCapabilities(): void {
     if (!this.store.readOperations || !this.store.persistCommitPlan || !this.store.readCommitPlan) {
       throw new Error("Workflow commit coordinator requires durable operations and immutable commit-plan storage.");
+    }
+  }
+
+  private async assertCurrentPlanEvidence(plan: WorkflowCommitPlan): Promise<void> {
+    const operations = await this.store.readOperations!(plan.workflowId, plan.runId);
+    const operationById = new Map(operations.map((operation) => [operation.operationId, operation]));
+    for (const step of plan.steps) {
+      if (step.kind === "workspace") {
+        await this.assertWorkspaceStepEvidence(plan, step);
+        continue;
+      }
+      if (!step.operationId) throw new Error(`Workflow commit step ${step.stepId} is missing operationId.`);
+      const operation = operationById.get(step.operationId);
+      if (!operation || operation.transactionId !== plan.transactionId || !operation.semanticDigest || !step.evidenceDigest || operation.semanticDigest !== step.evidenceDigest) {
+        throw new Error(`Workflow operation ${step.operationId} changed after the commit plan was frozen; refresh the plan and approval.`);
+      }
+    }
+  }
+
+  private async assertWorkspaceStepEvidence(plan: WorkflowCommitPlan, step: WorkflowCommitPlanStep): Promise<void> {
+    if (!this.store.inspectWorkspaceTransaction) throw new Error("Workflow commit coordinator requires workspace diff inspection.");
+    const current = await this.store.inspectWorkspaceTransaction({ workflowId: plan.workflowId, runId: plan.runId });
+    if (!current.evidenceDigest?.trim() || current.evidenceDigest !== step.evidenceDigest) {
+      throw new Error("Workflow workspace content changed after the commit plan was frozen; refresh the plan and approval.");
     }
   }
 }

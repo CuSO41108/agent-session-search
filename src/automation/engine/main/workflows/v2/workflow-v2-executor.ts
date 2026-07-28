@@ -66,6 +66,8 @@ export interface ExecuteWorkflowV2PlanInput {
   onNodeAccepted?: (input: { node: WorkflowV2Node; output: WorkflowV2WorkerOutput }) => Promise<void>;
   onNodeStateTransition?: (input: WorkflowV2NodeStateTransitionEvent) => void;
   onRunCheckpoint?: (input: ExecuteWorkflowV2Checkpoint) => Promise<void>;
+  afterBatchCheckpoint?: (input: ExecuteWorkflowV2Checkpoint) => Promise<{ pauseReason?: string } | void>;
+  cancelRunningNodes?: (input: { failedNodeId: string; runningNodeIds: string[]; reason: string }) => Promise<void>;
   now?: () => number;
 }
 
@@ -110,8 +112,27 @@ export async function executeWorkflowV2Plan(input: ExecuteWorkflowV2PlanInput): 
       workerOutputs: workerOutputs.map(cloneWorkflowV2WorkerOutput),
     });
   };
+  const processBatchCheckpoint = async (): Promise<void> => {
+    if (!input.afterBatchCheckpoint || (runState.status !== "running" && runState.status !== "completed")) return;
+    const batchCheckpoint = {
+      runState: structuredClone(runState),
+      workerOutputs: workerOutputs.map(cloneWorkflowV2WorkerOutput),
+    };
+    const outcome = await input.afterBatchCheckpoint(batchCheckpoint);
+    if (outcome?.pauseReason) {
+      runState = { ...runState, status: "paused" };
+      if (input.onRunCheckpoint) await checkpoint();
+    } else if (runState.status === "running" && runState.nodeOrder.every((nodeId) => {
+      const status = runState.nodes[nodeId]?.status;
+      return status === "completed" || status === "skipped";
+    })) {
+      runState = { ...runState, status: "completed" };
+      if (input.onRunCheckpoint) await checkpoint();
+    }
+  };
 
   if (input.onRunCheckpoint) await checkpoint();
+  if (input.afterBatchCheckpoint) await processBatchCheckpoint();
 
   while (runState.status === "running") {
     const runnableNodeIds = listWorkflowV2RunnableNodeIds(runState);
@@ -157,18 +178,37 @@ export async function executeWorkflowV2Plan(input: ExecuteWorkflowV2PlanInput): 
     }
     if (input.onRunCheckpoint) await checkpoint();
 
-    const settledBatch = await Promise.allSettled(
-      batch.map(({ nodeId, node, planNode, upstreamOutputs }) => executeWorkflowV2Node({
-        node,
-        planNode,
-        upstreamOutputs,
-        attempt: runState.nodes[nodeId]!.attempt,
-        runLlmNode: input.runLlmNode,
-        executeScript: input.executeScript,
-        runNodeHooks: input.runNodeHooks,
-        beforeNodeExecute: input.beforeNodeExecute,
-      })),
-    );
+    const runningNodeIds = new Set(batch.map((item) => item.nodeId));
+    let cancellationStarted = false;
+    const settledBatch = await Promise.allSettled(batch.map(async ({ nodeId, node, planNode, upstreamOutputs }) => {
+      try {
+        return await executeWorkflowV2Node({
+          node,
+          planNode,
+          upstreamOutputs,
+          attempt: runState.nodes[nodeId]!.attempt,
+          runLlmNode: input.runLlmNode,
+          executeScript: input.executeScript,
+          runNodeHooks: input.runNodeHooks,
+          beforeNodeExecute: input.beforeNodeExecute,
+        });
+      } catch (error) {
+        if (!cancellationStarted) {
+          cancellationStarted = true;
+          const siblings = [...runningNodeIds].filter((runningNodeId) => runningNodeId !== nodeId);
+          if (siblings.length > 0) {
+            await input.cancelRunningNodes?.({
+              failedNodeId: nodeId,
+              runningNodeIds: siblings,
+              reason: error instanceof Error ? error.message : String(error),
+            });
+          }
+        }
+        throw error;
+      } finally {
+        runningNodeIds.delete(nodeId);
+      }
+    }));
 
     for (const [index, { nodeId, node, planNode }] of batch.entries()) {
       const settledNode = settledBatch[index]!;
@@ -472,6 +512,7 @@ export async function executeWorkflowV2Plan(input: ExecuteWorkflowV2PlanInput): 
       }
     }
     if (input.onRunCheckpoint) await checkpoint();
+    if (input.afterBatchCheckpoint) await processBatchCheckpoint();
   }
 
   const finalRunnableNodeIds = listWorkflowV2RunnableNodeIds(runState);

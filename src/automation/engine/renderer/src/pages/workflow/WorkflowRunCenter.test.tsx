@@ -134,6 +134,16 @@ describe("WorkflowRunCenter", () => {
     expect(html).toContain("安全清理材料");
   });
 
+  test("shows pending and completed policy checkpoints in transaction details", () => {
+    const checkpointRun = run({ runId: "checkpoint-run", status: "waiting_for_user", startedAt: 1_000 });
+    checkpointRun.transaction = { transactionId: "transaction-checkpoint", mode: "strict_atomic", status: "waiting_for_user", baselineId: "baseline", currentSavepointId: "policy-savepoint", pendingCheckpointId: "publish-draft", pendingCheckpointPlanDigest: "1234567890abcdef987654321", completedCheckpointIds: ["prepare"], operationCount: 0, unknownOperationCount: 0, irreversibleOperationCount: 0, startedAt: 1_000, updatedAt: 2_000, retentionUntil: 3_000 };
+    const html = renderToStaticMarkup(<WorkflowRunCenter runs={[checkpointRun]} open selectedRunId={checkpointRun.runId} language="zh" onSelectRun={() => undefined} onClose={() => undefined} />);
+
+    expect(html).toContain("待审批检查点</b>publish-draft");
+    expect(html).toContain("待审批计划摘要</b>1234567890abcdef");
+    expect(html).toContain("已完成检查点</b>prepare");
+  });
+
   test("shows transaction recovery facts, receipts, and node acceptance", () => {
     const recoveryRun = run({ runId: "recovery-run", status: "failed", startedAt: 2_000, finishedAt: 4_000 });
     recoveryRun.transaction = {
@@ -141,6 +151,8 @@ describe("WorkflowRunCenter", () => {
       mode: "strict_atomic",
       status: "recovery_required",
       baselineId: "baseline-1",
+      governedFileCount: 12,
+      excludedPaths: [".git", "node_modules"],
       currentSavepointId: "savepoint-1",
       operationCount: 1,
       unknownOperationCount: 1,
@@ -214,10 +226,12 @@ describe("WorkflowRunCenter", () => {
     recoveryRun.progress[0]!.scriptReceipt = { exitCode: 1, signal: null, timedOut: false, stderrSummary: "warning", stdoutDigest: "digest", operationDigest: "operation-digest", effectState: "unknown" };
     recoveryRun.progress[0]!.intervention = { nodeId: "research", source: "supervision_pause", reason: "Review evidence", allowedActions: ["continue", "replan"], requestedAt: 3_900 };
 
-    const html = renderToStaticMarkup(<WorkflowRunCenter runs={[recoveryRun]} open selectedRunId={recoveryRun.runId} writableRunId={recoveryRun.runId} language="zh" onSelectRun={() => undefined} onClose={() => undefined} onResolveRecovery={() => undefined} onRefreshRecovery={() => undefined} onResolveConflict={() => undefined} onResolveIntervention={() => undefined} />);
+    const html = renderToStaticMarkup(<WorkflowRunCenter runs={[recoveryRun]} open selectedRunId={recoveryRun.runId} writableRunId={recoveryRun.runId} language="zh" onSelectRun={() => undefined} onClose={() => undefined} onResolveRecovery={() => undefined} onRefreshRecovery={() => undefined} onResolveConflict={() => undefined} onResolveUnknownOperation={() => undefined} onResolveIntervention={() => undefined} />);
 
     expect(html).toContain("事务与恢复");
     expect(html).toContain("recovery_required");
+    expect(html).toContain("受治理文件</b>12");
+    expect(html).toContain("排除路径</b>.git, node_modules");
     expect(html).toContain("已提交</b>0");
     expect(html).toContain("已补偿</b>0");
     expect(html).toContain("operation-1: unknown");
@@ -225,6 +239,9 @@ describe("WorkflowRunCenter", () => {
     expect(html).toContain("查看 Manager Agent 候选结果");
     expect(html).toContain("候选结果只读");
     expect(html).toContain("safe-preview");
+    expect(html).toContain("核验依据");
+    expect(html).toContain("核验为已应用");
+    expect(html).toContain("核验为未应用");
     expect(html).toContain("nodeId · research · attempt #1");
     expect(html).toContain("回滚依据（必填）");
     expect(html).toContain("节点验收 · degraded");

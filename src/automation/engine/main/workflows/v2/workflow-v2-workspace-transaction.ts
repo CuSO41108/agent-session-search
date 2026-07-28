@@ -9,8 +9,9 @@ const execFileAsync = promisify(execFile);
 const EXCLUDED_NAMES = new Set([".git", "node_modules", ".cache", "dist", "build"]);
 const MANIFEST_VERSION = 1 as const;
 const WORKSPACE_CAPABILITIES = new Set(["workspace_read", "workspace_write", "workspace_delete"]);
+const sourceWorkspaceWriteChains = new Map<string, Promise<void>>();
 
-export function workflowV2WorkspaceIsolationPlanError(plan: WorkflowV2Plan, capabilities: { brokeredScriptExecution?: boolean } = {}): string | undefined {
+export function workflowV2WorkspaceIsolationPlanError(plan: WorkflowV2Plan, capabilities: { brokeredScriptExecution?: boolean; brokeredAdapters?: readonly string[] } = {}): string | undefined {
   if (plan.definition.transactionPolicy?.defaultMode !== "strict_atomic") return undefined;
   for (const planNode of plan.nodes) {
     if (!planNode.scriptGovernance) continue;
@@ -27,6 +28,9 @@ export function workflowV2WorkspaceIsolationPlanError(plan: WorkflowV2Plan, capa
     }
     if (node.script.effectMode === "brokered_external" && !capabilities.brokeredScriptExecution) {
       return `Workflow strict_atomic brokered script node ${planNode.nodeId} has no external operation Broker execution port.`;
+    }
+    if (node.script.effectMode === "brokered_external" && node.script.compensationAdapter && capabilities.brokeredAdapters && !capabilities.brokeredAdapters.includes(node.script.compensationAdapter)) {
+      return `Workflow strict_atomic brokered script node ${planNode.nodeId} requires unavailable adapter ${node.script.compensationAdapter}.`;
     }
     const unsupported = planNode.scriptGovernance.capabilities.filter((capability) => !WORKSPACE_CAPABILITIES.has(capability));
     if (node.script.effectMode !== "brokered_external" && unsupported.length > 0) {
@@ -90,6 +94,8 @@ export interface WorkflowWorkspaceDiffResult {
   created: string[];
   modified: string[];
   deleted: string[];
+  /** Content-bound digest of every changed path before and after the diff. */
+  evidenceDigest: string;
 }
 
 export interface WorkflowWorkspaceConflictVersion {
@@ -206,6 +212,10 @@ export class WorkflowV2WorkspaceTransaction {
   }
 
   async commit(): Promise<WorkflowWorkspaceCommitResult> {
+    return serializeSourceWorkspaceWrite(await this.sourceDirectory(), () => this.commitUnlocked());
+  }
+
+  private async commitUnlocked(): Promise<WorkflowWorkspaceCommitResult> {
     const paths = this.paths();
     const manifest = await readManifest(paths.manifestPath);
     if (!manifest) throw new Error("Workflow workspace baseline manifest was not found.");
@@ -329,6 +339,10 @@ export class WorkflowV2WorkspaceTransaction {
   }
 
   async resolveConflict(input: { path: string; resolution: "isolated" | "current" | "manual"; expectedCurrentSha256?: string; content?: string }): Promise<WorkflowWorkspaceConflictPreview> {
+    return serializeSourceWorkspaceWrite(await this.sourceDirectory(), () => this.resolveConflictUnlocked(input));
+  }
+
+  private async resolveConflictUnlocked(input: { path: string; resolution: "isolated" | "current" | "manual"; expectedCurrentSha256?: string; content?: string }): Promise<WorkflowWorkspaceConflictPreview> {
     const [before] = await this.inspectConflictPreview([input.path]);
     if (!before) throw new Error(`Workflow conflict ${input.path} was not found.`);
     if (before.current.sha256 !== input.expectedCurrentSha256) {
@@ -370,6 +384,10 @@ export class WorkflowV2WorkspaceTransaction {
   }
 
   async rollbackCommitted(): Promise<WorkflowWorkspaceRollbackResult> {
+    return serializeSourceWorkspaceWrite(await this.sourceDirectory(), () => this.rollbackCommittedUnlocked());
+  }
+
+  private async rollbackCommittedUnlocked(): Promise<WorkflowWorkspaceRollbackResult> {
     const paths = this.paths();
     const manifest = await readManifest(paths.manifestPath);
     if (!manifest) throw new Error("Workflow workspace baseline manifest was not found.");
@@ -444,6 +462,29 @@ export class WorkflowV2WorkspaceTransaction {
   paths(): WorkflowWorkspaceTransactionPaths {
     return workspacePaths(this.transactionRoot);
   }
+
+  private async sourceDirectory(): Promise<string> {
+    const manifest = await readManifest(this.paths().manifestPath);
+    if (!manifest) throw new Error("Workflow workspace baseline manifest was not found.");
+    return existingDirectory(manifest.sourceDir);
+  }
+}
+
+async function serializeSourceWorkspaceWrite<T>(sourceDir: string, operation: () => Promise<T>): Promise<T> {
+  const resolved = path.resolve(sourceDir);
+  const key = process.platform === "win32" ? resolved.toLowerCase() : resolved;
+  const previous = sourceWorkspaceWriteChains.get(key) ?? Promise.resolve();
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const tail = previous.then(() => gate);
+  sourceWorkspaceWriteChains.set(key, tail);
+  await previous;
+  try {
+    return await operation();
+  } finally {
+    release();
+    if (sourceWorkspaceWriteChains.get(key) === tail) sourceWorkspaceWriteChains.delete(key);
+  }
 }
 
 async function diffDirectories(beforeDir: string, afterDir: string): Promise<WorkflowWorkspaceDiffResult> {
@@ -453,14 +494,26 @@ async function diffDirectories(beforeDir: string, afterDir: string): Promise<Wor
   const beforeByPath = new Map(beforeScan.files.map((file) => [file.relativePath, file]));
   const afterByPath = new Map(afterScan.files.map((file) => [file.relativePath, file]));
   const allPaths = [...new Set([...beforeByPath.keys(), ...afterByPath.keys()])].sort();
-  const result: WorkflowWorkspaceDiffResult = { created: [], modified: [], deleted: [] };
+  const result: WorkflowWorkspaceDiffResult = { created: [], modified: [], deleted: [], evidenceDigest: "" };
+  const evidence: Array<{
+    path: string;
+    before: { size: number; sha256: string } | null;
+    after: { size: number; sha256: string } | null;
+  }> = [];
   for (const relativePath of allPaths) {
     const before = beforeByPath.get(relativePath);
     const after = afterByPath.get(relativePath);
     if (!before && after) result.created.push(relativePath);
     else if (before && !after) result.deleted.push(relativePath);
     else if (!sameFile(before, after)) result.modified.push(relativePath);
+    else continue;
+    evidence.push({
+      path: relativePath,
+      before: before ? { size: before.size, sha256: before.sha256 } : null,
+      after: after ? { size: after.size, sha256: after.sha256 } : null,
+    });
   }
+  result.evidenceDigest = createHash("sha256").update(JSON.stringify(evidence)).digest("hex");
   return result;
 }
 

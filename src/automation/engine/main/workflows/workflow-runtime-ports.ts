@@ -18,7 +18,7 @@ import type {
   WorkflowV2DurableEvent,
   WorkflowV2PersistedRunState,
 } from "../../shared/workflow-v2/storage";
-import type { WorkflowCommitPlan, WorkflowOperationRecord, WorkflowOperationState } from "../../shared/workflow-v2/transaction";
+import type { WorkflowCommitPlan, WorkflowOperationRecord, WorkflowOperationState, WorkflowTransactionMode } from "../../shared/workflow-v2/transaction";
 import type { WorkflowRecoveryDecisionRecord, WorkflowRecoveryManagerRecommendation, WorkflowRecoveryPreview, WorkflowTransactionState } from "../../shared/workflow-v2/transaction";
 import type { WorkflowWorkspaceCommitResult, WorkflowWorkspaceConflictPreview, WorkflowWorkspaceDiffResult, WorkflowWorkspacePreparation, WorkflowWorkspaceRollbackResult } from "./v2/workflow-v2-workspace-transaction";
 
@@ -45,6 +45,7 @@ export interface ExecuteWorkflowV2ScriptRequest {
   timeoutMs: number;
   inputs: Readonly<Record<string, unknown>>;
   authorization: WorkflowV2ScriptAuthorization;
+  transactionMode?: WorkflowTransactionMode;
 }
 
 export interface WorkflowV2StorePort {
@@ -133,6 +134,7 @@ export interface WorkflowV2RecoveryOperationBroker {
   canInspectOperation: (operation: WorkflowOperationRecord) => boolean;
   canCompensateOperation: (operation: WorkflowOperationRecord) => boolean;
   inspect: (input: { workflowId: string; runId: string; operationId: string; signal?: AbortSignal }) => Promise<"applied" | "not_applied" | "unknown">;
+  applyPrepared?: (input: { workflowId: string; runId: string; operationId: string; signal?: AbortSignal }) => Promise<unknown>;
   compensateRun: (input: { workflowId: string; runId: string; operationIds?: readonly string[]; signal?: AbortSignal }) => Promise<{ compensated: string[]; skipped: string[]; failed?: { operationId: string; error: string } }>;
 }
 
@@ -141,12 +143,13 @@ export interface WorkflowRuntimeDependencies {
   startWorkflowRun: (input: StartWorkflowRunRequest) => WorkflowOperationResult;
   finishWorkflowRun: (input: FinishWorkflowRunRequest) => WorkflowOperationResult;
   updateWorkflowRunState: (input: WorkflowRunStateUpdate) => void;
-  runTask: (input: RunTaskRequest, approvalPolicy?: { allowedFileWriteRoot: string }) => Promise<AppSnapshot>;
+  runTask: (input: RunTaskRequest, approvalPolicy?: { allowedFileWriteRoot: string; workspaceOnly?: boolean }) => Promise<AppSnapshot>;
   stopTask: (taskId: string) => Promise<void>;
   deleteTask: (taskId: string, options?: { preserveRuntimeConversation?: boolean }) => Promise<AppSnapshot>;
   executeWorkflowV2Script: (input: ExecuteWorkflowV2ScriptRequest) => Promise<WorkflowV2ScriptWorkerOutput>;
   /** Executes brokered_external scripts through a host integration that records external operations in the Broker ledger. */
   executeWorkflowV2BrokeredScript?: (input: ExecuteWorkflowV2ScriptRequest) => Promise<WorkflowV2ScriptWorkerOutput>;
+  workflowV2BrokeredAdapters?: readonly string[];
   startWorkflowNodeConversation: (input: {
     workflowId: string;
     runId: string;

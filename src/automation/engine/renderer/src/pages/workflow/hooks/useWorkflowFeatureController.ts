@@ -186,6 +186,12 @@ export function useWorkflowFeatureController({
         if (!result.ok) throw new Error(result.error ?? "Workflow conflict could not be resolved.");
         await onRefresh();
       },
+      onResolveUnknownOperation: async (runId, input) => {
+        if (!draft.workflowId) return;
+        const result = await workflows.resolveUnknownOperation({ workflowId: draft.workflowId, runId, operationId: input.operationId, verifiedState: input.verifiedState, actor: "desktop-user", reason: input.reason.trim() });
+        if (!result.ok) throw new Error(result.error ?? "Workflow unknown operation could not be verified.");
+        await onRefresh();
+      },
       onCleanupRunMaterials: async (runId) => {
         if (!draft.workflowId) return;
         const result = await workflows.cleanupRunMaterials({ workflowId: draft.workflowId, runId });

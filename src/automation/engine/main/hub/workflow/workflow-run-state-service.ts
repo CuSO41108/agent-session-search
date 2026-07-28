@@ -22,7 +22,7 @@ export class WorkflowRunStateService {
     cloneDraft: (draft: WorkflowDraftState) => WorkflowDraftState;
     clearDraftRequest: (workflowId: string) => void;
     changed: () => void;
-    transactionCapabilities?: () => WorkflowTransactionCapabilities & { brokeredScriptExecution?: boolean };
+    transactionCapabilities?: () => WorkflowTransactionCapabilities & { brokeredScriptExecution?: boolean; brokeredAdapters?: readonly string[] };
   }) {}
 
   start(input: StartWorkflowRunRequest): WorkflowOperationResult {
@@ -38,7 +38,7 @@ export class WorkflowRunStateService {
     const transactionCapabilities = this.deps.transactionCapabilities?.();
     const transactionError = workflowTransactionPreflightError(workflow.workflowV2Plan.definition.transactionPolicy, transactionCapabilities);
     if (transactionError) return { ok: false, workflowId: workflow.workflowId, revision: workflow.revision, error: transactionError };
-    const workspaceError = workflowV2WorkspaceIsolationPlanError(workflow.workflowV2Plan, { brokeredScriptExecution: transactionCapabilities?.brokeredScriptExecution });
+    const workspaceError = workflowV2WorkspaceIsolationPlanError(workflow.workflowV2Plan, { brokeredScriptExecution: transactionCapabilities?.brokeredScriptExecution, brokeredAdapters: transactionCapabilities?.brokeredAdapters });
     if (workspaceError) return { ok: false, workflowId: workflow.workflowId, revision: workflow.revision, error: workspaceError };
     this.deps.clearDraftRequest(workflow.workflowId);
     const runId = this.deps.createRunId();

@@ -64,6 +64,16 @@ export function resolveWorkflowTransactionPolicy(policy: WorkflowTransactionPoli
   };
 }
 
+export function renewWorkflowTransactionRetention(
+  transaction: WorkflowTransactionState,
+  retentionDays: number,
+  now = Date.now(),
+): WorkflowTransactionState {
+  if (!Number.isSafeInteger(retentionDays) || retentionDays <= 0) throw new Error("Workflow transaction retentionDays must be a positive safe integer.");
+  const retentionMs = retentionDays * 24 * 60 * 60 * 1_000;
+  return { ...transaction, retentionUntil: Math.max(transaction.retentionUntil, now + retentionMs) };
+}
+
 export function workflowTransactionPreflightError(
   policy: WorkflowTransactionPolicy | undefined,
   capabilities: WorkflowTransactionCapabilities = {},
@@ -97,6 +107,9 @@ export function workflowTransactionPolicyValidationErrors(
   if (policy.onUnknown !== "pause") errors.push("Workflow transaction onUnknown must be pause.");
   if (policy.onConflict !== "user_or_manager") errors.push("Workflow transaction onConflict must be user_or_manager.");
   if (!Array.isArray(policy.checkpoints)) return [...errors, "Workflow transaction checkpoints must be an array."];
+  if (policy.checkpoints.length > 0 && policy.defaultMode !== "strict_atomic") {
+    errors.push("Workflow transaction checkpoints require strict_atomic mode.");
+  }
   const checkpointIds = new Set<string>();
   for (const checkpoint of policy.checkpoints) {
     if (!checkpoint || typeof checkpoint !== "object") {
@@ -128,7 +141,15 @@ export interface WorkflowTransactionState {
   mode: WorkflowTransactionMode;
   status: WorkflowTransactionStatus;
   baselineId: string;
+  governedFileCount?: number;
+  excludedPaths?: string[];
   currentSavepointId?: string;
+  currentSavepointOperationIds?: string[];
+  pendingCheckpointId?: string;
+  pendingCheckpointPlanDigest?: string;
+  committingCheckpointId?: string;
+  approvedCheckpointIds?: string[];
+  completedCheckpointIds?: string[];
   operationCount: number;
   unknownOperationCount: number;
   irreversibleOperationCount: number;
@@ -311,6 +332,9 @@ export const WORKFLOW_TRANSACTION_EVENT_TYPES = [
   "operation_applied",
   "operation_unknown",
   "savepoint_created",
+  "checkpoint_approval_required",
+  "checkpoint_approved",
+  "checkpoint_completed",
   "commit_started",
   "commit_completed",
   "compensation_started",
@@ -326,7 +350,15 @@ export function isWorkflowTransactionState(value: unknown): value is WorkflowTra
     && transactionModes.has(value.mode as WorkflowTransactionMode)
     && transactionStatuses.has(value.status as WorkflowTransactionStatus)
     && nonEmpty(value.baselineId)
+    && (value.governedFileCount === undefined || nonNegativeInteger(value.governedFileCount))
+    && (value.excludedPaths === undefined || stringSet(value.excludedPaths))
     && (value.currentSavepointId === undefined || nonEmpty(value.currentSavepointId))
+    && (value.currentSavepointOperationIds === undefined || stringSet(value.currentSavepointOperationIds))
+    && (value.pendingCheckpointId === undefined || nonEmpty(value.pendingCheckpointId))
+    && (value.pendingCheckpointPlanDigest === undefined || nonEmpty(value.pendingCheckpointPlanDigest))
+    && (value.committingCheckpointId === undefined || nonEmpty(value.committingCheckpointId))
+    && (value.approvedCheckpointIds === undefined || stringSet(value.approvedCheckpointIds))
+    && (value.completedCheckpointIds === undefined || stringSet(value.completedCheckpointIds))
     && nonNegativeInteger(value.operationCount)
     && nonNegativeInteger(value.unknownOperationCount)
     && nonNegativeInteger(value.irreversibleOperationCount)
@@ -444,6 +476,10 @@ function nonNegativeInteger(value: unknown): value is number {
 
 function timestamp(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value) && value >= 0;
+}
+
+function stringSet(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every(nonEmpty) && new Set(value).size === value.length;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

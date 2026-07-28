@@ -6,8 +6,8 @@ import { workflowV2ScriptCapabilityDigest, workflowV2ScriptOperationDigest } fro
 import { executeWorkflowV2BrokeredScript } from "./workflow-v2-brokered-script-executor";
 import { WorkflowV2OperationBroker, type WorkflowTransactionalOperationAdapter } from "./workflow-v2-operation-broker";
 
-function node(code: string): WorkflowV2ScriptNode {
-  return { id: "brokered", kind: "script", title: "Brokered", execModel: "script", executionMode: "script", outputFields: [], script: { executable: { kind: "inline", language: "typescript", code }, parameters: [], capabilities: ["network_write"], managerRisk: { level: "dangerous", rationale: "Approved external write." }, effectMode: "brokered_external", idempotency: "keyed", stderrPolicy: "fail", compensationAdapter: "http" } };
+function node(code: string, compensationAdapter = "http"): WorkflowV2ScriptNode {
+  return { id: "brokered", kind: "script", title: "Brokered", execModel: "script", executionMode: "script", outputFields: [], script: { executable: { kind: "inline", language: "typescript", code }, parameters: [], capabilities: ["network_write"], managerRisk: { level: "dangerous", rationale: "Approved external write." }, effectMode: "brokered_external", idempotency: "keyed", stderrPolicy: "fail", compensationAdapter } };
 }
 
 function fixture(scriptNode: WorkflowV2ScriptNode) {
@@ -27,23 +27,46 @@ function fixture(scriptNode: WorkflowV2ScriptNode) {
   const adapter: WorkflowTransactionalOperationAdapter = { adapterId: "http", prepare: async (input) => ({ adapterId: "http", plan: input.plan, prepared: input.plan, preparedAt: Date.now() }), apply, inspect: async () => "applied", compensate: async () => undefined };
   const broker = new WorkflowV2OperationBroker(store);
   broker.register(adapter);
+  broker.register({
+    ...adapter,
+    adapterId: "message",
+    prepare: async (input) => ({ adapterId: "message", plan: input.plan, prepared: input.plan, preparedAt: Date.now() }),
+  });
   const capabilities = ["network_write"] as const;
   const workDir = "C:\\workspace";
   const inputs = {};
   const operationDigest = workflowV2ScriptOperationDigest({ workflowId: "workflow-1", graphVersion: 1, runId: "run-1", node: scriptNode, workDir, inputs });
-  return { operations, store, broker, apply, request: { node: scriptNode, workDir, upstreamOutputs: [], signal: new AbortController().signal, timeoutMs: 1_000, inputs, authorization: { decision: "allow_once" as const, workflowId: "workflow-1", graphVersion: 1, runId: "run-1", nodeId: scriptNode.id, risk: "dangerous" as const, capabilities: [...capabilities], capabilityDigest: workflowV2ScriptCapabilityDigest(capabilities), operationDigest, approvalRequestId: "approval-1", attempt: 2 } } };
+  return { operations, store, broker, apply, request: { node: scriptNode, workDir, upstreamOutputs: [], signal: new AbortController().signal, timeoutMs: 1_000, inputs, transactionMode: "strict_atomic" as const, authorization: { decision: "allow_once" as const, workflowId: "workflow-1", graphVersion: 1, runId: "run-1", nodeId: scriptNode.id, risk: "dangerous" as const, capabilities: [...capabilities], capabilityDigest: workflowV2ScriptCapabilityDigest(capabilities), operationDigest, approvalRequestId: "approval-1", attempt: 2 } } };
 }
 
 describe("executeWorkflowV2BrokeredScript", () => {
-  test("persists planned/applying before applying a declarative HTTP operation", async () => {
+  test("prepares a strict atomic HTTP operation without applying it before the commit plan", async () => {
     const scriptNode = node('return { operations: [{ kind: "http", reversible: true, plan: { mode: "strict_atomic", request: { url: "https://example.test/items", method: "POST" }, inspect: { url: "https://example.test/items/1", method: "GET" }, compensate: { url: "https://example.test/items/1", method: "DELETE" } } }] };');
     const testFixture = fixture(scriptNode);
     const output = await executeWorkflowV2BrokeredScript(testFixture.request, testFixture.store, testFixture.broker);
-    expect(testFixture.apply).toHaveBeenCalledOnce();
-    expect(testFixture.operations).toEqual([expect.objectContaining({ state: "applied", attempt: 2, adapterId: "http", compensationAdapter: "http", receipt: { status: 200 } })]);
+    expect(testFixture.apply).not.toHaveBeenCalled();
+    expect(testFixture.operations).toEqual([expect.objectContaining({ state: "planned", attempt: 2, adapterId: "http", compensationAdapter: "http" })]);
     expect(output.acceptance.operationIds).toEqual([testFixture.operations[0]!.operationId]);
     expect(output.scriptReceipt.effectState).toBe("brokered");
     expect(output.outputs).not.toHaveProperty("operations");
+  });
+
+  test("applies a controlled HTTP operation during the approved node attempt", async () => {
+    const scriptNode = node('return { operations: [{ kind: "http", reversible: true, plan: { mode: "controlled", request: { url: "https://example.test/items", method: "POST" }, compensate: { url: "https://example.test/items/1", method: "DELETE" } } }] };');
+    const testFixture = fixture(scriptNode);
+    await executeWorkflowV2BrokeredScript({ ...testFixture.request, transactionMode: "controlled" }, testFixture.store, testFixture.broker);
+    expect(testFixture.apply).toHaveBeenCalledOnce();
+    expect(testFixture.operations[0]).toMatchObject({ state: "applied", receipt: { status: 200 } });
+  });
+
+  test("prepares an approved message draft for the injected message adapter", async () => {
+    const scriptNode = node('return { operations: [{ kind: "message", reversible: true, plan: { mode: "strict_atomic", draft: { channel: "email", recipients: ["reviewer@example.test"], body: "Reviewed result", attachments: [] }, approval: { approvalId: "approval-1", actor: "desktop-user", approvedAt: 1, draftDigest: "digest-1" } } }] };', "message");
+    const testFixture = fixture(scriptNode);
+
+    await executeWorkflowV2BrokeredScript(testFixture.request, testFixture.store, testFixture.broker);
+
+    expect(testFixture.apply).not.toHaveBeenCalled();
+    expect(testFixture.operations[0]).toMatchObject({ kind: "message", adapterId: "message", compensationAdapter: "message", state: "planned" });
   });
 
   test("does not expose fetch or process to the planning script", async () => {

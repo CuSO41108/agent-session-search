@@ -62,4 +62,25 @@ describe("RuntimeApprovalBroker", () => {
     broker.cancelOwner("task-1");
     await expect(outside).resolves.toBe("rejected");
   });
+
+  test("fails closed for unbrokered strict atomic effects while allowing isolated workspace writes", async () => {
+    const events: AgentEvent[] = [];
+    const broker = new RuntimeApprovalBroker();
+    broker.restrictToFileWritesWithin("strict-task", "C:/isolated/workspace");
+
+    await expect(broker.request({
+      ownerId: "strict-task",
+      provider: "codex",
+      content: "Run curl",
+      emit: (event) => events.push(event),
+    })).resolves.toBe("rejected");
+    await expect(broker.request({
+      ownerId: "strict-task",
+      provider: "claude",
+      content: "Write isolated result",
+      emit: (event) => events.push(event),
+      operation: { kind: "file_write", cwd: "C:/isolated", paths: ["workspace/result.txt"] },
+    })).resolves.toBe("approved");
+    expect(events).toContainEqual(expect.objectContaining({ type: "approval_response", decision: "rejected", metadata: { approvalMode: "strict_atomic_workspace_only" } }));
+  });
 });

@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import type { WorkflowTransactionMode } from "../../../shared/workflow-v2/transaction";
+import { sanitizeWorkflowTransactionValue } from "../../../shared/workflow-v2/transaction";
 import type {
   WorkflowOperationInspection,
   WorkflowPreparedOperation,
@@ -43,6 +44,9 @@ export class WorkflowV2HttpOperationAdapter implements WorkflowTransactionalOper
   async prepare(input: Parameters<WorkflowTransactionalOperationAdapter<WorkflowHttpOperationPlan, WorkflowHttpReceipt>["prepare"]>[0]): Promise<WorkflowPreparedOperation<WorkflowHttpOperationPlan>> {
     const request = normalizedRequest(input.plan.request);
     const readOnly = request.method === "GET" || request.method === "HEAD";
+    if (input.plan.mode === "strict_atomic" && containsDurablyRedactedValue(input.plan)) {
+      throw new Error("Strict atomic HTTP operations cannot embed credentials until the host provides a durable credential reference.");
+    }
     if (!readOnly && input.plan.mode === "strict_atomic" && (!input.plan.inspect || !input.plan.compensate)) {
       throw new Error("Strict atomic HTTP writes require both inspect and compensate requests.");
     }
@@ -128,6 +132,7 @@ export interface WorkflowMessageApproval {
 }
 
 export interface WorkflowMessagePlan {
+  mode: WorkflowTransactionMode;
   draft: WorkflowMessageDraft;
   approval: WorkflowMessageApproval;
 }
@@ -157,6 +162,9 @@ export class WorkflowV2MessageOperationAdapter implements WorkflowTransactionalO
 
   async prepare(input: Parameters<WorkflowTransactionalOperationAdapter<WorkflowMessagePlan, WorkflowMessageReceipt>["prepare"]>[0]): Promise<WorkflowPreparedOperation<WorkflowMessagePlan>> {
     const draft = normalizeDraft(input.plan.draft);
+    if (input.plan.mode === "strict_atomic" && !this.provider.retract) {
+      throw new Error("Strict atomic message writes require a provider with retract support.");
+    }
     if (!input.plan.approval.approvalId.trim() || !input.plan.approval.actor.trim()) throw new Error("Workflow message approval identity is required.");
     if (input.plan.approval.draftDigest !== workflowMessageDraftDigest(draft)) {
       throw new Error("Workflow message draft changed after approval and must be confirmed again.");
@@ -203,6 +211,10 @@ function assertExecutableRequest(request: WorkflowHttpRequestPlan): void {
   if (values.some((value) => value?.includes("[REDACTED"))) {
     throw new Error("Workflow HTTP operation contains redacted credential data and must be re-authorized before execution.");
   }
+}
+
+function containsDurablyRedactedValue(value: unknown): boolean {
+  return JSON.stringify(sanitizeWorkflowTransactionValue(value)).includes("[REDACTED");
 }
 
 function normalizeDraft(draft: WorkflowMessageDraft): WorkflowMessageDraft {

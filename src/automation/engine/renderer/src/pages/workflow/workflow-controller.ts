@@ -95,6 +95,7 @@ export interface WorkflowController {
   onResolveRecovery?: (runId: string, action: WorkflowRecoveryAction, reason: string) => MaybePromise;
   onRefreshRecovery?: (runId: string) => MaybePromise;
   onResolveConflict?: (runId: string, input: { path: string; resolution: "isolated" | "current" | "manual"; expectedCurrentSha256?: string; content?: string; reason: string }) => MaybePromise;
+  onResolveUnknownOperation?: (runId: string, input: { operationId: string; verifiedState: "applied" | "not_applied"; reason: string }) => MaybePromise;
   onCleanupRunMaterials?: (runId: string) => MaybePromise;
   onSendNodeMessage?: (conversationId: string, message: string) => MaybePromise;
   onCompleteNodeConversation?: (conversationId: string) => MaybePromise;

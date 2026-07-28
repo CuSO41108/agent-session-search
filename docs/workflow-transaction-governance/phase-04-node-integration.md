@@ -32,6 +32,10 @@ Agent 完成声明不是权威。协调器必须综合：
 
 Agent 输出必须先解析、校验、Review，再提交文件产物。历史消息只用于审计，不能替代权威 completion submission 或实际 diff。
 
+### 严格模式能力边界
+
+严格模式给 Agent 的授权面只允许隔离目录内的文件写入。网络写入、消息发送和其他外部副作用不能依赖 Agent 的任意工具调用，因为这类调用无法生成 Broker 的 prepared state、receipt 和补偿凭据。需要外部写入时，Workflow 必须把该步骤建模为 `brokered_external` 脚本节点；未代理调用会被审批 Broker 拒绝并进入可见失败/恢复状态。
+
 ## 脚本节点
 
 脚本定义必须增加或补齐：

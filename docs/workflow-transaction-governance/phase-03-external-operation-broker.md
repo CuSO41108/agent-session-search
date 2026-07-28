@@ -36,6 +36,7 @@ persist planned
 - 写请求必须有状态查询和补偿接口才能进入 `strict_atomic`；
 - 没有补偿能力的写请求只能进入 `controlled`，执行前明确确认；
 - 请求 Header、Token 和敏感字段脱敏；
+- `strict_atomic` 不持久化嵌入式凭据；宿主尚未提供 durable credential reference 时，含 Authorization、Token、Cookie 或其他会被脱敏字段的严格 HTTP 计划在 `prepare` 阶段失败关闭；
 - 远端返回 2xx 但本地 receipt 写入失败时，恢复器优先查询幂等键；
 - 查询结果为 `unknown` 时暂停并生成报告。
 
@@ -44,6 +45,8 @@ persist planned
 消息在节点执行期间只生成草稿：渠道、接收者、标题、正文、附件和发送时间都必须绑定到确认请求。确认后任何字段变化都要求重新确认。
 
 发送时记录 provider message ID。不可撤回消息标记 `irreversible`；失败后只能生成更正消息建议，不能声称已回滚。
+
+消息适配器是宿主能力边界，不内置真实邮件或聊天服务。宿主必须注入 `WorkflowMessageProvider` 的 `send/inspect`；`controlled` 可在明确确认后发送不可撤回消息，`strict_atomic` 只接受同时提供 `retract` 的 Provider。缺少对应能力时，运行时的严格能力清单不包含 `message`，节点发放前失败关闭。
 
 ## 补偿顺序
 

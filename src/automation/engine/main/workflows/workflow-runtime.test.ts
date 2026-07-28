@@ -21,9 +21,10 @@ import type { WorkflowNodeConversation } from "../../shared/workflow-v2/conversa
 import { createWorkflowV2RunState } from "../../shared/workflow-v2/state";
 import { WORKFLOW_V2_STORAGE_SCHEMA_VERSION, type WorkflowV2DurableEvent, type WorkflowV2PersistedRunState } from "../../shared/workflow-v2/storage";
 import type { WorkflowV2CostBudget, WorkflowV2Plan, WorkflowV2ResultPacket } from "../../shared/workflow-v2/planning";
-import { createStrictWorkflowTransactionPolicy, type WorkflowOperationRecord } from "../../shared/workflow-v2/transaction";
+import { createStrictWorkflowTransactionPolicy, type WorkflowCommitPlan, type WorkflowOperationRecord } from "../../shared/workflow-v2/transaction";
 import { buildWorkflowV2Plan } from "./v2/workflow-v2-planner";
 import { freezeWorkflowV2ScriptGovernance } from "./v2/workflow-v2-script-governance";
+import { workflowCommitPlanDigest } from "./v2/workflow-v2-commit-coordinator";
 import { transitionWorkflowV2NodeState } from "./v2/workflow-v2-scheduler";
 import {
   type ExecuteWorkflowV2ScriptRequest,
@@ -268,7 +269,7 @@ async function workflowV2RuntimeFixture(input: {
   runtime: WorkflowRuntime;
   workflow: WorkflowDraftState;
   taskRequests: RunTaskRequest[];
-  approvalPolicies: Array<{ allowedFileWriteRoot: string } | undefined>;
+  approvalPolicies: Array<{ allowedFileWriteRoot: string; workspaceOnly?: boolean } | undefined>;
   updates: Array<Omit<WorkflowRunStateUpdate, "workflowId" | "runId">>;
   startRequests: string[];
   stopTaskIds: string[];
@@ -314,7 +315,7 @@ async function workflowV2RuntimeFixture(input: {
     updatedAt: 1,
   } satisfies WorkflowDraftState;
   const taskRequests: RunTaskRequest[] = [];
-  const approvalPolicies: Array<{ allowedFileWriteRoot: string } | undefined> = [];
+  const approvalPolicies: Array<{ allowedFileWriteRoot: string; workspaceOnly?: boolean } | undefined> = [];
   const updates: Array<Omit<WorkflowRunStateUpdate, "workflowId" | "runId">> = [];
   const startRequests: string[] = [];
   const stopTaskIds: string[] = [];
@@ -922,8 +923,10 @@ describe("WorkflowRuntime Workflow V2 bridge", () => {
     definition.nodes[0].maxRetry = 1;
     definition.edges = [];
     definition.transactionPolicy = createStrictWorkflowTransactionPolicy();
+    definition.transactionPolicy.checkpoints = [{ id: "publish-draft", title: "Publish draft", afterNodeIds: ["draft"], kind: "commit", approval: "automatic" }];
     const persistedStates: WorkflowV2PersistedRunState[] = [];
     const durableEvents: import("../../shared/workflow-v2/storage").WorkflowV2DurableEvent[] = [];
+    let commitPlan: WorkflowCommitPlan | undefined;
     const calls: string[] = [];
     const isolatedDir = "C:/transaction/run-v2-runtime/workspace";
     const fixture = await workflowV2RuntimeFixture({
@@ -943,6 +946,17 @@ describe("WorkflowRuntime Workflow V2 bridge", () => {
         createWorkspaceSavepoint: async () => { calls.push("savepoint"); },
         restoreWorkspaceSavepoint: async () => { calls.push("restore"); },
         commitWorkspaceTransaction: async () => { calls.push("commit"); return { applied: ["result.txt"], conflicts: [] }; },
+        inspectWorkspaceTransaction: async () => ({ created: [], modified: ["result.txt"], deleted: [], evidenceDigest: "workspace-evidence" }),
+        readOperations: async () => [],
+        persistCommitPlan: async (plan) => { commitPlan = structuredClone(plan); return structuredClone(plan); },
+        readCommitPlan: async () => commitPlan ? structuredClone(commitPlan) : undefined,
+      },
+      recoveryBroker: {
+        canInspectOperation: () => false,
+        canCompensateOperation: () => false,
+        applyPrepared: async () => undefined,
+        inspect: async () => "not_applied",
+        compensateRun: async () => ({ compensated: [], skipped: [] }),
       },
       taskFactory: (request, index) => ({
         id: `task-${index}`,
@@ -966,13 +980,228 @@ describe("WorkflowRuntime Workflow V2 bridge", () => {
     fixture.runtime.runWorkflow({ workflowId: fixture.workflow.workflowId, transactionApprovalMode: "batch" });
     const finished = await fixture.finished;
 
-    expect(finished.status).toBe("completed");
+    expect(finished.status, finished.lastError).toBe("completed");
     expect(fixture.taskRequests[0]?.workDir).toBe(isolatedDir);
     expect(fixture.approvalPolicies[0]?.allowedFileWriteRoot).toBe(path.resolve(isolatedDir));
+    expect(fixture.approvalPolicies[0]?.workspaceOnly).toBe(true);
     expect(fixture.taskRequests).toHaveLength(2);
-    expect(calls).toEqual(["prepare", "savepoint", "restore", "savepoint", "commit"]);
-    expect(persistedStates.at(-1)?.transaction).toMatchObject({ mode: "strict_atomic", status: "committed", baselineId: `baseline:${definition.workflowId}:run-v2-runtime` });
-    expect(durableEvents.map((event) => event.type)).toEqual(expect.arrayContaining(["transaction_started", "commit_started", "commit_completed"]));
+    expect(calls).toEqual(["prepare", "savepoint", "restore", "savepoint", "savepoint", "commit", "commit"]);
+    expect(persistedStates.at(-1)?.transaction).toMatchObject({ mode: "strict_atomic", status: "committed", baselineId: `baseline:${definition.workflowId}:run-v2-runtime`, currentSavepointOperationIds: [], completedCheckpointIds: ["publish-draft"] });
+    expect(durableEvents.map((event) => event.type)).toEqual(expect.arrayContaining(["transaction_started", "checkpoint_completed", "commit_started", "commit_completed"]));
+  });
+
+  test("durably records a strict workspace preflight failure before any node starts", async () => {
+    const definition = workflowV2Definition();
+    definition.nodes = [definition.nodes[0]!];
+    definition.edges = [];
+    definition.transactionPolicy = createStrictWorkflowTransactionPolicy();
+    const persistedStates: WorkflowV2PersistedRunState[] = [];
+    const durableEvents: WorkflowV2DurableEvent[] = [];
+    const fixture = await workflowV2RuntimeFixture({
+      definition,
+      store: {
+        persistRunState: async (state) => { persistedStates.push(structuredClone(state)); },
+        appendEvents: async ({ events }) => { durableEvents.push(...structuredClone(events)); },
+        prepareWorkspaceTransaction: async () => { throw new Error("Workspace capacity unavailable: Authorization: Bearer preflight-secret"); },
+        createWorkspaceSavepoint: async () => undefined,
+        restoreWorkspaceSavepoint: async () => undefined,
+        rollbackWorkspaceTransaction: async () => ({ applied: [], conflicts: [] }),
+        commitWorkspaceTransaction: async () => ({ applied: [], conflicts: [] }),
+        inspectWorkspaceTransaction: async () => ({ created: [], modified: [], deleted: [], evidenceDigest: "unused" }),
+        inspectWorkspaceConflicts: async () => [],
+        readOperations: async () => [],
+      },
+      recoveryBroker: {
+        canInspectOperation: () => false,
+        canCompensateOperation: () => false,
+        applyPrepared: async () => undefined,
+        inspect: async () => "not_applied",
+        compensateRun: async () => ({ compensated: [], skipped: [] }),
+      },
+      executeScript: async () => { throw new Error("preflight failure must not execute nodes"); },
+    });
+
+    fixture.runtime.runWorkflow({ workflowId: fixture.workflow.workflowId, transactionApprovalMode: "batch" });
+    const finished = await fixture.finished;
+
+    expect(finished.status).toBe("failed");
+    expect(finished.lastError).toContain("[REDACTED]");
+    expect(finished.lastError).not.toContain("preflight-secret");
+    expect(fixture.taskRequests).toEqual([]);
+    expect(durableEvents.map((event) => event.type)).toEqual(["transaction_started", "preflight_blocked"]);
+    expect(durableEvents[1]?.detail).toContain("[REDACTED]");
+    expect(durableEvents[1]?.detail).not.toContain("preflight-secret");
+    expect(persistedStates.at(-1)).toMatchObject({
+      eventCount: 2,
+      runState: { status: "failed" },
+      transaction: { mode: "strict_atomic", status: "rolled_back", operationCount: 0 },
+    });
+  });
+
+  test("pauses a strict transaction at a required policy checkpoint before committing", async () => {
+    const definition = workflowV2Definition();
+    definition.nodes = [definition.nodes[0]!];
+    definition.edges = [];
+    definition.transactionPolicy = createStrictWorkflowTransactionPolicy();
+    definition.transactionPolicy.approvalMode = "batch";
+    definition.transactionPolicy.checkpoints = [{ id: "publish-draft", title: "Publish draft", afterNodeIds: ["draft"], kind: "commit", approval: "required" }];
+    const persistedStates: WorkflowV2PersistedRunState[] = [];
+    let durable: WorkflowV2PersistedRunState | undefined;
+    const commitWorkspaceTransaction = vi.fn(async () => ({ applied: ["result.txt"], conflicts: [] as string[] }));
+    let commitPlan: WorkflowCommitPlan | undefined;
+    const commitPlans: WorkflowCommitPlan[] = [];
+    let workspaceDiffPath = "result.txt";
+    let concurrentConflictPath: string | undefined;
+    const fixture = await workflowV2RuntimeFixture({
+      definition,
+      store: {
+        persistRunState: async (state) => { durable = structuredClone(state); persistedStates.push(structuredClone(state)); },
+        appendEvents: async () => undefined,
+        readRunState: async () => durable ? structuredClone(durable) : undefined,
+        prepareWorkspaceTransaction: async ({ workflowId, runId, sourceDir, baselineId }) => ({ baselineId, workspaceDir: "C:/transaction/required/workspace", reused: false, manifest: { schemaVersion: 1, workflowId, runId, sourceDir, baselineId, createdAt: 1, files: [], excluded: [] } }),
+        createWorkspaceSavepoint: async () => undefined,
+        restoreWorkspaceSavepoint: async () => undefined,
+        commitWorkspaceTransaction,
+        inspectWorkspaceTransaction: async () => ({ created: [], modified: [workspaceDiffPath], deleted: [], evidenceDigest: `workspace-evidence:${workspaceDiffPath}` }),
+        inspectWorkspaceConflicts: async ({ paths }) => paths.map((path) => ({ path, baseline: { exists: true, sha256: `baseline:${path}` }, isolated: { exists: true, sha256: `isolated:${path}` }, current: { exists: true, sha256: path === concurrentConflictPath ? `user:${path}` : `baseline:${path}` } })),
+        readOperations: async () => [],
+        persistCommitPlan: async (plan) => { commitPlan = structuredClone(plan); commitPlans.push(structuredClone(plan)); return structuredClone(plan); },
+        readCommitPlan: async () => commitPlan ? structuredClone(commitPlan) : undefined,
+      },
+      recoveryBroker: { canInspectOperation: () => false, canCompensateOperation: () => false, applyPrepared: async () => undefined, inspect: async () => "not_applied", compensateRun: async () => ({ compensated: [], skipped: [] }) },
+      executeScript: async () => { throw new Error("script runner should not be called"); },
+    });
+
+    fixture.runtime.runWorkflow({ workflowId: fixture.workflow.workflowId, transactionApprovalMode: "batch" });
+    await vi.waitFor(() => expect(fixture.updates.at(-1)?.status).toBe("waiting_for_user"));
+
+    expect(commitWorkspaceTransaction).not.toHaveBeenCalled();
+    expect(persistedStates.at(-1)?.runState.status).toBe("paused");
+    expect(persistedStates.at(-1)?.transaction).toMatchObject({ status: "waiting_for_user", pendingCheckpointId: "publish-draft" });
+    expect(persistedStates.at(-1)?.transaction?.pendingCheckpointPlanDigest).toBe(commitPlan?.planDigest);
+    expect(commitPlan?.planDigest).toEqual(expect.any(String));
+    expect(commitPlan?.approval).toBeUndefined();
+    expect([...fixture.updates].reverse().find((update) => update.recovery !== undefined)?.recovery).toMatchObject({
+      blockers: [expect.stringContaining("Checkpoint publish-draft requires approval")],
+      changedPaths: ["result.txt"],
+      availableActions: expect.arrayContaining(["continue"]),
+    });
+    const firstPlanDigest = commitPlan!.planDigest;
+
+    const pausedRun = workflowV2InterventionRun(fixture.workflow, "waiting_for_user", "completed");
+    pausedRun.runId = "run-v2-runtime";
+    fixture.setRuns([pausedRun]);
+    concurrentConflictPath = workspaceDiffPath;
+    const conflictBlocked = await fixture.runtime.resolveWorkflowV2Recovery({ workflowId: definition.workflowId, runId: pausedRun.runId, action: "continue", actor: "desktop-user", reason: "Approve despite a concurrent edit." });
+    expect(conflictBlocked).toMatchObject({ ok: false, error: expect.stringContaining("not safe") });
+    expect(commitWorkspaceTransaction).not.toHaveBeenCalled();
+    concurrentConflictPath = undefined;
+    workspaceDiffPath = "changed-after-preview.txt";
+    const staleApproval = await fixture.runtime.resolveWorkflowV2Recovery({ workflowId: definition.workflowId, runId: pausedRun.runId, action: "continue", actor: "desktop-user", reason: "Approve the reviewed checkpoint." });
+    expect(staleApproval.ok).toBe(true);
+    await vi.waitFor(() => expect(durable?.transaction?.status).toBe("waiting_for_user"));
+    expect(durable?.transaction?.pendingCheckpointPlanDigest).not.toBe(firstPlanDigest);
+    expect(durable?.transaction?.approvedCheckpointIds).not.toContain("publish-draft");
+    expect(commitWorkspaceTransaction).not.toHaveBeenCalled();
+
+    const resumed = await fixture.runtime.resolveWorkflowV2Recovery({ workflowId: definition.workflowId, runId: pausedRun.runId, action: "continue", actor: "desktop-user", reason: "Approve the refreshed checkpoint plan." });
+    expect(resumed.ok).toBe(true);
+    const finished = await fixture.finished;
+    expect(finished.status, finished.lastError).toBe("completed");
+    expect(commitWorkspaceTransaction).toHaveBeenCalledTimes(2);
+    expect(durable?.transaction).toMatchObject({ status: "committed", approvedCheckpointIds: ["publish-draft"], completedCheckpointIds: ["publish-draft"] });
+    expect(commitPlans.filter((plan) => plan.approval?.actor === "desktop-user" && plan.approval.evidenceDigest === plan.planDigest)).toHaveLength(2);
+    expect(commitPlan?.approval).toMatchObject({ actor: "desktop-user", evidenceDigest: commitPlan!.planDigest });
+  });
+
+  test("resumes downstream nodes after a policy checkpoint conflict is resolved", async () => {
+    const definition = workflowV2Definition();
+    definition.transactionPolicy = createStrictWorkflowTransactionPolicy();
+    definition.transactionPolicy.checkpoints = [{ id: "publish-draft", title: "Publish draft", afterNodeIds: ["draft"], kind: "commit", approval: "automatic" }];
+    let durable: WorkflowV2PersistedRunState | undefined;
+    let commitPlan: WorkflowCommitPlan | undefined;
+    let conflictResolved = false;
+    const commitWorkspaceTransaction = vi.fn(async () => conflictResolved
+      ? { applied: ["result.txt"], conflicts: [] as string[] }
+      : { applied: [] as string[], conflicts: ["result.txt"] });
+    const executeScript = vi.fn(async ({ node }: ExecuteWorkflowV2ScriptRequest) => ({
+      nodeId: node.id,
+      summary: "Verified after checkpoint recovery",
+      outputs: { verified: true },
+      proposals: [],
+    }));
+    const fixture = await workflowV2RuntimeFixture({
+      definition,
+      store: {
+        persistRunState: async (state) => { durable = structuredClone(state); },
+        appendEvents: async () => undefined,
+        readRunState: async () => durable ? structuredClone(durable) : undefined,
+        prepareWorkspaceTransaction: async ({ workflowId, runId, sourceDir, baselineId }) => ({
+          baselineId,
+          workspaceDir: "C:/transaction/checkpoint-conflict/workspace",
+          reused: false,
+          manifest: { schemaVersion: 1, workflowId, runId, sourceDir, baselineId, createdAt: 1, files: [], excluded: [] },
+        }),
+        createWorkspaceSavepoint: async () => undefined,
+        restoreWorkspaceSavepoint: async () => undefined,
+        commitWorkspaceTransaction,
+        inspectWorkspaceTransaction: async () => ({ created: [], modified: ["result.txt"], deleted: [], evidenceDigest: "workspace-evidence", conflicts: conflictResolved ? [] : ["result.txt"] }),
+        inspectWorkspaceConflicts: async () => conflictResolved ? [] : [{
+          path: "result.txt",
+          baseline: { exists: true, sha256: "baseline" },
+          isolated: { exists: true, sha256: "isolated" },
+          current: { exists: true, sha256: "current" },
+        }],
+        resolveWorkspaceConflict: async () => {
+          conflictResolved = true;
+          return {
+            path: "result.txt",
+            baseline: { exists: true, sha256: "baseline" },
+            isolated: { exists: true, sha256: "isolated" },
+            current: { exists: true, sha256: "isolated" },
+          };
+        },
+        readOperations: async () => [],
+        persistCommitPlan: async (plan) => { commitPlan = structuredClone(plan); return structuredClone(plan); },
+        readCommitPlan: async () => commitPlan ? structuredClone(commitPlan) : undefined,
+      },
+      recoveryBroker: {
+        canInspectOperation: () => false,
+        canCompensateOperation: () => false,
+        applyPrepared: async () => undefined,
+        inspect: async () => "not_applied",
+        compensateRun: async () => ({ compensated: [], skipped: [] }),
+      },
+      executeScript,
+    });
+
+    fixture.runtime.runWorkflow({ workflowId: fixture.workflow.workflowId, transactionApprovalMode: "batch" });
+    await vi.waitFor(() => expect(fixture.updates.at(-1)?.status).toBe("waiting_for_user"));
+    expect(durable?.transaction).toMatchObject({ status: "waiting_for_user", committingCheckpointId: "publish-draft" });
+    expect(executeScript).not.toHaveBeenCalled();
+
+    const recovery = fixture.updates.at(-1)?.recovery;
+    const pausedRun = workflowV2InterventionRun(fixture.workflow, "waiting_for_user", "completed");
+    pausedRun.runId = durable!.runId;
+    pausedRun.recovery = recovery ?? undefined;
+    fixture.setRuns([pausedRun]);
+    const resolved = await fixture.runtime.resolveWorkflowV2Conflict({
+      workflowId: definition.workflowId,
+      runId: pausedRun.runId,
+      path: "result.txt",
+      resolution: "isolated",
+      expectedCurrentSha256: "current",
+      actor: "desktop-user",
+      reason: "Use the reviewed checkpoint output.",
+    });
+    expect(resolved.ok, resolved.ok ? undefined : resolved.error).toBe(true);
+    const finished = await fixture.finished;
+
+    expect(finished.status, finished.lastError).toBe("completed");
+    expect(executeScript).toHaveBeenCalledOnce();
+    expect(commitWorkspaceTransaction).toHaveBeenCalledTimes(3);
+    expect(durable?.transaction).toMatchObject({ status: "committed", completedCheckpointIds: ["publish-draft"] });
+    expect(durable?.transaction?.committingCheckpointId).toBeUndefined();
   });
 
   test("requires an explicit approval mode when the confirmed policy delegates the choice to the user", async () => {
@@ -2141,7 +2370,7 @@ describe("WorkflowRuntime Workflow V2 bridge", () => {
         appendEvents: async ({ events }) => { durableEvents.push(...structuredClone(events)); },
         readRunState: async () => structuredClone(durable),
         readOperations: async () => [],
-        inspectWorkspaceTransaction: async () => ({ created: ["result.txt"], modified: [], deleted: [], conflicts: [] }),
+        inspectWorkspaceTransaction: async () => ({ created: ["result.txt"], modified: [], deleted: [], evidenceDigest: "workspace-evidence", conflicts: [] }),
       },
       executeScript: async () => { throw new Error("recovery decision must not execute scripts"); },
     });
@@ -2191,18 +2420,27 @@ describe("WorkflowRuntime Workflow V2 bridge", () => {
       eventCount: 1,
       transaction: { status: "recovery_required" },
       recoveryDecisions: [expect.objectContaining({ action: "keep_state", actor: "desktop-user", operationIds: [] })],
+      finalReport: expect.stringContaining("Preserve evidence while the external status is verified."),
     });
+    expect(persistedWrites.at(-1)?.finalReport).toContain("- created: result.txt");
     expect(fixture.updates.find((update) => update.recovery)).toMatchObject({ recovery: { availableActions: expect.arrayContaining(["keep_state", "abandon"]) } });
   });
 
-  test("runs reversible external compensation only after a confirmed recovery decision", async () => {
+  test.each([
+    { label: "fully rolls back when every applied external operation is compensated", includeIrreversible: false, expectedStatus: "rolled_back" as const },
+    { label: "reports a partial rollback while an irreversible external operation remains applied", includeIrreversible: true, expectedStatus: "partially_rolled_back" as const },
+  ])("runs confirmed compensation and $label", async ({ includeIrreversible, expectedStatus }) => {
     const definition = workflowV2Definition();
     let durable!: WorkflowV2PersistedRunState;
     const operations: WorkflowOperationRecord[] = [{
       operationId: "operation-reversible", transactionId: "transaction-recovery", runId: "run-v2-intervention", nodeId: "draft", attempt: 1,
       kind: "http", target: "https://example.test/resource", idempotencyKey: "key", adapterId: "http", prepared: { plan: {}, value: {} },
       state: "applied", reversible: true, compensationAdapter: "http", receipt: { status: 200 }, createdAt: 1_100, updatedAt: 1_200,
-    }];
+    }, ...(includeIrreversible ? [{
+      operationId: "operation-irreversible", transactionId: "transaction-recovery", runId: "run-v2-intervention", nodeId: "draft", attempt: 1,
+      kind: "message" as const, target: "team-room", idempotencyKey: "irreversible-key", adapterId: "message", prepared: { plan: {}, value: {} },
+      state: "applied" as const, reversible: false, receipt: { messageId: "sent-message" }, createdAt: 1_150, updatedAt: 1_250,
+    }] : [])];
     let compensationCalls = 0;
     const recoveryBroker: WorkflowV2RecoveryOperationBroker = {
       canInspectOperation: () => false,
@@ -2215,6 +2453,7 @@ describe("WorkflowRuntime Workflow V2 bridge", () => {
         return { compensated: [operations[0]!.operationId], skipped: [] };
       },
     };
+    const rollbackWorkspaceTransaction = vi.fn(async () => ({ applied: ["result.txt"], conflicts: [] as string[] }));
     const fixture = await workflowV2RuntimeFixture({
       definition,
       store: {
@@ -2222,7 +2461,8 @@ describe("WorkflowRuntime Workflow V2 bridge", () => {
         appendEvents: async () => undefined,
         readRunState: async () => structuredClone(durable),
         readOperations: async () => structuredClone(operations),
-        inspectWorkspaceTransaction: async () => ({ created: ["result.txt"], modified: [], deleted: [], conflicts: [] }),
+        inspectWorkspaceTransaction: async () => ({ created: ["result.txt"], modified: [], deleted: [], evidenceDigest: "workspace-evidence", conflicts: [] }),
+        rollbackWorkspaceTransaction,
       },
       recoveryBroker,
       executeScript: async () => { throw new Error("compensation must not execute workflow scripts"); },
@@ -2234,7 +2474,7 @@ describe("WorkflowRuntime Workflow V2 bridge", () => {
       schemaVersion: WORKFLOW_V2_STORAGE_SCHEMA_VERSION, workflowId: definition.workflowId, runId: "run-v2-intervention", graphVersion: definition.graphVersion,
       savedAt: 1_200, eventCount: 0, plan: fixture.workflow.workflowV2Plan!, runState, workerOutputs: [],
       nodeControl: Object.fromEntries(definition.nodes.map((node) => [node.id, { extensionCount: 0 }])),
-      transaction: { transactionId: "transaction-recovery", mode: "controlled", status: "recovery_required", baselineId: "baseline", operationCount: 1, unknownOperationCount: 0, irreversibleOperationCount: 0, startedAt: 1_000, updatedAt: 1_200, retentionUntil: 604_801_200 },
+      transaction: { transactionId: "transaction-recovery", mode: "controlled", status: "recovery_required", baselineId: "baseline", operationCount: operations.length, unknownOperationCount: 0, irreversibleOperationCount: includeIrreversible ? 1 : 0, startedAt: 1_000, updatedAt: 1_200, retentionUntil: 604_801_200 },
     };
     fixture.setRuns([workflowV2InterventionRun(fixture.workflow, "stopped", "paused")]);
 
@@ -2242,9 +2482,120 @@ describe("WorkflowRuntime Workflow V2 bridge", () => {
 
     expect(result.ok).toBe(true);
     expect(compensationCalls).toBe(1);
+    expect(rollbackWorkspaceTransaction).toHaveBeenCalledOnce();
     expect(operations[0]?.state).toBe("compensated");
     expect(durable.recoveryDecisions).toEqual([expect.objectContaining({ action: "compensate_all", actor: "desktop-user" })]);
-    expect(fixture.updates.at(-1)).toMatchObject({ transaction: { status: "waiting_for_user" }, operations: [{ state: "compensated" }] });
+    expect(durable.finalReport).toContain("operation-reversible: compensated");
+    expect(durable.finalReport).toContain("compensate_all by desktop-user");
+    expect(fixture.updates.at(-1)).toMatchObject({
+      transaction: { status: expectedStatus },
+      operations: expect.arrayContaining([expect.objectContaining({ operationId: "operation-reversible", state: "compensated" })]),
+    });
+    if (includeIrreversible) {
+      expect(fixture.updates.at(-1)?.operations).toEqual(expect.arrayContaining([expect.objectContaining({ operationId: "operation-irreversible", state: "applied", reversible: false })]));
+      expect(durable.recovery?.managerRecommendation.manualSteps).toEqual(expect.arrayContaining([expect.stringContaining("operation-irreversible")]));
+      expect(durable.finalReport).toContain("operation-irreversible: message applied");
+      expect(durable.finalReport).toContain("Manually reconcile operation-irreversible");
+    }
+  });
+
+  test("finishes the durable commit and applies non-conflicting files after the last conflict is confirmed", async () => {
+    const definition = workflowV2Definition();
+    let durable!: WorkflowV2PersistedRunState;
+    const resolvedConflicts = new Set<string>();
+    const commitSteps = [{ stepId: "workspace", order: 0, kind: "workspace" as const, prerequisites: [], evidenceDigest: "workspace-evidence" }];
+    const commitPlanBase = { schemaVersion: 1 as const, commitPlanId: "commit-plan:conflict", transactionId: "transaction-conflict", workflowId: definition.workflowId, runId: "run-v2-intervention", createdAt: 1_200, steps: commitSteps };
+    const initialPlanDigest = workflowCommitPlanDigest(commitPlanBase);
+    let commitPlan: WorkflowCommitPlan = { ...commitPlanBase, planDigest: initialPlanDigest, approval: { actor: "original-reviewer", approvedAt: 1_201, evidenceDigest: initialPlanDigest } };
+    let workspaceEvidenceDigest = "workspace-evidence";
+    const commitWorkspaceTransaction = vi.fn(async () => ({ applied: ["conflict.txt", "non-conflicting.txt"], conflicts: [] as string[] }));
+    const recoveryBroker: WorkflowV2RecoveryOperationBroker = {
+      canInspectOperation: () => false,
+      canCompensateOperation: () => false,
+      applyPrepared: async () => undefined,
+      inspect: async () => "not_applied",
+      compensateRun: async () => ({ compensated: [], skipped: [] }),
+    };
+    const fixture = await workflowV2RuntimeFixture({
+      definition,
+      store: {
+        persistRunState: async (state) => { durable = structuredClone(state); },
+        appendEvents: async () => undefined,
+        readRunState: async () => structuredClone(durable),
+        readOperations: async () => [],
+        persistCommitPlan: async (plan) => { commitPlan = structuredClone(plan); return structuredClone(plan); },
+        readCommitPlan: async () => structuredClone(commitPlan),
+        inspectWorkspaceTransaction: async () => ({ created: [], modified: ["conflict.txt", "remaining.txt", "non-conflicting.txt"], deleted: [], evidenceDigest: workspaceEvidenceDigest }),
+        inspectWorkspaceConflicts: async () => ["conflict.txt", "remaining.txt"]
+          .filter((path) => !resolvedConflicts.has(path))
+          .map((path) => ({ path, baseline: { exists: true, sha256: `baseline-${path}` }, isolated: { exists: true, sha256: `isolated-${path}` }, current: { exists: true, sha256: `current-${path}` } })),
+        resolveWorkspaceConflict: async ({ path, resolution }) => {
+          resolvedConflicts.add(path);
+          if (resolution === "current" || resolution === "manual") workspaceEvidenceDigest = "workspace-evidence-after-resolution";
+          return { path, baseline: { exists: true, sha256: `baseline-${path}` }, isolated: { exists: true, sha256: `isolated-${path}` }, current: { exists: true, sha256: `isolated-${path}` } };
+        },
+        commitWorkspaceTransaction,
+      },
+      recoveryBroker,
+      executeScript: async () => { throw new Error("conflict resolution must not execute nodes"); },
+    });
+    const runState = createWorkflowV2RunState({ definition });
+    runState.status = "completed";
+    for (const nodeId of runState.nodeOrder) runState.nodes[nodeId]!.status = "completed";
+    durable = {
+      schemaVersion: WORKFLOW_V2_STORAGE_SCHEMA_VERSION, workflowId: definition.workflowId, runId: "run-v2-intervention", graphVersion: definition.graphVersion,
+      savedAt: 1_200, eventCount: 0, plan: fixture.workflow.workflowV2Plan!, runState, workerOutputs: [],
+      nodeControl: Object.fromEntries(definition.nodes.map((node) => [node.id, { extensionCount: 0 }])),
+      transaction: { transactionId: "transaction-conflict", mode: "strict_atomic", status: "waiting_for_user", baselineId: "baseline", operationCount: 0, unknownOperationCount: 0, irreversibleOperationCount: 0, startedAt: 1_000, updatedAt: 1_200, retentionUntil: 604_801_200 },
+    };
+    const run = workflowV2InterventionRun(fixture.workflow, "waiting_for_user", "paused");
+    run.recovery = { generatedAt: 1_200, transactionId: "transaction-conflict", status: "waiting_for_user", blockers: ["Workspace conflicts: conflict.txt, remaining.txt"], conflicts: ["conflict.txt", "remaining.txt"], conflictDetails: [], changedPaths: ["conflict.txt", "remaining.txt", "non-conflicting.txt"], pendingNodeIds: [], uncertainNodeIds: [], cancelledNodeIds: [], cancellingNodeIds: [], notStartedNodeIds: [], availableActions: ["keep_state", "abandon"], managerRecommendation: { source: "rules", generatedAt: 1_200, transactionId: "transaction-conflict", recommendedAction: "keep_state", rationale: "Resolve conflict", compensationOperationIds: [], manualSteps: [], riskComparison: [], conflictCandidates: [] } };
+    fixture.setRuns([run]);
+
+    const firstResult = await fixture.runtime.resolveWorkflowV2Conflict({ workflowId: definition.workflowId, runId: run.runId, path: "conflict.txt", resolution: "isolated", expectedCurrentSha256: "current-conflict.txt", actor: "desktop-user", reason: "Use the reviewed workflow result." });
+    if (!firstResult.ok) throw new Error(firstResult.error);
+    expect(commitWorkspaceTransaction).not.toHaveBeenCalled();
+    expect(durable.finalReport).toContain("## Conflict decision");
+    expect(durable.finalReport).toContain("Path: conflict.txt");
+
+    const result = await fixture.runtime.resolveWorkflowV2Conflict({ workflowId: definition.workflowId, runId: run.runId, path: "remaining.txt", resolution: "current", expectedCurrentSha256: "current-remaining.txt", actor: "desktop-user", reason: "Keep the current version for the remaining file." });
+    if (!result.ok) throw new Error(result.error);
+    const finished = await fixture.finished;
+
+    expect(result.ok).toBe(true);
+    expect(commitWorkspaceTransaction).toHaveBeenCalledOnce();
+    expect(commitPlan.steps.find((step) => step.kind === "workspace")?.evidenceDigest).toBe("workspace-evidence-after-resolution");
+    expect(commitPlan.approval).toMatchObject({ actor: "desktop-user", evidenceDigest: commitPlan.planDigest });
+    expect(durable.transaction?.status).toBe("committed");
+    expect(durable.recovery).toBeUndefined();
+    expect(finished.status).toBe("completed");
+  });
+
+  test("rejects oversized recovery audit actors before conflict or operation state changes", async () => {
+    const fixture = await workflowV2RuntimeFixture({
+      executeScript: async () => { throw new Error("invalid recovery input must not execute workflow nodes"); },
+    });
+    const actor = "a".repeat(257);
+
+    const conflict = await fixture.runtime.resolveWorkflowV2Conflict({
+      workflowId: fixture.workflow.workflowId,
+      runId: "run-v2-intervention",
+      path: "result.txt",
+      resolution: "current",
+      actor,
+      reason: "Keep the current file.",
+    });
+    const operation = await fixture.runtime.resolveWorkflowV2UnknownOperation({
+      workflowId: fixture.workflow.workflowId,
+      runId: "run-v2-intervention",
+      operationId: "operation-unknown",
+      verifiedState: "not_applied",
+      actor,
+      reason: "The provider has no matching request.",
+    });
+
+    expect(conflict).toMatchObject({ ok: false, error: "Workflow conflict actor and reason are required." });
+    expect(operation).toMatchObject({ ok: false, error: "Workflow operation verification actor and reason are required." });
   });
 
   test("re-inspects operations and asks the Manager Agent when recovery is refreshed", async () => {
@@ -2252,10 +2603,10 @@ describe("WorkflowRuntime Workflow V2 bridge", () => {
     let durable!: WorkflowV2PersistedRunState;
     const operations: WorkflowOperationRecord[] = [{ operationId: "operation-unknown", transactionId: "transaction-recovery", runId: "run-v2-intervention", nodeId: "draft", attempt: 1, kind: "http", target: "https://example.test", idempotencyKey: "key", adapterId: "http", prepared: { plan: {}, value: {} }, state: "unknown", reversible: true, createdAt: 1_100, updatedAt: 1_200 }];
     const inspect = vi.fn(async () => { operations[0]!.state = "applied"; return "applied" as const; });
-    const generate = vi.fn(async ({ recovery }: Parameters<NonNullable<WorkflowRuntimeDependencies["generateWorkflowV2RecoveryRecommendation"]>>[0]) => ({ ...recovery.managerRecommendation, rationale: "Manager reviewed durable node, operation, and conflict evidence." }));
+    const generate = vi.fn(async ({ recovery }: Parameters<NonNullable<WorkflowRuntimeDependencies["generateWorkflowV2RecoveryRecommendation"]>>[0]) => ({ ...recovery.managerRecommendation, rationale: "Manager reviewed durable node, operation, and conflict evidence with Authorization: Bearer manager-secret." }));
     const fixture = await workflowV2RuntimeFixture({
       definition,
-      store: { persistRunState: async (state) => { durable = structuredClone(state); }, appendEvents: async () => undefined, readRunState: async () => structuredClone(durable), readOperations: async () => structuredClone(operations), inspectWorkspaceTransaction: async () => ({ created: [], modified: ["result.txt"], deleted: [] }), inspectWorkspaceConflicts: async () => [{ path: "result.txt", baseline: { exists: true, sha256: "baseline" }, isolated: { exists: true, sha256: "isolated" }, current: { exists: true, sha256: "current" } }] },
+      store: { persistRunState: async (state) => { durable = structuredClone(state); }, appendEvents: async () => undefined, readRunState: async () => structuredClone(durable), readOperations: async () => structuredClone(operations), inspectWorkspaceTransaction: async () => ({ created: [], modified: ["result.txt"], deleted: [], evidenceDigest: "workspace-evidence" }), inspectWorkspaceConflicts: async () => [{ path: "result.txt", baseline: { exists: true, sha256: "baseline" }, isolated: { exists: true, sha256: "isolated" }, current: { exists: true, sha256: "current" } }] },
       recoveryBroker: { canInspectOperation: () => true, canCompensateOperation: () => false, inspect, compensateRun: async () => ({ compensated: [], skipped: [] }) },
       generateRecoveryRecommendation: generate,
       executeScript: async () => { throw new Error("refresh must not execute workflow nodes"); },
@@ -2274,8 +2625,82 @@ describe("WorkflowRuntime Workflow V2 bridge", () => {
     expect(fixture.updates.at(-1)).toMatchObject({ operations: [{ state: "applied" }], recovery: { managerRecommendation: { rationale: expect.stringContaining("Manager reviewed") }, conflicts: ["result.txt"] } });
     expect(durable.recovery).toMatchObject({
       conflicts: ["result.txt"],
-      managerRecommendation: { rationale: expect.stringContaining("Manager reviewed") },
+      managerRecommendation: { rationale: expect.stringContaining("[REDACTED]") },
     });
+    expect(JSON.stringify(durable)).not.toContain("manager-secret");
+    expect(durable.finalReport).toContain("[REDACTED]");
+    expect(durable.finalReport).toContain("Operation operation-unknown: applied");
+  });
+
+  test("rejects recovery refresh while the run is still executing", async () => {
+    const readRunState = vi.fn(async () => undefined);
+    const fixture = await workflowV2RuntimeFixture({
+      store: {
+        persistRunState: async () => undefined,
+        appendEvents: async () => undefined,
+        readRunState,
+        readOperations: async () => [],
+      },
+      executeScript: async () => { throw new Error("active-run recovery must not execute scripts"); },
+    });
+    fixture.setRuns([workflowV2InterventionRun(fixture.workflow, "running", "running")]);
+
+    const result = await fixture.runtime.refreshWorkflowV2Recovery({
+      workflowId: fixture.workflow.workflowId,
+      runId: "run-v2-intervention",
+    });
+
+    expect(result).toMatchObject({ ok: false, error: "Workflow run is not awaiting recovery." });
+    expect(readRunState).not.toHaveBeenCalled();
+  });
+
+  test("serializes duplicate user verification of an unknown operation", async () => {
+    const definition = workflowV2Definition();
+    let durable!: WorkflowV2PersistedRunState;
+    const operations: WorkflowOperationRecord[] = [{ operationId: "operation-unknown", transactionId: "transaction-recovery", runId: "run-v2-intervention", nodeId: "draft", attempt: 1, kind: "http", target: "https://example.test", idempotencyKey: "key", state: "unknown", reversible: true, createdAt: 1_100, updatedAt: 1_200 }];
+    let activeResolutions = 0;
+    let maxActiveResolutions = 0;
+    const resolveUnknownOperation = vi.fn(async (input: Parameters<NonNullable<WorkflowV2StorePort["resolveUnknownOperation"]>>[0]) => {
+      activeResolutions += 1;
+      maxActiveResolutions = Math.max(maxActiveResolutions, activeResolutions);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      operations[0] = { ...operations[0]!, state: input.verifiedState, updatedAt: input.updatedAt, receipt: { recoveryResolution: { actor: input.actor, reason: input.reason, evidence: input.evidence } } };
+      durable.transaction = { ...durable.transaction!, status: "waiting_for_user", unknownOperationCount: 0, updatedAt: input.updatedAt };
+      activeResolutions -= 1;
+      return structuredClone(operations[0]!);
+    });
+    const fixture = await workflowV2RuntimeFixture({
+      definition,
+      store: {
+        persistRunState: async (state) => { durable = structuredClone(state); },
+        appendEvents: async () => undefined,
+        readRunState: async () => structuredClone(durable),
+        readOperations: async () => structuredClone(operations),
+        resolveUnknownOperation,
+        inspectWorkspaceTransaction: async () => ({ created: [], modified: [], deleted: [], evidenceDigest: "workspace-evidence" }),
+      },
+      recoveryBroker: { canInspectOperation: () => false, canCompensateOperation: () => false, inspect: async () => "unknown", compensateRun: async () => ({ compensated: [], skipped: [] }) },
+      executeScript: async () => { throw new Error("verification must not execute workflow nodes"); },
+    });
+    const runState = createWorkflowV2RunState({ definition });
+    durable = { schemaVersion: WORKFLOW_V2_STORAGE_SCHEMA_VERSION, workflowId: definition.workflowId, runId: "run-v2-intervention", graphVersion: definition.graphVersion, savedAt: 1_200, eventCount: 0, plan: fixture.workflow.workflowV2Plan!, runState, workerOutputs: [], nodeControl: Object.fromEntries(definition.nodes.map((node) => [node.id, { extensionCount: 0 }])), transaction: { transactionId: "transaction-recovery", mode: "strict_atomic", status: "recovery_required", baselineId: "baseline", operationCount: 1, unknownOperationCount: 1, irreversibleOperationCount: 0, startedAt: 1_000, updatedAt: 1_200, retentionUntil: 604_801_200 } };
+    const run = workflowV2InterventionRun(fixture.workflow, "waiting_for_user", "paused");
+    fixture.setRuns([run]);
+
+    const request = { workflowId: definition.workflowId, runId: run.runId, operationId: "operation-unknown", verifiedState: "not_applied" as const, actor: "desktop-user", reason: "Provider audit log contains no matching request. Authorization: Bearer secret-token" };
+    const results = await Promise.all([
+      fixture.runtime.resolveWorkflowV2UnknownOperation(request),
+      fixture.runtime.resolveWorkflowV2UnknownOperation(request),
+    ]);
+
+    expect(results.map((result) => result.ok).sort()).toEqual([false, true]);
+    expect(maxActiveResolutions).toBe(1);
+    expect(resolveUnknownOperation).toHaveBeenCalledOnce();
+    expect(resolveUnknownOperation).toHaveBeenCalledWith(expect.objectContaining({ operationId: "operation-unknown", verifiedState: "compensated", actor: "desktop-user", reason: expect.stringContaining("[REDACTED]"), evidence: { source: "user_verification", observedState: "not_applied" } }));
+    expect(JSON.stringify(operations[0])).not.toContain("secret-token");
+    expect(durable.finalReport).toContain("Operation operation-unknown: compensated");
+    expect(durable.finalReport).toContain("Provider audit log contains no matching request. Authorization: [REDACTED]");
+    expect(fixture.updates.at(-1)).toMatchObject({ transaction: { status: "waiting_for_user", unknownOperationCount: 0 }, operations: [{ state: "compensated" }] });
   });
 
   test("bounds an oversized script timeout to the platform timer range", async () => {

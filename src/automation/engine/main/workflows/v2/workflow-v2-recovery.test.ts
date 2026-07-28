@@ -82,6 +82,7 @@ describe("workflow-v2 recovery", () => {
         status: "recovery_required",
         baselineId: "baseline-1",
         currentSavepointId: "savepoint-1",
+        currentSavepointOperationIds: ["operation-1"],
         operationCount: 2,
         unknownOperationCount: 1,
         irreversibleOperationCount: 0,
@@ -129,6 +130,86 @@ describe("workflow-v2 recovery", () => {
     expect(preview.managerRecommendation.riskComparison.map((item) => item.action)).toEqual(preview.availableActions);
   });
 
+  test("fails closed when a savepoint rollback would strand later external operations", async () => {
+    const state = await persisted();
+    const preview = buildWorkflowV2RecoveryPreview({
+      transaction: {
+        transactionId: "transaction-1", mode: "strict_atomic", status: "recovery_required", baselineId: "baseline-1",
+        currentSavepointId: "savepoint-1", currentSavepointOperationIds: [], operationCount: 1, unknownOperationCount: 0,
+        irreversibleOperationCount: 0, startedAt: 1_000, updatedAt: 1_500, retentionUntil: 2_000,
+      },
+      operations: [{
+        operationId: "operation-after-savepoint", transactionId: "transaction-1", runId: "run-1", nodeId: "second", attempt: 1,
+        kind: "http", target: "https://example.test/resource", idempotencyKey: "key-after-savepoint", state: "applied",
+        reversible: true, createdAt: 1_200, updatedAt: 1_400,
+      }],
+      runState: state.runState,
+      workspaceDiff: { created: [], modified: ["changed.txt"], deleted: [] },
+      canRollbackSavepoint: true,
+      canCompensate: true,
+      compensableOperationIds: ["operation-after-savepoint"],
+      now: 1_600,
+    });
+
+    expect(preview.availableActions).not.toContain("rollback_savepoint");
+    expect(preview.availableActions).toContain("compensate_all");
+    expect(preview.blockers).toEqual(expect.arrayContaining([expect.stringContaining("operation-after-savepoint")]));
+    expect(preview.managerRecommendation.rollbackTarget).toBeUndefined();
+  });
+
+  test("does not offer or recommend continuation when the run has no remaining work", async () => {
+    const transaction = {
+      transactionId: "transaction-1", mode: "strict_atomic" as const, status: "waiting_for_user" as const, baselineId: "baseline-1",
+      operationCount: 0, unknownOperationCount: 0, irreversibleOperationCount: 0,
+      startedAt: 1_000, updatedAt: 1_500, retentionUntil: 2_000,
+    };
+    const runState = createWorkflowV2RunState({ definition: definition() });
+    runState.status = "completed";
+    for (const nodeId of runState.nodeOrder) runState.nodes[nodeId]!.status = "completed";
+
+    const preview = buildWorkflowV2RecoveryPreview({ transaction, operations: [], runState });
+
+    expect(preview.availableActions).not.toContain("continue");
+    expect(preview.managerRecommendation.recommendedAction).toBe("keep_state");
+  });
+
+  test("blocks continuation when a strict run loses its isolated workspace", async () => {
+    const state = await persisted();
+    const preview = buildWorkflowV2RecoveryPreview({
+      transaction: {
+        transactionId: "transaction-1", mode: "strict_atomic", status: "waiting_for_user", baselineId: "baseline-1",
+        operationCount: 0, unknownOperationCount: 0, irreversibleOperationCount: 0,
+        startedAt: 1_000, updatedAt: 1_500, retentionUntil: 2_000,
+      },
+      operations: [],
+      runState: state.runState,
+      workspaceAvailable: false,
+    });
+
+    expect(preview.availableActions).not.toContain("continue");
+    expect(preview.blockers).toEqual(expect.arrayContaining([expect.stringContaining("isolated workflow workspace is unavailable")]));
+    expect(preview.managerRecommendation.recommendedAction).toBe("keep_state");
+  });
+
+  test("blocks continuation when the durable operation ledger cannot be read", async () => {
+    const state = await persisted();
+    const preview = buildWorkflowV2RecoveryPreview({
+      transaction: {
+        transactionId: "transaction-1", mode: "strict_atomic", status: "recovery_required", baselineId: "baseline-1",
+        operationCount: 1, unknownOperationCount: 1, irreversibleOperationCount: 0,
+        startedAt: 1_000, updatedAt: 1_500, retentionUntil: 2_000,
+      },
+      operations: [],
+      runState: state.runState,
+      workspaceAvailable: true,
+      operationLedgerAvailable: false,
+    });
+
+    expect(preview.availableActions).not.toContain("continue");
+    expect(preview.blockers).toEqual(expect.arrayContaining([expect.stringContaining("operation ledger is unavailable")]));
+    expect(preview.managerRecommendation.recommendedAction).toBe("keep_state");
+  });
+
   test("creates read-only three-way conflict candidates without applying a merge", async () => {
     const state = await persisted();
     const preview = buildWorkflowV2RecoveryPreview({
@@ -148,6 +229,20 @@ describe("workflow-v2 recovery", () => {
       expect.objectContaining({ path: "both.txt", resolution: "manual" }),
     ]);
     expect(preview.managerRecommendation.manualSteps).toEqual([expect.stringContaining("both.txt")]);
+  });
+
+  test("exposes a required policy checkpoint as an approval blocker while allowing confirmation", async () => {
+    const state = await persisted();
+    const preview = buildWorkflowV2RecoveryPreview({
+      transaction: { transactionId: "transaction-1", mode: "strict_atomic", status: "waiting_for_user", baselineId: "baseline-1", pendingCheckpointId: "publish-draft", operationCount: 0, unknownOperationCount: 0, irreversibleOperationCount: 0, startedAt: 1_000, updatedAt: 1_500, retentionUntil: 2_000 },
+      operations: [],
+      runState: state.runState,
+      workspaceDiff: { created: [], modified: ["result.txt"], deleted: [] },
+      now: 1_600,
+    });
+
+    expect(preview.blockers).toContain("Checkpoint publish-draft requires approval before the frozen run can continue.");
+    expect(preview.availableActions).toContain("continue");
   });
 
   test("uses the terminal node Markdown output as the completed user report", async () => {
@@ -174,6 +269,28 @@ describe("workflow-v2 recovery", () => {
     expect(report).toContain("## Node timeline");
   });
 
+  test("uses the inspected transaction diff for the final file report", async () => {
+    const workflow = definition();
+    const plan = await buildWorkflowV2Plan({ definition: workflow, approvedBy: "tester", now: 1_000 });
+    const report = buildWorkflowV2FinalReport(plan, [{
+      nodeId: "first",
+      summary: "Prepared",
+      outputs: {},
+      proposals: [],
+      acceptance: { outcome: "clean", issues: [], changedPaths: ["worker-reported.txt"], operationIds: [] },
+    }], "completed", [], [], {
+      created: ["hook-created.txt"],
+      modified: ["actual-modified.txt"],
+      deleted: ["removed.txt"],
+      evidenceDigest: "workspace-evidence",
+    });
+
+    expect(report).toContain("- created: hook-created.txt");
+    expect(report).toContain("- modified: actual-modified.txt");
+    expect(report).toContain("- deleted: removed.txt");
+    expect(report).not.toContain("- changed: worker-reported.txt");
+  });
+
   test("includes recovery decisions, external operation states, and manual steps in reports", async () => {
     const workflow = definition();
     const plan = await buildWorkflowV2Plan({ definition: workflow, approvedBy: "tester", now: 1_000 });
@@ -182,7 +299,7 @@ describe("workflow-v2 recovery", () => {
       transactionId: "transaction-1",
       action: "keep_state",
       actor: "operator",
-      reason: "Waiting for verification.",
+      reason: "Waiting for verification with Bearer secret-token.",
       operationIds: ["operation-1"],
       decidedAt: 1_500,
     }], [{
@@ -196,15 +313,39 @@ describe("workflow-v2 recovery", () => {
       idempotencyKey: "key-1",
       state: "unknown",
       reversible: true,
+      requestSummary: { method: "POST", Authorization: "Bearer secret", recipient: "ops@example.test" },
+      receipt: { providerId: "remote-1", token: "secret" },
       createdAt: 1_200,
       updatedAt: 1_400,
+    }, {
+      operationId: "operation-irreversible",
+      transactionId: "transaction-1",
+      runId: "run-1",
+      nodeId: "second",
+      attempt: 1,
+      kind: "message",
+      target: "team-room",
+      idempotencyKey: "key-irreversible",
+      state: "applied",
+      reversible: false,
+      receipt: { messageId: "sent-message" },
+      createdAt: 1_300,
+      updatedAt: 1_500,
     }]);
 
     expect(report).toContain("## External operations");
     expect(report).toContain("operation-1: http unknown");
+    expect(report).toContain('request={"method":"POST","Authorization":"[REDACTED]","recipient":"ops@example.test"}');
+    expect(report).toContain('receipt={"providerId":"remote-1","token":"[REDACTED]"}');
+    expect(report).toContain("1. operation-1: unknown; updated=1970-01-01T00:00:01.400Z");
+    expect(report).not.toContain("Bearer secret");
     expect(report).toContain("## Recovery decisions");
     expect(report).toContain("keep_state by operator");
+    expect(report).toContain("Bearer [REDACTED]");
+    expect(report).not.toContain("secret-token");
     expect(report).toContain("## Manual steps");
+    expect(report).toContain("Verify operation-1 in the external system");
+    expect(report).toContain("Manually reconcile operation-irreversible");
   });
 
   test("accepts only Manager Agent recommendations bound to the current recovery facts", async () => {

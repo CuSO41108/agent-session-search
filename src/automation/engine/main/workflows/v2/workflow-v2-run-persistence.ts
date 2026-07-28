@@ -9,15 +9,94 @@ import {
 } from "../../../shared/workflow-v2/storage";
 import type { WorkflowV2StorePort } from "../workflow-runtime-ports";
 import type { ExecuteWorkflowV2Checkpoint } from "./workflow-v2-executor";
+import { createWorkflowV2RunState } from "../../../shared/workflow-v2/state";
 import { createWorkflowV2NodeCacheFingerprint } from "./workflow-v2-recovery";
 import { resolveWorkflowNodeAgent, workflowV2ExecutionEnvironment, workflowV2ReviewerPolicy } from "./workflow-v2-node-policy";
 import type { WorkflowV2RecoveryOverride } from "./workflow-v2-execution-contract";
 import {
   resolveWorkflowTransactionPolicy,
+  renewWorkflowTransactionRetention,
+  sanitizeWorkflowTransactionValue,
   type WorkflowOperationRecord,
   type WorkflowOperationState,
   type WorkflowTransactionState,
 } from "../../../shared/workflow-v2/transaction";
+
+export async function persistWorkflowV2PreflightBlocked(input: {
+  store: WorkflowV2StorePort | undefined;
+  workflow: WorkflowDraftState;
+  plan: WorkflowV2Plan;
+  runId: string;
+  error: string;
+  nodeControl: Record<string, WorkflowV2DurableNodeControlState>;
+  initialEventCount?: number;
+  initialCheckpoint?: ExecuteWorkflowV2Checkpoint;
+  initialTransaction?: WorkflowTransactionState;
+  now?: number;
+}): Promise<void> {
+  if (!input.store) return;
+  const now = input.now ?? Date.now();
+  const policy = resolveWorkflowTransactionPolicy(input.plan.definition.transactionPolicy).policy;
+  const transaction = input.initialTransaction
+    ? {
+        ...structuredClone(input.initialTransaction),
+        status: "recovery_required" as const,
+        updatedAt: now,
+        retentionUntil: now + policy.retentionDays * 24 * 60 * 60 * 1_000,
+      }
+    : {
+        transactionId: `transaction:${input.workflow.workflowId}:${input.runId}`,
+        mode: policy.defaultMode,
+        status: "rolled_back" as const,
+        baselineId: `baseline-pending:${input.runId}`,
+        operationCount: 0,
+        unknownOperationCount: 0,
+        irreversibleOperationCount: 0,
+        startedAt: now,
+        updatedAt: now,
+        retentionUntil: now + policy.retentionDays * 24 * 60 * 60 * 1_000,
+      };
+  const runState = input.initialCheckpoint
+    ? structuredClone(input.initialCheckpoint.runState)
+    : createWorkflowV2RunState({ definition: input.plan.definition });
+  runState.status = input.initialTransaction ? "paused" : "failed";
+  const safeError = String(sanitizeWorkflowTransactionValue(input.error));
+  const initialEventCount = input.initialEventCount ?? 0;
+  const events: WorkflowV2DurableEvent[] = [
+    ...(!input.initialTransaction ? [{
+      sequence: initialEventCount,
+      workflowId: input.workflow.workflowId,
+      runId: input.runId,
+      transactionId: transaction.transactionId,
+      type: "transaction_started",
+      at: now,
+      detail: `mode=${transaction.mode}`,
+    }] : []),
+    {
+      sequence: initialEventCount + (input.initialTransaction ? 0 : 1),
+      workflowId: input.workflow.workflowId,
+      runId: input.runId,
+      transactionId: transaction.transactionId,
+      type: "preflight_blocked",
+      at: now,
+      detail: safeError,
+    },
+  ];
+  await input.store.appendEvents({ workflowId: input.workflow.workflowId, runId: input.runId, events });
+  await input.store.persistRunState({
+    schemaVersion: WORKFLOW_V2_STORAGE_SCHEMA_VERSION,
+    workflowId: input.workflow.workflowId,
+    runId: input.runId,
+    graphVersion: input.plan.graphVersion,
+    savedAt: now,
+    eventCount: initialEventCount + events.length,
+    plan: structuredClone(input.plan),
+    runState,
+    workerOutputs: input.initialCheckpoint?.workerOutputs.map((output) => structuredClone(output)) ?? [],
+    nodeControl: structuredClone(input.nodeControl),
+    transaction,
+  });
+}
 
 export class WorkflowV2RunPersistence {
   private eventCount: number;
@@ -29,6 +108,8 @@ export class WorkflowV2RunPersistence {
   private writeChain: Promise<void> = Promise.resolve();
   private readonly cachedNodeIds = new Set<string>();
   private recoveryDecisions: NonNullable<WorkflowV2PersistedRunState["recoveryDecisions"]> = [];
+  private finalReport: string | undefined;
+  private readonly retentionDays: number;
 
   constructor(private readonly input: {
     store: WorkflowV2StorePort | undefined;
@@ -53,6 +134,7 @@ export class WorkflowV2RunPersistence {
     const now = Date.now();
     const resolvedPolicy = resolveWorkflowTransactionPolicy(input.plan.definition.transactionPolicy);
     const policy = resolvedPolicy.policy;
+    this.retentionDays = policy.retentionDays;
     this.compatibilityWarning = resolvedPolicy.compatibilityWarning;
     this.transaction = input.initialTransaction ? structuredClone(input.initialTransaction) : {
       transactionId: `transaction:${input.workflow.workflowId}:${input.runId}`,
@@ -80,13 +162,17 @@ export class WorkflowV2RunPersistence {
     return this.enqueueWrite(() => this.appendEventsUnlocked(events));
   }
 
-  initializeWorkspaceTransaction(baselineId: string): Promise<void> {
+  initializeWorkspaceTransaction(baselineId: string, scope?: { governedFileCount: number; excludedPaths: string[] }): Promise<void> {
     return this.enqueueWrite(async () => {
       this.transaction.baselineId = baselineId;
+      if (scope) {
+        this.transaction.governedFileCount = scope.governedFileCount;
+        this.transaction.excludedPaths = [...new Set(scope.excludedPaths)].sort();
+      }
       await this.ensureTransactionStartedUnlocked();
       const now = Date.now();
       await this.appendEventsUnlocked([
-        { type: "baseline_frozen", transactionId: this.transaction.transactionId, at: now, detail: `baselineId=${baselineId}` },
+        { type: "baseline_frozen", transactionId: this.transaction.transactionId, at: now, detail: `baselineId=${baselineId}; governedFiles=${scope?.governedFileCount ?? "unknown"}; excludedPaths=${scope?.excludedPaths.join(",") || "none"}` },
         { type: "preflight_passed", transactionId: this.transaction.transactionId, at: now, detail: "Isolated workspace is ready." },
       ]);
       await this.notifyTransactionChanged();
@@ -95,7 +181,9 @@ export class WorkflowV2RunPersistence {
 
   recordSavepoint(savepointId: string, nodeId: string, attempt: number): Promise<void> {
     return this.enqueueWrite(async () => {
+      const operations = await this.input.store?.readOperations?.(this.input.workflow.workflowId, this.input.runId) ?? [];
       this.transaction.currentSavepointId = savepointId;
+      this.transaction.currentSavepointOperationIds = [...new Set(operations.map((operation) => operation.operationId))].sort();
       this.transaction.updatedAt = Date.now();
       await this.appendEventsUnlocked([{
         type: "savepoint_created",
@@ -104,6 +192,46 @@ export class WorkflowV2RunPersistence {
         at: this.transaction.updatedAt,
         detail: `savepointId=${savepointId}; attempt=${attempt}`,
       }]);
+      if (this.latest) await this.persistCheckpointUnlocked(this.latest, false);
+      await this.notifyTransactionChanged();
+    });
+  }
+
+  requireCheckpointApproval(checkpointId: string, savepointId: string, planDigest?: string): Promise<void> {
+    return this.enqueueWrite(async () => {
+      this.transaction.currentSavepointId = savepointId;
+      this.transaction.pendingCheckpointId = checkpointId;
+      this.transaction.approvedCheckpointIds = (this.transaction.approvedCheckpointIds ?? []).filter((approvedId) => approvedId !== checkpointId);
+      if (planDigest) this.transaction.pendingCheckpointPlanDigest = planDigest;
+      else delete this.transaction.pendingCheckpointPlanDigest;
+      this.transaction.status = "waiting_for_user";
+      this.transaction.updatedAt = Date.now();
+      await this.appendEventsUnlocked([{ type: "checkpoint_approval_required", transactionId: this.transaction.transactionId, at: this.transaction.updatedAt, detail: `checkpointId=${checkpointId}; savepointId=${savepointId}${planDigest ? `; planDigest=${planDigest}` : ""}` }]);
+      if (this.latest) await this.persistCheckpointUnlocked(this.latest, false);
+      await this.notifyTransactionChanged();
+    });
+  }
+
+  beginCheckpointCommit(checkpointId: string): Promise<void> {
+    return this.enqueueWrite(async () => {
+      this.transaction.committingCheckpointId = checkpointId;
+      this.transaction.updatedAt = Date.now();
+      if (this.latest) await this.persistCheckpointUnlocked(this.latest, false);
+      await this.notifyTransactionChanged();
+    });
+  }
+
+  completeCheckpoint(checkpointId: string): Promise<void> {
+    return this.enqueueWrite(async () => {
+      const completed = new Set(this.transaction.completedCheckpointIds ?? []);
+      completed.add(checkpointId);
+      this.transaction.completedCheckpointIds = [...completed];
+      if (this.transaction.pendingCheckpointId === checkpointId) delete this.transaction.pendingCheckpointId;
+      delete this.transaction.pendingCheckpointPlanDigest;
+      if (this.transaction.committingCheckpointId === checkpointId) delete this.transaction.committingCheckpointId;
+      this.transaction.status = "active";
+      this.transaction.updatedAt = Date.now();
+      await this.appendEventsUnlocked([{ type: "checkpoint_completed", transactionId: this.transaction.transactionId, at: this.transaction.updatedAt, detail: `checkpointId=${checkpointId}` }]);
       if (this.latest) await this.persistCheckpointUnlocked(this.latest, false);
       await this.notifyTransactionChanged();
     });
@@ -128,6 +256,13 @@ export class WorkflowV2RunPersistence {
   persistCheckpoint(checkpoint: ExecuteWorkflowV2Checkpoint): Promise<void> {
     const snapshot = structuredClone(checkpoint);
     return this.enqueueWrite(() => this.persistCheckpointUnlocked(snapshot));
+  }
+
+  persistFinalReport(finalReport: string): Promise<void> {
+    return this.enqueueWrite(async () => {
+      this.finalReport = finalReport;
+      if (this.latest) await this.persistCheckpointUnlocked(this.latest, false);
+    });
   }
 
   transitionTransaction(
@@ -161,6 +296,7 @@ export class WorkflowV2RunPersistence {
         this.transaction = structuredClone(durable.transaction);
         this.eventCount = Math.max(this.eventCount, durable.eventCount);
         this.recoveryDecisions = structuredClone(durable.recoveryDecisions ?? []);
+        if (this.finalReport === undefined) this.finalReport = durable.finalReport;
       }
     }
     await this.ensureTransactionStartedUnlocked();
@@ -194,7 +330,7 @@ export class WorkflowV2RunPersistence {
       }
     }
     this.transaction.updatedAt = now;
-    this.transaction.retentionUntil = Math.max(this.transaction.retentionUntil, now);
+    this.transaction = renewWorkflowTransactionRetention(this.transaction, this.retentionDays, now);
     const persisted: WorkflowV2PersistedRunState = {
       schemaVersion: WORKFLOW_V2_STORAGE_SCHEMA_VERSION,
       workflowId: this.input.workflow.workflowId,
@@ -208,6 +344,7 @@ export class WorkflowV2RunPersistence {
       nodeControl: structuredClone(this.input.nodeControl),
       transaction: structuredClone(this.transaction),
       recoveryDecisions: structuredClone(this.recoveryDecisions),
+      ...(this.finalReport ? { finalReport: this.finalReport } : {}),
     };
     await this.input.store.persistRunState(persisted);
     await this.persistCacheEntries(checkpoint);
@@ -331,6 +468,7 @@ export class WorkflowV2RunPersistence {
       this.transaction = structuredClone(durable.transaction);
       this.eventCount = Math.max(this.eventCount, durable.eventCount);
       this.recoveryDecisions = structuredClone(durable.recoveryDecisions ?? []);
+      if (this.finalReport === undefined) this.finalReport = durable.finalReport;
     }
   }
 

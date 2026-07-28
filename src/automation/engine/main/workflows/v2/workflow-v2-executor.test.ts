@@ -217,7 +217,7 @@ describe("workflow-v2 executor", () => {
     expect(startedNodeIds).toEqual(["first", "second", "workflow-summary"]);
   });
 
-  test("settles every started node in a failed batch without scheduling another batch", async () => {
+  test("requests cancellation for running siblings, settles the batch, and does not schedule another batch", async () => {
     const plan = await buildWorkflowV2Plan({
       definition: failingParallelDefinition(),
       approvedBy: "tester",
@@ -225,6 +225,7 @@ describe("workflow-v2 executor", () => {
     });
     const releaseSecond = deferred();
     const startedNodeIds: string[] = [];
+    const cancellations: Array<{ failedNodeId: string; runningNodeIds: string[]; reason: string }> = [];
 
     const execution = executeWorkflowV2Plan({
       plan,
@@ -243,14 +244,18 @@ describe("workflow-v2 executor", () => {
       executeScript: async () => {
         throw new Error("script runner should not be called");
       },
+      cancelRunningNodes: async (input) => {
+        cancellations.push(input);
+        releaseSecond.resolve();
+      },
     });
 
     await Promise.resolve();
     const startedBeforeSecondResolved = [...startedNodeIds];
-    releaseSecond.resolve();
     const result = await execution;
 
     expect(startedBeforeSecondResolved).toEqual(["first", "second"]);
+    expect(cancellations).toEqual([{ failedNodeId: "first", runningNodeIds: ["second"], reason: "First worker failed" }]);
     expect(startedNodeIds).toEqual(["first", "second"]);
     expect(result.runState.status).toBe("failed");
     expect(result.runState.nodes.first?.status).toBe("failed");

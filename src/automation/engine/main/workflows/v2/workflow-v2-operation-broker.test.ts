@@ -2,11 +2,12 @@ import { describe, expect, test } from "vitest";
 import type { WorkflowOperationRecord } from "../../../shared/workflow-v2/transaction";
 import { WorkflowV2OperationBroker, type WorkflowTransactionalOperationAdapter } from "./workflow-v2-operation-broker";
 
-function fakeStore(options: { failAppliedTransition?: boolean } = {}) {
+function fakeStore(options: { failAppliedTransition?: boolean; failPlan?: boolean } = {}) {
   const operations: WorkflowOperationRecord[] = [];
   const store = {
     operations,
     planOperation: async ({ record }: { workflowId: string; record: WorkflowOperationRecord }) => {
+      if (options.failPlan) throw new Error("planned persistence failed");
       const existing = operations.find((item) => item.operationId === record.operationId || item.idempotencyKey === record.idempotencyKey);
       if (existing) return structuredClone(existing);
       operations.push(structuredClone(record));
@@ -85,6 +86,18 @@ describe("WorkflowV2OperationBroker", () => {
     await expect(broker.apply(input)).resolves.toEqual({ id: "remote-1" });
     expect(testAdapter.calls).toEqual(["prepare", "apply"]);
     expect(store.operations[0]).toMatchObject({ state: "applied", idempotencyKey: expect.stringContaining("http-test") });
+  });
+
+  test("never calls the external adapter when planned persistence fails", async () => {
+    const store = fakeStore({ failPlan: true });
+    const testAdapter = adapter({});
+    const broker = new WorkflowV2OperationBroker(store as never);
+    broker.register(testAdapter.value);
+
+    await expect(broker.apply({ workflowId: "workflow-1", transactionId: "transaction-1", runId: "run-1", nodeId: "node-1", attempt: 1, kind: "http", target: "https://example.test", plan: { url: "https://example.test" }, adapterId: "http-test", reversible: true, compensationAdapter: "http-test" })).rejects.toThrow("planned persistence failed");
+
+    expect(testAdapter.calls).toEqual(["prepare"]);
+    expect(store.operations).toEqual([]);
   });
 
   test("keeps apply failures unknown until inspect proves remote application", async () => {

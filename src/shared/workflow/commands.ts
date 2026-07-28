@@ -235,6 +235,15 @@ export interface ResolveWorkflowV2ConflictRequest {
   reason: string;
 }
 
+export interface ResolveWorkflowV2UnknownOperationRequest {
+  workflowId: string;
+  runId: string;
+  operationId: string;
+  verifiedState: "applied" | "not_applied";
+  actor: string;
+  reason: string;
+}
+
 export interface CleanupWorkflowV2RunRequest {
   workflowId: string;
   runId: string;

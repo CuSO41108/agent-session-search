@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { runInNewContext } from "node:vm";
 import type { WorkflowV2ScriptWorkerOutput } from "../../../shared/workflow-v2/packets";
 import type { ExecuteWorkflowV2ScriptRequest, WorkflowV2StorePort } from "../workflow-runtime-ports";
-import type { WorkflowHttpOperationPlan } from "./workflow-v2-external-adapters";
+import type { WorkflowHttpOperationPlan, WorkflowMessagePlan } from "./workflow-v2-external-adapters";
 import { WorkflowV2OperationBroker } from "./workflow-v2-operation-broker";
 import { assertWorkflowV2ScriptAuthorized, validateWorkflowV2ScriptOutput, WorkflowV2ScriptExecutionError } from "./workflow-v2-script-executor";
 
@@ -11,6 +11,12 @@ interface BrokeredHttpOperation {
   plan: WorkflowHttpOperationPlan;
   reversible: boolean;
 }
+interface BrokeredMessageOperation {
+  kind: "message";
+  plan: WorkflowMessagePlan;
+  reversible: boolean;
+}
+type BrokeredOperation = BrokeredHttpOperation | BrokeredMessageOperation;
 
 export async function executeWorkflowV2BrokeredScript(input: ExecuteWorkflowV2ScriptRequest, store: WorkflowV2StorePort, broker: WorkflowV2OperationBroker): Promise<WorkflowV2ScriptWorkerOutput> {
   assertWorkflowV2ScriptAuthorized(input);
@@ -18,8 +24,9 @@ export async function executeWorkflowV2BrokeredScript(input: ExecuteWorkflowV2Sc
   if (input.node.script.executable.kind !== "inline" || input.node.script.executable.language !== "typescript") throw new Error("Brokered external scripts must be inline TypeScript that returns declarative operations.");
   if (!store.readOperations) throw new Error("Brokered script execution requires a durable operation ledger.");
   const startedAt = Date.now();
+  const transactionMode = input.transactionMode ?? "direct";
   let outputs: Record<string, unknown>;
-  let operations: BrokeredHttpOperation[];
+  let operations: BrokeredOperation[];
   try {
     const value = runInNewContext(`"use strict"; (function(inputs) { ${input.node.script.executable.code}\n})(inputs)`, { inputs: structuredClone(input.inputs) }, { timeout: Math.max(1, Math.min(input.timeoutMs, 30_000)), contextCodeGeneration: { strings: false, wasm: false } }) as unknown;
     if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Brokered script must return an object.");
@@ -34,24 +41,30 @@ export async function executeWorkflowV2BrokeredScript(input: ExecuteWorkflowV2Sc
   const operationIds: string[] = [];
   try {
     for (const [index, operation] of operations.entries()) {
-      if (operation.reversible && input.node.script.compensationAdapter !== "http") throw new Error("Reversible HTTP brokered operations require the http compensation adapter.");
+      if (operation.plan.mode !== transactionMode) throw new Error("Brokered operation mode does not match the frozen workflow transaction mode.");
+      if (transactionMode === "strict_atomic" && !operation.reversible) throw new Error("Strict atomic brokered operations must be reversible.");
+      if (operation.reversible && input.node.script.compensationAdapter !== operation.kind) throw new Error(`Reversible ${operation.kind} brokered operations require the ${operation.kind} compensation adapter.`);
       const prepared = await broker.prepare({
         workflowId: input.authorization.workflowId,
         transactionId: `transaction:${input.authorization.workflowId}:${input.authorization.runId}`,
         runId: input.authorization.runId,
         nodeId: input.node.id,
         attempt: input.authorization.attempt ?? 1,
-        kind: "http",
-        target: operation.plan.request.url,
+        kind: operation.kind,
+        target: operation.kind === "http" ? operation.plan.request.url : `${operation.plan.draft.channel}:${operation.plan.draft.recipients.join(",")}`,
         plan: operation.plan,
-        adapterId: "http",
+        adapterId: operation.kind,
         reversible: operation.reversible,
-        ...(operation.reversible ? { compensationAdapter: "http" } : {}),
-        requestSummary: { index, method: operation.plan.request.method, url: operation.plan.request.url, reversible: operation.reversible },
+        ...(operation.reversible ? { compensationAdapter: operation.kind } : {}),
+        requestSummary: operation.kind === "http"
+          ? { index, method: operation.plan.request.method, url: operation.plan.request.url, reversible: operation.reversible }
+          : { index, channel: operation.plan.draft.channel, recipients: operation.plan.draft.recipients, title: operation.plan.draft.title, attachmentCount: operation.plan.draft.attachments.length, reversible: operation.reversible },
         signal: input.signal,
       });
       operationIds.push(prepared.operationId);
-      await broker.applyPrepared({ workflowId: input.authorization.workflowId, runId: input.authorization.runId, operationId: prepared.operationId, signal: input.signal });
+      if (transactionMode !== "strict_atomic") {
+        await broker.applyPrepared({ workflowId: input.authorization.workflowId, runId: input.authorization.runId, operationId: prepared.operationId, signal: input.signal });
+      }
     }
   } catch (error) {
     throw new WorkflowV2ScriptExecutionError(error instanceof Error ? error.message : String(error), receipt(input, "unknown", startedAt));
@@ -67,14 +80,16 @@ export async function executeWorkflowV2BrokeredScript(input: ExecuteWorkflowV2Sc
   };
 }
 
-function parseOperations(value: unknown): BrokeredHttpOperation[] {
+function parseOperations(value: unknown): BrokeredOperation[] {
   if (!Array.isArray(value) || value.length === 0) throw new Error("Brokered script output requires a non-empty operations array.");
   return value.map((operation) => {
     if (!operation || typeof operation !== "object" || Array.isArray(operation)) throw new Error("Brokered operation is malformed.");
     const item = operation as Record<string, unknown>;
-    if (item.kind !== "http" || !item.plan || typeof item.plan !== "object" || Array.isArray(item.plan)) throw new Error("Only declarative HTTP brokered operations are currently supported.");
+    if ((item.kind !== "http" && item.kind !== "message") || !item.plan || typeof item.plan !== "object" || Array.isArray(item.plan)) throw new Error("Only declarative HTTP and message brokered operations are supported.");
     if (typeof item.reversible !== "boolean") throw new Error("Brokered operation must declare reversibility.");
-    return { kind: "http", plan: structuredClone(item.plan as unknown as WorkflowHttpOperationPlan), reversible: item.reversible };
+    return item.kind === "http"
+      ? { kind: "http", plan: structuredClone(item.plan as unknown as WorkflowHttpOperationPlan), reversible: item.reversible }
+      : { kind: "message", plan: structuredClone(item.plan as unknown as WorkflowMessagePlan), reversible: item.reversible };
   });
 }
 

@@ -24,6 +24,7 @@ interface WorkflowRunCenterProps {
   onResolveRecovery?: (runId: string, action: WorkflowRecoveryAction, reason: string) => void | Promise<void>;
   onRefreshRecovery?: (runId: string) => void | Promise<void>;
   onResolveConflict?: (runId: string, input: { path: string; resolution: "isolated" | "current" | "manual"; expectedCurrentSha256?: string; content?: string; reason: string }) => void | Promise<void>;
+  onResolveUnknownOperation?: (runId: string, input: { operationId: string; verifiedState: "applied" | "not_applied"; reason: string }) => void | Promise<void>;
   onCleanupRunMaterials?: (runId: string) => void | Promise<void>;
   writableRunId?: string;
   onResolveIntervention?: (nodeId: string, action: WorkflowV2InterventionAction, reason?: string) => void | Promise<void>;
@@ -174,7 +175,7 @@ export function WorkflowRunCenter(props: WorkflowRunCenterProps) {
   return <WorkflowRunCenterOpen {...props} />;
 }
 
-function WorkflowRunCenterOpen({ runs, conversations = [], artifacts = [], loading = false, error, selectedRunId, language = "en", onSelectRun, onClose, onResolveRecovery, onRefreshRecovery, onResolveConflict, onCleanupRunMaterials, writableRunId, onResolveIntervention }: WorkflowRunCenterProps) {
+function WorkflowRunCenterOpen({ runs, conversations = [], artifacts = [], loading = false, error, selectedRunId, language = "en", onSelectRun, onClose, onResolveRecovery, onRefreshRecovery, onResolveConflict, onResolveUnknownOperation, onCleanupRunMaterials, writableRunId, onResolveIntervention }: WorkflowRunCenterProps) {
   const [activeRunId, setActiveRunId] = useState<string | undefined>(selectedRunId);
   const [statusFilter, setStatusFilter] = useState<WorkflowStatus | "all">("all");
   const [sourceFilter, setSourceFilter] = useState<WorkflowRunTriggerSource | "all">("all");
@@ -190,6 +191,9 @@ function WorkflowRunCenterOpen({ runs, conversations = [], artifacts = [], loadi
   const [conflictDrafts, setConflictDrafts] = useState<Record<string, { resolution: "isolated" | "current" | "manual"; content: string; reason: string }>>({});
   const [conflictBusyPath, setConflictBusyPath] = useState<string>();
   const [conflictError, setConflictError] = useState<string>();
+  const [unknownOperationReasons, setUnknownOperationReasons] = useState<Record<string, string>>({});
+  const [unknownOperationBusyId, setUnknownOperationBusyId] = useState<string>();
+  const [unknownOperationError, setUnknownOperationError] = useState<string>();
   const [refreshedRecoveryRunIds, setRefreshedRecoveryRunIds] = useState<string[]>([]);
   const [nodeActionReason, setNodeActionReason] = useState("");
   const [nodeActionBusy, setNodeActionBusy] = useState(false);
@@ -295,6 +299,11 @@ function WorkflowRunCenterOpen({ runs, conversations = [], artifacts = [], loadi
                     <span><b>{language === "zh" ? "事务状态" : "Status"}</b>{selectedRun.transaction.status}</span>
                     <span><b>{language === "zh" ? "审批模式" : "Approval mode"}</b>{selectedRun.workflowV2Plan.definition.transactionPolicy?.approvalMode ?? "—"}</span>
                     <span><b>{language === "zh" ? "保存点" : "Savepoint"}</b>{selectedRun.transaction.currentSavepointId ?? "—"}</span>
+                    <span><b>{language === "zh" ? "待审批检查点" : "Pending checkpoint"}</b>{selectedRun.transaction.pendingCheckpointId ?? "—"}</span>
+                    <span><b>{language === "zh" ? "待审批计划摘要" : "Pending plan digest"}</b>{selectedRun.transaction.pendingCheckpointPlanDigest?.slice(0, 16) ?? "—"}</span>
+                    <span><b>{language === "zh" ? "已完成检查点" : "Completed checkpoints"}</b>{selectedRun.transaction.completedCheckpointIds?.join(", ") || "—"}</span>
+                    <span><b>{language === "zh" ? "受治理文件" : "Governed files"}</b>{selectedRun.transaction.governedFileCount ?? "—"}</span>
+                    <span><b>{language === "zh" ? "排除路径" : "Excluded paths"}</b>{selectedRun.transaction.excludedPaths?.join(", ") || "—"}</span>
                     <span><b>{language === "zh" ? "操作总数" : "Operations"}</b>{selectedRun.transaction.operationCount}</span>
                     <span><b>{language === "zh" ? "已提交" : "Applied"}</b>{selectedRun.operations?.filter((operation) => operation.state === "applied").length ?? 0}</span>
                     <span><b>{language === "zh" ? "已补偿" : "Compensated"}</b>{selectedRun.operations?.filter((operation) => operation.state === "compensated").length ?? 0}</span>
@@ -389,7 +398,22 @@ function WorkflowRunCenterOpen({ runs, conversations = [], artifacts = [], loadi
                       {operation.requestSummary !== undefined ? <details><summary>{language === "zh" ? "查看授权目标与参数摘要" : "View authorized target and parameter summary"}</summary><pre>{JSON.stringify(operation.requestSummary, null, 2)}</pre></details> : null}
                       {operation.error ? <p className="is-error">{operation.error}</p> : null}
                       {operation.receipt !== undefined ? <details><summary>{language === "zh" ? "查看 receipt" : "View receipt"}</summary><pre>{JSON.stringify(operation.receipt, null, 2)}</pre></details> : null}
+                      {operation.state === "unknown" && onResolveUnknownOperation && selectedRun.runId === writableRunId ? <div className="workflow-run-center-recovery-actions">
+                        <label><span>{language === "zh" ? "核验依据" : "Verification reason"}</span><input value={unknownOperationReasons[operation.operationId] ?? ""} maxLength={2_000} onChange={(event) => setUnknownOperationReasons((current) => ({ ...current, [operation.operationId]: event.currentTarget.value }))} placeholder={language === "zh" ? "填写远端记录、回执或人工核对结果" : "Describe the remote record, receipt, or manual verification"} /></label>
+                        <div>{(["applied", "not_applied"] as const).map((verifiedState) => <button key={verifiedState} type="button" disabled={unknownOperationBusyId === operation.operationId || !(unknownOperationReasons[operation.operationId]?.trim())} onClick={() => {
+                          const reason = unknownOperationReasons[operation.operationId]!.trim();
+                          const prompt = language === "zh" ? `确认将 ${operation.operationId} 核验为“${verifiedState === "applied" ? "已应用" : "未应用"}”？此决定会写入事务账本。` : `Verify ${operation.operationId} as “${verifiedState === "applied" ? "applied" : "not applied"}”? This decision will be written to the transaction ledger.`;
+                          if (!window.confirm(prompt)) return;
+                          setUnknownOperationBusyId(operation.operationId);
+                          setUnknownOperationError(undefined);
+                          void Promise.resolve(onResolveUnknownOperation(selectedRun.runId, { operationId: operation.operationId, verifiedState, reason }))
+                            .then(() => setUnknownOperationReasons((current) => { const next = { ...current }; delete next[operation.operationId]; return next; }))
+                            .catch((resolveError) => setUnknownOperationError(resolveError instanceof Error ? resolveError.message : String(resolveError)))
+                            .finally(() => setUnknownOperationBusyId(undefined));
+                        }}>{verifiedState === "applied" ? (language === "zh" ? "核验为已应用" : "Verify applied") : (language === "zh" ? "核验为未应用" : "Verify not applied")}</button>)}</div>
+                      </div> : null}
                     </article>)}
+                    {unknownOperationError ? <p className="is-error">{unknownOperationError}</p> : null}
                   </div> : null}
                   {(selectedRun.recoveryDecisions?.length ?? 0) > 0 ? <details className="workflow-run-center-node-outputs">
                     <summary>{language === "zh" ? "用户恢复决定" : "Recovery decisions"} · {selectedRun.recoveryDecisions!.length}</summary>

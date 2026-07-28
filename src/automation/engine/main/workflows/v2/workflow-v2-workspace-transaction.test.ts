@@ -28,13 +28,16 @@ describe("WorkflowV2WorkspaceTransaction", () => {
       stderrPolicy: "warn",
       executable: { kind: "command", command: "echo unsafe" },
     }))).toContain("unconstrained command");
-    expect(workflowV2WorkspaceIsolationPlanError(strictPlan({
+    const brokeredMessagePlan = strictPlan({
       effectMode: "brokered_external",
       idempotency: "safe_retry",
       stderrPolicy: "fail",
-      compensationAdapter: "undo-test",
+      compensationAdapter: "message",
       executable: { kind: "inline", handler: "test" },
-    }))).toContain("Broker execution port");
+    });
+    expect(workflowV2WorkspaceIsolationPlanError(brokeredMessagePlan)).toContain("Broker execution port");
+    expect(workflowV2WorkspaceIsolationPlanError(brokeredMessagePlan, { brokeredScriptExecution: true, brokeredAdapters: ["http"] })).toContain("unavailable adapter message");
+    expect(workflowV2WorkspaceIsolationPlanError(brokeredMessagePlan, { brokeredScriptExecution: true, brokeredAdapters: ["http", "message"] })).toBeUndefined();
   });
 
   test("freezes dirty and untracked files into an isolated workspace without changing the source", async () => {
@@ -165,13 +168,31 @@ describe("WorkflowV2WorkspaceTransaction", () => {
     await transaction.createSavepoint({ savepointId: "node-1-attempt-1", nodeId: "node-1", attempt: 1, now: 10 });
     await writeFile(path.join(prepared.workspaceDir, "file.txt"), "failed attempt", "utf8");
     await writeFile(path.join(prepared.workspaceDir, "created.txt"), "attempt artifact", "utf8");
-    expect(await transaction.inspectDiffSinceSavepoint("node-1-attempt-1")).toEqual({ created: ["created.txt"], modified: ["file.txt"], deleted: [] });
+    expect(await transaction.inspectDiffSinceSavepoint("node-1-attempt-1")).toMatchObject({ created: ["created.txt"], modified: ["file.txt"], deleted: [] });
     await transaction.createSavepoint({ savepointId: "node-1-attempt-1", nodeId: "node-1", attempt: 1, now: 20 });
 
     await transaction.restoreSavepoint("node-1-attempt-1");
 
     expect(await readFile(path.join(prepared.workspaceDir, "file.txt"), "utf8")).toBe("baseline");
     await expect(readFile(path.join(prepared.workspaceDir, "metadata.json"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  test("binds workspace diff evidence to same-path file content", async () => {
+    const root = await temporaryRoot("workflow-workspace-evidence-");
+    const sourceDir = path.join(root, "source");
+    await mkdir(sourceDir, { recursive: true });
+    await writeFile(path.join(sourceDir, "result.txt"), "baseline", "utf8");
+    const transaction = new WorkflowV2WorkspaceTransaction(path.join(root, "transaction"));
+    const prepared = await transaction.prepare({ workflowId: "workflow-1", runId: "run-1", sourceDir, baselineId: "baseline-1" });
+
+    await writeFile(path.join(prepared.workspaceDir, "result.txt"), "first approved content", "utf8");
+    const first = await transaction.inspectDiff();
+    await writeFile(path.join(prepared.workspaceDir, "result.txt"), "different content at the same path", "utf8");
+    const second = await transaction.inspectDiff();
+
+    expect(first.modified).toEqual(["result.txt"]);
+    expect(second.modified).toEqual(["result.txt"]);
+    expect(second.evidenceDigest).not.toBe(first.evidenceDigest);
   });
 
   test("replaces an interrupted savepoint staging copy without accepting partial contents", async () => {
@@ -206,11 +227,12 @@ describe("WorkflowV2WorkspaceTransaction", () => {
     await writeFile(path.join(prepared.workspaceDir, "created.txt"), "created by workflow", "utf8");
     await rm(path.join(prepared.workspaceDir, "user-only.txt"));
     await rm(path.join(prepared.workspaceDir, "delete.txt"));
-    expect(await transaction.inspectDiff()).toEqual({
+    expect(await transaction.inspectDiff()).toMatchObject({
       created: ["created.txt"],
       modified: ["apply.txt", "conflict.txt"],
       deleted: ["delete.txt", "user-only.txt"],
     });
+    expect((await transaction.inspectDiff()).evidenceDigest).toMatch(/^[a-f0-9]{64}$/);
     expect(JSON.parse(await readFile(path.join(transaction.paths().reportsDir, "last-diff.json"), "utf8"))).toMatchObject({ created: ["created.txt"] });
     await writeFile(path.join(sourceDir, "conflict.txt"), "user", "utf8");
     await writeFile(path.join(sourceDir, "user-only.txt"), "user", "utf8");
@@ -254,6 +276,27 @@ describe("WorkflowV2WorkspaceTransaction", () => {
     expect(await readFile(path.join(sourceDir, "apply.txt"), "utf8")).toBe("baseline");
     expect(await readFile(path.join(sourceDir, "delete.txt"), "utf8")).toBe("baseline");
     await expect(readFile(path.join(sourceDir, "created.txt"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  test("serializes writes from independent transactions targeting the same source workspace", async () => {
+    const root = await temporaryRoot("workflow-workspace-serialized-commit-");
+    const sourceDir = path.join(root, "source");
+    await mkdir(sourceDir, { recursive: true });
+    await writeFile(path.join(sourceDir, "result.txt"), "baseline", "utf8");
+    const first = new WorkflowV2WorkspaceTransaction(path.join(root, "transaction-first"));
+    const second = new WorkflowV2WorkspaceTransaction(path.join(root, "transaction-second"));
+    const firstPrepared = await first.prepare({ workflowId: "workflow-1", runId: "run-1", sourceDir, baselineId: "baseline-1" });
+    const secondPrepared = await second.prepare({ workflowId: "workflow-1", runId: "run-2", sourceDir, baselineId: "baseline-2" });
+    await writeFile(path.join(firstPrepared.workspaceDir, "result.txt"), "first workflow", "utf8");
+    await writeFile(path.join(secondPrepared.workspaceDir, "result.txt"), "second workflow", "utf8");
+
+    const [firstResult, secondResult] = await Promise.all([first.commit(), second.commit()]);
+
+    expect([firstResult, secondResult]).toEqual(expect.arrayContaining([
+      { applied: ["result.txt"], conflicts: [] },
+      { applied: [], conflicts: ["result.txt"] },
+    ]));
+    expect(await readFile(path.join(sourceDir, "result.txt"), "utf8")).toBe(firstResult.applied.length > 0 ? "first workflow" : "second workflow");
   });
 
   test("builds a bounded redacted three-way conflict preview", async () => {

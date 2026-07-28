@@ -122,6 +122,7 @@ export function WorkflowPage({ controller: source }: { controller: WorkflowContr
   const onResolveRecovery = source.onResolveRecovery;
   const onRefreshRecovery = source.onRefreshRecovery;
   const onResolveConflict = source.onResolveConflict;
+  const onResolveUnknownOperation = source.onResolveUnknownOperation;
   const onCleanupRunMaterials = source.onCleanupRunMaterials;
   const onSendNodeMessage = source.onSendNodeMessage;
   const onCompleteNodeConversation = source.onCompleteNodeConversation;
@@ -400,6 +401,7 @@ export function WorkflowPage({ controller: source }: { controller: WorkflowContr
         {...(onResolveRecovery ? { onResolveRecovery } : {})}
         {...(onRefreshRecovery ? { onRefreshRecovery } : {})}
         {...(onResolveConflict ? { onResolveConflict } : {})}
+        {...(onResolveUnknownOperation ? { onResolveUnknownOperation } : {})}
         {...(onCleanupRunMaterials ? { onCleanupRunMaterials } : {})}
         {...(activeRunId ? { writableRunId: activeRunId } : {})}
         {...(onResolveIntervention ? { onResolveIntervention } : {})}

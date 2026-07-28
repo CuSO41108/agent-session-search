@@ -67,25 +67,26 @@ describe("workflow-v2 file store", () => {
     expect((await readdir(layout.runDir)).filter((entry) => entry.endsWith(".tmp"))).toEqual([]);
   });
 
-  test("serializes concurrent event appends in sequence", async () => {
+  test("serializes concurrent event appends from independent stores", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "workflow-v2-events-"));
     temporaryDirectories.push(root);
-    const store = new WorkflowV2FileStore(root);
+    const firstStore = new WorkflowV2FileStore(root);
+    const secondStore = new WorkflowV2FileStore(root);
 
     await Promise.all([
-      store.appendEvents({
+      firstStore.appendEvents({
         workflowId: "workflow-1",
         runId: "run-1",
         events: [{ sequence: 0, workflowId: "workflow-1", runId: "run-1", type: "started", at: 1 }],
       }),
-      store.appendEvents({
+      secondStore.appendEvents({
         workflowId: "workflow-1",
         runId: "run-1",
         events: [{ sequence: 1, workflowId: "workflow-1", runId: "run-1", type: "paused", at: 2 }],
       }),
     ]);
 
-    expect(await store.readEvents("workflow-1", "run-1")).toEqual([
+    expect(await firstStore.readEvents("workflow-1", "run-1")).toEqual([
       { sequence: 0, workflowId: "workflow-1", runId: "run-1", type: "started", at: 1 },
       { sequence: 1, workflowId: "workflow-1", runId: "run-1", type: "paused", at: 2 },
     ]);
@@ -243,7 +244,9 @@ describe("workflow-v2 file store", () => {
     await store.transitionOperation({ workflowId: "workflow-1", runId: "run-1", operationId: "operation-1", state: "unknown", updatedAt: 4, error: "Bearer visible" });
     await expect(store.transitionOperation({ workflowId: "workflow-1", runId: "run-1", operationId: "operation-1", state: "applied", updatedAt: 5 })).rejects.toThrow("cannot transition");
     expect((await store.readRunState("workflow-1", "run-1"))?.transaction).toMatchObject({ status: "recovery_required", operationCount: 1, unknownOperationCount: 1, irreversibleOperationCount: 1 });
-    const resolved = await store.resolveUnknownOperation({ workflowId: "workflow-1", runId: "run-1", operationId: "operation-1", verifiedState: "applied", actor: "operator", reason: "Verified by remote receipt", evidence: { "X-Api-Key": "must-not-persist" }, updatedAt: 6 });
+    await expect(store.resolveUnknownOperation({ workflowId: "workflow-1", runId: "run-1", operationId: "operation-1", verifiedState: "applied", actor: "a".repeat(257), reason: "Verified by remote receipt", updatedAt: 6 })).rejects.toThrow("bounded actor and reason");
+    await expect(store.resolveUnknownOperation({ workflowId: "workflow-1", runId: "run-1", operationId: "operation-1", verifiedState: "applied", actor: "operator", reason: "r".repeat(2_001), updatedAt: 6 })).rejects.toThrow("bounded actor and reason");
+    const resolved = await store.resolveUnknownOperation({ workflowId: "workflow-1", runId: "run-1", operationId: "operation-1", verifiedState: "applied", actor: `${" ".repeat(300)}operator`, reason: `Verified by remote receipt${" ".repeat(2_100)}`, evidence: { "X-Api-Key": "must-not-persist" }, updatedAt: 6 });
     expect(resolved).toMatchObject({ state: "applied", receipt: { recoveryResolution: { actor: "operator", reason: "Verified by remote receipt" } } });
     expect(JSON.stringify(resolved)).not.toContain("must-not-persist");
     expect((await store.readRunState("workflow-1", "run-1"))?.transaction).toMatchObject({ status: "waiting_for_user", unknownOperationCount: 0 });
@@ -278,6 +281,17 @@ describe("workflow-v2 file store", () => {
     await expect(store.persistCommitPlan(structuredClone(plan))).resolves.toEqual(plan);
     await expect(store.persistCommitPlan({ ...plan, planDigest: "mutated" })).rejects.toThrow("immutable");
     await expect(store.readCommitPlan("workflow-1", "run-1")).resolves.toEqual(plan);
+
+    const nextPlan: WorkflowCommitPlan = {
+      ...plan,
+      commitPlanId: "commit-plan-2",
+      planDigest: "digest-2",
+      createdAt: 3,
+      steps: [{ stepId: "workspace-2", order: 0, kind: "workspace", prerequisites: [], evidenceDigest: "workspace-digest-2" }],
+    };
+    await expect(store.persistCommitPlan(nextPlan)).resolves.toEqual(nextPlan);
+    await expect(store.readCommitPlan("workflow-1", "run-1")).resolves.toEqual(nextPlan);
+    await expect(store.persistCommitPlan({ ...plan, planDigest: "mutated-again" })).rejects.toThrow("immutable");
   });
 
   test("reloads authoritative transaction counters before persisting a later checkpoint", async () => {

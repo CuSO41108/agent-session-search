@@ -25,13 +25,14 @@ function operation(input: { id: string; reversible: boolean; state?: WorkflowOpe
 
 function fixture(input: { conflicts?: string[]; compensationFails?: boolean } = {}) {
   let commitPlan: WorkflowCommitPlan | undefined;
+  let workspaceEvidenceDigest = "workspace-digest-1";
   const operations = [operation({ id: "irreversible", reversible: false }), operation({ id: "reversible", reversible: true })];
   const store = {
     readOperations: async () => structuredClone(operations),
-    inspectWorkspaceTransaction: async () => ({ created: ["result.txt"], modified: [], deleted: [] }),
+    inspectWorkspaceTransaction: async () => ({ created: ["result.txt"], modified: [], deleted: [], evidenceDigest: workspaceEvidenceDigest }),
     persistCommitPlan: async (plan: WorkflowCommitPlan) => { commitPlan = structuredClone(plan); return structuredClone(plan); },
     readCommitPlan: async () => commitPlan ? structuredClone(commitPlan) : undefined,
-    commitWorkspaceTransaction: async () => ({ applied: input.conflicts?.length ? [] : ["result.txt"], conflicts: input.conflicts ?? [] }),
+    commitWorkspaceTransaction: vi.fn(async () => ({ applied: input.conflicts?.length ? [] : ["result.txt"], conflicts: input.conflicts ?? [] })),
   };
   const broker = {
     applyPrepared: vi.fn(async (_input: { operationId: string }) => ({ ok: true })),
@@ -40,7 +41,7 @@ function fixture(input: { conflicts?: string[]; compensationFails?: boolean } = 
       ? { compensated: [], skipped: [], failed: { operationId: "reversible", error: "compensation failed" } }
       : { compensated: ["reversible"], skipped: [] }),
   };
-  return { store, broker, operations, getPlan: () => commitPlan };
+  return { store, broker, operations, getPlan: () => commitPlan, changeWorkspaceEvidence: () => { workspaceEvidenceDigest = "workspace-digest-2"; } };
 }
 
 describe("WorkflowV2CommitCoordinator", () => {
@@ -56,21 +57,22 @@ describe("WorkflowV2CommitCoordinator", () => {
     expect(value.broker.applyPrepared.mock.calls.map((call) => call[0].operationId)).toEqual(["reversible", "irreversible"]);
   });
 
-  test("compensates reversible external operations and preserves workspace on conflict", async () => {
+  test("preserves applied reversible operations while a preflight workspace conflict awaits resolution", async () => {
     const value = fixture({ conflicts: ["result.txt"] });
     const coordinator = new WorkflowV2CommitCoordinator(value.store as never, value.broker as never);
     await coordinator.createPlan({ workflowId: "workflow-1", runId: "run-1", transactionId: "transaction-1", operationIds: ["reversible"], includeWorkspace: true, now: 10 });
 
     await expect(coordinator.commit({ workflowId: "workflow-1", runId: "run-1" })).resolves.toMatchObject({ status: "waiting_for_user", conflicts: ["result.txt"] });
-    expect(value.broker.compensateRun).toHaveBeenCalledWith(expect.objectContaining({ operationIds: ["reversible"] }));
+    expect(value.broker.compensateRun).not.toHaveBeenCalled();
   });
 
-  test("reports recovery required when conflict compensation fails", async () => {
+  test("does not run compensation for a workspace conflict that has not applied files", async () => {
     const value = fixture({ conflicts: ["result.txt"], compensationFails: true });
     const coordinator = new WorkflowV2CommitCoordinator(value.store as never, value.broker as never);
     await coordinator.createPlan({ workflowId: "workflow-1", runId: "run-1", transactionId: "transaction-1", operationIds: ["reversible"], includeWorkspace: true, now: 10 });
 
-    await expect(coordinator.commit({ workflowId: "workflow-1", runId: "run-1" })).resolves.toMatchObject({ status: "recovery_required", error: "compensation failed" });
+    await expect(coordinator.commit({ workflowId: "workflow-1", runId: "run-1" })).resolves.toMatchObject({ status: "waiting_for_user", conflicts: ["result.txt"] });
+    expect(value.broker.compensateRun).not.toHaveBeenCalled();
   });
 
   test("inspects an uncertain external step and resumes without applying it twice", async () => {
@@ -94,4 +96,30 @@ describe("WorkflowV2CommitCoordinator", () => {
     value.broker.applyPrepared.mockRejectedValueOnce(new Error("Workflow operation has unknown remote state."));
     await expect(coordinator.commit({ workflowId: "workflow-1", runId: "run-1" })).resolves.toMatchObject({ status: "recovery_required" });
   });
+
+  test("refuses to apply an approved plan after same-path workspace content changes", async () => {
+    const value = fixture();
+    const coordinator = new WorkflowV2CommitCoordinator(value.store as never, value.broker as never);
+    const preview = await coordinator.previewPlan({ workflowId: "workflow-1", runId: "run-1", transactionId: "transaction-1", operationIds: ["irreversible"], includeWorkspace: true, now: 10 });
+    await coordinator.createPlan({ workflowId: "workflow-1", runId: "run-1", transactionId: "transaction-1", operationIds: ["irreversible"], includeWorkspace: true, approval: { actor: "operator", approvedAt: 11, evidenceDigest: preview.planDigest }, now: 10 });
+    value.changeWorkspaceEvidence();
+
+    await expect(coordinator.commit({ workflowId: "workflow-1", runId: "run-1" })).rejects.toThrow("workspace content changed");
+    expect(value.broker.applyPrepared).not.toHaveBeenCalled();
+  });
+
+  test("rechecks workspace content after reversible external steps and compensates on drift", async () => {
+    const value = fixture();
+    const coordinator = new WorkflowV2CommitCoordinator(value.store as never, value.broker as never);
+    await coordinator.createPlan({ workflowId: "workflow-1", runId: "run-1", transactionId: "transaction-1", operationIds: ["reversible"], includeWorkspace: true, now: 10 });
+    value.broker.applyPrepared.mockImplementationOnce(async () => { value.changeWorkspaceEvidence(); return { ok: true }; });
+
+    await expect(coordinator.commit({ workflowId: "workflow-1", runId: "run-1" })).resolves.toMatchObject({
+      status: "rolled_back",
+      error: expect.stringContaining("workspace content changed"),
+    });
+    expect(value.store.commitWorkspaceTransaction).not.toHaveBeenCalled();
+    expect(value.broker.compensateRun).toHaveBeenCalledWith(expect.objectContaining({ operationIds: ["reversible"] }));
+  });
+
 });

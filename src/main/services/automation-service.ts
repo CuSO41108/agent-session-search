@@ -173,6 +173,7 @@ export type WorkflowAutomationModule = Pick<
   | "resolveWorkflowV2Recovery"
   | "refreshWorkflowV2Recovery"
   | "resolveWorkflowV2Conflict"
+  | "resolveWorkflowV2UnknownOperation"
   | "cleanupWorkflowV2RunMaterials"
   | "sendWorkflowNodeMessage"
   | "completeWorkflowNodeConversation"
