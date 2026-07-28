@@ -117,12 +117,12 @@ describe("skill sync", () => {
     expect(skillSyncFingerprint(localSkill({ directoryPath: "/tmp/.codex/skills/team/review-code" }))).not.toBe(expected);
     expect(skillSyncFingerprint(localSkill({
       source: "agent-recall-v2",
-      rootPath: "/tmp/agent-recall/skills",
-      directoryPath: "/tmp/agent-recall/skills/review-code",
-    }))).toBe(createHash("sha256").update("agent-recall/review-code").digest("hex"));
+      rootPath: "/tmp/agent-recall-v2/skills",
+      directoryPath: "/tmp/agent-recall-v2/skills/review-code",
+    }))).toBe(createHash("sha256").update("agent-recall-v2/review-code").digest("hex"));
   });
 
-  it("preserves the AgentRecall portable scope in remote versions", async () => {
+  it("preserves the agent-recall-v2 portable scope in remote versions", async () => {
     const client = new SupabaseSkillSyncClient({
       url: "https://example.supabase.co",
       anonKey: "anon",

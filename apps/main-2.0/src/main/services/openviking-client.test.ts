@@ -247,7 +247,7 @@ describe("OpenVikingGateway", () => {
     expect(requests).toHaveLength(1);
     expect(requests[0]).toMatchObject({
       method: "DELETE",
-      path: "/api/v1/admin/accounts/agent-recall/users/workspace_abcd",
+      path: "/api/v1/admin/accounts/agent-recall-v2/users/workspace_abcd",
     });
     expect(requests[0].headers["x-api-key"]).toBe("root-key");
   });
@@ -294,7 +294,7 @@ describe("OpenVikingGateway", () => {
         result: { user_key: "regenerated-workspace-key" },
       });
     }
-    if (url.pathname === "/api/v1/admin/accounts/agent-recall/users/workspace_abcd" && request.method === "DELETE") {
+    if (url.pathname === "/api/v1/admin/accounts/agent-recall-v2/users/workspace_abcd" && request.method === "DELETE") {
       return sendJson(response, 200, { status: "ok", result: {} });
     }
     if (url.pathname === "/api/v1/sessions/session-1" && request.method === "GET") {
