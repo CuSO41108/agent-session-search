@@ -44,23 +44,24 @@ jobs:
             exit 0
           fi
 
-          v1_notes=()
           for note in "${notes[@]}"; do
             node scripts/release-notes.mjs check-file "$note"
-            target="$(node scripts/release-notes.mjs target "$note")"
-            if [ "$target" = "v1" ] || [ "$target" = "both" ]; then
-              v1_notes+=("$note")
-            fi
+            node scripts/release-notes.mjs target "$note" >/dev/null
           done
-          if [ "${#v1_notes[@]}" -eq 0 ]; then
-            echo "No unreleased AgentRecall 1.0 changes; skipping stable application release."
-            echo "publish=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          note_file="$RUNNER_TEMP/agent-recall-release-note.md"
-          node scripts/release-notes.mjs combine --target v1 "${v1_notes[@]}" > "$note_file"
+
+          note_file="$RUNNER_TEMP/agent-recall-combined-note.md"
+          v1_note_file="$RUNNER_TEMP/agent-recall-v1-note.md"
+          v2_note_file="$RUNNER_TEMP/agent-recall-v2-note.md"
+          release_note_file="$RUNNER_TEMP/agent-recall-release-note.md"
+          node scripts/release-notes.mjs combine "${notes[@]}" > "$note_file"
+          node scripts/release-notes.mjs combine --target v1 --include-empty "${notes[@]}" > "$v1_note_file"
+          node scripts/release-notes.mjs combine --target v2 --include-empty "${notes[@]}" > "$v2_note_file"
+          node scripts/release-notes.mjs dual "${notes[@]}" > "$release_note_file"
           echo "publish=true" >> "$GITHUB_OUTPUT"
           echo "note_file=$note_file" >> "$GITHUB_OUTPUT"
+          echo "v1_note_file=$v1_note_file" >> "$GITHUB_OUTPUT"
+          echo "v2_note_file=$v2_note_file" >> "$GITHUB_OUTPUT"
+          echo "release_note_file=$release_note_file" >> "$GITHUB_OUTPUT"
 
       - name: Compute idempotent release version
         if: steps.pending.outputs.publish == 'true'
@@ -74,14 +75,12 @@ jobs:
 
       - name: Install dependencies
         if: steps.pending.outputs.publish == 'true' && steps.version.outputs.release_required == 'true'
-        working-directory: apps/main-1.0
         run: |
-          npm ci --ignore-scripts
-          npm run build:mcp
+          npm ci
+          npm run setup
 
       - name: Test and build
         if: steps.pending.outputs.publish == 'true' && steps.version.outputs.release_required == 'true'
-        working-directory: apps/main-1.0
         run: |
           npm test
           npm run typecheck
@@ -91,24 +90,43 @@ jobs:
         if: steps.pending.outputs.publish == 'true' && steps.version.outputs.release_required == 'true'
         id: assets
         env:
-          NOTE_FILE: ${{ steps.pending.outputs.note_file }}
+          V1_NOTE_FILE: ${{ steps.pending.outputs.v1_note_file }}
+          V2_NOTE_FILE: ${{ steps.pending.outputs.v2_note_file }}
+          RELEASE_NOTE_FILE: ${{ steps.pending.outputs.release_note_file }}
           VERSION: ${{ steps.version.outputs.version }}
-        working-directory: apps/main-1.0
         run: |
-          mkdir -p "$GITHUB_WORKSPACE/release"
-          package_file="$(node scripts/pack-release.mjs --pack-destination "$GITHUB_WORKSPACE/release")"
-          node scripts/create-release-assets.mjs \
-            --note "$NOTE_FILE" \
+          mkdir -p release
+          npm --prefix apps/main-2.0 version "$VERSION" --no-git-tag-version
+
+          v1_package_file="$(cd apps/main-1.0 && node scripts/pack-release.mjs --pack-destination "$GITHUB_WORKSPACE/release")"
+          node apps/main-1.0/scripts/create-release-assets.mjs \
+            --note "$V1_NOTE_FILE" \
             --version "$VERSION" \
-            --package "$GITHUB_WORKSPACE/release/$package_file" \
+            --package "$GITHUB_WORKSPACE/release/$v1_package_file" \
             --repository "$GITHUB_REPOSITORY" \
             --output "$GITHUB_WORKSPACE/release"
-          node scripts/create-release-assets.mjs \
+          node apps/main-1.0/scripts/create-release-assets.mjs \
             --validate \
             --version "$VERSION" \
             --repository "$GITHUB_REPOSITORY" \
             --output "$GITHUB_WORKSPACE/release"
-          echo "package_file=$package_file" >> "$GITHUB_OUTPUT"
+
+          v2_package_file="$(cd apps/main-2.0 && node scripts/pack-release.mjs --pack-destination "$GITHUB_WORKSPACE/release")"
+          node apps/main-2.0/scripts/create-release-assets.mjs \
+            --note "$V2_NOTE_FILE" \
+            --version "$VERSION" \
+            --package "$GITHUB_WORKSPACE/release/$v2_package_file" \
+            --repository "$GITHUB_REPOSITORY" \
+            --output "$GITHUB_WORKSPACE/release"
+          node apps/main-2.0/scripts/create-release-assets.mjs \
+            --validate \
+            --version "$VERSION" \
+            --repository "$GITHUB_REPOSITORY" \
+            --output "$GITHUB_WORKSPACE/release"
+
+          cp "$RELEASE_NOTE_FILE" release/release-notes.md
+          echo "v1_package_file=$v1_package_file" >> "$GITHUB_OUTPUT"
+          echo "v2_package_file=$v2_package_file" >> "$GITHUB_OUTPUT"
 
       - name: Create tag and GitHub Release
         if: steps.pending.outputs.publish == 'true' && steps.version.outputs.release_required == 'true'
@@ -129,11 +147,11 @@ jobs:
               echo "Release $TAG already exists and is published; refusing to overwrite it."
               exit 1
             fi
-            gh release edit "$TAG" --title "AgentRecall $TAG" --notes-file release/release-notes.md
+            gh release edit "$TAG" --title "AgentRecall $TAG (V1 + V2)" --notes-file release/release-notes.md
           else
-            gh release create "$TAG" --draft --verify-tag --title "AgentRecall $TAG" --notes-file release/release-notes.md
+            gh release create "$TAG" --draft --verify-tag --title "AgentRecall $TAG (V1 + V2)" --notes-file release/release-notes.md
           fi
-          gh release upload "$TAG" release/*.tgz release/*.sha256 release/update.json --clobber
+          gh release upload "$TAG" release/*.tgz release/*.sha256 release/update*.json --clobber
           verify_directory="$(mktemp -d)"
           gh release download "$TAG" \
             --pattern "agent-recall-${VERSION}.tgz" \
@@ -141,8 +159,18 @@ jobs:
             --pattern "agent-recall.tgz" \
             --pattern "agent-recall.tgz.sha256" \
             --pattern "update.json" \
+            --pattern "agent-recall-v2-${VERSION}.tgz" \
+            --pattern "agent-recall-v2-${VERSION}.tgz.sha256" \
+            --pattern "agent-recall-v2.tgz" \
+            --pattern "agent-recall-v2.tgz.sha256" \
+            --pattern "update-v2.json" \
             --dir "$verify_directory"
           node apps/main-1.0/scripts/create-release-assets.mjs \
+            --validate \
+            --version "$VERSION" \
+            --repository "$GITHUB_REPOSITORY" \
+            --output "$verify_directory"
+          node apps/main-2.0/scripts/create-release-assets.mjs \
             --validate \
             --version "$VERSION" \
             --repository "$GITHUB_REPOSITORY" \

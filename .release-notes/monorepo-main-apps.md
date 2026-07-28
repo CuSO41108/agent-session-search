@@ -1,6 +1,6 @@
 # agent-recall-v2 独立运行与 Chat 修复
 
-<!-- release-target: both -->
+<!-- release-target: v2 -->
 
 ## Bug 修复
 
