@@ -9,8 +9,8 @@
   },
   "scripts": {
     "setup": "npm run setup:v1 && npm run setup:v2",
-    "setup:v1": "npm ci --prefix apps/main-1.0",
-    "setup:v2": "npm ci --prefix apps/main-2.0",
+    "setup:v1": "npm ci --ignore-scripts --prefix apps/main-1.0 && npm --prefix apps/main-1.0 run build:mcp",
+    "setup:v2": "npm ci --ignore-scripts --prefix apps/main-2.0 && npm --prefix apps/main-2.0 run build:mcp",
     "dev": "npm run dev:v1",
     "dev:v1": "npm --prefix apps/main-1.0 run dev",
     "dev:v2": "npm --prefix apps/main-2.0 run dev",

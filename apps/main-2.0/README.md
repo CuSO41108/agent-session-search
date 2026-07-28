@@ -1,10 +1,10 @@
 <p align="center">
-  <img src="./assets/logo.png" alt="AgentRecall Logo" width="860">
+  <img src="./assets/logo.png" alt="agent-recall-v2 Logo" width="860">
 </p>
 
-<h1 align="center">AgentRecall</h1>
+<h1 align="center">agent-recall-v2</h1>
 
-<p align="center">本地桌面工具 · 搜索、查看、恢复 AI Coding Agent 会话</p>
+<p align="center">AgentRecall 的独立 V2 开发版</p>
 
 <p align="center">
   简体中文 ｜ <a href="./docs/README.en.md">English</a>
@@ -20,41 +20,21 @@
 </p>
 
 <p align="center">
-  <img src="./assets/show.png" alt="AgentRecall 界面预览" width="860">
+  <img src="./assets/show.png" alt="agent-recall-v2 界面预览" width="860">
 </p>
 
-AgentRecall 帮你把分散在不同 AI Coding Agent 里的本地会话找回来：统一索引、搜索、查看上下文，并在需要时继续或迁移会话。它优先面向个人本地使用，支持 macOS 与 Windows。
+`agent-recall-v2` 是仓库中的独立开发版应用。它和 AgentRecall 1.0 拥有不同的包名、命令、应用数据目录、数据库、更新缓存与 MCP 标识，可以同时运行；当前不读取或导入 V1 的 SQLite 数据。
 
 ## 快速开始
 
-准备 **Node.js 22.13+**，安装最新 Release：
+准备 **Node.js 22.13+**，在仓库根目录运行：
 
 ```bash
-npm install -g https://github.com/zszz3/AgentRecall/releases/latest/download/agent-recall.tgz
-agent-recall
+npm run setup:v2
+npm run dev:v2
 ```
 
-国内网络可使用 npm 与 Electron 镜像：
-
-```bash
-ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/ \
-npm install -g https://github.com/zszz3/AgentRecall/releases/latest/download/agent-recall.tgz \
-  --registry=https://registry.npmmirror.com
-```
-
-| 系统 | 启动命令 | 默认快捷键 |
-| --- | --- | --- |
-| macOS | `agent-recall` | `⌥ Option + Space` |
-| Windows | `agent-recall` | `Ctrl + Alt + Space` |
-
-启动后应用会常驻菜单栏或系统托盘。设置、主题、语言和快捷键都可以在应用内调整。macOS 上执行 `agent-recall install-app` 可以生成本地 `agent-recall-v2.app`，之后直接从 Launchpad / Spotlight / Dock 打开。完整安装、更新、回滚和卸载说明见 [Install.md](./Install.md)。
-
-常用更新命令：
-
-```bash
-agent-recall --check-update
-agent-recall --update
-```
+`agent-recall-v2` 目前不复用 AgentRecall 1.0 的 Release 安装包或更新通道。完整的本地开发和数据边界说明见 [Install.md](./Install.md)。
 
 ## 核心能力
 
@@ -90,11 +70,11 @@ agent-recall --update
 
 ## MCP 工具
 
-应用内置一个 stdio MCP 服务器（`agent-recall-mcp`），让 Claude Code / Codex / CodeBuddy 在对话里直接搜索、读取历史会话，并管理标签、收藏、可见性，以及跨 Agent 迁移会话。应用会自动安装并管理本地数据运行时，不需要用户另外安装 PostgreSQL。首次打开后会写入权限受限的连接指针（`~/.agent-recall/database-url`），MCP 服务器据此连接同一份数据；高级部署也可用 `AGENT_RECALL_DATABASE_URL` 环境变量覆盖。
+应用内置一个 stdio MCP 服务器（`agent-recall-v2-mcp`），让 Claude Code / Codex / CodeBuddy 在对话里直接搜索、读取历史会话，并管理标签、收藏、可见性，以及跨 Agent 迁移会话。应用会自动安装并管理本地数据运行时，不需要用户另外安装 PostgreSQL。首次打开后会写入权限受限的连接指针（`~/.agent-recall-v2/database-url`），MCP 服务器据此连接同一份数据；高级部署也可用 `AGENT_RECALL_DATABASE_URL` 环境变量覆盖。
 
 ## Skills 与数字资产
 
-AgentRecall 也提供轻量的 Skills、Rules 和 Memories 管理能力：
+`agent-recall-v2` 也提供轻量的 Skills、Rules 和 Memories 管理能力：
 
 - 查看、筛选和管理本机 Codex / Claude Code Skills；
 - 使用 Supabase 在多台机器间同步用户 Skills；
@@ -107,25 +87,25 @@ AgentRecall 也提供轻量的 Skills、Rules 和 Memories 管理能力：
 ```bash
 git clone https://github.com/zszz3/AgentRecall.git
 cd AgentRecall
-npm ci
-npm run dev
+npm run setup:v2
+npm run dev:v2
 ```
 
 常用命令：
 
 | 命令 | 用途 |
 | --- | --- |
-| `npm run dev` | 启动 Electron 开发版 |
-| `npm test` | 运行自动化测试 |
-| `npm run typecheck` | 检查 TypeScript 类型 |
-| `npm run build` | 生成生产构建 |
+| `npm run dev:v2` | 启动 `agent-recall-v2` |
+| `npm run test:v2` | 运行 V2 自动化测试 |
+| `npm run typecheck` | 检查 V1 和 V2 的 TypeScript 类型 |
+| `npm run build` | 构建 V1 和 V2 |
 | `npm run release-note:check` | 检查当前分支的用户更新说明 |
 
 验证正式安装包可运行：
 
 ```bash
 npm run build
-npm run package:smoke
+npm run package:smoke:v2
 ```
 
 更多安装和故障排查见 [Install.md](./Install.md)。

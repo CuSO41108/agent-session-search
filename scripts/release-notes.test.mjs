@@ -89,23 +89,30 @@ test("workflows require branch notes and publish accumulated changes every day o
   assert.match(noteWorkflow, /pull_request:/);
   assert.match(noteWorkflow, /release-notes\.mjs check-range/);
   assert.match(qualityWorkflow, /os:\s*\[ubuntu-latest, macos-latest, windows-latest\]/);
+  assert.match(qualityWorkflow, /npm run setup/);
   assert.match(qualityWorkflow, /- name: Test\s+if: runner\.os != 'Windows'\s+run: npm test/);
   assert.match(qualityWorkflow, /- name: Test update and install scripts \(Windows\)\s+if: runner\.os == 'Windows'\s+run: npm run test:scripts/);
   assert.match(qualityWorkflow, /- name: Typecheck\s+run: npm run typecheck/);
   assert.match(qualityWorkflow, /- name: Build\s+run: npm run build/);
+  assert.match(qualityWorkflow, /run: npm run package:smoke\s/);
+  assert.match(qualityWorkflow, /run: npm run package:smoke:v2/);
   assert.match(releaseWorkflow, /schedule:[\s\S]*cron:\s*["']0 2 \* \* \*["']/);
   assert.match(releaseWorkflow, /workflow_dispatch:/);
   assert.doesNotMatch(releaseWorkflow, /^\s{2}push:/m);
   assert.match(releaseWorkflow, /git describe --tags --abbrev=0 --match 'v\[0-9\]\*'/);
   assert.match(releaseWorkflow, /git diff --name-only --diff-filter=A "\$latest_tag" "\$RELEASE_SHA"/);
   assert.match(releaseWorkflow, /No unreleased user-facing changes; skipping application release/);
-  assert.match(releaseWorkflow, /release-notes\.mjs combine/);
+  assert.match(releaseWorkflow, /release-notes\.mjs target/);
+  assert.match(releaseWorkflow, /release-notes\.mjs combine --target v1/);
   assert.match(releaseWorkflow, /cancel-in-progress:\s*false/);
+  assert.match(releaseWorkflow, /working-directory: apps\/main-1\.0/);
   assert.match(releaseWorkflow, /npm test[\s\S]*npm run typecheck[\s\S]*npm run build/);
+  assert.doesNotMatch(releaseWorkflow, /apps\/main-2\.0/);
   assert.match(releaseWorkflow, /gh release upload/);
   assert.match(releaseWorkflow, /gh release view "\$TAG" --json isDraft --jq '\.isDraft'/);
   assert.match(releaseWorkflow, /already exists and is published; refusing to overwrite it/);
   assert.match(releaseWorkflow, /node scripts\/compute-release-version\.mjs/);
+  assert.match(releaseWorkflow, /node apps\/main-1\.0\/scripts\/create-release-assets\.mjs/);
   const releaseRequiredGuards = releaseWorkflow.match(
     /if: steps\.pending\.outputs\.publish == 'true' && steps\.version\.outputs\.release_required == 'true'/g,
   );
