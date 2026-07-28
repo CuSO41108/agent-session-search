@@ -16,6 +16,12 @@ describe("OpenViking main-process wiring", () => {
     expect(mainSource).toContain("developmentFallback");
     expect(mainSource).toContain("allowLocalRuntime: !releaseUpdateRuntime");
     expect(mainSource).toContain(
+      'const releaseUpdateRuntime = process.env.AGENT_RECALL_RELEASE_BUILD === "1"',
+    );
+    expect(mainSource).toContain(
+      "developmentFallback: releaseUpdateRuntime",
+    );
+    expect(mainSource).toContain(
       'codexAuthBootstrapPath: codexAuthPath(process.env, app.getPath("home"))',
     );
     expect(mainSource.indexOf("store = new SessionStore")).toBeLessThan(
