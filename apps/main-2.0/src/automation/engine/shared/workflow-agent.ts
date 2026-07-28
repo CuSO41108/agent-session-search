@@ -21,6 +21,15 @@ export const WORKFLOW_EXECUTION_MODE_POLICY = [
   "Do not use memory, skills, or repository history to override these runtime rules. Current source=user script input and inline TypeScript execution are supported.",
 ] as const;
 
+export const WORKFLOW_SCRIPT_GOVERNANCE_POLICY = [
+  "Every script node in a governed workflow (transactionPolicy.defaultMode is strict_atomic or controlled) must declare script.effectMode, script.idempotency, and script.stderrPolicy inside the script object; executionModeRationale and managerRisk do not replace these fields.",
+  "Set effectMode=pure only for in-memory work with no workspace or external interaction, workspace_only for governed workspace changes, and brokered_external for HTTP, message, or other external operations. Never describe external access as read-only while omitting effectMode.",
+  "In strict_atomic mode, a script that declares network_read, network_write, external_read, external_write, or any other non-workspace capability must use effectMode=brokered_external. A pure or workspace_only script with any of those capabilities is invalid and cannot run in workspace isolation.",
+  "Set idempotency=safe_retry only when repeating the exact script is safe, keyed when the external adapter uses an idempotency key, and non_idempotent otherwise. Set stderrPolicy explicitly to ignore, warn, or fail according to the node contract.",
+  "A strict_atomic brokered_external node must use an available declarative Broker adapter and declare script.compensationAdapter for that adapter; do not generate arbitrary network code that bypasses the Broker.",
+  "The current HTTP Broker records request receipts but does not expose remote response bodies as script outputs. Therefore do not create a strict_atomic script node for web research, content retrieval, or any network read whose response must feed a downstream node. Use an LLM research node with available web tools instead; if the user explicitly requires both a script research node and strict_atomic mode, explain that this combination is unsupported and ask which constraint may change before calling workflow_create.",
+] as const;
+
 export const WORKFLOW_V2_DEFINITION_TEMPLATE = `{
   "workflowId": "<temporary-id>",
   "graphVersion": 1,
@@ -39,6 +48,9 @@ export const WORKFLOW_V2_DEFINITION_TEMPLATE = `{
         "parameters": [{ "key": "text", "label": "Text", "location": "stdin", "valueType": "string", "source": "user", "required": true, "description": "Text to return unchanged." }],
         "capabilities": [],
         "managerRisk": { "level": "safe", "rationale": "Returns the declared user parameter unchanged without external side effects." },
+        "effectMode": "pure",
+        "idempotency": "safe_retry",
+        "stderrPolicy": "warn",
         "outputSchema": { "type": "object", "required": ["echoed"] }
       },
       "outputFields": [{ "key": "echoed", "required": true }]
@@ -73,13 +85,14 @@ export function buildWorkflowAgentPrompt({ workflowId, objective }: WorkflowAgen
     "- The definition must be a valid DAG using WorkflowV2Definition nodes and edges.",
     "- Do not create start/end placeholder nodes. Only create executable LLM or script nodes.",
     ...WORKFLOW_EXECUTION_MODE_POLICY.map((rule) => `- ${rule}`),
+    ...WORKFLOW_SCRIPT_GOVERNANCE_POLICY.map((rule) => `- ${rule}`),
     "- The runtime pauses script nodes with missing source=user parameters, renders typed inputs, and resumes the same node after submission.",
     "- Only add an interactive LLM node when collecting the input itself requires natural-language reasoning, clarification, iteration, choice, or confirmation.",
     "- Never classify an input-dependent node as one-shot because the expected question seems simple.",
     "- Do not add an interactive LLM node merely to collect typed parameters for a script. A deterministic user-input transformation should normally be one script node with source=user parameters.",
     "- Do not invent a choice between strict script behavior and immediate executability when the runtime already supports typed script input. Build the directly executable script workflow.",
     "- Do not use an LLM node for copying, echoing, renaming, mapping, selecting, or serializing already available values unless reasoning is genuinely required.",
-    "- Each LLM node requires prompt and outputFields; each script node requires executable source, typed parameters, declared capabilities, Manager risk with rationale, and outputFields.",
+    "- Each LLM node requires prompt and outputFields; each script node requires executable source, typed parameters, declared capabilities, Manager risk with rationale, effectMode, idempotency, stderrPolicy, and outputFields.",
     "- Every script input must be declared exactly once in parameters with its location, valueType, source, required flag, and source binding. For a finite set of permitted scalar values, declare enum so the request editor can render a select control and the runtime can validate the value. Never hide required inputs inside prompts, code literals, or ambient state.",
     "- When a script parameter consumes a direct upstream node output, declare source=upstream, set upstreamNodeId to that direct predecessor node id, and set upstreamOutputKey to an exact key declared by the predecessor's outputFields. Do not duplicate an available upstream value as source=user.",
     "- For every LLM-to-script handoff, make the LLM prompt populate the exact outputFields key consumed by the script and declare the output field valueType. The output valueType must match every downstream parameter bound to that output. Downstream bindings read outputs[upstreamOutputKey], never the LLM summary.",

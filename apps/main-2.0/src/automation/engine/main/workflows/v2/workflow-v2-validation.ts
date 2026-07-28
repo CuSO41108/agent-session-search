@@ -22,7 +22,7 @@ export function validateWorkflowV2NodeOutput(
   if (input.node.execModel === "llm") {
     return validateLlmNodeOutput(input.node, input.output, input.attempt);
   }
-  return validateScriptNodeOutput(input.node, input.output);
+  return validateScriptNodeOutput(input.node, input.output, input.attempt);
 }
 
 function validateLlmNodeOutput(
@@ -49,9 +49,13 @@ function validateLlmNodeOutput(
 function validateScriptNodeOutput(
   node: WorkflowV2ScriptNode,
   output: WorkflowV2WorkerOutput,
+  attempt: number,
 ): WorkflowV2NodeValidationResult {
   const failures = collectStructuralFailures(node, output);
   if (failures.reasons.length === 0) return passResult();
+  if (node.onError === "retry" && attempt <= (node.maxRetry ?? 0)) {
+    return { outcome: "retry", ...failures };
+  }
   return {
     outcome: node.onError === "ask_human" ? "ask_human" : "fail",
     ...failures,
@@ -74,7 +78,60 @@ function collectStructuralFailures(
   if (missingOutputFields.length > 0) {
     reasons.push(`Missing required output fields: ${missingOutputFields.join(", ")}.`);
   }
+  for (const field of node.outputFields) {
+    if (!Object.hasOwn(outputs, field.key)) continue;
+    const value = outputs[field.key];
+    if (value === null || value === undefined) {
+      reasons.push(`Output field ${field.key} must not be null or undefined.`);
+      continue;
+    }
+    if (field.valueType && !matchesOutputType(value, field.valueType)) {
+      reasons.push(`Output field ${field.key} must match value type ${field.valueType}.`);
+    }
+  }
+  if (node.execModel === "script" && node.script.outputSchema) {
+    for (const key of node.script.outputSchema.required ?? []) {
+      if (!Object.hasOwn(outputs, key) || outputs[key] === null || outputs[key] === undefined) reasons.push(`Script output schema requires non-null field ${key}.`);
+    }
+    for (const [key, property] of Object.entries(node.script.outputSchema.properties ?? {})) {
+      const value = outputs[key];
+      if (value === undefined) continue;
+      if (value === null) {
+        if (!property.nullable && property.type !== "null") reasons.push(`Script output field ${key} must not be null.`);
+        continue;
+      }
+      if (!matchesJsonSchemaType(value, property.type)) reasons.push(`Script output field ${key} must be ${property.type}.`);
+      else if (property.type === "array" && property.items && !(value as unknown[]).every((item) => matchesJsonSchemaType(item, property.items!.type))) reasons.push(`Script output field ${key} contains an invalid array item.`);
+    }
+  }
   return { reasons, missingOutputFields };
+}
+
+function matchesOutputType(value: unknown, valueType: NonNullable<WorkflowV2Node["outputFields"][number]["valueType"]>): boolean {
+  if (valueType === "number") return typeof value === "number" && Number.isFinite(value);
+  if (valueType === "boolean") return typeof value === "boolean";
+  if (valueType === "json") return isFiniteJsonValue(value, new WeakSet<object>());
+  return typeof value === "string";
+}
+
+function isFiniteJsonValue(value: unknown, seen: WeakSet<object>): boolean {
+  if (value === null || typeof value === "string" || typeof value === "boolean") return true;
+  if (typeof value === "number") return Number.isFinite(value);
+  if (typeof value !== "object" || seen.has(value)) return false;
+  seen.add(value);
+  const valid = Array.isArray(value)
+    ? value.every((item) => isFiniteJsonValue(item, seen))
+    : Object.values(value as Record<string, unknown>).every((item) => isFiniteJsonValue(item, seen));
+  seen.delete(value);
+  return valid;
+}
+
+function matchesJsonSchemaType(value: unknown, type: "string" | "number" | "boolean" | "object" | "array" | "null"): boolean {
+  if (type === "null") return value === null;
+  if (type === "array") return Array.isArray(value);
+  if (type === "object") return typeof value === "object" && value !== null && !Array.isArray(value);
+  if (type === "number") return typeof value === "number" && Number.isFinite(value);
+  return typeof value === type;
 }
 
 function passResult(): WorkflowV2NodeValidationResult {

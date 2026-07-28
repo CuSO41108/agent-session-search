@@ -1,4 +1,4 @@
-import type { WorkflowV2WorkerOutput } from "./packets";
+import { isWorkflowV2WorkerOutput, type WorkflowV2WorkerOutput } from "./packets";
 import type { WorkflowV2Plan } from "./planning";
 import type { WorkflowV2ScriptParameterDef } from "./definition";
 import type { WorkflowV2ReviewVerdict } from "./review";
@@ -8,6 +8,7 @@ import type { WorkflowV2RunState } from "./state";
 import type { WorkflowV2ExecutionLeaseState, WorkflowV2ProgressReport } from "./supervision";
 import { isWorkflowV2ProgressReport } from "./supervision";
 import { isWorkflowV2HookJsonValue } from "./hooks";
+import { isWorkflowRecoveryDecisionRecord, isWorkflowRecoveryPreview, isWorkflowTransactionState, type WorkflowRecoveryDecisionRecord, type WorkflowRecoveryPreview, type WorkflowTransactionState } from "./transaction";
 
 export const WORKFLOW_V2_STORAGE_SCHEMA_VERSION = 1;
 
@@ -17,6 +18,8 @@ export interface WorkflowV2StorageLayout {
   runDir: string;
   runStatePath: string;
   eventLogPath: string;
+  operationLogPath: string;
+  commitPlanPath: string;
   cacheDir: string;
 }
 
@@ -77,13 +80,20 @@ export interface WorkflowV2PersistedRunState {
   runState: WorkflowV2RunState;
   workerOutputs: WorkflowV2WorkerOutput[];
   nodeControl: Record<string, WorkflowV2DurableNodeControlState>;
+  /** Optional only for compatibility with runs persisted before transaction governance. */
+  transaction?: WorkflowTransactionState;
+  recoveryDecisions?: WorkflowRecoveryDecisionRecord[];
+  recovery?: WorkflowRecoveryPreview;
+  finalReport?: string;
 }
 
 export interface WorkflowV2DurableEvent {
   sequence: number;
   workflowId: string;
   runId: string;
+  transactionId?: string;
   nodeId?: string;
+  operationId?: string;
   type: string;
   at: number;
   detail?: string;
@@ -143,6 +153,13 @@ export function isWorkflowV2PersistedRunState(value: unknown): value is Workflow
   if (!isPersistedExecutionState(value.runState, value.workflowId, value.graphVersion)) return false;
   if (!Array.isArray(value.workerOutputs) || !value.workerOutputs.every(isWorkerOutput)) return false;
   if (!isRecord(value.nodeControl)) return false;
+  if (value.transaction !== undefined) {
+    if (!isWorkflowTransactionState(value.transaction)) return false;
+    if (value.transaction.transactionId.trim().length === 0) return false;
+  }
+  if (value.recoveryDecisions !== undefined && (!Array.isArray(value.recoveryDecisions) || !value.recoveryDecisions.every(isWorkflowRecoveryDecisionRecord))) return false;
+  if (value.recovery !== undefined && !isWorkflowRecoveryPreview(value.recovery)) return false;
+  if (value.finalReport !== undefined && !isNonEmptyString(value.finalReport)) return false;
   const nodeIds = new Set(value.runState.nodeOrder);
   return Object.entries(value.nodeControl)
     .every(([nodeId, control]) => nodeIds.has(nodeId) && isDurableNodeControlState(control));
@@ -159,6 +176,7 @@ export function isWorkflowV2CacheEntryMetadata(value: unknown): value is Workflo
 }
 
 function isWorkerOutput(value: unknown): value is WorkflowV2WorkerOutput {
+  if (!isWorkflowV2WorkerOutput(value)) return false;
   if (!isRecord(value)) return false;
   if (!isNonEmptyString(value.nodeId) || !isNonEmptyString(value.summary)) return false;
   if (!isRecord(value.outputs) || !Array.isArray(value.proposals)) return false;

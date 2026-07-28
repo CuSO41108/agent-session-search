@@ -6,6 +6,7 @@ import { AgentHub, createWorkflowAgentTimeout } from "./agent-hub";
 import { DEFAULT_MODEL_ID } from "../../shared/models";
 import { projectNodeStates } from "../../shared/workflow-v2/runtime-utils";
 import { createWorkflowV2InlineScriptSpec } from "../../shared/workflow-v2/definition";
+import { createDirectWorkflowTransactionPolicy } from "../../shared/workflow-v2/transaction";
 import type { AgentChannel, AgentId, ChatRuntimeSessionState, ConfiguredAgent, RuntimeConversation } from "../../shared/types";
 import { createRuntimeDriverRegistry, RuntimeDriverRegistry } from "./runtime/executor/agent-executor";
 import type {
@@ -64,22 +65,25 @@ function createV2Workflow(hub: AgentHub, input: any): any {
   const workflowId = draft.workflowDraft!.workflowId;
   const result = hub.materializeWorkflowDraft(workflowId, {
     ...input,
-    definition: input.definition ?? {
-      workflowId: "test-placeholder",
-      graphVersion: 1,
-      objective: input.objective,
-      nodes: agentNodes.map((node: any) => ({
-        id: node.id,
-        kind: "implementation",
-        title: node.title,
-        execModel: "llm",
-        executionMode: "one-shot",
-        prompt: node.prompt,
-        outputFields: [{ key: "result", required: true }],
-      })),
-      edges: (input.graph?.edges ?? [])
-        .filter((edge: any) => agentNodeIds.has(edge.fromNodeId) && agentNodeIds.has(edge.toNodeId))
-        .map((edge: any) => ({ fromNodeId: edge.fromNodeId, toNodeId: edge.toNodeId })),
+    definition: {
+      ...(input.definition ?? {
+        workflowId: "test-placeholder",
+        graphVersion: 1,
+        objective: input.objective,
+        nodes: agentNodes.map((node: any) => ({
+          id: node.id,
+          kind: "implementation",
+          title: node.title,
+          execModel: "llm",
+          executionMode: "one-shot",
+          prompt: node.prompt,
+          outputFields: [{ key: "result", required: true }],
+        })),
+        edges: (input.graph?.edges ?? [])
+          .filter((edge: any) => agentNodeIds.has(edge.fromNodeId) && agentNodeIds.has(edge.toNodeId))
+          .map((edge: any) => ({ fromNodeId: edge.fromNodeId, toNodeId: edge.toNodeId })),
+      }),
+      transactionPolicy: input.definition?.transactionPolicy ?? createDirectWorkflowTransactionPolicy(),
     },
   });
   if (result.ok) {

@@ -12,6 +12,8 @@ import {
   startWorkflowRunState,
   updateWorkflowRunState,
 } from "./agent-hub-workflow-run-state";
+import { workflowTransactionPreflightError, type WorkflowTransactionCapabilities } from "../../../shared/workflow-v2/transaction";
+import { workflowV2WorkspaceIsolationPlanError } from "../../workflows/v2/workflow-v2-workspace-transaction";
 
 export class WorkflowRunStateService {
   constructor(private readonly deps: {
@@ -20,6 +22,7 @@ export class WorkflowRunStateService {
     cloneDraft: (draft: WorkflowDraftState) => WorkflowDraftState;
     clearDraftRequest: (workflowId: string) => void;
     changed: () => void;
+    transactionCapabilities?: () => WorkflowTransactionCapabilities & { brokeredScriptExecution?: boolean; brokeredAdapters?: readonly string[] };
   }) {}
 
   start(input: StartWorkflowRunRequest): WorkflowOperationResult {
@@ -32,6 +35,11 @@ export class WorkflowRunStateService {
     if (workflow.confirmedRevision !== workflow.revision) {
       return { ok: false, workflowId: workflow.workflowId, revision: workflow.revision, error: "Workflow must be confirmed before starting a run." };
     }
+    const transactionCapabilities = this.deps.transactionCapabilities?.();
+    const transactionError = workflowTransactionPreflightError(workflow.workflowV2Plan.definition.transactionPolicy, transactionCapabilities);
+    if (transactionError) return { ok: false, workflowId: workflow.workflowId, revision: workflow.revision, error: transactionError };
+    const workspaceError = workflowV2WorkspaceIsolationPlanError(workflow.workflowV2Plan, { brokeredScriptExecution: transactionCapabilities?.brokeredScriptExecution, brokeredAdapters: transactionCapabilities?.brokeredAdapters });
+    if (workspaceError) return { ok: false, workflowId: workflow.workflowId, revision: workflow.revision, error: workspaceError };
     this.deps.clearDraftRequest(workflow.workflowId);
     const runId = this.deps.createRunId();
     const next = startWorkflowRunState({ workflow, request: input, runId, cloneDraft: this.deps.cloneDraft });

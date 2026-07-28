@@ -124,6 +124,146 @@ describe("WorkflowRunCenter", () => {
     expect(html).toContain("Finished");
   });
 
+  test("offers report download and safe cleanup only for finalized transaction materials", () => {
+    const finalized = run({ runId: "finalized", status: "completed", startedAt: 1_000, finishedAt: 2_000 });
+    finalized.finalReport = "# Final report";
+    finalized.transaction = { transactionId: "transaction-final", mode: "strict_atomic", status: "committed", baselineId: "baseline", operationCount: 0, unknownOperationCount: 0, irreversibleOperationCount: 0, startedAt: 1_000, updatedAt: 2_000, retentionUntil: 3_000 };
+    const html = renderToStaticMarkup(<WorkflowRunCenter runs={[finalized]} open selectedRunId={finalized.runId} language="zh" onSelectRun={() => undefined} onClose={() => undefined} onCleanupRunMaterials={() => undefined} />);
+
+    expect(html).toContain("下载最终报告");
+    expect(html).toContain("安全清理材料");
+  });
+
+  test("shows pending and completed policy checkpoints in transaction details", () => {
+    const checkpointRun = run({ runId: "checkpoint-run", status: "waiting_for_user", startedAt: 1_000 });
+    checkpointRun.transaction = { transactionId: "transaction-checkpoint", mode: "strict_atomic", status: "waiting_for_user", baselineId: "baseline", currentSavepointId: "policy-savepoint", pendingCheckpointId: "publish-draft", pendingCheckpointPlanDigest: "1234567890abcdef987654321", completedCheckpointIds: ["prepare"], operationCount: 0, unknownOperationCount: 0, irreversibleOperationCount: 0, startedAt: 1_000, updatedAt: 2_000, retentionUntil: 3_000 };
+    const html = renderToStaticMarkup(<WorkflowRunCenter runs={[checkpointRun]} open selectedRunId={checkpointRun.runId} language="zh" onSelectRun={() => undefined} onClose={() => undefined} />);
+
+    expect(html).toContain("待审批检查点</b>publish-draft");
+    expect(html).toContain("待审批计划摘要</b>1234567890abcdef");
+    expect(html).toContain("已完成检查点</b>prepare");
+  });
+
+  test("shows transaction recovery facts, receipts, and node acceptance", () => {
+    const recoveryRun = run({ runId: "recovery-run", status: "failed", startedAt: 2_000, finishedAt: 4_000 });
+    recoveryRun.transaction = {
+      transactionId: "transaction-1",
+      mode: "strict_atomic",
+      status: "recovery_required",
+      baselineId: "baseline-1",
+      governedFileCount: 12,
+      excludedPaths: [".git", "node_modules"],
+      currentSavepointId: "savepoint-1",
+      operationCount: 1,
+      unknownOperationCount: 1,
+      irreversibleOperationCount: 0,
+      startedAt: 2_000,
+      updatedAt: 4_000,
+      retentionUntil: 604_804_000,
+    };
+    recoveryRun.operations = [{
+      operationId: "operation-1",
+      transactionId: "transaction-1",
+      runId: recoveryRun.runId,
+      nodeId: "research",
+      attempt: 1,
+      kind: "http",
+      target: "https://example.test/resource",
+      idempotencyKey: "key-1",
+      state: "unknown",
+      reversible: true,
+      receipt: { requestId: "safe-preview" },
+      createdAt: 2_500,
+      updatedAt: 3_500,
+    }];
+    recoveryRun.recovery = {
+      generatedAt: 4_000,
+      transactionId: "transaction-1",
+      status: "recovery_required",
+      blockers: ["operation-1: unknown"],
+      conflicts: ["result.txt"],
+      conflictDetails: [{
+        path: "result.txt",
+        baseline: { exists: true, preview: "baseline" },
+        isolated: { exists: true, preview: "workflow result" },
+        current: { exists: true, preview: "user edit" },
+      }],
+      changedPaths: ["result.txt"],
+      pendingNodeIds: [],
+      uncertainNodeIds: ["research"],
+      cancelledNodeIds: [],
+      cancellingNodeIds: ["research"],
+      notStartedNodeIds: [],
+      availableActions: ["rollback_savepoint", "keep_state", "abandon"],
+      managerRecommendation: {
+        source: "agent",
+        generatedAt: 4_000,
+        transactionId: "transaction-1",
+        recommendedAction: "keep_state",
+        rationale: "Preserve evidence until the conflict is reviewed.",
+        rollbackTarget: "savepoint-1",
+        compensationOperationIds: [],
+        manualSteps: ["Manually merge result.txt."],
+        riskComparison: [{ action: "keep_state", risk: "low", detail: "Leaves evidence unchanged." }],
+        conflictCandidates: [{ path: "result.txt", resolution: "manual", rationale: "Both sides changed." }],
+      },
+    };
+    recoveryRun.recoveryDecisions = [{
+      decisionId: "decision-1",
+      transactionId: "transaction-1",
+      action: "keep_state",
+      actor: "desktop-user",
+      reason: "Waiting for external verification.",
+      operationIds: ["operation-1"],
+      decidedAt: 4_000,
+    }];
+    recoveryRun.progress[0]!.acceptance = {
+      outcome: "degraded",
+      issues: [{ code: "tool_retry_recovered", severity: "warning", detail: "A required tool succeeded after retry." }],
+      changedPaths: ["result.txt"],
+      operationIds: ["operation-1"],
+    };
+    recoveryRun.progress[0]!.scriptReceipt = { exitCode: 1, signal: null, timedOut: false, stderrSummary: "warning", stdoutDigest: "digest", operationDigest: "operation-digest", effectState: "unknown" };
+    recoveryRun.progress[0]!.intervention = { nodeId: "research", source: "supervision_pause", reason: "Review evidence", allowedActions: ["continue", "replan"], requestedAt: 3_900 };
+
+    const html = renderToStaticMarkup(<WorkflowRunCenter runs={[recoveryRun]} open selectedRunId={recoveryRun.runId} writableRunId={recoveryRun.runId} language="zh" onSelectRun={() => undefined} onClose={() => undefined} onResolveRecovery={() => undefined} onRefreshRecovery={() => undefined} onResolveConflict={() => undefined} onResolveUnknownOperation={() => undefined} onResolveIntervention={() => undefined} />);
+
+    expect(html).toContain("事务与恢复");
+    expect(html).toContain("recovery_required");
+    expect(html).toContain("受治理文件</b>12");
+    expect(html).toContain("排除路径</b>.git, node_modules");
+    expect(html).toContain("已提交</b>0");
+    expect(html).toContain("已补偿</b>0");
+    expect(html).toContain("operation-1: unknown");
+    expect(html).toContain("回滚到保存点");
+    expect(html).toContain("查看 Manager Agent 候选结果");
+    expect(html).toContain("候选结果只读");
+    expect(html).toContain("safe-preview");
+    expect(html).toContain("核验依据");
+    expect(html).toContain("核验为已应用");
+    expect(html).toContain("核验为未应用");
+    expect(html).toContain("nodeId · research · attempt #1");
+    expect(html).toContain("回滚依据（必填）");
+    expect(html).toContain("节点验收 · degraded");
+    expect(html).toContain("脚本执行凭据 · unknown");
+    expect(html).toContain("stderr · warning");
+    expect(html).toContain("继续/重试");
+    expect(html).toContain("tool_retry_recovered");
+    expect(html).toContain("决定依据");
+    expect(html).toContain("说明核验依据和预期结果");
+    expect(html).toContain("用户恢复决定 · 1");
+    expect(html).toContain("Waiting for external verification.");
+    expect(html).toContain("Workflow 基线");
+    expect(html).toContain("Workflow 隔离结果");
+    expect(html).toContain("用户当前工作区");
+    expect(html).toContain("workflow result");
+    expect(html).toContain("user edit");
+    expect(html).toContain("重新检查恢复事实");
+    expect(html).toContain("手动合并");
+    expect(html).toContain("最终写入前差异确认");
+    expect(html).toContain("确认并写入");
+  });
+
   test("renders node execution telemetry for runtime, channel, model, attempts, tokens, cost, and duration", () => {
     const observedRun = run({ runId: "observed-run", status: "completed", startedAt: 2_000, finishedAt: 62_000 });
     (observedRun.progress[0] as WorkflowRunState["progress"][number] & { telemetry: unknown }).telemetry = {

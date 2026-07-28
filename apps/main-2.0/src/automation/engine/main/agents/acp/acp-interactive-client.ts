@@ -70,6 +70,7 @@ export function agentEventsFromAcpUpdate(update: acp.SessionUpdate): AgentEvent[
       name: update.title,
       content: stringifyValue(update.rawInput),
       metadata: {
+        id: update.toolCallId,
         toolCallId: update.toolCallId,
         ...(update.kind ? { kind: update.kind } : {}),
         ...(update.status ? { status: update.status } : {}),
@@ -84,6 +85,7 @@ export function agentEventsFromAcpUpdate(update: acp.SessionUpdate): AgentEvent[
       ...(update.title ? { name: update.title } : {}),
       content,
       metadata: {
+        id: update.toolCallId,
         toolCallId: update.toolCallId,
         ...(update.kind ? { kind: update.kind } : {}),
         ...(update.status ? { status: update.status } : {}),

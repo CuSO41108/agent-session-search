@@ -67,4 +67,18 @@ describe("workflow-v2 mechanical validation", () => {
       output: { nodeId: "other", summary: "done", outputs: { draft: "text" }, proposals: [] },
     }).outcome).toBe("fail");
   });
+
+  test("rejects nulls, wrong primitive types, and non-finite JSON values", () => {
+    const typedNode: WorkflowV2LLMNode = { ...llmNode, outputFields: [
+      { key: "title", required: true, valueType: "string" },
+      { key: "count", required: true, valueType: "number" },
+      { key: "data", required: true, valueType: "json" },
+    ] };
+    const result = validateWorkflowV2NodeOutput({ node: typedNode, attempt: 2, output: { nodeId: "draft", summary: "invalid", outputs: { title: null, count: "1", data: { score: Number.POSITIVE_INFINITY } }, proposals: [] } });
+    expect(result.reasons).toEqual(expect.arrayContaining([
+      expect.stringContaining("title must not be null"),
+      expect.stringContaining("count must match value type number"),
+      expect.stringContaining("data must match value type json"),
+    ]));
+  });
 });

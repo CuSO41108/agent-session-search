@@ -2,6 +2,7 @@ import type { AppSnapshot } from "../../../shared/types";
 import type { CreateWorkflowDraftRequest, PatchWorkflowDraftRequest } from "../../../shared/workflow/commands";
 import type { WorkflowDraftState } from "../../../shared/workflow/draft";
 import type { WorkflowStore } from "../../workflow-store";
+import { createStrictWorkflowTransactionPolicy } from "../../../shared/workflow-v2/transaction";
 
 export class WorkflowDraftService {
   constructor(private readonly deps: {
@@ -53,7 +54,7 @@ export class WorkflowDraftService {
       reviewerConfiguredAgentId,
       reviewerModelId,
       objective: "",
-      definition: { workflowId, graphVersion: 1, objective: "", nodes: [], edges: [] },
+      definition: { workflowId, graphVersion: 1, objective: "", nodes: [], edges: [], transactionPolicy: createStrictWorkflowTransactionPolicy() },
       messages: [],
       reply: "",
       error: undefined,

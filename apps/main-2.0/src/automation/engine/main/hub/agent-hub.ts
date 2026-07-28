@@ -50,6 +50,11 @@ import type {
   PauseWorkflowNodeRequest,
   ReviseWorkflowV2RunRequest,
   ResolveWorkflowV2InterventionRequest,
+  ResolveWorkflowV2RecoveryRequest,
+  RefreshWorkflowV2RecoveryRequest,
+  ResolveWorkflowV2ConflictRequest,
+  ResolveWorkflowV2UnknownOperationRequest,
+  CleanupWorkflowV2RunRequest,
   ProviderBalanceResult,
   RunWorkflowRequest,
   ListWorkflowOutputsRequest,
@@ -92,6 +97,7 @@ import type { BoundMcpServer } from "./runtime/executor/runtime-mcp";
 import { normalizeConfigChannelsForStorage } from "../../shared/config-channels";
 import { DEFAULT_MODEL_ID, defaultChannelForAgent, defaultModelForAgent, isModelForChannel } from "../../shared/models";
 import type { WorkflowV2Definition } from "../../shared/workflow-v2/definition";
+import { sanitizeWorkflowOperationRecord, sanitizeWorkflowTransactionValue } from "../../shared/workflow-v2/transaction";
 import { defaultWorkflowWorkDirSuffix } from "../../shared/workflow-v2/runtime-utils";
 import { detectAgentRuntimes, resolveRuntimeExecutables } from "../agents/runtime/detect";
 import { InteractiveSessionManager } from "../agents/runtime/interactive-session-manager";
@@ -113,7 +119,10 @@ import {
 import { loadRuntimeLocalConfig } from "../channels/runtime-local-config";
 import type { AgentHubPersistedStore } from "./persisted/persisted-store";
 import { WorkflowRuntime, parseWorkflowV2WorkerArtifact } from "../workflows/workflow-runtime";
+import type { WorkflowV2StorePort } from "../workflows/workflow-runtime-ports";
 import { WorkflowV2FileStore } from "../workflows/v2/workflow-v2-store";
+import { WorkflowV2OperationBroker } from "../workflows/v2/workflow-v2-operation-broker";
+import { WorkflowV2HttpOperationAdapter, WorkflowV2MessageOperationAdapter, type WorkflowMessageProvider } from "../workflows/v2/workflow-v2-external-adapters";
 import type { WorkflowV2WorkerOutput } from "../../shared/workflow-v2/packets";
 import { WorkflowV2ConversationManager } from "../workflows/v2/workflow-v2-conversation-manager";
 import { WorkflowNodeConversationService } from "./workflow/workflow-node-conversation-service";
@@ -124,6 +133,9 @@ import { WorkflowRunStateService } from "./workflow/workflow-run-state-service";
 import { WorkflowContextService } from "./workflow/workflow-context-service";
 import { buildWorkflowV2PlanSync } from "../workflows/v2/workflow-v2-planner";
 import { executeWorkflowV2Script } from "../workflows/v2/workflow-v2-script-executor";
+import { executeWorkflowV2BrokeredScript } from "../workflows/v2/workflow-v2-brokered-script-executor";
+import { buildWorkflowV2RecoveryPreview, parseWorkflowV2RecoveryManagerRecommendation } from "../workflows/v2/workflow-v2-recovery";
+import { canRollbackWorkflowV2CurrentSavepoint, inspectWorkflowV2RecoveryWorkspace } from "../workflows/v2/workflow-v2-recovery-capabilities";
 import { RuntimeApprovalBroker } from "../approvals/runtime-approval-broker";
 import { freezeWorkflowV2ScriptGovernance } from "../workflows/v2/workflow-v2-script-governance";
 import { WorkflowStore } from "../workflow-store";
@@ -412,6 +424,7 @@ export class AgentHub {
     executorFactory?: AgentExecutorFactory,
     runtimeDrivers?: RuntimeDriverRegistry,
     modelCatalogDiscoverer: ModelCatalogDiscoverer = discoverChannelModels,
+    private readonly workflowMessageProvider?: WorkflowMessageProvider,
   ) {
     this.executables = resolveRuntimeExecutables(executables);
     this.modelCatalogDiscoverer = modelCatalogDiscoverer;
@@ -492,6 +505,14 @@ export class AgentHub {
       cloneDraft: (draft) => this.cloneWorkflowDraft(draft),
       clearDraftRequest: (workflowId) => this.activeWorkflowDraftRequests.delete(workflowId),
       changed: () => this.emitWorkflow(),
+      transactionCapabilities: () => ({
+        workspaceIsolation: Boolean(this.storagePath),
+        externalOperationBroker: Boolean(this.storagePath),
+        brokeredScriptExecution: Boolean(this.storagePath),
+        durableLedger: Boolean(this.storagePath),
+        recoveryApproval: true,
+        brokeredAdapters: this.workflowMessageProvider ? ["http", "message"] : ["http"],
+      }),
     });
     this.workflowContextService = new WorkflowContextService({
       store: this.workflowStore,
@@ -513,6 +534,13 @@ export class AgentHub {
       stopTask: (taskId) => this.stopTask(taskId),
       deleteTask: (taskId, options) => this.deleteTask(taskId, options),
       executeWorkflowV2Script: (input) => executeWorkflowV2Script(input),
+      executeWorkflowV2BrokeredScript: (input) => {
+        if (!this.storagePath) throw new Error("Workflow brokered external execution requires durable storage.");
+        const store = new WorkflowV2FileStore(path.dirname(this.storagePath));
+        const broker = this.createWorkflowOperationBroker(store);
+        return executeWorkflowV2BrokeredScript(input, store, broker);
+      },
+      workflowV2BrokeredAdapters: this.workflowMessageProvider?.retract ? ["http", "message"] : ["http"],
       startWorkflowNodeConversation: (input) => {
         const resolved = this.resolveConfiguredAgent(input.configuredAgentId, input.modelId);
         return this.workflowNodeConversations.start({
@@ -531,6 +559,39 @@ export class AgentHub {
       createWorkflowV2Store: () => this.storagePath
         ? new WorkflowV2FileStore(path.dirname(this.storagePath))
         : undefined,
+      createWorkflowV2RecoveryOperationBroker: (store) => {
+        return this.createWorkflowOperationBroker(store);
+      },
+      generateWorkflowV2RecoveryRecommendation: async ({ workflowId, runId, recovery, evidence }) => {
+        const workflow = this.workflowStore.workflows.get(workflowId);
+        if (!workflow) return undefined;
+        const resolved = this.resolveConfiguredAgent(workflow.configuredAgentId, workflow.modelId);
+        if (!resolved?.runtime?.available) return undefined;
+        // Recovery advice must be generated on a surface that cannot mutate the
+        // workspace. The API runtime sends no tool definitions, while Claude's
+        // workflow permission handler rejects every non-workflow tool. Other CLI
+        // runtimes currently have no enforceable read-only workflow boundary, so
+        // they deliberately fall back to the deterministic rules recommendation.
+        if (resolved.runtimeAgentId !== "api" && resolved.runtimeAgentId !== "claude") return undefined;
+        const executionMode = this.selectExecutionMode(resolved.runtimeAgentId, "workflow", "oneshot");
+        const response = await this.askWorkflowAgent({
+          workflowRunId: runId,
+          prompt: [
+            "You are the read-only Manager Agent for transaction recovery.",
+            "Use only the supplied evidence. Do not call tools, modify files, send messages, execute compensation, or change transaction state.",
+            "Return exactly one JSON object with: recommendedAction, rationale, optional rollbackTarget, compensationOperationIds, manualSteps, riskComparison[{action,risk,detail}], conflictCandidates[{path,resolution,rationale}].",
+            `Available actions: ${recovery.availableActions.join(", ")}.`,
+            `Evidence: ${JSON.stringify(sanitizeWorkflowTransactionValue(evidence)).slice(0, 200_000)}`,
+          ].join("\n\n"),
+          configuredAgentId: workflow.configuredAgentId,
+          runtimeId: resolved.runtimeAgentId,
+          executionMode,
+          continuationPolicy: "fresh",
+          runtimeConfig: { model: resolved.modelId, ...(resolved.reasoningEffort ? { reasoningEffort: resolved.reasoningEffort } : {}) },
+          workDir: workflow.workDir || this.workDir,
+        }, undefined, AbortSignal.timeout(90_000));
+        return parseWorkflowV2RecoveryManagerRecommendation(response.content, recovery);
+      },
     });
     this.workflowNodeConversationService = new WorkflowNodeConversationService({
       conversations: this.workflowNodeConversations,
@@ -1429,6 +1490,21 @@ export class AgentHub {
   resolveWorkflowV2Intervention(input: ResolveWorkflowV2InterventionRequest): Promise<WorkflowOperationResult> {
     return this.workflowRunService.resolveIntervention(input);
   }
+  resolveWorkflowV2Recovery(input: ResolveWorkflowV2RecoveryRequest): Promise<WorkflowOperationResult> {
+    return this.workflowRunService.resolveRecovery(input);
+  }
+  refreshWorkflowV2Recovery(input: RefreshWorkflowV2RecoveryRequest): Promise<WorkflowOperationResult> {
+    return this.workflowRunService.refreshRecovery(input);
+  }
+  resolveWorkflowV2Conflict(input: ResolveWorkflowV2ConflictRequest): Promise<WorkflowOperationResult> {
+    return this.workflowRunService.resolveConflict(input);
+  }
+  resolveWorkflowV2UnknownOperation(input: ResolveWorkflowV2UnknownOperationRequest): Promise<WorkflowOperationResult> {
+    return this.workflowRunService.resolveUnknownOperation(input);
+  }
+  cleanupWorkflowV2RunMaterials(input: CleanupWorkflowV2RunRequest): Promise<WorkflowOperationResult> {
+    return this.workflowRunService.cleanupMaterials(input);
+  }
 
   stopWorkflowRun(input: StopWorkflowRunRequest): Promise<WorkflowOperationResult> {
     return this.workflowRunService.stop(input);
@@ -1833,12 +1909,14 @@ export class AgentHub {
     return resolved;
   }
 
-  async runTask(input: RunTaskRequest, approvalPolicy?: { allowedFileWriteRoot: string }): Promise<AppSnapshot> {
+  async runTask(input: RunTaskRequest, approvalPolicy?: { allowedFileWriteRoot: string; workspaceOnly?: boolean }): Promise<AppSnapshot> {
     const task = this.createTaskState(input);
     dispatchTaskPromptExecutionValue({
       task,
       registerTask: (nextTask) => {
-        if (approvalPolicy) this.runtimeApprovals.allowFileWritesWithin(nextTask.id, approvalPolicy.allowedFileWriteRoot); this.tasks.set(nextTask.id, nextTask);
+        if (approvalPolicy?.workspaceOnly) this.runtimeApprovals.restrictToFileWritesWithin(nextTask.id, approvalPolicy.allowedFileWriteRoot);
+        else if (approvalPolicy) this.runtimeApprovals.allowFileWritesWithin(nextTask.id, approvalPolicy.allowedFileWriteRoot);
+        this.tasks.set(nextTask.id, nextTask);
         this.activeTaskId = nextTask.id;
       },
       resolveConfiguredAgent: (configuredAgentId, modelId) => this.resolveConfiguredAgent(configuredAgentId, modelId),
@@ -2966,6 +3044,13 @@ export class AgentHub {
     });
   }
 
+  private createWorkflowOperationBroker(store: WorkflowV2StorePort): WorkflowV2OperationBroker {
+    const broker = new WorkflowV2OperationBroker(store);
+    broker.register(new WorkflowV2HttpOperationAdapter());
+    if (this.workflowMessageProvider) broker.register(new WorkflowV2MessageOperationAdapter(this.workflowMessageProvider));
+    return broker;
+  }
+
   private restoreWorkflowRun(raw: unknown): WorkflowRunState | undefined {
     return restoreWorkflowRunValue(raw);
   }
@@ -2974,6 +3059,20 @@ export class AgentHub {
     if (!this.storagePath) return false;
     const store = new WorkflowV2FileStore(path.dirname(this.storagePath));
     let reconciled = false;
+    try {
+      const cleanedRuns = await store.cleanupExpiredRuns();
+      for (const cleaned of cleanedRuns) {
+        const run = this.workflowStore.runs.get(cleaned.runId);
+        if (!run || run.workflowId !== cleaned.workflowId) continue;
+        const cleanedRun = this.cloneWorkflowRun(run);
+        delete cleanedRun.operations;
+        delete cleanedRun.recovery;
+        this.workflowStore.runs.set(cleaned.runId, cleanedRun);
+        reconciled = true;
+      }
+    } catch (error) {
+      console.warn("Failed to clean up expired Workflow V2 transaction materials:", error);
+    }
 
     for (const [runId, run] of this.workflowStore.runs) {
       if (!run.workflowV2Plan) continue;
@@ -2989,12 +3088,73 @@ export class AgentHub {
       }
       if (!persisted) continue;
 
+      let operationLedgerAvailable = true;
+      let rawOperations: ReturnType<typeof sanitizeWorkflowOperationRecord>[];
+      try {
+        rawOperations = await store.readOperations(run.workflowId, runId);
+      } catch {
+        operationLedgerAvailable = false;
+        rawOperations = [];
+      }
+      const broker = this.createWorkflowOperationBroker(store);
+      for (const operation of operationLedgerAvailable ? rawOperations.filter((item) => item.state === "applying" || item.state === "unknown" || item.state === "compensating") : []) {
+        if (!broker.canInspectOperation(operation)) continue;
+        await broker.inspect({ workflowId: run.workflowId, runId, operationId: operation.operationId, signal: AbortSignal.timeout(10_000) }).catch(() => undefined);
+      }
+      persisted = await store.readRunState(run.workflowId, runId) ?? persisted;
+      if (operationLedgerAvailable) {
+        try {
+          rawOperations = await store.readOperations(run.workflowId, runId);
+        } catch {
+          operationLedgerAvailable = false;
+        }
+      }
+      const operations = rawOperations.map(sanitizeWorkflowOperationRecord);
+      const workspaceInspection = await inspectWorkflowV2RecoveryWorkspace({
+        store,
+        workflowId: run.workflowId,
+        runId,
+        fallbackConflictPaths: persisted.recovery?.conflicts ?? run.recovery?.conflicts ?? [],
+      });
+      const recoveryWorkspaceDiff = workspaceInspection.workspaceDiff
+        ? { ...workspaceInspection.workspaceDiff, conflicts: workspaceInspection.conflictPaths }
+        : workspaceInspection.conflictPaths.length ? { created: [], modified: [], deleted: [], conflicts: workspaceInspection.conflictPaths } : undefined;
+      const compensableOperationIds = rawOperations.filter((operation) => broker.canCompensateOperation(operation)).map((operation) => operation.operationId);
+      const canRollbackSavepoint = persisted.transaction
+        ? await canRollbackWorkflowV2CurrentSavepoint({ store, workflowId: run.workflowId, runId, transaction: persisted.transaction })
+        : false;
+      const rebuiltRecovery = persisted.transaction && (persisted.transaction.status === "recovery_required" || persisted.transaction.status === "partially_rolled_back" || persisted.transaction.status === "waiting_for_user")
+        ? buildWorkflowV2RecoveryPreview({
+            transaction: persisted.transaction,
+            operations,
+            runState: persisted.runState,
+            nodeControl: persisted.nodeControl,
+            ...(recoveryWorkspaceDiff ? { workspaceDiff: recoveryWorkspaceDiff } : {}),
+            workspaceAvailable: workspaceInspection.workspaceAvailable,
+            operationLedgerAvailable,
+            conflictDetails: workspaceInspection.conflictDetails,
+            canRollbackSavepoint,
+            canRollbackWorkspace: true,
+            canCompensate: compensableOperationIds.length > 0,
+            compensableOperationIds,
+            now: persisted.savedAt,
+          })
+        : undefined;
+      const recoveryFacts = (preview: NonNullable<typeof rebuiltRecovery>) => {
+        const { generatedAt: _generatedAt, managerRecommendation: _managerRecommendation, ...facts } = preview;
+        return facts;
+      };
+      const recovery = rebuiltRecovery && persisted.recovery && isDeepStrictEqual(recoveryFacts(rebuiltRecovery), recoveryFacts(persisted.recovery))
+        ? { ...rebuiltRecovery, generatedAt: persisted.recovery.generatedAt, managerRecommendation: structuredClone(persisted.recovery.managerRecommendation) }
+        : rebuiltRecovery;
       const latestRunId = workflow.runIds[workflow.runIds.length - 1];
       const result = reconcileWorkflowV2RunFromDurableState({
         workflow,
         run,
         persisted,
         updateWorkflowProjection: latestRunId === runId,
+        operations,
+        ...(recovery ? { recovery } : {}),
       });
       if (!result) {
         console.warn(`Skipped Workflow V2 durable state with mismatched identity for run ${runId}.`);

@@ -76,10 +76,10 @@ describe("AcpInteractiveClient", () => {
 
     expect(events).toEqual(expect.arrayContaining([
       { type: "delta", content: "Hello" },
-      expect.objectContaining({ type: "tool_call", name: "Read file" }),
+      expect.objectContaining({ type: "tool_call", name: "Read file", metadata: expect.objectContaining({ id: expect.any(String) }) }),
       expect.objectContaining({ type: "approval_request", requestId: expect.stringMatching(/^runtime-approval:/) }),
       expect.objectContaining({ type: "approval_response", decision: "approved" }),
-      expect.objectContaining({ type: "tool_result", name: "Read file", content: "contents" }),
+      expect.objectContaining({ type: "tool_result", name: "Read file", content: "contents", metadata: expect.objectContaining({ id: expect.any(String), status: "completed" }) }),
       { type: "completed" },
     ]));
     const calls = (await readFile(fake.callsPath, "utf8"))

@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { mkdtemp, mkdir, readFile, realpath, writeFile } from "node:fs/promises";
+import { access, mkdtemp, mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -39,6 +39,100 @@ describe("workflow-v2 script executor", () => {
     });
 
     expect(output.outputs).toEqual({ result: "ok" });
+    expect(output.scriptReceipt).toMatchObject({ exitCode: 0, timedOut: false, stderrSummary: "", effectState: "none", operationDigest: expect.stringMatching(/^[a-f0-9]{64}$/) });
+    expect(output.acceptance).toMatchObject({ outcome: "clean", issues: [] });
+  });
+
+  test("records stderr and applies warn or fail policy", async () => {
+    const makeNode = (stderrPolicy: "warn" | "fail"): WorkflowV2ScriptNode => ({
+      id: `stderr-${stderrPolicy}`,
+      kind: "command",
+      title: "Stderr",
+      execModel: "script",
+      executionMode: "script",
+      outputFields: [{ key: "stdout", required: true }],
+      script: {
+        executable: { kind: "command", command: process.execPath, args: ["-e", "process.stderr.write('warning'); process.stdout.write('ok')"] },
+        parameters: [],
+        capabilities: ["process_spawn", "shell_execute"],
+        managerRisk: { level: "dangerous", rationale: "Runs a bounded test process." },
+        effectMode: "pure",
+        idempotency: "safe_retry",
+        stderrPolicy,
+      },
+    });
+    const execute = (node: WorkflowV2ScriptNode) => {
+      const operationDigest = workflowV2ScriptOperationDigest({ workflowId: "wf", graphVersion: 1, runId: "run", node, workDir: process.cwd(), inputs: {} });
+      return executeWorkflowV2Script({
+        node, workDir: process.cwd(), upstreamOutputs: [], signal: new AbortController().signal, timeoutMs: 2_000, inputs: {},
+        authorization: { decision: "allow_once", approvalRequestId: "approval", workflowId: "wf", graphVersion: 1, runId: "run", nodeId: node.id, risk: "dangerous", capabilities: ["process_spawn", "shell_execute"], capabilityDigest: workflowV2ScriptCapabilityDigest(["process_spawn", "shell_execute"]), operationDigest },
+      });
+    };
+
+    await expect(execute(makeNode("warn"))).resolves.toMatchObject({ acceptance: { outcome: "degraded", issues: [expect.objectContaining({ code: "script_stderr" })] }, scriptReceipt: { stderrSummary: "warning" } });
+    await expect(execute(makeNode("fail"))).rejects.toMatchObject({ name: "WorkflowV2ScriptExecutionError", receipt: { stderrSummary: "warning" } });
+  });
+
+  test("marks a failed legacy command as effect unknown", async () => {
+    const node: WorkflowV2ScriptNode = {
+      id: "legacy-command", kind: "command", title: "Legacy command", execModel: "script", executionMode: "script", outputFields: [],
+      script: {
+        executable: { kind: "command", command: process.execPath, args: ["-e", "process.exit(1)"] },
+        parameters: [], capabilities: ["process_spawn"], managerRisk: { level: "dangerous", rationale: "Legacy process contract." },
+      },
+    };
+    const operationDigest = workflowV2ScriptOperationDigest({ workflowId: "wf", graphVersion: 1, runId: "run", node, workDir: process.cwd(), inputs: {} });
+    await expect(executeWorkflowV2Script({
+      node, workDir: process.cwd(), upstreamOutputs: [], signal: new AbortController().signal, timeoutMs: 2_000, inputs: {},
+      authorization: { decision: "allow_once", approvalRequestId: "approval", workflowId: "wf", graphVersion: 1, runId: "run", nodeId: node.id, risk: "dangerous", capabilities: ["process_spawn"], capabilityDigest: workflowV2ScriptCapabilityDigest(["process_spawn"]), operationDigest },
+    })).rejects.toMatchObject({ name: "WorkflowV2ScriptExecutionError", receipt: { effectState: "unknown" } });
+  });
+
+  test("terminates a timed-out command process tree before a child can keep producing side effects", async () => {
+    const workDir = await mkdtemp(path.join(os.tmpdir(), "workflow-script-tree-"));
+    const marker = path.join(workDir, "child-survived.txt");
+    const childCode = `setTimeout(() => require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'survived'), 700)`;
+    const parentCode = `require('node:child_process').spawn(process.execPath, ['-e', ${JSON.stringify(childCode)}], { stdio: 'ignore' }); setInterval(() => {}, 1000)`;
+    const node: WorkflowV2ScriptNode = {
+      id: "timeout-tree", kind: "command", title: "Timeout tree", execModel: "script", executionMode: "script", outputFields: [],
+      script: { executable: { kind: "command", command: process.execPath, args: ["-e", parentCode] }, parameters: [], capabilities: ["process_spawn"], managerRisk: { level: "dangerous", rationale: "Fault injection." }, effectMode: "pure", idempotency: "safe_retry", stderrPolicy: "fail" },
+    };
+    const operationDigest = workflowV2ScriptOperationDigest({ workflowId: "wf", graphVersion: 1, runId: "run", node, workDir, inputs: {} });
+    const controller = new AbortController();
+    const execution = executeWorkflowV2Script({ node, workDir, upstreamOutputs: [], signal: controller.signal, timeoutMs: 100, inputs: {}, authorization: { decision: "allow_once", approvalRequestId: "approval", workflowId: "wf", graphVersion: 1, runId: "run", nodeId: node.id, risk: "dangerous", capabilities: ["process_spawn"], capabilityDigest: workflowV2ScriptCapabilityDigest(["process_spawn"]), operationDigest } });
+    setTimeout(() => controller.abort(new Error("Script timed out.")), 100);
+    try {
+      await expect(execution).rejects.toMatchObject({ receipt: { timedOut: true, effectState: "unknown" } });
+      await new Promise((resolve) => setTimeout(resolve, 900));
+      await expect(access(marker)).rejects.toThrow();
+    } finally {
+      await rm(workDir, { recursive: true, force: true });
+    }
+  }, 10_000);
+
+  test.each([
+    ["synchronous loop", "while (true) {}"],
+    ["unsettled promise", "return new Promise(() => {});"],
+  ])("times out an inline TypeScript %s without blocking the workflow runtime", async (_name, code) => {
+    const node: WorkflowV2ScriptNode = {
+      id: "inline-timeout", kind: "transform", title: "Inline timeout", execModel: "script", executionMode: "script", outputFields: [],
+      script: { ...createWorkflowV2InlineScriptSpec({ language: "typescript", code, timeoutMs: 25 }), effectMode: "pure", idempotency: "safe_retry", stderrPolicy: "fail" },
+    };
+    const operationDigest = workflowV2ScriptOperationDigest({ workflowId: "wf", graphVersion: 1, runId: "run", node, workDir: process.cwd(), inputs: {} });
+
+    await expect(executeWorkflowV2Script({
+      node, workDir: process.cwd(), upstreamOutputs: [], signal: new AbortController().signal, timeoutMs: 25, inputs: {},
+      authorization: { decision: "auto_allow", workflowId: "wf", graphVersion: 1, runId: "run", nodeId: node.id, risk: "safe", capabilities: [], capabilityDigest: workflowV2ScriptCapabilityDigest([]), operationDigest },
+    })).rejects.toMatchObject({ name: "WorkflowV2ScriptExecutionError", receipt: { timedOut: true, effectState: "unknown" } });
+  });
+
+  test("rejects nulls and invalid array items from the script output schema", async () => {
+    const node: WorkflowV2ScriptNode = {
+      id: "schema", kind: "transform", title: "Schema", execModel: "script", executionMode: "script", outputFields: [{ key: "items", required: true }],
+      script: { ...createWorkflowV2InlineScriptSpec({ language: "typescript", code: "return { items: ['ok', 1] };" }), outputSchema: { type: "object", required: ["items"], properties: { items: { type: "array", items: { type: "string" } } } } },
+    };
+    const operationDigest = workflowV2ScriptOperationDigest({ workflowId: "wf", graphVersion: 1, runId: "run", node, workDir: process.cwd(), inputs: {} });
+    await expect(executeWorkflowV2Script({ node, workDir: process.cwd(), upstreamOutputs: [], signal: new AbortController().signal, timeoutMs: 2_000, inputs: {}, authorization: { decision: "auto_allow", workflowId: "wf", graphVersion: 1, runId: "run", nodeId: node.id, risk: "safe", capabilities: [], capabilityDigest: workflowV2ScriptCapabilityDigest([]), operationDigest } })).rejects.toThrow("invalid array item");
   });
 
   test("rejects an authorization whose capability digest does not match", async () => {

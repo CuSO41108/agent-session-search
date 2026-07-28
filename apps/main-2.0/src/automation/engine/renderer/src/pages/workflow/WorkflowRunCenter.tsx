@@ -7,6 +7,8 @@ import type { WorkflowRunTimelineSegment, WorkflowRunTriggerSource } from "../..
 import type { WorkflowRunNodeTelemetry } from "../../../../shared/workflow/run";
 import type { WorkflowNodeConversation } from "../../../../shared/workflow-v2/conversation";
 import type { WorkflowNodeMessage } from "../../../../shared/workflow/run";
+import type { WorkflowRecoveryAction } from "../../../../shared/workflow-v2/transaction";
+import type { WorkflowV2InterventionAction } from "../../../../shared/workflow-v2/review";
 
 interface WorkflowRunCenterProps {
   runs: WorkflowRunState[];
@@ -19,6 +21,13 @@ interface WorkflowRunCenterProps {
   language?: "en" | "zh";
   onSelectRun: (runId: string | undefined) => void;
   onClose: () => void;
+  onResolveRecovery?: (runId: string, action: WorkflowRecoveryAction, reason: string) => void | Promise<void>;
+  onRefreshRecovery?: (runId: string) => void | Promise<void>;
+  onResolveConflict?: (runId: string, input: { path: string; resolution: "isolated" | "current" | "manual"; expectedCurrentSha256?: string; content?: string; reason: string }) => void | Promise<void>;
+  onResolveUnknownOperation?: (runId: string, input: { operationId: string; verifiedState: "applied" | "not_applied"; reason: string }) => void | Promise<void>;
+  onCleanupRunMaterials?: (runId: string) => void | Promise<void>;
+  writableRunId?: string;
+  onResolveIntervention?: (nodeId: string, action: WorkflowV2InterventionAction, reason?: string) => void | Promise<void>;
 }
 
 const STATUS_LABELS: Record<WorkflowStatus, { en: string; zh: string }> = {
@@ -93,6 +102,17 @@ function eventLabel(type: string, language: "en" | "zh"): string {
   return type.replaceAll("_", " ");
 }
 
+function recoveryActionLabel(action: string, language: "en" | "zh"): string {
+  const labels: Record<string, { en: string; zh: string }> = {
+    continue: { en: "Continue", zh: "继续" },
+    rollback_savepoint: { en: "Roll back to savepoint", zh: "回滚到保存点" },
+    compensate_all: { en: "Best-effort compensation", zh: "尽力全量补偿" },
+    keep_state: { en: "Keep current state", zh: "保留现场" },
+    abandon: { en: "Abandon recovery", zh: "放弃处理" },
+  };
+  return labels[action]?.[language] ?? action;
+}
+
 function runIcon(status: WorkflowStatus) {
   if (status === "completed") return CheckCircle2;
   if (status === "failed" || status === "waiting_for_user") return CircleAlert;
@@ -155,7 +175,7 @@ export function WorkflowRunCenter(props: WorkflowRunCenterProps) {
   return <WorkflowRunCenterOpen {...props} />;
 }
 
-function WorkflowRunCenterOpen({ runs, conversations = [], artifacts = [], loading = false, error, selectedRunId, language = "en", onSelectRun, onClose }: WorkflowRunCenterProps) {
+function WorkflowRunCenterOpen({ runs, conversations = [], artifacts = [], loading = false, error, selectedRunId, language = "en", onSelectRun, onClose, onResolveRecovery, onRefreshRecovery, onResolveConflict, onResolveUnknownOperation, onCleanupRunMaterials, writableRunId, onResolveIntervention }: WorkflowRunCenterProps) {
   const [activeRunId, setActiveRunId] = useState<string | undefined>(selectedRunId);
   const [statusFilter, setStatusFilter] = useState<WorkflowStatus | "all">("all");
   const [sourceFilter, setSourceFilter] = useState<WorkflowRunTriggerSource | "all">("all");
@@ -163,6 +183,21 @@ function WorkflowRunCenterOpen({ runs, conversations = [], artifacts = [], loadi
   const [runListLimit, setRunListLimit] = useState(50);
   const [startedAfter, setStartedAfter] = useState("");
   const [startedBefore, setStartedBefore] = useState("");
+  const [recoveryReason, setRecoveryReason] = useState("");
+  const [recoveryActionError, setRecoveryActionError] = useState<string>();
+  const [recoveryBusy, setRecoveryBusy] = useState(false);
+  const [cleanupBusy, setCleanupBusy] = useState(false);
+  const [cleanupError, setCleanupError] = useState<string>();
+  const [conflictDrafts, setConflictDrafts] = useState<Record<string, { resolution: "isolated" | "current" | "manual"; content: string; reason: string }>>({});
+  const [conflictBusyPath, setConflictBusyPath] = useState<string>();
+  const [conflictError, setConflictError] = useState<string>();
+  const [unknownOperationReasons, setUnknownOperationReasons] = useState<Record<string, string>>({});
+  const [unknownOperationBusyId, setUnknownOperationBusyId] = useState<string>();
+  const [unknownOperationError, setUnknownOperationError] = useState<string>();
+  const [refreshedRecoveryRunIds, setRefreshedRecoveryRunIds] = useState<string[]>([]);
+  const [nodeActionReason, setNodeActionReason] = useState("");
+  const [nodeActionBusy, setNodeActionBusy] = useState(false);
+  const [nodeActionError, setNodeActionError] = useState<string>();
   const selectedRun = activeRunId ? runs.find((run) => run.runId === activeRunId) : undefined;
   const graphVersions = useMemo(() => [...new Set(runs.map((run) => run.workflowV2Plan.graphVersion))].sort((left, right) => right - left), [runs]);
   const filters: WorkflowRunFilters = {
@@ -179,6 +214,12 @@ function WorkflowRunCenterOpen({ runs, conversations = [], artifacts = [], loadi
     if (selectedRunId && runs.some((run) => run.runId === selectedRunId)) setActiveRunId(selectedRunId);
     else if (activeRunId && !runs.some((run) => run.runId === activeRunId)) setActiveRunId(undefined);
   }, [activeRunId, runs, selectedRunId]);
+
+  useEffect(() => {
+    if (!selectedRun?.recovery || !onRefreshRecovery || refreshedRecoveryRunIds.includes(selectedRun.runId)) return;
+    setRefreshedRecoveryRunIds((current) => [...current, selectedRun.runId]);
+    void Promise.resolve(onRefreshRecovery(selectedRun.runId)).catch((refreshError) => setRecoveryActionError(refreshError instanceof Error ? refreshError.message : String(refreshError)));
+  }, [onRefreshRecovery, refreshedRecoveryRunIds, selectedRun]);
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -251,6 +292,134 @@ function WorkflowRunCenterOpen({ runs, conversations = [], artifacts = [], loadi
                   <div className="workflow-run-center-metrics"><span><b>{labels.started}</b>{formatDate(selectedRun.startedAt, language)}</span><span><b>{labels.finished}</b>{selectedRun.finishedAt ? formatDate(selectedRun.finishedAt, language) : "—"}</span><span><b>{labels.duration}</b>{formatDuration(selectedRun)}</span><span><b>{labels.trigger}</b>{triggerSourceLabel(selectedRun.triggerSource, language)}</span><span><b>{labels.graph}</b>v{selectedRun.workflowV2Plan.graphVersion}</span></div>
                 </header>
                 {selectedRun.lastError ? <div className="workflow-run-center-error"><CircleAlert size={15} /><span>{selectedRun.lastError}</span></div> : null}
+                {selectedRun.transaction ? <section className="workflow-run-center-section workflow-run-center-transaction">
+                  <header><CircleAlert size={14} /><strong>{language === "zh" ? "事务与恢复" : "Transaction and recovery"}</strong></header>
+                  <div className="workflow-run-center-config-grid">
+                    <span><b>{language === "zh" ? "事务模式" : "Mode"}</b>{selectedRun.transaction.mode}</span>
+                    <span><b>{language === "zh" ? "事务状态" : "Status"}</b>{selectedRun.transaction.status}</span>
+                    <span><b>{language === "zh" ? "审批模式" : "Approval mode"}</b>{selectedRun.workflowV2Plan.definition.transactionPolicy?.approvalMode ?? "—"}</span>
+                    <span><b>{language === "zh" ? "保存点" : "Savepoint"}</b>{selectedRun.transaction.currentSavepointId ?? "—"}</span>
+                    <span><b>{language === "zh" ? "待审批检查点" : "Pending checkpoint"}</b>{selectedRun.transaction.pendingCheckpointId ?? "—"}</span>
+                    <span><b>{language === "zh" ? "待审批计划摘要" : "Pending plan digest"}</b>{selectedRun.transaction.pendingCheckpointPlanDigest?.slice(0, 16) ?? "—"}</span>
+                    <span><b>{language === "zh" ? "已完成检查点" : "Completed checkpoints"}</b>{selectedRun.transaction.completedCheckpointIds?.join(", ") || "—"}</span>
+                    <span><b>{language === "zh" ? "受治理文件" : "Governed files"}</b>{selectedRun.transaction.governedFileCount ?? "—"}</span>
+                    <span><b>{language === "zh" ? "排除路径" : "Excluded paths"}</b>{selectedRun.transaction.excludedPaths?.join(", ") || "—"}</span>
+                    <span><b>{language === "zh" ? "操作总数" : "Operations"}</b>{selectedRun.transaction.operationCount}</span>
+                    <span><b>{language === "zh" ? "已提交" : "Applied"}</b>{selectedRun.operations?.filter((operation) => operation.state === "applied").length ?? 0}</span>
+                    <span><b>{language === "zh" ? "已补偿" : "Compensated"}</b>{selectedRun.operations?.filter((operation) => operation.state === "compensated").length ?? 0}</span>
+                    <span><b>{language === "zh" ? "状态未知" : "Unknown"}</b>{selectedRun.transaction.unknownOperationCount}</span>
+                    <span><b>{language === "zh" ? "不可撤销" : "Irreversible"}</b>{selectedRun.transaction.irreversibleOperationCount}</span>
+                    <span><b>{language === "zh" ? "材料保留至" : "Retained until"}</b>{formatDate(selectedRun.transaction.retentionUntil, language)}</span>
+                  </div>
+                  {selectedRun.workflowV2Plan.definition.transactionPolicy?.defaultMode === "controlled" ? <small>{language === "zh" ? "自动提交授权绑定到已确认的操作语义；目标、参数或动态新增操作发生变化后必须重新确认。" : "Auto-commit authorization is bound to confirmed operation semantics; changed targets, parameters, or dynamically added operations require confirmation again."}</small> : null}
+                  <div className="workflow-run-center-material-actions">
+                    {selectedRun.finalReport?.trim() ? <button type="button" onClick={() => downloadWorkflowRunReport(selectedRun)}>{language === "zh" ? "下载最终报告" : "Download final report"}</button> : null}
+                    {onCleanupRunMaterials && (selectedRun.transaction.status === "committed" || selectedRun.transaction.status === "rolled_back") ? <button type="button" disabled={cleanupBusy} onClick={() => {
+                      const prompt = language === "zh" ? "确认清理该 Run 的事务账本、快照、receipt 和本地报告材料？此操作不可撤销，运行摘要仍会保留。" : "Delete this run's transaction ledger, snapshots, receipts, and local report materials? This cannot be undone; the run summary remains.";
+                      if (!window.confirm(prompt)) return;
+                      setCleanupBusy(true);
+                      setCleanupError(undefined);
+                      void Promise.resolve(onCleanupRunMaterials(selectedRun.runId)).catch((cleanupActionError) => setCleanupError(cleanupActionError instanceof Error ? cleanupActionError.message : String(cleanupActionError))).finally(() => setCleanupBusy(false));
+                    }}>{language === "zh" ? "安全清理材料" : "Safely clean materials"}</button> : null}
+                    {cleanupError ? <p className="is-error">{cleanupError}</p> : null}
+                  </div>
+                  {selectedRun.recovery ? <div className="workflow-run-center-events">
+                    {selectedRun.recovery.blockers.map((blocker) => <span key={blocker}>{language === "zh" ? "阻塞" : "Blocker"} · {blocker}</span>)}
+                    {selectedRun.recovery.conflicts.map((conflict) => <span key={`conflict:${conflict}`}>{language === "zh" ? "冲突" : "Conflict"} · {conflict}</span>)}
+                    {selectedRun.recovery.cancelledNodeIds.length > 0 ? <span>{language === "zh" ? "已取消节点" : "Cancelled nodes"} · {selectedRun.recovery.cancelledNodeIds.join(", ")}</span> : null}
+                    {selectedRun.recovery.cancellingNodeIds.length > 0 ? <span>{language === "zh" ? "正在取消或停止状态未知" : "Cancelling or stop unconfirmed"} · {selectedRun.recovery.cancellingNodeIds.join(", ")}</span> : null}
+                    {(selectedRun.operations?.some((operation) => operation.state === "applying" || operation.state === "unknown" || operation.state === "compensating") ?? false) ? <span>{language === "zh" ? "可能仍有副作用的外部请求" : "External requests that may still have side effects"} · {selectedRun.operations!.filter((operation) => operation.state === "applying" || operation.state === "unknown" || operation.state === "compensating").map((operation) => `${operation.operationId} (${operation.target})`).join(", ")}</span> : null}
+                    {selectedRun.recovery.notStartedNodeIds.length > 0 ? <span>{language === "zh" ? "fail-fast 后未启动" : "Not started after fail-fast"} · {selectedRun.recovery.notStartedNodeIds.join(", ")}</span> : null}
+                    <span>{language === "zh" ? "可用处理动作" : "Available actions"} · {selectedRun.recovery.availableActions.map((action) => recoveryActionLabel(action, language)).join(" / ")}</span>
+                    {onRefreshRecovery ? <button type="button" disabled={recoveryBusy} onClick={() => void Promise.resolve(onRefreshRecovery(selectedRun.runId)).catch((refreshError) => setRecoveryActionError(refreshError instanceof Error ? refreshError.message : String(refreshError)))}>{language === "zh" ? "重新检查恢复事实" : "Re-inspect recovery facts"}</button> : null}
+                  </div> : null}
+                  {selectedRun.recovery ? <details className="workflow-run-center-manager-candidate">
+                    <summary>{selectedRun.recovery.managerRecommendation.source === "agent" ? (language === "zh" ? "查看 Manager Agent 候选结果" : "View Manager Agent candidate") : (language === "zh" ? "查看规则恢复候选结果" : "View rules-based recovery candidate")}</summary>
+                    <strong>{language === "zh" ? "建议动作" : "Recommended action"} · {recoveryActionLabel(selectedRun.recovery.managerRecommendation.recommendedAction, language)}</strong>
+                    <p>{selectedRun.recovery.managerRecommendation.rationale}</p>
+                    {selectedRun.recovery.managerRecommendation.rollbackTarget ? <p>{language === "zh" ? "建议回滚目标" : "Rollback target"} · {selectedRun.recovery.managerRecommendation.rollbackTarget}</p> : null}
+                    {selectedRun.recovery.managerRecommendation.compensationOperationIds.length > 0 ? <p>{language === "zh" ? "逆序补偿计划" : "Reverse compensation plan"} · {selectedRun.recovery.managerRecommendation.compensationOperationIds.join(" → ")}</p> : null}
+                    {selectedRun.recovery.managerRecommendation.conflictCandidates.map((candidate) => <p key={candidate.path}>{candidate.path} · {candidate.resolution} · {candidate.rationale}</p>)}
+                    {selectedRun.recovery.managerRecommendation.manualSteps.map((step) => <p key={step}>{language === "zh" ? "人工步骤" : "Manual step"} · {step}</p>)}
+                    <div>{selectedRun.recovery.managerRecommendation.riskComparison.map((item) => <span key={item.action}>{recoveryActionLabel(item.action, language)} · {item.risk} · {item.detail}</span>)}</div>
+                    <small>{language === "zh" ? "候选结果只读；任何写入、补偿或事务状态变更仍需下方确认。" : "This candidate is read-only; writes, compensation, and transaction changes still require confirmation below."}</small>
+                  </details> : null}
+                  {selectedRun.recovery && onResolveRecovery ? <div className="workflow-run-center-recovery-actions">
+                    <label><span>{language === "zh" ? "决定依据" : "Decision reason"}</span><input value={recoveryReason} maxLength={2_000} onChange={(event) => setRecoveryReason(event.currentTarget.value)} placeholder={language === "zh" ? "说明核验依据和预期结果" : "Describe the evidence and expected outcome"} /></label>
+                    <div>{selectedRun.recovery.availableActions.map((action) => <button key={action} type="button" disabled={recoveryBusy || recoveryReason.trim().length === 0} onClick={() => {
+                      const prompt = language === "zh" ? `确认执行“${recoveryActionLabel(action, language)}”？执行前请再次核对当前 diff 与 operation receipt。` : `Confirm “${recoveryActionLabel(action, language)}”? Re-check the current diff and operation receipts first.`;
+                      if (!window.confirm(prompt)) return;
+                      setRecoveryBusy(true);
+                      setRecoveryActionError(undefined);
+                      void Promise.resolve(onResolveRecovery(selectedRun.runId, action, recoveryReason.trim()))
+                        .then(() => setRecoveryReason(""))
+                        .catch((actionError) => setRecoveryActionError(actionError instanceof Error ? actionError.message : String(actionError)))
+                        .finally(() => setRecoveryBusy(false));
+                    }}>{recoveryActionLabel(action, language)}</button>)}</div>
+                    {recoveryActionError ? <p className="is-error">{recoveryActionError}</p> : null}
+                  </div> : null}
+                  {(selectedRun.recovery?.conflictDetails.length ?? 0) > 0 ? <div className="workflow-run-center-conflicts">
+                    {selectedRun.recovery!.conflictDetails.map((conflict) => {
+                      const draft = conflictDrafts[conflict.path] ?? { resolution: "isolated" as const, content: "", reason: "" };
+                      const finalContent = draft.resolution === "isolated" ? conflict.isolated.preview : draft.resolution === "current" ? conflict.current.preview : draft.content;
+                      return <article key={conflict.path}>
+                      <strong>{conflict.path}</strong>
+                      <div className="workflow-run-center-conflict-columns">
+                        {([
+                          [language === "zh" ? "Workflow 基线" : "Workflow baseline", conflict.baseline],
+                          [language === "zh" ? "Workflow 隔离结果" : "Workflow isolated result", conflict.isolated],
+                          [language === "zh" ? "用户当前工作区" : "Current user workspace", conflict.current],
+                        ] as const).map(([title, version]) => <section key={title}><b>{title}</b><small>{version.exists ? `${version.sha256?.slice(0, 12) ?? "no digest"} · ${version.size ?? 0} B` : (language === "zh" ? "文件不存在" : "File absent")}</small>{version.preview !== undefined ? <pre>{version.preview}</pre> : version.binary ? <p>{language === "zh" ? "二进制文件，仅显示摘要" : "Binary file; digest only"}</p> : null}</section>)}
+                      </div>
+                      {onResolveConflict ? <div className="workflow-run-center-recovery-actions">
+                        <label><span>{language === "zh" ? "解决方式" : "Resolution"}</span><select value={draft.resolution} onChange={(event) => setConflictDrafts((current) => ({ ...current, [conflict.path]: { ...draft, resolution: event.currentTarget.value as typeof draft.resolution } }))}><option value="isolated">{language === "zh" ? "采用 Workflow 结果" : "Use workflow result"}</option><option value="current">{language === "zh" ? "保留用户当前版本" : "Keep current version"}</option><option value="manual">{language === "zh" ? "手动合并" : "Manual merge"}</option></select></label>
+                        {draft.resolution === "manual" ? <label><span>{language === "zh" ? "最终文件内容" : "Final file content"}</span><textarea value={draft.content} onChange={(event) => setConflictDrafts((current) => ({ ...current, [conflict.path]: { ...draft, content: event.currentTarget.value } }))} /></label> : null}
+                        <label><span>{language === "zh" ? "决定依据" : "Decision reason"}</span><input value={draft.reason} maxLength={2_000} onChange={(event) => setConflictDrafts((current) => ({ ...current, [conflict.path]: { ...draft, reason: event.currentTarget.value } }))} /></label>
+                        <details open><summary>{language === "zh" ? "最终写入前差异确认" : "Final diff before write"}</summary><pre>{finalContent ?? (language === "zh" ? "（删除文件）" : "(delete file)")}</pre></details>
+                        <button type="button" disabled={conflictBusyPath === conflict.path || !draft.reason.trim() || (draft.resolution === "manual" && (conflict.isolated.binary || conflict.current.binary))} onClick={() => {
+                          const prompt = language === "zh" ? `确认按“${draft.resolution}”解决 ${conflict.path}？上方内容将成为确认后的最终版本。` : `Resolve ${conflict.path} with “${draft.resolution}”? The content above is the confirmed final version.`;
+                          if (!window.confirm(prompt)) return;
+                          setConflictBusyPath(conflict.path);
+                          setConflictError(undefined);
+                          void Promise.resolve(onResolveConflict(selectedRun.runId, { path: conflict.path, resolution: draft.resolution, ...(conflict.current.sha256 ? { expectedCurrentSha256: conflict.current.sha256 } : {}), ...(draft.resolution === "manual" ? { content: draft.content } : {}), reason: draft.reason.trim() })).then(() => setConflictDrafts((current) => { const next = { ...current }; delete next[conflict.path]; return next; })).catch((resolveError) => setConflictError(resolveError instanceof Error ? resolveError.message : String(resolveError))).finally(() => setConflictBusyPath(undefined));
+                        }}>{language === "zh" ? "确认并写入" : "Confirm and write"}</button>
+                      </div> : null}
+                    </article>})}
+                    {conflictError ? <p className="is-error">{conflictError}</p> : null}
+                  </div> : null}
+                  {(selectedRun.operations?.length ?? 0) > 0 ? <div className="workflow-run-center-artifact-list">
+                    {selectedRun.operations!.map((operation) => <article key={operation.operationId}>
+                      <strong>{operation.kind} · {operation.state}</strong>
+                      <small>{operation.operationId}</small>
+                      <small>nodeId · {operation.nodeId} · attempt #{operation.attempt}</small>
+                      <p>{operation.target}</p>
+                      <small>{operation.reversible ? (language === "zh" ? "可补偿" : "Reversible") : (language === "zh" ? "不可撤销" : "Irreversible")}</small>
+                      <small>{language === "zh" ? "补偿适配器" : "Compensation adapter"} · {operation.compensationAdapter ?? (language === "zh" ? "无" : "none")}</small>
+                      {operation.requestSummary !== undefined ? <details><summary>{language === "zh" ? "查看授权目标与参数摘要" : "View authorized target and parameter summary"}</summary><pre>{JSON.stringify(operation.requestSummary, null, 2)}</pre></details> : null}
+                      {operation.error ? <p className="is-error">{operation.error}</p> : null}
+                      {operation.receipt !== undefined ? <details><summary>{language === "zh" ? "查看 receipt" : "View receipt"}</summary><pre>{JSON.stringify(operation.receipt, null, 2)}</pre></details> : null}
+                      {operation.state === "unknown" && onResolveUnknownOperation && selectedRun.runId === writableRunId ? <div className="workflow-run-center-recovery-actions">
+                        <label><span>{language === "zh" ? "核验依据" : "Verification reason"}</span><input value={unknownOperationReasons[operation.operationId] ?? ""} maxLength={2_000} onChange={(event) => setUnknownOperationReasons((current) => ({ ...current, [operation.operationId]: event.currentTarget.value }))} placeholder={language === "zh" ? "填写远端记录、回执或人工核对结果" : "Describe the remote record, receipt, or manual verification"} /></label>
+                        <div>{(["applied", "not_applied"] as const).map((verifiedState) => <button key={verifiedState} type="button" disabled={unknownOperationBusyId === operation.operationId || !(unknownOperationReasons[operation.operationId]?.trim())} onClick={() => {
+                          const reason = unknownOperationReasons[operation.operationId]!.trim();
+                          const prompt = language === "zh" ? `确认将 ${operation.operationId} 核验为“${verifiedState === "applied" ? "已应用" : "未应用"}”？此决定会写入事务账本。` : `Verify ${operation.operationId} as “${verifiedState === "applied" ? "applied" : "not applied"}”? This decision will be written to the transaction ledger.`;
+                          if (!window.confirm(prompt)) return;
+                          setUnknownOperationBusyId(operation.operationId);
+                          setUnknownOperationError(undefined);
+                          void Promise.resolve(onResolveUnknownOperation(selectedRun.runId, { operationId: operation.operationId, verifiedState, reason }))
+                            .then(() => setUnknownOperationReasons((current) => { const next = { ...current }; delete next[operation.operationId]; return next; }))
+                            .catch((resolveError) => setUnknownOperationError(resolveError instanceof Error ? resolveError.message : String(resolveError)))
+                            .finally(() => setUnknownOperationBusyId(undefined));
+                        }}>{verifiedState === "applied" ? (language === "zh" ? "核验为已应用" : "Verify applied") : (language === "zh" ? "核验为未应用" : "Verify not applied")}</button>)}</div>
+                      </div> : null}
+                    </article>)}
+                    {unknownOperationError ? <p className="is-error">{unknownOperationError}</p> : null}
+                  </div> : null}
+                  {(selectedRun.recoveryDecisions?.length ?? 0) > 0 ? <details className="workflow-run-center-node-outputs">
+                    <summary>{language === "zh" ? "用户恢复决定" : "Recovery decisions"} · {selectedRun.recoveryDecisions!.length}</summary>
+                    <div className="workflow-run-center-events">{selectedRun.recoveryDecisions!.map((decision) => <span key={decision.decisionId}>{recoveryActionLabel(decision.action, language)} · {decision.actor} · {formatDate(decision.decidedAt, language)} · {decision.reason} · operationId: {decision.operationIds.join(", ") || "—"}</span>)}</div>
+                  </details> : null}
+                </section> : null}
                 {selectedArtifacts.length > 0 ? <section className="workflow-run-center-section workflow-run-center-artifacts"><header><GitBranch size={14} /><strong>{labels.artifacts}</strong></header><div className="workflow-run-center-artifact-list">{selectedArtifacts.map((artifact) => <article key={artifact.id}><strong>{artifact.title}</strong><small>{artifact.kind === "file" ? artifactFileName(artifact.path) : artifact.kind === "url" ? artifactUrlPreview(artifact.url) : "text"}</small>{artifact.description ? <p>{artifact.description}</p> : null}{artifact.kind === "text" && artifact.content ? <pre>{artifact.content.slice(0, 4000)}</pre> : null}</article>)}</div></section> : null}
                 <section className="workflow-run-center-section">
                   <header><GitBranch size={14} /><strong>{labels.config}</strong></header>
@@ -305,6 +474,43 @@ function WorkflowRunCenterOpen({ runs, conversations = [], artifacts = [], loadi
                           {eventError ? <p className="is-error">{getWorkflowErrorCode(eventError)} · {eventError}</p> : null}
                           {progress?.inputSummary ? <details className="workflow-run-center-node-outputs"><summary>{labels.inputSummary}</summary><pre>{JSON.stringify(progress.inputSummary, null, 2)}</pre></details> : null}
                           {progress?.outputs ? <details className="workflow-run-center-node-outputs"><summary>{labels.outputs}</summary><pre>{JSON.stringify(progress.outputs, null, 2)}</pre></details> : null}
+                          {progress?.acceptance ? <details className="workflow-run-center-node-outputs" open={progress.acceptance.outcome !== "clean"}>
+                            <summary>{language === "zh" ? "节点验收" : "Node acceptance"} · {progress.acceptance.outcome}</summary>
+                            <div className="workflow-run-center-events">
+                              <span>{language === "zh" ? "变更路径" : "Changed paths"} · {progress.acceptance.changedPaths.join(", ") || "—"}</span>
+                              <span>operationId · {progress.acceptance.operationIds.join(", ") || "—"}</span>
+                              {progress.acceptance.issues.map((issue) => <span key={`${issue.code}:${issue.detail}`}>{issue.severity} · {issue.code} · {issue.detail}</span>)}
+                            </div>
+                          </details> : null}
+                          {progress?.scriptReceipt ? <details className="workflow-run-center-node-outputs" open={progress.scriptReceipt.timedOut || progress.scriptReceipt.effectState === "unknown" || Boolean(progress.scriptReceipt.stderrSummary)}>
+                            <summary>{language === "zh" ? "脚本执行凭据" : "Script execution receipt"} · {progress.scriptReceipt.effectState}</summary>
+                            <div className="workflow-run-center-events">
+                              <span>exitCode · {progress.scriptReceipt.exitCode ?? "—"}</span>
+                              <span>signal · {progress.scriptReceipt.signal ?? "—"}</span>
+                              <span>timeout · {String(progress.scriptReceipt.timedOut)}</span>
+                              <span>effectState · {progress.scriptReceipt.effectState}</span>
+                              {progress.scriptReceipt.stderrSummary ? <span>stderr · {progress.scriptReceipt.stderrSummary}</span> : null}
+                            </div>
+                          </details> : null}
+                          {progress?.intervention && selectedRun.runId === writableRunId && onResolveIntervention ? <div className="workflow-run-center-node-actions">
+                            <input value={nodeActionReason} maxLength={2_000} onChange={(event) => setNodeActionReason(event.currentTarget.value)} placeholder={language === "zh" ? "处理依据（可选）" : "Decision reason (optional)"} />
+                            <div>{progress.intervention.allowedActions.map((action) => <button key={action} type="button" disabled={nodeActionBusy} onClick={() => {
+                              if (!window.confirm(language === "zh" ? `确认对节点 ${progress.title} 执行 ${action}？` : `Confirm ${action} for node ${progress.title}?`)) return;
+                              setNodeActionBusy(true);
+                              setNodeActionError(undefined);
+                              void Promise.resolve(onResolveIntervention(progress.nodeId, action, nodeActionReason.trim() || undefined)).then(() => setNodeActionReason("")).catch((nodeActionFailure) => setNodeActionError(nodeActionFailure instanceof Error ? nodeActionFailure.message : String(nodeActionFailure))).finally(() => setNodeActionBusy(false));
+                            }}>{action === "continue" ? (language === "zh" ? "继续/重试" : "Continue / retry") : action}</button>)}</div>
+                            {nodeActionError ? <p className="is-error">{nodeActionError}</p> : null}
+                          </div> : null}
+                          {selectedRun.recovery?.availableActions.includes("rollback_savepoint") && selectedRun.runId === writableRunId && onResolveRecovery && selectedRun.recovery.uncertainNodeIds.includes(node.nodeId) ? <div className="workflow-run-center-node-actions">
+                            <input value={nodeActionReason} maxLength={2_000} onChange={(event) => setNodeActionReason(event.currentTarget.value)} placeholder={language === "zh" ? "回滚依据（必填）" : "Rollback reason (required)"} />
+                            <button type="button" disabled={nodeActionBusy || !nodeActionReason.trim()} onClick={() => {
+                              if (!window.confirm(language === "zh" ? `确认从节点 ${node.title} 回滚到当前保存点？` : `Roll back from node ${node.title} to the current savepoint?`)) return;
+                              setNodeActionBusy(true);
+                              setNodeActionError(undefined);
+                              void Promise.resolve(onResolveRecovery(selectedRun.runId, "rollback_savepoint", nodeActionReason.trim())).then(() => setNodeActionReason("")).catch((nodeActionFailure) => setNodeActionError(nodeActionFailure instanceof Error ? nodeActionFailure.message : String(nodeActionFailure))).finally(() => setNodeActionBusy(false));
+                            }}>{language === "zh" ? "回滚到保存点" : "Roll back to savepoint"}</button>
+                          </div> : null}
                           {timelineSegments.length > 0 ? <div className="workflow-run-center-node-timeline-visual" aria-label={labels.timeline}><div className="workflow-run-center-node-track">{timelineSegments.map((segment, index) => <span key={`${segment.kind}-${segment.startedAt}-${index}`} className={`workflow-run-center-node-track-segment is-${segment.kind}`} style={selectedTimelineBounds ? getWorkflowRunTimelineSegmentStyle(segment, selectedTimelineBounds) : undefined} title={`${segment.kind.replaceAll("_", " ")} · ${formatNodeDuration({ attempt: segment.attempt ?? 1, startedAt: segment.startedAt, finishedAt: segment.finishedAt })}`} />)}</div><div className="workflow-run-center-node-segments">{timelineSegments.map((segment, index) => <span key={`${segment.kind}-${segment.startedAt}-${index}`}><b>{segment.kind.replaceAll("_", " ")}</b> {formatNodeDuration({ attempt: segment.attempt ?? 1, startedAt: segment.startedAt, finishedAt: segment.finishedAt })}</span>)}</div></div> : null}
                           {events.length > 0 ? (
                             <div className="workflow-run-center-events">
@@ -332,4 +538,14 @@ function WorkflowRunCenterOpen({ runs, conversations = [], artifacts = [], loadi
       </section>
     </div>
   );
+}
+
+function downloadWorkflowRunReport(run: WorkflowRunState): void {
+  const blob = new Blob([run.finalReport ?? ""], { type: "text/markdown;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = `workflow-${run.workflowId}-${run.runId}-report.md`;
+  anchor.click();
+  URL.revokeObjectURL(url);
 }

@@ -1,6 +1,6 @@
 import type { WorkflowV2ScriptParameterDef } from "./definition";
 import { isWorkflowV2HookJsonValue } from "./hooks";
-import type { WorkflowV2WorkerOutput } from "./packets";
+import { isWorkflowV2WorkerOutput, type WorkflowV2WorkerOutput } from "./packets";
 import type { WorkflowV2Plan } from "./planning";
 import type {
   WorkflowV2InterventionAction,
@@ -193,6 +193,7 @@ export function isWorkflowV2CacheEntryMetadata(
 }
 
 function isWorkerOutput(value: unknown): value is WorkflowV2WorkerOutput {
+  if (!isWorkflowV2WorkerOutput(value)) return false;
   if (!isRecord(value)) return false;
   if (!isNonEmptyString(value.nodeId) || !isNonEmptyString(value.summary)) return false;
   if (!isRecord(value.outputs) || !Array.isArray(value.proposals)) return false;

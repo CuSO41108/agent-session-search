@@ -217,7 +217,7 @@ describe("workflow-v2 executor", () => {
     expect(startedNodeIds).toEqual(["first", "second", "workflow-summary"]);
   });
 
-  test("settles every started node in a failed batch without scheduling another batch", async () => {
+  test("requests cancellation for running siblings, settles the batch, and does not schedule another batch", async () => {
     const plan = await buildWorkflowV2Plan({
       definition: failingParallelDefinition(),
       approvedBy: "tester",
@@ -225,6 +225,7 @@ describe("workflow-v2 executor", () => {
     });
     const releaseSecond = deferred();
     const startedNodeIds: string[] = [];
+    const cancellations: Array<{ failedNodeId: string; runningNodeIds: string[]; reason: string }> = [];
 
     const execution = executeWorkflowV2Plan({
       plan,
@@ -243,14 +244,18 @@ describe("workflow-v2 executor", () => {
       executeScript: async () => {
         throw new Error("script runner should not be called");
       },
+      cancelRunningNodes: async (input) => {
+        cancellations.push(input);
+        releaseSecond.resolve();
+      },
     });
 
     await Promise.resolve();
     const startedBeforeSecondResolved = [...startedNodeIds];
-    releaseSecond.resolve();
     const result = await execution;
 
     expect(startedBeforeSecondResolved).toEqual(["first", "second"]);
+    expect(cancellations).toEqual([{ failedNodeId: "first", runningNodeIds: ["second"], reason: "First worker failed" }]);
     expect(startedNodeIds).toEqual(["first", "second"]);
     expect(result.runState.status).toBe("failed");
     expect(result.runState.nodes.first?.status).toBe("failed");
@@ -771,6 +776,59 @@ describe("workflow-v2 executor", () => {
     }));
   });
 
+  test("retries a known script failure only under an explicit bounded retry policy", async () => {
+    const retryDefinition = definition();
+    retryDefinition.nodes = [
+      {
+        id: "script",
+        kind: "verify",
+        title: "Retryable script",
+        execModel: "script",
+        executionMode: "script",
+        script: createWorkflowV2InlineScriptSpec({ language: "typescript", code: "return { verification: true };" }),
+        outputFields: [{ key: "verification", required: true }],
+        onError: "retry",
+        maxRetry: 1,
+      },
+    ];
+    retryDefinition.edges = [];
+    const plan = await buildWorkflowV2Plan({ definition: retryDefinition, approvedBy: "tester", now: 2_100 });
+    let attempts = 0;
+    const result = await executeWorkflowV2Plan({
+      plan,
+      runLlmNode: async () => { throw new Error("llm runner should not be called"); },
+      executeScript: async ({ node }) => {
+        attempts += 1;
+        if (attempts === 1) throw new Error("transient script failure");
+        return { nodeId: node.id, summary: "script recovered", outputs: { verification: true }, proposals: [] };
+      },
+    });
+
+    expect(attempts).toBe(2);
+    expect(result.runState.status).toBe("completed");
+    expect(result.workerOutputs[0]?.summary).toBe("script recovered");
+  });
+
+  test("never automatically retries a non-idempotent script even when onError requests retry", async () => {
+    const retryDefinition = definition();
+    const script = createWorkflowV2InlineScriptSpec({ language: "typescript", code: "return { verification: true };" });
+    script.idempotency = "non_idempotent";
+    retryDefinition.nodes = [{ id: "script", kind: "verify", title: "Non-idempotent script", execModel: "script", executionMode: "script", script, outputFields: [{ key: "verification", required: true }], onError: "retry", maxRetry: 3 }];
+    retryDefinition.edges = [];
+    const plan = await buildWorkflowV2Plan({ definition: retryDefinition, approvedBy: "tester", now: 2_200 });
+    let attempts = 0;
+
+    const result = await executeWorkflowV2Plan({
+      plan,
+      runLlmNode: async () => { throw new Error("llm runner should not be called"); },
+      executeScript: async () => { attempts += 1; throw new Error("remote effect may have completed"); },
+    });
+
+    expect(attempts).toBe(1);
+    expect(result.runState.status).toBe("paused");
+    expect(result.runState.nodes.script).toMatchObject({ status: "paused", intervention: { reason: expect.stringContaining("Automatic retry is disabled") } });
+  });
+
   test("fails fast when the frozen plan cannot make progress", async () => {
     const validPlan = await buildWorkflowV2Plan({
       definition: definition(),
@@ -851,6 +909,7 @@ describe("workflow-v2 executor", () => {
     retryDefinition.edges = [];
     const plan = await buildWorkflowV2Plan({ definition: retryDefinition, approvedBy: "tester", now: 5_000 });
     let attempts = 0;
+    const acceptedSummaries: string[] = [];
 
     const result = await executeWorkflowV2Plan({
       plan,
@@ -866,6 +925,7 @@ describe("workflow-v2 executor", () => {
       executeScript: async () => {
         throw new Error("script runner should not be called");
       },
+      onNodeAccepted: async ({ output }) => { acceptedSummaries.push(output.summary); },
     });
 
     expect(attempts).toBe(2);
@@ -877,6 +937,7 @@ describe("workflow-v2 executor", () => {
       outputs: { draft: "accepted" },
       proposals: [],
     }]);
+    expect(acceptedSummaries).toEqual(["attempt 2"]);
   });
 
   test("pauses through one intervention contract when validation requires a human", async () => {
@@ -923,6 +984,7 @@ describe("workflow-v2 executor", () => {
     reviewedDefinition.edges = [];
     const plan = await buildWorkflowV2Plan({ definition: reviewedDefinition, approvedBy: "tester", now: 5_200 });
     const reviewerInputs: string[] = [];
+    const acceptanceOrder: string[] = [];
 
     const result = await executeWorkflowV2Plan({
       plan,
@@ -936,6 +998,7 @@ describe("workflow-v2 executor", () => {
         throw new Error("script runner should not be called");
       },
       reviewNodeOutput: async (reviewInput) => {
+        acceptanceOrder.push("review");
         reviewerInputs.push(JSON.stringify(reviewInput));
         return {
           reviewerNodeId: "independent-reviewer",
@@ -947,12 +1010,14 @@ describe("workflow-v2 executor", () => {
           },
         };
       },
+      onNodeAccepted: async () => { acceptanceOrder.push("materialize"); },
     });
 
     expect(result.runState.status).toBe("completed");
     expect(result.runState.nodes.draft?.reviewVerdict?.decision).toBe("accept");
     expect(reviewerInputs).toHaveLength(1);
     expect(reviewerInputs[0]).not.toContain("executor self-assessment");
+    expect(acceptanceOrder).toEqual(["review", "materialize"]);
   });
 
   test("requeues a reviewer rejection and accepts a later corrected attempt", async () => {

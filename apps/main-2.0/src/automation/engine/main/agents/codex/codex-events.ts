@@ -95,14 +95,26 @@ function normalizeToolItem(item: Record<string, unknown> | undefined, state: Cod
     const args = name.toLowerCase().includes("workflow_node_complete")
       ? formattedArguments
       : truncate(formattedArguments, 600);
-    return [{ type: "tool_call", name, content: args }];
+    return [{ type: "tool_call", name, content: args, ...(callId ? { metadata: { id: callId } } : {}) }];
   }
 
   if (itemType === "function_call_output") {
     const callId = asString(item.call_id) || asString(item.callId) || asString(item.id);
     const name = (callId && state.toolNames.get(callId)) || "tool";
     const output = truncate(extractToolOutput(item));
-    return [{ type: "tool_result", name, content: output }];
+    const rawStatus = asString(item.status).toLowerCase();
+    const error = item.error && typeof item.error === "object"
+      ? asString((item.error as Record<string, unknown>).message)
+      : asString(item.error);
+    const status = rawStatus === "failed" || rawStatus === "error" || rawStatus === "cancelled" || error
+      ? "failed"
+      : "completed";
+    return [{
+      type: "tool_result",
+      name,
+      content: error ? truncate(error) : output,
+      metadata: { ...(callId ? { id: callId } : {}), status },
+    }];
   }
 
   return [];

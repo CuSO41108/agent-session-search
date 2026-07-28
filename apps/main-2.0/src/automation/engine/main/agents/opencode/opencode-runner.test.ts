@@ -56,7 +56,7 @@ send({ type: "step_finish", sessionID: "ses_1", part: { type: "step-finish", rea
     expect(agentEventsFromOpenCodeJson({
       type: "tool_use",
       part: { type: "tool", tool: "bash", callID: "call_1", state: { status: "completed", output: "ok" } },
-    })).toEqual([expect.objectContaining({ type: "tool_result", name: "bash", content: "ok" })]);
+    })).toEqual([expect.objectContaining({ type: "tool_result", name: "bash", content: "ok", metadata: expect.objectContaining({ id: "call_1", status: "completed" }) })]);
     expect(agentEventsFromOpenCodeJson({ type: "error", error: { name: "AuthError" } })).toEqual([
       { type: "error", error: '{"name":"AuthError"}' },
     ]);

@@ -1,8 +1,13 @@
 import type {
+  CleanupWorkflowV2RunRequest,
   AnswerWorkflowGateRequest,
   PauseWorkflowNodeRequest,
   ReviseWorkflowV2RunRequest,
   ResolveWorkflowV2InterventionRequest,
+  ResolveWorkflowV2RecoveryRequest,
+  RefreshWorkflowV2RecoveryRequest,
+  ResolveWorkflowV2ConflictRequest,
+  ResolveWorkflowV2UnknownOperationRequest,
   RunWorkflowRequest,
   StartWorkflowNodeRequest,
   StopWorkflowRunRequest,
@@ -47,6 +52,26 @@ export class WorkflowRunService {
 
   resolveIntervention(input: ResolveWorkflowV2InterventionRequest): Promise<WorkflowOperationResult> {
     return this.deps.runtime.resolveWorkflowV2Intervention(input);
+  }
+
+  resolveRecovery(input: ResolveWorkflowV2RecoveryRequest): Promise<WorkflowOperationResult> {
+    return this.deps.runtime.resolveWorkflowV2Recovery(input);
+  }
+
+  refreshRecovery(input: RefreshWorkflowV2RecoveryRequest): Promise<WorkflowOperationResult> {
+    return this.deps.runtime.refreshWorkflowV2Recovery(input);
+  }
+
+  resolveConflict(input: ResolveWorkflowV2ConflictRequest): Promise<WorkflowOperationResult> {
+    return this.deps.runtime.resolveWorkflowV2Conflict(input);
+  }
+
+  resolveUnknownOperation(input: ResolveWorkflowV2UnknownOperationRequest): Promise<WorkflowOperationResult> {
+    return this.deps.runtime.resolveWorkflowV2UnknownOperation(input);
+  }
+
+  cleanupMaterials(input: CleanupWorkflowV2RunRequest): Promise<WorkflowOperationResult> {
+    return this.deps.runtime.cleanupWorkflowV2RunMaterials(input);
   }
 
   stop(input: StopWorkflowRunRequest): Promise<WorkflowOperationResult> {

@@ -119,6 +119,11 @@ export function WorkflowPage({ controller: source }: { controller: WorkflowContr
   const onStartNode = source.onStartNode;
   const onSubmitScriptInput = source.onSubmitScriptInput;
   const onResolveIntervention = source.onResolveIntervention;
+  const onResolveRecovery = source.onResolveRecovery;
+  const onRefreshRecovery = source.onRefreshRecovery;
+  const onResolveConflict = source.onResolveConflict;
+  const onResolveUnknownOperation = source.onResolveUnknownOperation;
+  const onCleanupRunMaterials = source.onCleanupRunMaterials;
   const onSendNodeMessage = source.onSendNodeMessage;
   const onCompleteNodeConversation = source.onCompleteNodeConversation;
   const onRejectNodeCompletion = source.onRejectNodeCompletion;
@@ -149,6 +154,7 @@ export function WorkflowPage({ controller: source }: { controller: WorkflowContr
   const [draftEditorOpen, setDraftEditorOpen] = useState(false);
   const [runCenterOpen, setRunCenterOpen] = useState(false);
   const [selectedHistoryRunId, setSelectedHistoryRunId] = useState<string | undefined>(undefined);
+  const [transactionApprovalMode, setTransactionApprovalMode] = useState<"batch" | "per_operation">("batch");
 
   useEffect(() => {
     if (generationReview?.status === "reviewing") setReviewDrawerOpen(true);
@@ -392,6 +398,13 @@ export function WorkflowPage({ controller: source }: { controller: WorkflowContr
         open={runCenterOpen}
         {...(selectedHistoryRunId ? { selectedRunId: selectedHistoryRunId } : {})}
         language={language}
+        {...(onResolveRecovery ? { onResolveRecovery } : {})}
+        {...(onRefreshRecovery ? { onRefreshRecovery } : {})}
+        {...(onResolveConflict ? { onResolveConflict } : {})}
+        {...(onResolveUnknownOperation ? { onResolveUnknownOperation } : {})}
+        {...(onCleanupRunMaterials ? { onCleanupRunMaterials } : {})}
+        {...(activeRunId ? { writableRunId: activeRunId } : {})}
+        {...(onResolveIntervention ? { onResolveIntervention } : {})}
         onSelectRun={setSelectedHistoryRunId}
         onClose={() => setRunCenterOpen(false)}
       />
@@ -400,7 +413,10 @@ export function WorkflowPage({ controller: source }: { controller: WorkflowContr
         <button
           type="button"
           className={`workflow-runs-fab ${runCenterOpen ? "is-open" : ""}`}
-          onClick={() => { setSelectedHistoryRunId(undefined); setRunCenterOpen(true); }}
+          onClick={() => {
+            setSelectedHistoryRunId(undefined);
+            setRunCenterOpen(true);
+          }}
           disabled={runs.length === 0}
           title={runs.length === 0 ? "No workflow runs yet" : "Open run history"}
           aria-label={runs.length === 0 ? "No workflow runs yet" : `Open ${runs.length} workflow runs`}
@@ -666,7 +682,15 @@ export function WorkflowPage({ controller: source }: { controller: WorkflowContr
                 <span>{workflowText.confirmWorkflow}</span>
               </button>
             ) : null}
-            <button className="send-btn workflow-run-action" onClick={() => void onRunWorkflow()} disabled={!validation.valid || !workflowConfirmed || running}>
+            {workflowV2Plan?.definition.transactionPolicy?.approvalMode === "user_choice" ? <label className="workflow-approval-mode">
+              <span>{language === "zh" ? "外部操作审批" : "External approvals"}</span>
+              <select value={transactionApprovalMode} onChange={(event) => setTransactionApprovalMode(event.currentTarget.value as "batch" | "per_operation")} disabled={running}>
+                <option value="batch">{language === "zh" ? "批量审批" : "Batch approval"}</option>
+                <option value="per_operation">{language === "zh" ? "逐项审批" : "Per-operation approval"}</option>
+              </select>
+            </label> : null}
+            {workflowV2Plan && !workflowV2Plan.definition.transactionPolicy ? <span className="workflow-transaction-compatibility-warning" role="status">{language === "zh" ? "兼容 direct 模式：此旧 Workflow 不保证回滚。" : "Compatibility direct mode: this legacy workflow has no rollback guarantee."}</span> : null}
+            <button className="send-btn workflow-run-action" onClick={() => void onRunWorkflow(workflowV2Plan?.definition.transactionPolicy?.approvalMode === "user_choice" ? transactionApprovalMode : undefined)} disabled={!validation.valid || !workflowConfirmed || running}>
               <Play size={14} />
               <span>{workflowText.runWorkflow}</span>
             </button>

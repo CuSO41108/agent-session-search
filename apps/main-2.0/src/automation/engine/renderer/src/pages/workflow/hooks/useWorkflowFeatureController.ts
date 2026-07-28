@@ -158,6 +158,45 @@ export function useWorkflowFeatureController({
         }
         await onRefresh();
       },
+      onResolveRecovery: async (runId, action, reason) => {
+        if (!draft.workflowId) return;
+        const result = await workflows.resolveRecovery({
+          workflowId: draft.workflowId,
+          runId,
+          action,
+          actor: "desktop-user",
+          reason: reason.trim(),
+        });
+        if (!result.ok) {
+          const error = result.error ?? "Workflow recovery action could not be applied.";
+          setSnapshot(await workflows.patchDraft({ workflowId: draft.workflowId, error }));
+          throw new Error(error);
+        }
+        await onRefresh();
+      },
+      onRefreshRecovery: async (runId) => {
+        if (!draft.workflowId) return;
+        const result = await workflows.refreshRecovery({ workflowId: draft.workflowId, runId });
+        if (!result.ok) throw new Error(result.error ?? "Workflow recovery could not be refreshed.");
+        await onRefresh();
+      },
+      onResolveConflict: async (runId, input) => {
+        if (!draft.workflowId) return;
+        const result = await workflows.resolveConflict({ workflowId: draft.workflowId, runId, path: input.path, resolution: input.resolution, ...(input.expectedCurrentSha256 ? { expectedCurrentSha256: input.expectedCurrentSha256 } : {}), ...(input.content !== undefined ? { content: input.content } : {}), actor: "desktop-user", reason: input.reason });
+        if (!result.ok) throw new Error(result.error ?? "Workflow conflict could not be resolved.");
+        await onRefresh();
+      },
+      onResolveUnknownOperation: async (runId, input) => {
+        if (!draft.workflowId) return;
+        const result = await workflows.resolveUnknownOperation({ workflowId: draft.workflowId, runId, operationId: input.operationId, verifiedState: input.verifiedState, actor: "desktop-user", reason: input.reason.trim() });
+        if (!result.ok) throw new Error(result.error ?? "Workflow unknown operation could not be verified.");
+        await onRefresh();
+      },
+      onCleanupRunMaterials: async (runId) => {
+        if (!draft.workflowId) return;
+        const result = await workflows.cleanupRunMaterials({ workflowId: draft.workflowId, runId });
+        if (!result.ok) throw new Error(result.error ?? "Workflow run materials could not be cleaned.");
+      },
       onRejectNodeCompletion: async (conversationId, instruction) => setSnapshot(await workflows.rejectNodeCompletion({ conversationId, instruction })),
       onInterruptNodeConversation: async (conversationId) => setSnapshot(await workflows.interruptNodeConversation({ conversationId })),
       ...(onResolveRuntimeApproval ? { onResolveRuntimeApproval } : {}),
@@ -192,8 +231,8 @@ export function useWorkflowFeatureController({
         return draft.updateWorkflowNode(nodeId, update);
       },
       onUpdateDefinition: (definition) => draft.updateWorkflowDefinition(definition),
-      onRunWorkflow: async () => {
-        const result = await runner.runWorkflowInternal();
+      onRunWorkflow: async (transactionApprovalMode) => {
+        const result = await runner.runWorkflowInternal(undefined, transactionApprovalMode);
         if (!result.ok && result.error && draft.workflowId) {
           const next = await workflows.patchDraft({ workflowId: draft.workflowId, error: result.error });
           setSnapshot(next);

@@ -16,7 +16,7 @@ interface UseWorkflowRunnerOptions {
 
 export interface WorkflowRunnerController {
   runWorkflow: () => Promise<void>;
-  runWorkflowInternal: (targetWorkflow?: WorkflowDraftState) => Promise<RunWorkflowResult>;
+  runWorkflowInternal: (targetWorkflow?: WorkflowDraftState, transactionApprovalMode?: "batch" | "per_operation") => Promise<RunWorkflowResult>;
 }
 
 export function useWorkflowRunner({
@@ -24,7 +24,7 @@ export function useWorkflowRunner({
   workflowId,
   workflowContextDocument,
 }: UseWorkflowRunnerOptions): WorkflowRunnerController {
-  const runWorkflowInternal = useCallback(async (targetWorkflow?: WorkflowDraftState): Promise<RunWorkflowResult> => {
+  const runWorkflowInternal = useCallback(async (targetWorkflow?: WorkflowDraftState, transactionApprovalMode?: "batch" | "per_operation"): Promise<RunWorkflowResult> => {
     const targetWorkflowId = targetWorkflow?.workflowId ?? workflowId;
     if (!targetWorkflowId) {
       return { ok: false, error: "Workflow was not found." };
@@ -33,6 +33,7 @@ export function useWorkflowRunner({
     const result = await workflows.runWorkflow({
       workflowId: targetWorkflowId,
       contextDocument: targetWorkflow?.contextDocument ?? workflowContextDocument,
+      ...(transactionApprovalMode ? { transactionApprovalMode } : {}),
     });
     return {
       ok: result.ok,

@@ -16,14 +16,21 @@ import type { WorkflowV2TemplateRegistry } from "./templates";
 import { compileWorkflowV2Definition, WorkflowV2TemplateCompileError } from "./templates";
 import { workflowV2NodeHookValidationErrors } from "./hooks";
 import { listWorkflowV2TerminalNodeIds, normalizeWorkflowV2TerminalNode } from "./topology";
+import { workflowTransactionPolicyValidationErrors } from "./transaction";
 
 const VALID_SCRIPT_LANGUAGES = new Set(["python", "typescript", "bash"]);
 const VALID_SCRIPT_RISKS = new Set(["safe", "read", "write", "dangerous"]);
+const VALID_SCRIPT_EFFECT_MODES = new Set(["pure", "workspace_only", "brokered_external"]);
+const VALID_SCRIPT_IDEMPOTENCY = new Set(["safe_retry", "keyed", "non_idempotent"]);
+const VALID_SCRIPT_STDERR_POLICIES = new Set(["ignore", "warn", "fail"]);
+const VALID_SCRIPT_ERROR_POLICIES = new Set(["fail", "skip", "ask_human", "retry"]);
+const VALID_EXHAUSTED_POLICIES = new Set(["fail", "skip", "ask_human"]);
 const VALID_SUMMARY_FALLBACK_POLICIES = new Set(["truncate", "summarize", "ask_human"]);
 const VALID_MODEL_PROFILES = new Set(["fast", "balanced", "expert"]);
 const VALID_NODE_ROLES = new Set(["orchestrator", "executor", "reviewer"]);
 const VALID_WORKFLOW_VALUE_TYPES = new Set(["string", "number", "boolean", "json", "secret", "file", "directory"]);
 const VALID_OUTPUT_ARTIFACT_FORMATS = new Set(["markdown", "text", "json", "html", "csv"]);
+const STRICT_WORKSPACE_CAPABILITIES = new Set(["workspace_read", "workspace_write", "workspace_delete"]);
 
 export function isSafeInteger(value: unknown): value is number {
   return Number.isSafeInteger(value);
@@ -178,6 +185,7 @@ function appendNodeValidationErrors(node: WorkflowV2Node, errors: string[]): voi
     if (node.maxRetry !== undefined && !isNonNegativeSafeInteger(node.maxRetry)) {
       errors.push(`Workflow V2 llm node ${node.id} must have a non-negative safe-integer maxRetry.`);
     }
+    if (node.onExhausted !== undefined && !VALID_EXHAUSTED_POLICIES.has(node.onExhausted)) errors.push(`Workflow V2 llm node ${node.id} has an invalid onExhausted policy.`);
     if (node.contextBudget && !isValidWorkflowV2ContextBudget(node.contextBudget)) {
       errors.push(`Workflow V2 llm node ${node.id} has an invalid context budget.`);
     }
@@ -209,6 +217,13 @@ function appendNodeValidationErrors(node: WorkflowV2Node, errors: string[]): voi
     }
     if (!Array.isArray(node.script.capabilities)) errors.push(`Workflow V2 script node ${node.id} must declare capabilities.`);
     if (!VALID_SCRIPT_RISKS.has(node.script.managerRisk.level) || !node.script.managerRisk.rationale.trim()) errors.push(`Workflow V2 script node ${node.id} must declare Manager risk and rationale.`);
+    if (node.script.effectMode !== undefined && !VALID_SCRIPT_EFFECT_MODES.has(node.script.effectMode)) errors.push(`Workflow V2 script node ${node.id} has an invalid effectMode.`);
+    if (node.script.idempotency !== undefined && !VALID_SCRIPT_IDEMPOTENCY.has(node.script.idempotency)) errors.push(`Workflow V2 script node ${node.id} has an invalid idempotency contract.`);
+    if (node.script.stderrPolicy !== undefined && !VALID_SCRIPT_STDERR_POLICIES.has(node.script.stderrPolicy)) errors.push(`Workflow V2 script node ${node.id} has an invalid stderrPolicy.`);
+    if (node.maxRetry !== undefined && !isNonNegativeSafeInteger(node.maxRetry)) errors.push(`Workflow V2 script node ${node.id} must have a non-negative safe-integer maxRetry.`);
+    if (node.onError !== undefined && !VALID_SCRIPT_ERROR_POLICIES.has(node.onError)) errors.push(`Workflow V2 script node ${node.id} has an invalid onError policy.`);
+    if (node.onError === "retry" && node.maxRetry === undefined) errors.push(`Workflow V2 script node ${node.id} must declare maxRetry when onError is retry.`);
+    if (node.script.compensationAdapter !== undefined && !node.script.compensationAdapter.trim()) errors.push(`Workflow V2 script node ${node.id} compensationAdapter must not be empty.`);
     if (node.script.timeoutMs !== undefined && !isPositiveSafeInteger(node.script.timeoutMs)) {
       errors.push(`Workflow V2 script node ${node.id} must have a positive safe-integer timeoutMs.`);
     }
@@ -338,6 +353,31 @@ export function validateWorkflowV2Definition(definition: WorkflowV2Definition, o
     nodeIds.add(node.id);
     appendNodeValidationErrors(node, errors);
     if (node.role === undefined) warnings.push(`Workflow V2 node ${node.id} does not declare a role.`);
+  }
+
+  if (definition.transactionPolicy === undefined) {
+    warnings.push("Workflow V2 definition has no transaction policy and will run in compatibility direct mode.");
+  } else if (!isRecord(definition.transactionPolicy)) {
+    errors.push("Workflow V2 transaction policy must be an object.");
+  } else {
+    errors.push(...workflowTransactionPolicyValidationErrors(definition.transactionPolicy, nodeIds));
+  }
+  if (definition.transactionPolicy && definition.transactionPolicy.defaultMode !== "direct") {
+    for (const node of definition.nodes) {
+      if (node.execModel !== "script") continue;
+      if (!node.script.effectMode) errors.push(`Workflow V2 governed script node ${node.id} must declare effectMode.`);
+      if (!node.script.idempotency) errors.push(`Workflow V2 governed script node ${node.id} must declare idempotency.`);
+      if (!node.script.stderrPolicy) errors.push(`Workflow V2 governed script node ${node.id} must declare stderrPolicy.`);
+      if (definition.transactionPolicy.defaultMode === "strict_atomic" && node.script.effectMode !== "brokered_external" && Array.isArray(node.script.capabilities)) {
+        const unbrokeredCapabilities = node.script.capabilities.filter((capability) => !STRICT_WORKSPACE_CAPABILITIES.has(capability));
+        if (unbrokeredCapabilities.length > 0) {
+          errors.push(`Workflow V2 strict script node ${node.id} must use effectMode=brokered_external for non-workspace capabilities: ${unbrokeredCapabilities.join(", ")}.`);
+        }
+      }
+      if (node.script.effectMode === "brokered_external" && !node.script.compensationAdapter && definition.transactionPolicy?.defaultMode === "strict_atomic") {
+        errors.push(`Workflow V2 strict brokered script node ${node.id} must declare compensationAdapter.`);
+      }
+    }
   }
 
   const topologicalNodeIds = topologicalOrder(definition, errors);

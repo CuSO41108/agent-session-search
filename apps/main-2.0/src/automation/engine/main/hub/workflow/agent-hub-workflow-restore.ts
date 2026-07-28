@@ -36,6 +36,14 @@ import { cloneWorkflowV2Plan } from "../../../shared/workflow-v2/planning";
 import type { WorkflowV2Definition } from "../../../shared/workflow-v2/definition";
 import { validateWorkflowV2Definition } from "../../../shared/workflow-v2/validation";
 import type { WorkflowV2PersistedRunState } from "../../../shared/workflow-v2/storage";
+import {
+  isWorkflowOperationRecord,
+  isWorkflowRecoveryDecisionRecord,
+  isWorkflowRecoveryPreview,
+  isWorkflowTransactionState,
+  type WorkflowOperationRecord,
+  type WorkflowRecoveryPreview,
+} from "../../../shared/workflow-v2/transaction";
 import type { WorkflowV2RunNodeState } from "../../../shared/workflow-v2/state";
 import { buildWorkflowV2FinalReport } from "../../workflows/v2/workflow-v2-recovery";
 import { projectWorkflowV2PausedNodeInteraction } from "../../workflows/v2/workflow-v2-node-interaction";
@@ -249,10 +257,22 @@ export function restoreWorkflowRun(raw: unknown): WorkflowRunState | undefined {
   const restoredWorkflowV2Plan =
     record.workflowV2Plan === undefined ? undefined : restoreWorkflowV2Plan(record.workflowV2Plan);
   if (!restoredWorkflowV2Plan) return undefined;
+  const configuration = asRecord(record.configurationSnapshot);
+  const operations = asArray(record.operations).filter(isWorkflowOperationRecord);
+  const recoveryDecisions = asArray(record.recoveryDecisions).filter(isWorkflowRecoveryDecisionRecord);
   return {
     runId,
     workflowId,
     status: restoreWorkflowRunStatus(record.status),
+    ...(record.triggerSource === "manual" || record.triggerSource === "scheduled" || record.triggerSource === "mcp" || record.triggerSource === "recovery" || record.triggerSource === "rerun" ? { triggerSource: record.triggerSource } : {}),
+    ...(configuration && asOptionalString(configuration.configuredAgentId) ? { configurationSnapshot: {
+      configuredAgentId: asOptionalString(configuration.configuredAgentId)!,
+      ...(asOptionalString(configuration.runtimeId) ? { runtimeId: asOptionalString(configuration.runtimeId) } : {}),
+      ...(asOptionalString(configuration.channelId) ? { channelId: asOptionalString(configuration.channelId) } : {}),
+      ...(asOptionalString(configuration.modelId) ? { modelId: asOptionalString(configuration.modelId) } : {}),
+      ...(asOptionalString(configuration.reasoningEffort) ? { reasoningEffort: asOptionalString(configuration.reasoningEffort) } : {}),
+      ...(typeof configuration.agentRevision === "number" && Number.isSafeInteger(configuration.agentRevision) && configuration.agentRevision >= 0 ? { agentRevision: configuration.agentRevision } : {}),
+    } } : {}),
     workflowV2Plan: restoredWorkflowV2Plan,
     progress: asArray(record.progress)
       .map((item) => restoreWorkflowRunProgressItem(item))
@@ -262,6 +282,10 @@ export function restoreWorkflowRun(raw: unknown): WorkflowRunState | undefined {
       .filter((event): event is WorkflowEvent => Boolean(event)),
     contextDocument: asOptionalString(record.contextDocument) ?? "",
     ...(finalReport !== undefined ? { finalReport } : {}),
+    ...(isWorkflowTransactionState(record.transaction) ? { transaction: structuredClone(record.transaction) } : {}),
+    ...(Array.isArray(record.operations) && operations.length === record.operations.length ? { operations: structuredClone(operations) } : {}),
+    ...(isWorkflowRecoveryPreview(record.recovery) ? { recovery: structuredClone(record.recovery) } : {}),
+    ...(Array.isArray(record.recoveryDecisions) && recoveryDecisions.length === record.recoveryDecisions.length ? { recoveryDecisions: structuredClone(recoveryDecisions) } : {}),
     startedAt: asNumber(record.startedAt, Date.now()),
     finishedAt: typeof record.finishedAt === "number" ? record.finishedAt : undefined,
     lastError: asOptionalString(record.lastError),
@@ -273,6 +297,8 @@ export function reconcileWorkflowV2RunFromDurableState(input: {
   run: WorkflowRunState;
   persisted: WorkflowV2PersistedRunState;
   updateWorkflowProjection: boolean;
+  operations?: WorkflowOperationRecord[];
+  recovery?: WorkflowRecoveryPreview;
 }): { workflow: WorkflowDraftState; run: WorkflowRunState } | undefined {
   if (input.persisted.workflowId !== input.workflow.workflowId
     || input.persisted.workflowId !== input.run.workflowId
@@ -294,6 +320,8 @@ export function reconcileWorkflowV2RunFromDurableState(input: {
     };
     const output = outputByNodeId.get(nodeId);
     if (output) progressItem.outputs = structuredClone(output.outputs);
+    if (output?.acceptance) progressItem.acceptance = structuredClone(output.acceptance);
+    if (output?.scriptReceipt) progressItem.scriptReceipt = structuredClone(output.scriptReceipt);
     if (node.intervention) {
       Object.assign(progressItem, projectWorkflowV2PausedNodeInteraction({
         nodeId,
@@ -329,7 +357,7 @@ export function reconcileWorkflowV2RunFromDurableState(input: {
       ? "failed"
       : "waiting_for_user";
   const finalReport = status === "completed" || status === "failed"
-    ? buildWorkflowV2FinalReport(input.persisted.plan, input.persisted.workerOutputs, durableStatus)
+    ? input.persisted.finalReport ?? buildWorkflowV2FinalReport(input.persisted.plan, input.persisted.workerOutputs, durableStatus, input.persisted.recoveryDecisions, input.operations)
     : undefined;
   const lastError = status === "failed"
     ? progress.find((item) => item.status === "failed")?.detail ?? "Workflow V2 run failed before app restart."
@@ -341,9 +369,17 @@ export function reconcileWorkflowV2RunFromDurableState(input: {
     events,
     finishedAt: status === "completed" || status === "failed" ? input.persisted.savedAt : undefined,
     lastError,
+    ...(input.persisted.transaction ? { transaction: structuredClone(input.persisted.transaction) } : {}),
+    ...(input.operations ? { operations: structuredClone(input.operations) } : {}),
+    ...(input.recovery ? { recovery: structuredClone(input.recovery) } : {}),
+    ...(input.persisted.recoveryDecisions ? { recoveryDecisions: structuredClone(input.persisted.recoveryDecisions) } : {}),
   };
   if (finalReport !== undefined) nextRun.finalReport = finalReport;
   else delete nextRun.finalReport;
+  if (!input.persisted.transaction) delete nextRun.transaction;
+  if (!input.operations) delete nextRun.operations;
+  if (!input.recovery) delete nextRun.recovery;
+  if (!input.persisted.recoveryDecisions) delete nextRun.recoveryDecisions;
 
   if (!input.updateWorkflowProjection) return { workflow: input.workflow, run: nextRun };
   const nextWorkflow: WorkflowDraftState = {

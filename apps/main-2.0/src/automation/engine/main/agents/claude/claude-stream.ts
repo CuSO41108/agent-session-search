@@ -84,7 +84,7 @@ function normalizeClaudeToolEvents(message: unknown, state?: ClaudeStreamState):
         type: "tool_result",
         name,
         content: truncate(extractToolResultContent(block.content)),
-        ...(id || failed ? { metadata: { ...(id ? { id } : {}), ...(failed ? { status: "failed" } : {}) } } : {}),
+        metadata: { ...(id ? { id } : {}), status: failed ? "failed" : "completed" },
       });
     }
   }

@@ -10,6 +10,7 @@ import type {
 import type { WorkflowNodeInputRequest } from "../../../shared/workflow/run";
 import type { WorkflowV2ScriptParameterDef } from "../../../shared/workflow-v2/definition";
 import type { WorkflowNodeMessage } from "../../../shared/workflow-v2/conversation";
+import { isWorkflowV2NodeAcceptanceReport, isWorkflowV2ScriptExecutionReceipt } from "../../../shared/workflow-v2/packets";
 import { isWorkflowV2HumanIntervention } from "../../../shared/workflow-v2/review";
 import {
   asArray,
@@ -104,11 +105,13 @@ export function restoreWorkflowRunProgressItem(raw: unknown): WorkflowRunProgres
   if (record.intervention !== undefined && isWorkflowV2HumanIntervention(record.intervention)) {
     item.intervention = structuredClone(record.intervention);
   }
+  if (isWorkflowV2NodeAcceptanceReport(record.acceptance)) item.acceptance = structuredClone(record.acceptance);
+  if (isWorkflowV2ScriptExecutionReceipt(record.scriptReceipt)) item.scriptReceipt = structuredClone(record.scriptReceipt);
   if (status === "awaiting_input") {
     const inputRequest = restoreWorkflowNodeInputRequest(record.inputRequest);
     if (inputRequest) item.inputRequest = inputRequest;
-    if (record.inputSummary && typeof record.inputSummary === "object" && !Array.isArray(record.inputSummary)) item.inputSummary = structuredClone(record.inputSummary) as Record<string, unknown>;
   }
+  if (record.inputSummary && typeof record.inputSummary === "object" && !Array.isArray(record.inputSummary)) item.inputSummary = structuredClone(record.inputSummary) as Record<string, unknown>;
   const outputs = asRecord(record.outputs);
   if (outputs) item.outputs = structuredClone(outputs);
   const telemetry = asRecord(record.telemetry);

@@ -1,16 +1,17 @@
 import type { RunTaskRequest, TaskRun } from "../../../shared/types";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { RuntimeConversation } from "../../../shared/runtime/conversation";
 import { mergeRuntimeUsage } from "../../../../../shared/runtime/usage";
 import type { WorkflowEvent, WorkflowRunNodeTelemetry, WorkflowRunProgressItem } from "../../../shared/workflow/run";
 import type { WorkflowV2LLMNode, WorkflowV2ScriptNode } from "../../../shared/workflow-v2/definition";
 import type { WorkflowNodeMessage } from "../../../shared/workflow-v2/conversation";
-import type { WorkflowV2WorkerOutput } from "../../../shared/workflow-v2/packets";
+import type { WorkflowV2ScriptExecutionReceipt, WorkflowV2ScriptWorkerOutput, WorkflowV2WorkerOutput } from "../../../shared/workflow-v2/packets";
 import type {
   WorkflowV2Plan,
   WorkflowV2ResultPacket,
   WorkflowV2TaskPacket,
 } from "../../../shared/workflow-v2/planning";
+import { resolveWorkflowTransactionPolicy, sanitizeWorkflowOperationRecord, sanitizeWorkflowTransactionValue, type WorkflowCommitPlan, type WorkflowOperationRecord, type WorkflowTransactionState } from "../../../shared/workflow-v2/transaction";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import {
@@ -23,7 +24,7 @@ import {
 } from "../../../shared/workflow-v2/runtime-utils";
 import { executeWorkflowV2Plan } from "./workflow-v2-executor";
 import type { WorkflowRunRegistry } from "../workflow-run-registry";
-import { WorkflowV2RunPersistence } from "./workflow-v2-run-persistence";
+import { persistWorkflowV2PreflightBlocked, WorkflowV2RunPersistence } from "./workflow-v2-run-persistence";
 import type { ExecuteWorkflowV2RunInput, WorkflowV2RecoveryOverride } from "./workflow-v2-execution-contract";
 export type { WorkflowV2RecoveryOverride } from "./workflow-v2-execution-contract";
 
@@ -87,7 +88,7 @@ import { recordWorkflowV2ScriptInputRequest, resolveWorkflowV2ScriptInput, workf
 import { projectWorkflowV2PausedNodeInteraction } from "./workflow-v2-node-interaction";
 import { executeAuthorizedWorkflowV2Script } from "./workflow-v2-script-execution";
 import { authorizeWorkflowV2ScriptOperation } from "./workflow-v2-script-approval";
-import { buildWorkflowV2FinalReport } from "./workflow-v2-recovery";
+import { buildWorkflowV2FinalReport, buildWorkflowV2RecoveryPreview } from "./workflow-v2-recovery";
 import {
   createWorkflowV2HookRegistry,
   runWorkflowV2HookChain,
@@ -95,22 +96,68 @@ import {
   type WorkflowV2HookChainResult,
 } from "./workflow-v2-hooks";
 import { runWorkflowV2TaskWithOutputPolicy } from "./workflow-v2-output-approval";
+import { workflowV2WorkspaceIsolationPlanError } from "./workflow-v2-workspace-transaction";
+import { inspectWorkflowV2AgentCompletion } from "./workflow-v2-node-acceptance";
+import { WorkflowV2ScriptExecutionError } from "./workflow-v2-script-executor";
+import { WorkflowV2CommitCoordinator } from "./workflow-v2-commit-coordinator";
+import { canRollbackWorkflowV2CurrentSavepoint } from "./workflow-v2-recovery-capabilities";
 
 const WORKFLOW_V2_MAX_PARALLEL_NODES = 4;
 const MAX_NODE_TIMER_DELAY_MS = 2_147_483_647;
+function workflowV2NodeSavepointId(nodeId: string, attempt: number): string {
+  return `node-${createHash("sha256").update(nodeId).digest("hex").slice(0, 20)}-attempt-${attempt}`;
+}
+function workflowV2PolicySavepointId(checkpointId: string): string {
+  return `policy-${createHash("sha256").update(checkpointId).digest("hex").slice(0, 20)}`;
+}
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function workflowNodeHistoryMessages(task: TaskRun): WorkflowNodeMessage[] {
-  return task.messages.flatMap((message, messageIndex) => {
+function workflowNodeAuditMessages(tasks: readonly TaskRun[]): TaskRun["messages"] {
+  const messagesById = new Map<string, TaskRun["messages"][number]>();
+  for (const task of tasks) {
+    for (const [messageIndex, message] of task.messages.entries()) {
+      const messageId = message.id?.trim() ? message.id : `${task.id}:message:${messageIndex}`;
+      const existing = messagesById.get(messageId);
+      if (!existing) {
+        messagesById.set(messageId, {
+          ...structuredClone(message),
+          id: messageId,
+          ...(message.events ? {
+            events: message.events.map((event, eventIndex) => ({
+              ...structuredClone(event),
+              id: event.id?.trim() ? event.id : `${messageId}:event:${eventIndex}`,
+            })),
+          } : {}),
+        });
+        continue;
+      }
+      const eventsById = new Map((existing.events ?? []).map((event, eventIndex) => [event.id?.trim() ? event.id : `${messageId}:existing-event:${eventIndex}`, event]));
+      for (const [eventIndex, event] of (message.events ?? []).entries()) {
+        const eventId = event.id?.trim() ? event.id : `${messageId}:event:${eventIndex}`;
+        eventsById.set(eventId, { ...structuredClone(event), id: eventId });
+      }
+      messagesById.set(messageId, {
+        ...structuredClone(message),
+        id: messageId,
+        events: [...eventsById.values()],
+      });
+    }
+  }
+  return [...messagesById.values()];
+}
+
+function workflowNodeHistoryMessages(taskOrTasks: TaskRun | readonly TaskRun[]): WorkflowNodeMessage[] {
+  const tasks = Array.isArray(taskOrTasks) ? taskOrTasks : [taskOrTasks];
+  return workflowNodeAuditMessages(tasks).flatMap((message, messageIndex) => {
     const messages: WorkflowNodeMessage[] = [];
     if (message.content.trim()) {
       messages.push({
-        id: `${message.id || `${task.id}:message:${messageIndex}`}:content`,
+        id: `${message.id || `workflow-message:${messageIndex}`}:content`,
         role: message.role === "user" ? "user" : message.role === "assistant" ? "assistant" : "system",
         content: message.content,
-        at: Number.isFinite(message.timestamp) ? message.timestamp : task.updatedAt,
+        at: message.timestamp,
       });
     }
     for (const event of message.events ?? []) {
@@ -164,9 +211,81 @@ export class WorkflowV2RunExecutor {
       }
       return { nodeId: node.id, title: node.title, status: "queued", detail: "Queued" };
     });
-    const workflowWorkDir = workflow.workDir || latestSnapshot.workDir;
+    const sourceWorkDir = workflow.workDir || latestSnapshot.workDir;
+    const transactionMode = resolveWorkflowTransactionPolicy(plan.definition.transactionPolicy).policy.defaultMode;
+    const workspaceIsolated = transactionMode === "strict_atomic";
+    let workflowWorkDir = sourceWorkDir;
+    let baselineId: string | undefined;
+    let workspaceScope: { governedFileCount: number; excludedPaths: string[] } | undefined;
+    if (workspaceIsolated) {
+      try {
+        const planError = workflowV2WorkspaceIsolationPlanError(plan, { brokeredScriptExecution: Boolean(this.deps.executeWorkflowV2BrokeredScript), brokeredAdapters: this.deps.workflowV2BrokeredAdapters });
+        if (planError) throw new Error(planError);
+        if (!durableStore?.prepareWorkspaceTransaction) throw new Error("Workflow strict_atomic mode requires durable workspace isolation.");
+        const preparation = await durableStore.prepareWorkspaceTransaction({
+          workflowId: workflow.workflowId,
+          runId,
+          sourceDir: sourceWorkDir,
+          baselineId: `baseline:${workflow.workflowId}:${runId}`,
+        });
+        workflowWorkDir = preparation.workspaceDir;
+        baselineId = preparation.baselineId;
+        workspaceScope = {
+          governedFileCount: preparation.manifest.files.length,
+          excludedPaths: preparation.manifest.excluded.map((entry) => entry.relativePath),
+        };
+      } catch (error) {
+        const rawMessage = error instanceof Error ? error.message : String(error);
+        const message = String(sanitizeWorkflowTransactionValue(rawMessage));
+        try {
+          await persistWorkflowV2PreflightBlocked({
+            store: durableStore,
+            workflow,
+            plan,
+            runId,
+            error: message,
+            nodeControl: durableNodeControl,
+            initialEventCount: input.initialDurableEventCount,
+            initialCheckpoint: input.initialCheckpoint,
+            initialTransaction: input.initialTransaction,
+          });
+        } catch (persistenceError) {
+          console.warn("[workflow-v2] Failed to persist strict transaction preflight failure", persistenceError);
+        }
+        this.deps.finishWorkflowRun({
+          workflowId: workflow.workflowId,
+          runId,
+          status: "failed",
+          progress: workflowProgressAfterFailure(latestProgress, message),
+          contextDocument: baseWorkflowContextDocument,
+          lastError: message,
+        });
+        return;
+      }
+    }
     const configuredAgentId = workflow.configuredAgentId || latestSnapshot.configuredAgents[0]?.id || "default-agent";
     const modelId = configuredAgentModelId(workflow, latestSnapshot);
+    const publishTransactionProjection = async (transaction: WorkflowTransactionState): Promise<void> => {
+      const operations = (await durableStore?.readOperations?.(workflow.workflowId, runId) ?? [])
+        .map(sanitizeWorkflowOperationRecord);
+      const persisted = await durableStore?.readRunState?.(workflow.workflowId, runId);
+      const workspaceDiff = workspaceIsolated
+        ? await durableStore?.inspectWorkspaceTransaction?.({ workflowId: workflow.workflowId, runId })
+        : undefined;
+      const recoveryVisible = transaction.status === "waiting_for_user"
+        || transaction.status === "recovery_required"
+        || transaction.status === "partially_rolled_back";
+      this.deps.updateWorkflowRunState({
+        workflowId: workflow.workflowId,
+        runId,
+        transaction: structuredClone(transaction),
+        operations,
+        recoveryDecisions: structuredClone(persisted?.recoveryDecisions ?? []),
+        recovery: recoveryVisible && persisted
+          ? buildWorkflowV2RecoveryPreview({ transaction, operations, runState: persisted.runState, nodeControl: persisted.nodeControl, ...(workspaceDiff ? { workspaceDiff } : {}), workspaceAvailable: workspaceDiff !== undefined, canRollbackSavepoint: await canRollbackWorkflowV2CurrentSavepoint({ store: durableStore, workflowId: workflow.workflowId, runId, transaction }), canRollbackWorkspace: Boolean(durableStore?.rollbackWorkspaceTransaction) })
+          : null,
+      });
+    };
     const persistence = new WorkflowV2RunPersistence({
       store: durableStore,
       workflow,
@@ -174,12 +293,167 @@ export class WorkflowV2RunExecutor {
       runId,
       initialEventCount: input.initialDurableEventCount ?? 0,
       ...(input.initialCheckpoint ? { initialCheckpoint: input.initialCheckpoint } : {}),
+      ...(input.initialTransaction ? { initialTransaction: input.initialTransaction } : {}),
+      ...(baselineId ? { baselineId } : {}),
       nodeControl: durableNodeControl,
       workDir: workflowWorkDir,
       configuredAgentId,
       modelId, configuredAgents: latestSnapshot.configuredAgents,
       ...(input.recoveryOverrides ? { recoveryOverrides: input.recoveryOverrides } : {}),
+      onTransactionChanged: publishTransactionProjection,
     });
+    if (workspaceIsolated && baselineId && !input.initialTransaction) {
+      await persistence.initializeWorkspaceTransaction(baselineId, workspaceScope);
+    }
+    const createCommitCoordinator = (): WorkflowV2CommitCoordinator => {
+      if (!durableStore?.commitWorkspaceTransaction || !durableStore.readOperations) {
+        throw new Error("Workflow strict_atomic mode cannot commit its governed transaction.");
+      }
+      const commitBroker = this.deps.createWorkflowV2RecoveryOperationBroker?.(durableStore);
+      if (!commitBroker) throw new Error("Workflow strict_atomic mode cannot create its external operation commit broker.");
+      return new WorkflowV2CommitCoordinator(durableStore, commitBroker);
+    };
+    const prepareGovernedCommitPlan = async (): Promise<WorkflowCommitPlan> => {
+      const coordinator = createCommitCoordinator();
+      const existingPlan = await durableStore!.readCommitPlan?.(workflow.workflowId, runId);
+      const operationIds = (await durableStore!.readOperations!(workflow.workflowId, runId))
+        .filter((operation) => operation.adapterId && operation.state === "planned")
+        .map((operation) => operation.operationId);
+      const preview = await coordinator.previewPlan({
+        workflowId: workflow.workflowId,
+        runId,
+        transactionId: persistence.transactionState.transactionId,
+        operationIds,
+        includeWorkspace: true,
+      });
+      if (existingPlan?.planDigest === preview.planDigest) return existingPlan;
+      return durableStore!.persistCommitPlan!(preview);
+    };
+    const commitGovernedChanges = async (): Promise<Awaited<ReturnType<WorkflowV2CommitCoordinator["commit"]>>> => {
+      const coordinator = createCommitCoordinator();
+      const existingPlan = await durableStore!.readCommitPlan?.(workflow.workflowId, runId);
+      if (persistence.transactionState.status !== "committing" || !existingPlan) {
+        await prepareGovernedCommitPlan();
+      }
+      await persistence.transitionTransaction("committing", { type: "commit_started", detail: "Applying governed checkpoint changes." });
+      return coordinator.commit({ workflowId: workflow.workflowId, runId });
+    };
+    const processTransactionCheckpoints = async (checkpoint: ExecuteWorkflowV2Checkpoint): Promise<{ pauseReason?: string }> => {
+      if (!workspaceIsolated) return {};
+      const completedIds = new Set(persistence.transactionState.completedCheckpointIds ?? []);
+      const approvedIds = new Set(persistence.transactionState.approvedCheckpointIds ?? []);
+      for (const policyCheckpoint of resolveWorkflowTransactionPolicy(plan.definition.transactionPolicy).policy.checkpoints) {
+        if (completedIds.has(policyCheckpoint.id)) continue;
+        const reached = policyCheckpoint.afterNodeIds.every((nodeId) => {
+          const status = checkpoint.runState.nodes[nodeId]?.status;
+          return status === "completed" || status === "skipped";
+        });
+        if (!reached) continue;
+        const savepointId = workflowV2PolicySavepointId(policyCheckpoint.id);
+        if (persistence.transactionState.currentSavepointId !== savepointId) {
+          if (!durableStore?.createWorkspaceSavepoint) throw new Error("Workflow strict_atomic mode cannot create a policy savepoint.");
+          await durableStore.createWorkspaceSavepoint({
+            workflowId: workflow.workflowId,
+            runId,
+            savepointId,
+            nodeId: policyCheckpoint.afterNodeIds.at(-1) ?? policyCheckpoint.id,
+            attempt: 1,
+          });
+          await persistence.recordSavepoint(savepointId, policyCheckpoint.afterNodeIds.at(-1) ?? policyCheckpoint.id, 1);
+        }
+        const pendingPlan = policyCheckpoint.kind === "commit" ? await prepareGovernedCommitPlan() : undefined;
+        const approvalMatchesCurrentPlan = approvedIds.has(policyCheckpoint.id)
+          && (!pendingPlan || pendingPlan.approval?.evidenceDigest === pendingPlan.planDigest);
+        if (policyCheckpoint.approval === "required" && !approvalMatchesCurrentPlan) {
+          await persistence.requireCheckpointApproval(policyCheckpoint.id, savepointId, pendingPlan?.planDigest);
+          approvedIds.delete(policyCheckpoint.id);
+          const persisted = await durableStore?.readRunState?.(workflow.workflowId, runId);
+          const workspaceDiff = await durableStore?.inspectWorkspaceTransaction?.({ workflowId: workflow.workflowId, runId });
+          if (persisted) {
+            const operations = (await durableStore?.readOperations?.(workflow.workflowId, runId) ?? []).map(sanitizeWorkflowOperationRecord);
+            this.deps.updateWorkflowRunState({
+              workflowId: workflow.workflowId,
+              runId,
+              status: "waiting_for_user",
+              recovery: buildWorkflowV2RecoveryPreview({
+                transaction: persistence.transactionState,
+                operations,
+                runState: persisted.runState,
+                nodeControl: persisted.nodeControl,
+                workspaceDiff: {
+                  created: workspaceDiff?.created ?? [],
+                  modified: workspaceDiff?.modified ?? [],
+                  deleted: workspaceDiff?.deleted ?? [],
+                },
+                workspaceAvailable: workspaceDiff !== undefined,
+                canRollbackSavepoint: await canRollbackWorkflowV2CurrentSavepoint({ store: durableStore, workflowId: workflow.workflowId, runId, transaction: persistence.transactionState }),
+                canRollbackWorkspace: Boolean(durableStore?.rollbackWorkspaceTransaction),
+              }),
+            });
+          }
+          return { pauseReason: `Checkpoint ${policyCheckpoint.title} requires approval.` };
+        }
+        if (policyCheckpoint.kind === "commit") {
+          await persistence.beginCheckpointCommit(policyCheckpoint.id);
+          const commit = await commitGovernedChanges();
+          if (commit.conflicts.length > 0) {
+            await persistence.transitionTransaction("waiting_for_user", { type: "conflict_detected", detail: `Checkpoint conflicts require review: ${commit.conflicts.join(", ")}` });
+            const persisted = await durableStore?.readRunState?.(workflow.workflowId, runId);
+            const workspaceDiff = await durableStore?.inspectWorkspaceTransaction?.({ workflowId: workflow.workflowId, runId });
+            const conflictDetails = await durableStore?.inspectWorkspaceConflicts?.({ workflowId: workflow.workflowId, runId, paths: commit.conflicts }) ?? [];
+            if (persisted) {
+              const operations = (await durableStore?.readOperations?.(workflow.workflowId, runId) ?? []).map(sanitizeWorkflowOperationRecord);
+              this.deps.updateWorkflowRunState({
+                workflowId: workflow.workflowId,
+                runId,
+                status: "waiting_for_user",
+                recovery: buildWorkflowV2RecoveryPreview({
+                  transaction: persistence.transactionState,
+                  operations,
+                  runState: persisted.runState,
+                  nodeControl: persisted.nodeControl,
+                  workspaceDiff: { created: workspaceDiff?.created ?? [], modified: workspaceDiff?.modified ?? [], deleted: workspaceDiff?.deleted ?? [], conflicts: commit.conflicts },
+                  workspaceAvailable: workspaceDiff !== undefined,
+                  canRollbackSavepoint: await canRollbackWorkflowV2CurrentSavepoint({ store: durableStore, workflowId: workflow.workflowId, runId, transaction: persistence.transactionState }),
+                  canRollbackWorkspace: Boolean(durableStore?.rollbackWorkspaceTransaction),
+                  conflictDetails,
+                }),
+              });
+            }
+            return { pauseReason: `Checkpoint ${policyCheckpoint.title} has workspace conflicts.` };
+          }
+          if (commit.status !== "committed") {
+            await persistence.transitionTransaction(commit.status, {
+              type: commit.status === "recovery_required" ? "recovery_required" : "compensation_completed",
+              detail: commit.error ?? `Checkpoint commit completed with ${commit.status}.`,
+            });
+            throw new Error(commit.error ?? `Checkpoint commit completed with ${commit.status}.`);
+          }
+        }
+        await persistence.completeCheckpoint(policyCheckpoint.id);
+        completedIds.add(policyCheckpoint.id);
+      }
+      return {};
+    };
+    const operationLedgerEnabled = Boolean(durableStore?.planOperation && durableStore.transitionOperation && durableStore.readOperations);
+    const planNodeOperation = async (operation: WorkflowOperationRecord): Promise<void> => {
+      await persistence.planOperation(operation);
+      await persistence.transitionOperation({ operationId: operation.operationId, state: "applying", updatedAt: Date.now() });
+    };
+    const completeNodeOperation = async (operationId: string, receipt: unknown): Promise<void> => {
+      await persistence.transitionOperation({ operationId, state: "applied", updatedAt: Date.now(), receipt });
+    };
+    const markNodeOperationUnknown = async (operationId: string, error: unknown, receipt?: unknown): Promise<void> => {
+      const message = error instanceof Error ? error.message : String(error);
+      await persistence.transitionOperation({ operationId, state: "unknown", updatedAt: Date.now(), error: message, ...(receipt !== undefined ? { receipt } : {}) });
+    };
+    const inspectNodeWorkspaceDiff = async (nodeId: string, attempt: number) => {
+      if (!workspaceIsolated) return undefined;
+      if (durableStore?.inspectWorkspaceSavepointDiff) {
+        return durableStore.inspectWorkspaceSavepointDiff({ workflowId: workflow.workflowId, runId, savepointId: workflowV2NodeSavepointId(nodeId, attempt) });
+      }
+      return durableStore?.inspectWorkspaceTransaction?.({ workflowId: workflow.workflowId, runId });
+    };
 
     const remainingWallClockMs = (): number => maxWallClockMs === undefined
       ? Number.POSITIVE_INFINITY
@@ -224,7 +498,16 @@ export class WorkflowV2RunExecutor {
 
     const startWorkflowTask = async (request: RunTaskRequest, allowOutputWrite = false): Promise<TaskRun> => {
       const existingTaskIds = new Set(latestSnapshot.tasks.map((task) => task.id));
-      latestSnapshot = await runWorkflowV2TaskWithOutputPolicy({ workflowId: workflow.workflowId, runId, workDir: workflowWorkDir, request, allowOutputWrite, runTask: this.deps.runTask });
+      latestSnapshot = await runWorkflowV2TaskWithOutputPolicy({
+        workflowId: workflow.workflowId,
+        runId,
+        workDir: workflowWorkDir,
+        request,
+        allowOutputWrite,
+        workspaceOnly: workspaceIsolated,
+        ...(workspaceIsolated && allowOutputWrite ? { allowedFileWriteRoot: workflowWorkDir } : {}),
+        runTask: this.deps.runTask,
+      });
       const task = latestSnapshot.tasks
         .filter((item) => !existingTaskIds.has(item.id))
         .sort((left, right) => right.createdAt - left.createdAt)
@@ -377,6 +660,7 @@ export class WorkflowV2RunExecutor {
       modelId: string;
       workDir: string;
       taskIds: string[];
+      auditTaskIds: string[];
       supervisorTaskIds: string[];
       completionExecutionId?: string;
     }): Promise<TaskRun> => {
@@ -650,6 +934,7 @@ export class WorkflowV2RunExecutor {
           ...(input.completionExecutionId ? { workflowNodeExecutionId: input.completionExecutionId } : {}),
         }, true);
         input.taskIds.push(currentTask.id);
+        input.auditTaskIds.push(currentTask.id);
       }
     };
 
@@ -683,17 +968,58 @@ export class WorkflowV2RunExecutor {
       const recoveryConversation = consumedRecoveryNodeIds.has(request.node.id)
         ? undefined
         : input.resumeConversations?.get(request.node.id);
+      const attempt = (runtimeAttemptByNodeId.get(request.node.id) ?? 0) + 1;
+      runtimeAttemptByNodeId.set(request.node.id, attempt);
+      const recoveryOperations = recoveryCheckpoint && operationLedgerEnabled
+        ? (await durableStore!.readOperations!(workflow.workflowId, runId)).filter((operation) => operation.nodeId === request.node.id)
+        : [];
+      const unresolvedRecoveryOperations = recoveryOperations.filter((operation) =>
+        operation.state === "applying" || operation.state === "unknown" || operation.state === "compensating");
+      if (unresolvedRecoveryOperations.length > 0) {
+        throw new WorkflowV2SupervisionSignal({
+          resolution: {
+            action: "pause",
+            question: `Resolve uncertain operations for node ${request.node.title} before continuing.`,
+            reason: `Recovery cannot continue while operations remain unresolved: ${unresolvedRecoveryOperations.map((operation) => operation.operationId).join(", ")}`,
+          },
+          report: {
+            nodeId: request.node.id,
+            attempt,
+            phase: "effect_unknown",
+            completedItems: recoveryOperations.filter((operation) => operation.state === "applied").map((operation) => operation.operationId),
+            remainingItems: unresolvedRecoveryOperations.map((operation) => operation.operationId),
+            blockers: ["One or more prior external operations have an uncertain effect state."],
+            evidence: unresolvedRecoveryOperations.map((operation) => `${operation.operationId}:${operation.state}`),
+            safeToInterrupt: true,
+            requestedAction: "escalate",
+            reportedAt: Date.now(),
+          },
+        });
+      }
+      const recoveryWorkspaceDiff = recoveryCheckpoint && workspaceIsolated
+        ? await durableStore?.inspectWorkspaceTransaction?.({ workflowId: workflow.workflowId, runId })
+        : undefined;
+      const recoveryExecutionContext = recoveryCheckpoint
+        ? [
+            "# Recovery execution state",
+            `Completed operation IDs: ${recoveryOperations.filter((operation) => operation.state === "applied").map((operation) => operation.operationId).join(", ") || "none"}`,
+            `Current workspace changes: ${recoveryWorkspaceDiff ? [...recoveryWorkspaceDiff.created, ...recoveryWorkspaceDiff.modified, ...recoveryWorkspaceDiff.deleted].sort().join(", ") || "none" : "unavailable"}`,
+            "Do not repeat a completed operation. Reuse the existing workspace changes and continue only the unfinished work.",
+          ].join("\n")
+        : "";
       const effectivePrompt = [messages.prompt, recoveryOverride?.userInput].filter(Boolean).join("\n\n");
       const effectiveDeveloperInstructions = [
         messages.developerInstructions,
-        ...(recoveryCheckpoint ? ["A recovery checkpoint is included in runtime context; treat it as control context, not a completed result."] : []),
+        ...(recoveryCheckpoint ? ["A recovery checkpoint and execution-state inventory are included in runtime context; treat them as control context, not a completed result."] : []),
         ...(recoveryOverride ? [recoveryOverride.instruction] : []),
         ...(recoveryOverride?.modelProfile ? [`Effective model profile: ${recoveryOverride.modelProfile}`] : []),
         ...(recoveryOverride?.forceIndependentReview ? ["This attempt requires independent semantic review."] : []),
       ].join("\n\n");
-      const effectiveContextDocument = [messages.contextDocument, recoveryCheckpoint ? `# Recovery checkpoint\n${recoveryCheckpoint}` : ""].filter(Boolean).join("\n\n");
-      const attempt = (runtimeAttemptByNodeId.get(request.node.id) ?? 0) + 1;
-      runtimeAttemptByNodeId.set(request.node.id, attempt);
+      const effectiveContextDocument = [
+        messages.contextDocument,
+        recoveryCheckpoint ? `# Recovery checkpoint\n${recoveryCheckpoint}` : "",
+        recoveryExecutionContext,
+      ].filter(Boolean).join("\n\n");
       if (request.planNode.executionMode === "interactive") {
         const conversation = await this.deps.startWorkflowNodeConversation({
           workflowId: workflow.workflowId,
@@ -775,9 +1101,11 @@ export class WorkflowV2RunExecutor {
       consumedRecoveryNodeIds.add(request.node.id);
       updateNode(request.node.id, { status: "running", detail: "Task running", taskId: task.id, telemetry });
 
-      let taskIds = [task.id];
+      const taskIds = [task.id];
+      const auditTaskIds = [task.id];
       const supervisorTaskIds: string[] = [];
       let archiveTaskId: string | undefined = task.id;
+      let auditHistoryTasks: TaskRun[] = [];
       try {
         const completedTask = await waitForLeasedLlmTask({
           node: request.node,
@@ -787,6 +1115,7 @@ export class WorkflowV2RunExecutor {
           modelId: agentRoute.modelId,
           workDir: workflowWorkDir,
           taskIds,
+          auditTaskIds,
           supervisorTaskIds,
           completionExecutionId,
         });
@@ -794,7 +1123,13 @@ export class WorkflowV2RunExecutor {
         // Message history is an execution artifact, independent from whether the
         // worker output passes structured validation. Archive it before parsing so
         // failed or malformed one-shot responses remain inspectable in run history.
-        const historyMessages = workflowNodeHistoryMessages(completedTask);
+        const auditTasks = auditTaskIds
+          .map((taskId) => latestSnapshot.tasks.find((item) => item.id === taskId))
+          .filter((item): item is TaskRun => Boolean(item));
+        if (!auditTasks.some((item) => item.id === completedTask.id)) auditTasks.push(completedTask);
+        auditHistoryTasks = auditTasks;
+        const auditMessages = workflowNodeAuditMessages(auditTasks);
+        const historyMessages = workflowNodeHistoryMessages(auditTasks);
         const completedTelemetry = { ...addNodeUsage(telemetry, completedTask.usage), finishedAt: Date.now() };
         updateNode(request.node.id, {
           status: "running",
@@ -811,13 +1146,20 @@ export class WorkflowV2RunExecutor {
         });
         const artifact = submission ? JSON.stringify(submission.output) : taskAssistantArtifact(completedTask);
         const output = parseWorkflowV2WorkerArtifact(request.node, artifact);
-        await materializeWorkflowV2OutputArtifacts({
-          workflowId: workflow.workflowId,
-          runId,
-          workDir: workflowWorkDir,
+        const nodeOperations = operationLedgerEnabled
+          ? (await durableStore!.readOperations!(workflow.workflowId, runId)).filter((operation) => operation.nodeId === request.node.id && operation.attempt === attempt)
+          : [];
+        const workspaceDiff = await inspectNodeWorkspaceDiff(request.node.id, attempt);
+        const acceptance = inspectWorkflowV2AgentCompletion({
           node: request.node,
-          output,
+          messages: auditMessages,
+          operations: nodeOperations,
+          changedPaths: workspaceDiff ? [...workspaceDiff.created, ...workspaceDiff.modified, ...workspaceDiff.deleted] : [],
         });
+        if (acceptance.outcome === "rejected") {
+          throw new Error(`Workflow V2 Agent node ${request.node.id} failed transactional acceptance: ${acceptance.issues.filter((issue) => issue.severity === "error").map((issue) => issue.detail).join(" ")}`);
+        }
+        output.acceptance = acceptance;
         if (submission) {
           await durableStore?.resolveNodeCompletionSubmission?.({
             workflowId: workflow.workflowId,
@@ -838,13 +1180,14 @@ export class WorkflowV2RunExecutor {
         });
         return output;
       } catch (error) {
-        const taskForHistory = error instanceof WorkflowV2OneShotInputRequestSignal
-          ? error.task
-          : [...taskIds]
+        const tasksForHistory = error instanceof WorkflowV2OneShotInputRequestSignal
+          ? [error.task]
+          : [...auditHistoryTasks, ...auditTaskIds
               .map((taskId) => latestSnapshot.tasks.find((item) => item.id === taskId))
-              .find((item): item is TaskRun => Boolean(item));
-        if (taskForHistory) {
-          const historyMessages = workflowNodeHistoryMessages(taskForHistory);
+              .filter((item): item is TaskRun => Boolean(item))];
+        if (tasksForHistory.length > 0) {
+          const taskForHistory = tasksForHistory[tasksForHistory.length - 1]!;
+          const historyMessages = workflowNodeHistoryMessages(tasksForHistory);
           updateNode(request.node.id, {
             status: "running",
             detail: "Task history archived",
@@ -917,12 +1260,39 @@ export class WorkflowV2RunExecutor {
         inputs: resolvedInput.values,
         ...(approvalGrant ? { approvalGrant } : {}),
       });
+      const attempt = (runtimeAttemptByNodeId.get(request.node.id) ?? 0) + 1;
+      runtimeAttemptByNodeId.set(request.node.id, attempt);
+      const scriptOperation: WorkflowOperationRecord = {
+        operationId: `operation:${runId}:${request.node.id}:${attempt}:script`,
+        transactionId: persistence.transactionState.transactionId,
+        runId,
+        nodeId: request.node.id,
+        attempt,
+        kind: request.node.script.effectMode === "workspace_only" ? "file" : "other",
+        target: workflowWorkDir,
+        idempotencyKey: `${persistence.transactionState.transactionId}:${request.node.id}:${attempt}:script:${operationDigest}`,
+        state: "planned",
+        reversible: request.node.script.effectMode !== "brokered_external",
+        ...(request.node.script.compensationAdapter ? { compensationAdapter: request.node.script.compensationAdapter } : {}),
+        requestSummary: {
+          operationDigest,
+          capabilities: [...governance.capabilities],
+          risk: permission.risk,
+          effectMode: request.node.script.effectMode ?? "legacy_unclassified",
+          idempotency: request.node.script.idempotency ?? "legacy_unclassified",
+          stderrPolicy: request.node.script.stderrPolicy ?? "warn",
+        },
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      };
+      const scriptOperationTracked = operationLedgerEnabled && request.node.script.effectMode !== "brokered_external";
+      if (scriptOperationTracked) await planNodeOperation(scriptOperation);
       this.runRegistry.get(runId)?.abortControllerByNodeId?.set(request.node.id, controller);
-      const telemetry: WorkflowRunNodeTelemetry = { attempt: 1, startedAt: Date.now() };
+      const telemetry: WorkflowRunNodeTelemetry = { attempt, startedAt: Date.now() };
       updateNode(request.node.id, { status: "running", detail: "Script running", telemetry });
-      let output: WorkflowV2WorkerOutput;
+      let output: WorkflowV2ScriptWorkerOutput;
       try {
-        output = await executeAuthorizedWorkflowV2Script({ deps: this.deps, node: request.node, workDir: workflowWorkDir, upstreamOutputs: request.upstreamOutputs, timeoutMs, inputs: resolvedInput.values, controller,
+        output = await executeAuthorizedWorkflowV2Script({ deps: this.deps, node: request.node, workDir: workflowWorkDir, upstreamOutputs: request.upstreamOutputs, timeoutMs, inputs: resolvedInput.values, controller, transactionMode,
           authorization: {
             decision: permission.decision,
             workflowId: workflow.workflowId,
@@ -933,18 +1303,69 @@ export class WorkflowV2RunExecutor {
             capabilities: [...governance.capabilities],
             capabilityDigest: governance.capabilityDigest,
             operationDigest,
+            attempt,
             ...(approvalGrant ? { approvalRequestId: approvalGrant.requestId } : {}),
           },
         });
-        await materializeWorkflowV2OutputArtifacts({
-          workflowId: workflow.workflowId,
-          runId,
-          workDir: workflowWorkDir,
-          node: request.node,
-          output,
-        });
+        if (!output.scriptReceipt || output.scriptReceipt.operationDigest !== operationDigest) {
+          throw new Error(`Workflow V2 script node ${request.node.id} did not return a matching execution receipt.`);
+        }
+        const receipt = output.scriptReceipt;
+        if (receipt.timedOut || receipt.signal) {
+          throw new WorkflowV2ScriptExecutionError(
+            `Workflow V2 script node ${request.node.id} did not terminate cleanly.`,
+            { ...receipt, effectState: "unknown" },
+          );
+        }
+        if (receipt.effectState === "unknown") {
+          throw new WorkflowV2ScriptExecutionError(`Workflow V2 script node ${request.node.id} has unknown side effects.`, receipt);
+        }
+        if (receipt.stderrSummary && (request.node.script.stderrPolicy ?? "warn") === "fail") {
+          throw new WorkflowV2ScriptExecutionError(`Workflow V2 script node ${request.node.id} produced stderr under a fail policy.`, receipt);
+        }
+        if (output.acceptance.outcome === "rejected") {
+          throw new WorkflowV2ScriptExecutionError(`Workflow V2 script node ${request.node.id} was rejected: ${output.acceptance.issues.map((issue) => issue.detail).join(" ")}`, receipt);
+        }
+        const workspaceDiff = await inspectNodeWorkspaceDiff(request.node.id, attempt);
+        const stderrWarning = receipt.stderrSummary && (request.node.script.stderrPolicy ?? "warn") === "warn";
+        output.acceptance = {
+          ...(output.acceptance ?? { outcome: "clean", issues: [] }),
+          ...(stderrWarning && !output.acceptance.issues.some((issue) => issue.code === "script_stderr")
+            ? { outcome: "degraded", issues: [...output.acceptance.issues, { code: "script_stderr", severity: "warning" as const, detail: receipt.stderrSummary }] }
+            : {}),
+          changedPaths: workspaceDiff ? [...workspaceDiff.created, ...workspaceDiff.modified, ...workspaceDiff.deleted].sort() : [],
+          operationIds: [...new Set([...(output.acceptance.operationIds ?? []), ...(scriptOperationTracked ? [scriptOperation.operationId] : [])])],
+        };
+        if (scriptOperationTracked) await completeNodeOperation(scriptOperation.operationId, output.scriptReceipt);
       } catch (error) {
+        const receipt = error instanceof WorkflowV2ScriptExecutionError ? error.receipt : undefined;
+        const effectUnknown = !receipt
+          || receipt.effectState === "unknown"
+          || request.node.script.effectMode === "brokered_external";
+        if (scriptOperationTracked) {
+          if (receipt && !effectUnknown) await completeNodeOperation(scriptOperation.operationId, receipt);
+          else await markNodeOperationUnknown(scriptOperation.operationId, error, receipt);
+        }
         await throwIfWorkflowV2ManuallyPaused(request.node.id);
+        if (effectUnknown) {
+          const message = error instanceof Error ? error.message : String(error);
+          await persistence.transitionTransaction("recovery_required", { type: "recovery_required", detail: message });
+          throw new WorkflowV2SupervisionSignal({
+            resolution: { action: "pause", question: `Verify the external effects of script node ${request.node.title} before continuing.`, reason: message },
+            report: {
+              nodeId: request.node.id,
+              attempt,
+              phase: "effect_unknown",
+              completedItems: [],
+              remainingItems: ["Verify script side effects"],
+              blockers: [message],
+              evidence: receipt ? [JSON.stringify(receipt)] : [],
+              safeToInterrupt: true,
+              requestedAction: "need_input",
+              reportedAt: Date.now(),
+            },
+          });
+        }
         throw error;
       } finally {
         this.runRegistry.get(runId)?.abortControllerByNodeId?.delete(request.node.id);
@@ -952,7 +1373,7 @@ export class WorkflowV2RunExecutor {
       updateNode(request.node.id, { status: "running", detail: output.summary, telemetry: { ...telemetry, finishedAt: Date.now() } }, {
         type: "node_output",
         nodeId: request.node.id,
-        attempt: 1,
+        attempt,
         summary: output.summary,
       });
       return output;
@@ -1088,11 +1509,36 @@ export class WorkflowV2RunExecutor {
       });
       const result = await executeWorkflowV2Plan({
         plan,
-        maxParallelNodes: WORKFLOW_V2_MAX_PARALLEL_NODES,
+        maxParallelNodes: workspaceIsolated ? 1 : WORKFLOW_V2_MAX_PARALLEL_NODES,
         ...(input.initialCheckpoint ? { initialCheckpoint: input.initialCheckpoint } : {}),
+        ...(workspaceIsolated ? {
+          beforeNodeExecute: async ({ node, attempt }) => {
+            const savepointId = workflowV2NodeSavepointId(node.id, attempt);
+            if (attempt === 1) {
+              if (!durableStore?.createWorkspaceSavepoint) throw new Error("Workflow strict_atomic mode cannot create a node savepoint.");
+              await durableStore.createWorkspaceSavepoint({ workflowId: workflow.workflowId, runId, savepointId, nodeId: node.id, attempt });
+              await persistence.recordSavepoint(savepointId, node.id, attempt);
+            } else {
+              if (!durableStore?.restoreWorkspaceSavepoint) throw new Error("Workflow strict_atomic mode cannot restore a node savepoint for retry.");
+              await durableStore.restoreWorkspaceSavepoint({ workflowId: workflow.workflowId, runId, savepointId: workflowV2NodeSavepointId(node.id, attempt - 1) });
+              if (!durableStore.createWorkspaceSavepoint) throw new Error("Workflow strict_atomic mode cannot create a retry savepoint.");
+              await durableStore.createWorkspaceSavepoint({ workflowId: workflow.workflowId, runId, savepointId, nodeId: node.id, attempt });
+              await persistence.recordSavepoint(savepointId, node.id, attempt);
+            }
+          },
+        } : {}),
         runLlmNode,
         executeScript: runScriptNode,
         reviewNodeOutput,
+        onNodeAccepted: async ({ node, output }) => {
+          await materializeWorkflowV2OutputArtifacts({
+            workflowId: workflow.workflowId,
+            runId,
+            workDir: workflowWorkDir,
+            node,
+            output,
+          });
+        },
         runNodeHooks,
         forceIndependentReviewNodeIds: new Set(
           [...(input.recoveryOverrides?.entries() ?? [])]
@@ -1100,6 +1546,15 @@ export class WorkflowV2RunExecutor {
             .map(([nodeId]) => nodeId),
         ),
         onRunCheckpoint: (checkpoint) => persistence.persistCheckpoint(checkpoint),
+        afterBatchCheckpoint: processTransactionCheckpoints,
+        cancelRunningNodes: async ({ runningNodeIds, reason }) => {
+          const activeRun = this.runRegistry.get(runId);
+          await Promise.allSettled(runningNodeIds.map(async (nodeId) => {
+            activeRun?.abortControllerByNodeId?.get(nodeId)?.abort(new Error(`Parallel workflow node cancelled after a sibling failed: ${reason}`));
+            const taskId = activeRun?.taskIdByNodeId.get(nodeId);
+            if (taskId) await this.deps.stopTask(taskId);
+          }));
+        },
         onNodeStateTransition: (transition) => {
           if (transition.status === "running") {
             updateNode(transition.nodeId, { status: "running", detail: "Starting" }, {
@@ -1109,10 +1564,11 @@ export class WorkflowV2RunExecutor {
               detail: "Starting",
             });
           } else if (transition.status === "completed") {
-            updateNode(transition.nodeId, { status: "completed", detail: transition.output.summary, outputs: structuredClone(transition.output.outputs) }, {
+            updateNode(transition.nodeId, { status: "completed", detail: transition.output.summary, outputs: structuredClone(transition.output.outputs), ...(transition.output.acceptance ? { acceptance: structuredClone(transition.output.acceptance) } : {}), ...(transition.output.scriptReceipt ? { scriptReceipt: structuredClone(transition.output.scriptReceipt) } : {}) }, {
               type: "node_completed",
               nodeId: transition.nodeId,
               detail: transition.output.summary,
+              ...(transition.output.acceptance ? { acceptance: structuredClone(transition.output.acceptance) } : {}),
             }, true);
           } else if (transition.status === "skipped") {
             updateNode(transition.nodeId, { status: "completed", detail: transition.output.summary, outputs: structuredClone(transition.output.outputs) }, {
@@ -1141,9 +1597,78 @@ export class WorkflowV2RunExecutor {
         },
       });
 
-      const finalReport = buildWorkflowV2FinalReport(plan, result.workerOutputs, result.runState.status);
+      const finalDurableState = await durableStore?.readRunState?.(workflow.workflowId, runId);
+      const finalOperations = await durableStore?.readOperations?.(workflow.workflowId, runId) ?? [];
+      const finalWorkspaceDiff = workspaceIsolated
+        ? await durableStore?.inspectWorkspaceTransaction?.({ workflowId: workflow.workflowId, runId })
+        : undefined;
+      let finalReport = buildWorkflowV2FinalReport(plan, result.workerOutputs, result.runState.status, finalDurableState?.recoveryDecisions, finalOperations.map(sanitizeWorkflowOperationRecord), finalWorkspaceDiff);
       if (this.runRegistry.isStopRequested(runId)) return;
       if (result.runState.status === "completed") {
+        if (workspaceIsolated) {
+          const commit = await commitGovernedChanges();
+          if (commit.conflicts.length > 0) {
+            await persistence.transitionTransaction("waiting_for_user", {
+              type: "conflict_detected",
+              detail: `Workspace conflicts require review: ${commit.conflicts.join(", ")}`,
+            });
+            const conflictDurableState = await durableStore?.readRunState?.(workflow.workflowId, runId);
+            const conflictWorkspaceDiff = await durableStore?.inspectWorkspaceTransaction?.({ workflowId: workflow.workflowId, runId });
+            const conflictDetails = await durableStore?.inspectWorkspaceConflicts?.({ workflowId: workflow.workflowId, runId, paths: commit.conflicts }) ?? [];
+            const conflictRecovery = conflictDurableState ? buildWorkflowV2RecoveryPreview({
+              transaction: persistence.transactionState,
+              operations: finalOperations.map(sanitizeWorkflowOperationRecord),
+              runState: conflictDurableState.runState,
+              nodeControl: conflictDurableState.nodeControl,
+              workspaceDiff: {
+                created: conflictWorkspaceDiff?.created ?? [],
+                modified: conflictWorkspaceDiff?.modified ?? [],
+                deleted: conflictWorkspaceDiff?.deleted ?? [],
+                conflicts: commit.conflicts,
+              },
+              workspaceAvailable: conflictWorkspaceDiff !== undefined,
+              canRollbackSavepoint: await canRollbackWorkflowV2CurrentSavepoint({ store: durableStore, workflowId: workflow.workflowId, runId, transaction: persistence.transactionState }),
+              conflictDetails,
+            }) : undefined;
+            const conflictFinalReport = `${finalReport}\n\nWorkspace commit is waiting for conflict resolution: ${commit.conflicts.join(", ")}`;
+            await persistence.persistFinalReport(conflictFinalReport);
+            this.deps.updateWorkflowRunState({
+              workflowId: workflow.workflowId,
+              runId,
+              status: "waiting_for_user",
+              progress: latestProgress,
+              contextDocument: baseWorkflowContextDocument,
+              finalReport: conflictFinalReport,
+              ...(conflictRecovery ? { recovery: conflictRecovery } : {}),
+            });
+            return;
+          }
+          if (commit.status !== "committed") {
+            await persistence.transitionTransaction(commit.status, {
+              type: commit.status === "recovery_required" ? "recovery_required" : "compensation_completed",
+              detail: commit.error ?? `Commit coordinator completed with ${commit.status}.`,
+            });
+            const commitError = commit.error ?? `Workflow commit coordinator completed with ${commit.status}.`;
+            const failedCommitReport = `${finalReport}\n\nCommit result: ${commit.status}. ${commitError}`;
+            await persistence.persistFinalReport(failedCommitReport);
+            this.deps.finishWorkflowRun({
+              workflowId: workflow.workflowId,
+              runId,
+              status: "failed",
+              progress: latestProgress,
+              contextDocument: baseWorkflowContextDocument,
+              finalReport: failedCommitReport,
+              lastError: commitError,
+            });
+            return;
+          }
+          await persistence.transitionTransaction("committed", {
+            type: "commit_completed",
+            detail: `Applied ${commit.workspaceApplied.length} isolated workspace change(s) and ${commit.appliedOperationIds.length} external operation(s).`,
+          });
+          finalReport = `${finalReport}\n\n## Commit result\n- Status: committed\n- Workspace changes applied: ${commit.workspaceApplied.length}\n- External operations applied: ${commit.appliedOperationIds.length}\n- Completed policy checkpoints: ${persistence.transactionState.completedCheckpointIds?.join(", ") || "none"}`;
+        }
+        await persistence.persistFinalReport(finalReport);
         this.deps.finishWorkflowRun({
           workflowId: workflow.workflowId,
           runId,
@@ -1155,6 +1680,10 @@ export class WorkflowV2RunExecutor {
         return;
       }
       if (result.runState.status === "paused") {
+        if (workspaceIsolated && persistence.transactionState.status !== "recovery_required") await persistence.transitionTransaction("waiting_for_user");
+        const pendingCheckpointId = persistence.transactionState.pendingCheckpointId;
+        if (pendingCheckpointId) finalReport = `${finalReport}\n\nCheckpoint approval required: ${pendingCheckpointId}`;
+        await persistence.persistFinalReport(finalReport);
         this.deps.updateWorkflowRunState({
           workflowId: workflow.workflowId,
           runId,
@@ -1169,6 +1698,8 @@ export class WorkflowV2RunExecutor {
       const lastError = result.runState.nodeOrder
         .map((nodeId) => result.runState.nodes[nodeId])
         .find((node) => node?.status === "failed")?.lastError ?? "Workflow V2 execution failed.";
+      if (workspaceIsolated) await persistence.transitionTransaction("recovery_required", { type: "recovery_required", detail: lastError });
+      await persistence.persistFinalReport(finalReport);
       this.deps.finishWorkflowRun({
         workflowId: workflow.workflowId,
         runId,
@@ -1182,6 +1713,13 @@ export class WorkflowV2RunExecutor {
       if (this.runRegistry.isStopRequested(runId)) return;
       const message = error instanceof Error ? error.message : String(error);
       latestProgress = workflowProgressAfterFailure(latestProgress, message);
+      if (workspaceIsolated) {
+        try {
+          await persistence.transitionTransaction("recovery_required", { type: "recovery_required", detail: message });
+        } catch {
+          // Preserve the original execution failure when durable recovery recording also fails.
+        }
+      }
       this.deps.finishWorkflowRun({
         workflowId: workflow.workflowId,
         runId,

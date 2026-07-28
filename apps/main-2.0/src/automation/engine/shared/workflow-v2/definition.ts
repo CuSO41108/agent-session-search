@@ -1,5 +1,7 @@
 import type { WorkflowV2ExecutionLeasePolicy } from "./supervision";
 import type { WorkflowV2HookActionDef, WorkflowV2NodeHooks } from "./hooks";
+import type { WorkflowTransactionPolicy } from "./transaction";
+export type { WorkflowTransactionPolicy } from "./transaction";
 export type {
   WorkflowV2HookActionDef,
   WorkflowV2HookActionKind,
@@ -15,6 +17,10 @@ export type WorkflowV2ExecutionMode = "one-shot" | "interactive" | "script";
 export type WorkflowV2ModelProfile = "fast" | "balanced" | "expert";
 export type WorkflowV2ScriptLanguage = "python" | "typescript" | "bash";
 export type WorkflowV2ScriptRiskLevel = "safe" | "read" | "write" | "dangerous";
+export type WorkflowV2ScriptEffectMode = "pure" | "workspace_only" | "brokered_external";
+export type WorkflowV2ScriptIdempotency = "safe_retry" | "keyed" | "non_idempotent";
+export type WorkflowV2ScriptStderrPolicy = "ignore" | "warn" | "fail";
+export type WorkflowV2ScriptErrorPolicy = "fail" | "skip" | "ask_human" | "retry";
 export type WorkflowV2ScriptCapability = "workspace_read" | "workspace_write" | "workspace_delete" | "external_read" | "external_write" | "external_delete" | "network_read" | "network_write" | "process_spawn" | "shell_execute" | "environment_read" | "credential_read" | "system_config_write";
 export type WorkflowV2ScriptPermissionDecision = "auto_allow" | "allow_once" | "require_confirmation" | "deny";
 export type WorkflowV2ScriptParameterLocation = "argument" | "environment" | "header" | "query" | "body" | "stdin";
@@ -32,6 +38,7 @@ export interface WorkflowV2ScriptAuthorization {
   capabilities: WorkflowV2ScriptCapability[];
   capabilityDigest: string;
   operationDigest: string;
+  attempt?: number;
   approvalRequestId?: string;
 }
 export interface WorkflowV2ScriptParameterDef {
@@ -126,8 +133,23 @@ export interface WorkflowV2ScriptSpec {
   parameters: WorkflowV2ScriptParameterDef[];
   capabilities: WorkflowV2ScriptCapability[];
   managerRisk: { level: WorkflowV2ScriptRiskLevel; rationale: string };
+  /** Required for governed workflows; optional only while loading legacy direct-mode definitions. */
+  effectMode?: WorkflowV2ScriptEffectMode;
+  /** Required for governed workflows; optional only while loading legacy direct-mode definitions. */
+  idempotency?: WorkflowV2ScriptIdempotency;
+  /** Required for governed workflows; optional only while loading legacy direct-mode definitions. */
+  stderrPolicy?: WorkflowV2ScriptStderrPolicy;
+  compensationAdapter?: string;
   timeoutMs?: number;
-  outputSchema?: { type: "object"; required?: string[] };
+  outputSchema?: {
+    type: "object";
+    required?: string[];
+    properties?: Record<string, {
+      type: "string" | "number" | "boolean" | "object" | "array" | "null";
+      nullable?: boolean;
+      items?: { type: "string" | "number" | "boolean" | "object" };
+    }>;
+  };
 }
 
 export function createWorkflowV2InlineScriptSpec(input: {
@@ -136,13 +158,16 @@ export function createWorkflowV2InlineScriptSpec(input: {
   risk?: WorkflowV2ScriptRiskLevel;
   rationale?: string;
   timeoutMs?: number;
-  outputSchema?: { type: "object"; required?: string[] };
+  outputSchema?: WorkflowV2ScriptSpec["outputSchema"];
 }): WorkflowV2ScriptSpec {
   return {
     executable: { kind: "inline", language: input.language, code: input.code },
     parameters: [],
     capabilities: [],
     managerRisk: { level: input.risk ?? "safe", rationale: input.rationale ?? "Pure in-memory transformation without external side effects." },
+    effectMode: "pure",
+    idempotency: "safe_retry",
+    stderrPolicy: "warn",
     ...(input.timeoutMs !== undefined ? { timeoutMs: input.timeoutMs } : {}),
     ...(input.outputSchema ? { outputSchema: input.outputSchema } : {}),
   };
@@ -152,7 +177,8 @@ export interface WorkflowV2ScriptNode extends WorkflowV2BaseNode {
   execModel: "script";
   script: WorkflowV2ScriptSpec;
   expectedExitCode?: number;
-  onError?: WorkflowV2ExhaustedPolicy;
+  maxRetry?: number;
+  onError?: WorkflowV2ScriptErrorPolicy;
 }
 
 export type WorkflowV2Node = WorkflowV2LLMNode | WorkflowV2ScriptNode;
@@ -195,7 +221,7 @@ export interface WorkflowV2TemplateNodeOverrides {
   contextBudget?: WorkflowV2ContextBudget;
   script?: WorkflowV2ScriptSpec;
   expectedExitCode?: number;
-  onError?: WorkflowV2ExhaustedPolicy;
+  onError?: WorkflowV2ScriptErrorPolicy;
 }
 
 export interface WorkflowV2TemplateNodeDraft {
@@ -213,6 +239,8 @@ export interface WorkflowV2Definition {
   objective: string;
   nodes: WorkflowV2Node[];
   edges: WorkflowV2Edge[];
+  /** Missing on legacy definitions, which are normalized to direct mode. */
+  transactionPolicy?: WorkflowTransactionPolicy;
 }
 
 export interface WorkflowV2AuthoredDefinition {
@@ -221,6 +249,7 @@ export interface WorkflowV2AuthoredDefinition {
   objective: string;
   nodes: WorkflowV2AuthoredNode[];
   edges: WorkflowV2Edge[];
+  transactionPolicy?: WorkflowTransactionPolicy;
 }
 
 export interface WorkflowV2ValidationResult {

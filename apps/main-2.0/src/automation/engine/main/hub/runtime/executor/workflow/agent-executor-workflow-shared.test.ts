@@ -13,6 +13,9 @@ describe("workflow manager execution-mode policy", () => {
     expect(WORKFLOW_DEVELOPER_INSTRUCTIONS).toContain("must remain a script node");
     expect(WORKFLOW_DEVELOPER_INSTRUCTIONS).toContain("Do not use memory");
     expect(WORKFLOW_DEVELOPER_INSTRUCTIONS).toContain("WorkflowV2Definition");
+    expect(WORKFLOW_DEVELOPER_INSTRUCTIONS).toContain("script.effectMode, script.idempotency, and script.stderrPolicy");
+    expect(WORKFLOW_DEVELOPER_INSTRUCTIONS).toContain("brokered_external");
+    expect(WORKFLOW_DEVELOPER_INSTRUCTIONS).toContain("does not expose remote response bodies as script outputs");
   });
 
   test("keeps workflow-manager instructions out of generic Agent execution", () => {

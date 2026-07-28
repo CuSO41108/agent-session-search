@@ -7,6 +7,7 @@ import type {
   WorkflowV2Definition,
 } from "../../../shared/types";
 import { cloneWorkflowV2Plan } from "../../../shared/workflow-v2/planning";
+import { createStrictWorkflowTransactionPolicy } from "../../../shared/workflow-v2/transaction";
 
 function emptyWorkflowDefinition(workflowId: string): WorkflowV2Definition {
   return {
@@ -15,11 +16,15 @@ function emptyWorkflowDefinition(workflowId: string): WorkflowV2Definition {
     objective: "",
     nodes: [],
     edges: [],
+    transactionPolicy: createStrictWorkflowTransactionPolicy(),
   };
 }
 
 export function versionWorkflowDefinition(current: WorkflowV2Definition, candidate: WorkflowV2Definition): { definition: WorkflowV2Definition; changed: boolean } {
-  const definition = structuredClone(candidate);
+  const definition = structuredClone({
+    ...candidate,
+    ...(candidate.transactionPolicy ? {} : current.transactionPolicy ? { transactionPolicy: current.transactionPolicy } : {}),
+  });
   const changed = JSON.stringify({ ...current, graphVersion: 0 }) !== JSON.stringify({ ...definition, graphVersion: 0 });
   definition.graphVersion = changed
     ? current.nodes.length > 0 ? current.graphVersion + 1 : Math.max(current.graphVersion, definition.graphVersion)
@@ -137,6 +142,7 @@ export function createWorkflowDraftState(input: {
 }): WorkflowDraftState {
   const now = input.now ?? Date.now();
   const definition = structuredClone(input.request.definition);
+  definition.transactionPolicy ??= createStrictWorkflowTransactionPolicy();
   const objective = input.request.objective.trim() || definition.objective;
   definition.objective = objective;
   return input.cloneDraft({

@@ -1,4 +1,4 @@
-import { mkdtemp, readFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, test } from "vitest";
@@ -11,11 +11,12 @@ import {
   type WorkflowV2PersistedRunState,
 } from "../../../shared/workflow-v2/storage";
 import { buildWorkflowV2Plan } from "../../workflows/v2/workflow-v2-planner";
+import { buildWorkflowV2RecoveryPreview } from "../../workflows/v2/workflow-v2-recovery";
 import { transitionWorkflowV2NodeState } from "../../workflows/v2/workflow-v2-scheduler";
 import { WorkflowV2FileStore } from "../../workflows/v2/workflow-v2-store";
 import { AgentHub } from "../agent-hub";
 import { createWorkflowV2InlineScriptSpec } from "../../../shared/workflow-v2/definition";
-import { reconcileWorkflowV2RunFromDurableState, restoreWorkflowDraft, restoreWorkflowStoreCollections } from "./agent-hub-workflow-restore";
+import { reconcileWorkflowV2RunFromDurableState, restoreWorkflowDraft, restoreWorkflowRun, restoreWorkflowStoreCollections } from "./agent-hub-workflow-restore";
 
 function definition(workflowId = "workflow-recovery"): WorkflowV2Definition {
   return {
@@ -103,6 +104,17 @@ async function fixture(): Promise<{
 }
 
 describe("Workflow V2 AgentHub durable restore", () => {
+  test("compatibly reads legacy runs without inventing transaction evidence", async () => {
+    const input = await fixture();
+    const restored = restoreWorkflowRun(input.run);
+
+    expect(restored).toBeDefined();
+    expect(restored?.transaction).toBeUndefined();
+    expect(restored?.operations).toBeUndefined();
+    expect(restored?.recovery).toBeUndefined();
+    expect(restored?.recoveryDecisions).toBeUndefined();
+  });
+
   test("restores an unfinished planning conversation with an empty DAG", () => {
     const workflowId = "planning-workflow";
     const restored = restoreWorkflowDraft({
@@ -296,13 +308,14 @@ describe("Workflow V2 AgentHub durable restore", () => {
       { nodeId: "draft", summary: "Draft persisted", outputs: { draft: "done" }, proposals: [] },
       { nodeId: "verify", summary: "Verification persisted", outputs: { verified: true }, proposals: [] },
     ];
+    input.persisted.finalReport = "# Durable final report\n\n- Exact transaction diff retained.";
 
     const restored = reconcileWorkflowV2RunFromDurableState({ ...input, updateWorkflowProjection: true });
 
     expect(restored?.run.status).toBe("completed");
     expect(restored?.run.finishedAt).toBe(1_500);
-    expect(restored?.run.finalReport).toContain("Verification persisted");
-    expect(restored?.workflow).toMatchObject({ status: "completed", finalReport: expect.stringContaining("Draft persisted") });
+    expect(restored?.run.finalReport).toBe(input.persisted.finalReport);
+    expect(restored?.workflow).toMatchObject({ status: "completed", finalReport: input.persisted.finalReport });
   });
 
   test("rejects durable state that does not belong to the public run", async () => {
@@ -333,7 +346,8 @@ describe("Workflow V2 AgentHub durable restore", () => {
     const started = hub.startWorkflowRun({ workflowId });
     expect(started).toMatchObject({ ok: true, runId: expect.any(String) });
     const runId = started.runId!;
-    await hub.flushPersistence();
+    await hub.stopWorkflowRun({ workflowId, runId });
+    await hub.shutdown();
 
     let durableRunState = createWorkflowV2RunState({ definition: frozenDefinition, maxParallelNodes: 4 });
     durableRunState = transitionWorkflowV2NodeState(durableRunState, { nodeId: "draft", status: "running", now: 2_000 });
@@ -344,6 +358,43 @@ describe("Workflow V2 AgentHub durable restore", () => {
       status: "paused",
       now: 2_300,
       error: "Paused before restart",
+    });
+    const transaction = {
+      transactionId: "transaction-startup-recovery",
+      mode: "strict_atomic" as const,
+      status: "recovery_required" as const,
+      baselineId: "baseline-startup-recovery",
+      operationCount: 0,
+      unknownOperationCount: 0,
+      irreversibleOperationCount: 0,
+      startedAt: 2_000,
+      updatedAt: 2_400,
+      retentionUntil: Date.now() + 604_800_000,
+    };
+    const durableStore = new WorkflowV2FileStore(rootDir);
+    const sourceDir = path.join(rootDir, "governed-source");
+    await mkdir(sourceDir, { recursive: true });
+    await writeFile(path.join(sourceDir, "restart-change.txt"), "baseline file", "utf8");
+    const workspace = await durableStore.prepareWorkspaceTransaction({ workflowId, runId, sourceDir, baselineId: transaction.baselineId, now: 2_000 });
+    await writeFile(path.join(workspace.workspaceDir, "restart-change.txt"), "recoverable workflow change", "utf8");
+    await writeFile(path.join(sourceDir, "restart-change.txt"), "concurrent user change one", "utf8");
+    const workspaceDiff = await durableStore.inspectWorkspaceTransaction({ workflowId, runId });
+    const conflictDetails = await durableStore.inspectWorkspaceConflicts({ workflowId, runId, paths: ["restart-change.txt"] });
+    const rulesRecovery = buildWorkflowV2RecoveryPreview({
+      transaction,
+      operations: [],
+      runState: durableRunState,
+      nodeControl: {
+        draft: { extensionCount: 0 },
+        verify: { extensionCount: 0, checkpoint: "verify-checkpoint" },
+      },
+      canRollbackSavepoint: false,
+      canRollbackWorkspace: true,
+      canCompensate: false,
+      compensableOperationIds: [],
+      workspaceDiff: { ...workspaceDiff, conflicts: conflictDetails.map((detail) => detail.path) },
+      conflictDetails,
+      now: 2_400,
     });
     const durableState = {
       schemaVersion: WORKFLOW_V2_STORAGE_SCHEMA_VERSION,
@@ -364,12 +415,23 @@ describe("Workflow V2 AgentHub durable restore", () => {
         draft: { extensionCount: 0 },
         verify: { extensionCount: 0, checkpoint: "verify-checkpoint" },
       },
+      transaction,
+      recovery: {
+        ...rulesRecovery,
+        managerRecommendation: {
+          ...rulesRecovery.managerRecommendation,
+          source: "agent" as const,
+          rationale: "The Manager Agent reviewed the durable evidence before restart.",
+        },
+      },
     } satisfies WorkflowV2PersistedRunState;
     expect(isWorkflowV2PersistedRunState(durableState)).toBe(true);
-    await new WorkflowV2FileStore(rootDir).persistRunState(durableState);
+    await durableStore.persistRunState(durableState);
+    expect((await durableStore.readRunState(workflowId, runId))?.recovery?.managerRecommendation.source).toBe("agent");
 
     const restoredHub = new AgentHub();
     await restoredHub.loadPersistedState(storagePath);
+    expect((await durableStore.readRunState(workflowId, runId))?.transaction?.status).toBe("recovery_required");
     const restored = restoredHub.snapshot();
     const restoredRun = restored.workflowStore.runs.find((run) => run.runId === runId);
     const restoredWorkflow = restored.workflowStore.workflows.find((workflow) => workflow.workflowId === workflowId);
@@ -382,9 +444,40 @@ describe("Workflow V2 AgentHub durable restore", () => {
       ],
     });
     expect(restoredWorkflow).toMatchObject({ status: "waiting_for_user" });
+    const { generatedAt: _restoredGeneratedAt, managerRecommendation: _restoredManagerRecommendation, ...restoredFacts } = restoredRun!.recovery!;
+    const { generatedAt: _durableGeneratedAt, managerRecommendation: _durableManagerRecommendation, ...durableFacts } = durableState.recovery;
+    expect(restoredFacts).toEqual(durableFacts);
+    expect(restoredRun?.recovery?.managerRecommendation).toMatchObject({
+      source: "agent",
+      rationale: "The Manager Agent reviewed the durable evidence before restart.",
+    });
+    expect(restoredRun?.recovery?.availableActions).toContain("compensate_all");
     const persistedPublicState = JSON.parse(await readFile(storagePath, "utf8")) as {
       workflowStore: { runs: Array<{ runId: string; status: string }> };
     };
     expect(persistedPublicState.workflowStore.runs.find((run) => run.runId === runId)?.status).toBe("waiting_for_user");
+    await restoredHub.shutdown();
+
+    const previousCurrentDigest = restoredRun?.recovery?.conflictDetails[0]?.current.sha256;
+    await writeFile(path.join(sourceDir, "restart-change.txt"), "concurrent user change two", "utf8");
+    const changedEvidenceHub = new AgentHub();
+    await changedEvidenceHub.loadPersistedState(storagePath);
+    const changedEvidenceRun = changedEvidenceHub.snapshot().workflowStore.runs.find((run) => run.runId === runId);
+
+    expect(changedEvidenceRun?.recovery?.conflictDetails[0]?.current.sha256).not.toBe(previousCurrentDigest);
+    expect(changedEvidenceRun?.recovery?.managerRecommendation.source).toBe("rules");
+    expect(changedEvidenceRun?.recovery?.managerRecommendation.rationale).not.toContain("reviewed the durable evidence before restart");
+    await changedEvidenceHub.shutdown();
+
+    await writeFile(path.join(sourceDir, "restart-change.txt"), "baseline file", "utf8");
+    await writeFile(durableStore.layout(workflowId, runId).operationLogPath, "{ malformed operation ledger", "utf8");
+    const malformedLedgerHub = new AgentHub();
+    await malformedLedgerHub.loadPersistedState(storagePath);
+    const malformedLedgerRun = malformedLedgerHub.snapshot().workflowStore.runs.find((run) => run.runId === runId);
+
+    expect(malformedLedgerRun?.recovery?.conflicts).toEqual([]);
+    expect(malformedLedgerRun?.recovery?.blockers).toEqual(expect.arrayContaining([expect.stringContaining("operation ledger is unavailable")]));
+    expect(malformedLedgerRun?.recovery?.availableActions).not.toContain("continue");
+    await malformedLedgerHub.shutdown();
   });
 });

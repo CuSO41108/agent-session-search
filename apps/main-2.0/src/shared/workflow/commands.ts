@@ -3,6 +3,7 @@ import type { WorkflowV2ContextBudget, WorkflowV2Definition, WorkflowV2ModelProf
 import type { WorkflowV2AcceptanceCriterion, WorkflowV2CostBudget, WorkflowV2GraphRevision, WorkflowV2Plan } from "../workflow-v2/planning";
 import type { WorkflowV2InterventionAction } from "../workflow-v2/review";
 import type { WorkflowV2GenerationReviewState } from "../workflow-v2/generation-review";
+import type { WorkflowRecoveryAction } from "../workflow-v2/transaction";
 import type { WorkflowGrillMessage } from "./draft";
 import type { WorkflowArtifactReference, WorkflowEvent, WorkflowRunConfigurationSnapshot, WorkflowRunProgressItem, WorkflowRunTriggerSource, WorkflowStatus } from "./run";
 
@@ -132,6 +133,7 @@ export interface StartWorkflowRunRequest {
   contextDocument?: string;
   triggerSource?: WorkflowRunTriggerSource;
   configurationSnapshot?: WorkflowRunConfigurationSnapshot;
+  transactionApprovalMode?: "batch" | "per_operation";
 }
 
 export interface ListWorkflowOutputsRequest {
@@ -142,6 +144,7 @@ export interface RunWorkflowRequest {
   workflowId: string;
   contextDocument?: string;
   triggerSource?: WorkflowRunTriggerSource;
+  transactionApprovalMode?: "batch" | "per_operation";
 }
 
 export interface ConfirmWorkflowRequest {
@@ -206,6 +209,44 @@ export interface StartWorkflowNodeRequest extends PauseWorkflowNodeRequest {}
 export interface ResolveWorkflowV2InterventionRequest extends PauseWorkflowNodeRequest {
   action: WorkflowV2InterventionAction;
   reason?: string;
+}
+
+export interface ResolveWorkflowV2RecoveryRequest {
+  workflowId: string;
+  runId: string;
+  action: WorkflowRecoveryAction;
+  actor: string;
+  reason: string;
+}
+
+export interface RefreshWorkflowV2RecoveryRequest {
+  workflowId: string;
+  runId: string;
+}
+
+export interface ResolveWorkflowV2ConflictRequest {
+  workflowId: string;
+  runId: string;
+  path: string;
+  resolution: "isolated" | "current" | "manual";
+  expectedCurrentSha256?: string;
+  content?: string;
+  actor: string;
+  reason: string;
+}
+
+export interface ResolveWorkflowV2UnknownOperationRequest {
+  workflowId: string;
+  runId: string;
+  operationId: string;
+  verifiedState: "applied" | "not_applied";
+  actor: string;
+  reason: string;
+}
+
+export interface CleanupWorkflowV2RunRequest {
+  workflowId: string;
+  runId: string;
 }
 
 export interface ReviseWorkflowV2RunRequest extends PauseWorkflowNodeRequest {

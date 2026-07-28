@@ -127,6 +127,9 @@ export function compileWorkflowV2Node(
     ...((overrides.expectedExitCode ?? template.expectedExitCode) !== undefined
       ? { expectedExitCode: overrides.expectedExitCode ?? template.expectedExitCode }
       : {}),
+    ...((overrides.maxRetry ?? template.maxRetry) !== undefined
+      ? { maxRetry: overrides.maxRetry ?? template.maxRetry }
+      : {}),
     ...(overrides.onError ?? template.onError ? { onError: overrides.onError ?? template.onError } : {}),
   };
   return compiled;

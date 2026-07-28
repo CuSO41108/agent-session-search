@@ -55,14 +55,30 @@ describe("normalizeCodexNotification", () => {
         { item: { type: "function_call", call_id: "call-1", name: "shell_command", arguments: "{\"command\":\"ls src\"}" } },
         state,
       ),
-    ).toEqual([{ type: "tool_call", name: "shell_command", content: "ls src" }]);
+    ).toEqual([{ type: "tool_call", name: "shell_command", content: "ls src", metadata: { id: "call-1" } }]);
     expect(
       normalizeCodexNotification(
         "rawResponseItem/completed",
         { item: { type: "function_call_output", call_id: "call-1", output: "Exit code: 0\nOutput:\nApp.tsx" } },
         state,
       ),
-    ).toEqual([{ type: "tool_result", name: "shell_command", content: "Exit code: 0\nOutput:\nApp.tsx" }]);
+    ).toEqual([{ type: "tool_result", name: "shell_command", content: "Exit code: 0\nOutput:\nApp.tsx", metadata: { id: "call-1", status: "completed" } }]);
+  });
+
+  test("marks raw function-call errors as failed terminal results", () => {
+    const state = createCodexStreamState();
+    normalizeCodexNotification("rawResponseItem/completed", {
+      item: { type: "function_call", call_id: "call-2", name: "shell_command", arguments: "{}" },
+    }, state);
+
+    expect(normalizeCodexNotification("rawResponseItem/completed", {
+      item: { type: "function_call_output", call_id: "call-2", status: "failed", error: { message: "command failed" } },
+    }, state)).toEqual([{
+      type: "tool_result",
+      name: "shell_command",
+      content: "command failed",
+      metadata: { id: "call-2", status: "failed" },
+    }]);
   });
 
   test("emits failed MCP calls from current app-server item notifications", () => {

@@ -45,6 +45,9 @@
             "level": "dangerous",
             "rationale": "Reads the selected directory and starts Git with a fixed executable and shell disabled to collect change paths without modifying files."
           },
+          "effectMode": "pure",
+          "idempotency": "safe_retry",
+          "stderrPolicy": "warn",
           "timeoutMs": 30000,
           "outputSchema": {
             "type": "object",
@@ -55,7 +58,15 @@
               "unstaged_files",
               "untracked_files",
               "changed_files"
-            ]
+            ],
+            "properties": {
+              "review_directory": { "type": "string" },
+              "repository_root": { "type": "string" },
+              "staged_files": { "type": "array", "items": { "type": "string" } },
+              "unstaged_files": { "type": "array", "items": { "type": "string" } },
+              "untracked_files": { "type": "array", "items": { "type": "string" } },
+              "changed_files": { "type": "array", "items": { "type": "string" } }
+            }
           }
         },
         "outputFields": [
