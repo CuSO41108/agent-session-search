@@ -105,6 +105,21 @@ describe("workflow-v2 validation", () => {
     expect(validateWorkflowV2Definition(definition).errors).not.toEqual(expect.arrayContaining([expect.stringContaining("must declare")]));
   });
 
+  test("rejects unbrokered network access before a strict workflow is saved", () => {
+    const definition = validDefinition();
+    definition.transactionPolicy = createStrictWorkflowTransactionPolicy();
+    const script = definition.nodes[1];
+    if (script?.execModel !== "script") throw new Error("expected script fixture");
+    script.script.capabilities = ["network_read"];
+    script.script.effectMode = "workspace_only";
+    script.script.idempotency = "safe_retry";
+    script.script.stderrPolicy = "warn";
+
+    expect(validateWorkflowV2Definition(definition).errors).toContain(
+      "Workflow V2 strict script node apply must use effectMode=brokered_external for non-workspace capabilities: network_read.",
+    );
+  });
+
   test("requires a bounded retry budget for script retry policy", () => {
     const definition = validDefinition();
     const script = definition.nodes[1];

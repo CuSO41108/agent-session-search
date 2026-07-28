@@ -30,6 +30,7 @@ const VALID_MODEL_PROFILES = new Set(["fast", "balanced", "expert"]);
 const VALID_NODE_ROLES = new Set(["orchestrator", "executor", "reviewer"]);
 const VALID_WORKFLOW_VALUE_TYPES = new Set(["string", "number", "boolean", "json", "secret", "file", "directory"]);
 const VALID_OUTPUT_ARTIFACT_FORMATS = new Set(["markdown", "text", "json", "html", "csv"]);
+const STRICT_WORKSPACE_CAPABILITIES = new Set(["workspace_read", "workspace_write", "workspace_delete"]);
 
 export function isSafeInteger(value: unknown): value is number {
   return Number.isSafeInteger(value);
@@ -367,6 +368,12 @@ export function validateWorkflowV2Definition(definition: WorkflowV2Definition, o
       if (!node.script.effectMode) errors.push(`Workflow V2 governed script node ${node.id} must declare effectMode.`);
       if (!node.script.idempotency) errors.push(`Workflow V2 governed script node ${node.id} must declare idempotency.`);
       if (!node.script.stderrPolicy) errors.push(`Workflow V2 governed script node ${node.id} must declare stderrPolicy.`);
+      if (definition.transactionPolicy.defaultMode === "strict_atomic" && node.script.effectMode !== "brokered_external" && Array.isArray(node.script.capabilities)) {
+        const unbrokeredCapabilities = node.script.capabilities.filter((capability) => !STRICT_WORKSPACE_CAPABILITIES.has(capability));
+        if (unbrokeredCapabilities.length > 0) {
+          errors.push(`Workflow V2 strict script node ${node.id} must use effectMode=brokered_external for non-workspace capabilities: ${unbrokeredCapabilities.join(", ")}.`);
+        }
+      }
       if (node.script.effectMode === "brokered_external" && !node.script.compensationAdapter && definition.transactionPolicy?.defaultMode === "strict_atomic") {
         errors.push(`Workflow V2 strict brokered script node ${node.id} must declare compensationAdapter.`);
       }

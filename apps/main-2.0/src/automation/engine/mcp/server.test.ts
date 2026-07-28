@@ -121,6 +121,14 @@ describe("MCP server tools", () => {
     expect(definition.required).toEqual(["workflowId", "graphVersion", "objective", "nodes", "edges"]);
     expect(definition.properties.nodes.items.required).toContain("executionMode");
     expect(definition.properties.nodes.items.properties.executionMode.enum).toEqual(["one-shot", "interactive", "script"]);
+    const script = definition.properties.nodes.items.properties.script;
+    expect(script.required).toEqual(expect.arrayContaining(["effectMode", "idempotency", "stderrPolicy"]));
+    expect(script.properties.effectMode.enum).toEqual(["pure", "workspace_only", "brokered_external"]);
+    expect(script.properties.idempotency.enum).toEqual(["safe_retry", "keyed", "non_idempotent"]);
+    expect(script.properties.stderrPolicy.enum).toEqual(["ignore", "warn", "fail"]);
+    expect(definition.properties.transactionPolicy.properties.defaultMode.enum).toEqual(["strict_atomic", "controlled", "direct"]);
+    expect(tool.description).toContain("script.effectMode");
+    expect(tool.description).toContain("does not expose response bodies as script outputs");
   });
 
   test("uses env override for bridge discovery", () => {

@@ -39,11 +39,17 @@ describe("workflow V2 manager prompt", () => {
     expect(prompt).toContain("Read values through inputs.<key>");
     expect(prompt).toContain("Do not read WORKFLOW_INPUT");
     expect(prompt).toContain("Classify pure in-memory transformations as safe");
+    expect(prompt).toContain("must declare script.effectMode, script.idempotency, and script.stderrPolicy");
+    expect(prompt).toContain("Never describe external access as read-only while omitting effectMode");
+    expect(prompt).toContain("strict_atomic brokered_external node");
+    expect(prompt).toContain("network_read, network_write, external_read, external_write");
+    expect(prompt).toContain("does not expose remote response bodies as script outputs");
+    expect(prompt).toContain("Use an LLM research node with available web tools instead");
   });
 
   test("provides a valid-shape V2 definition example", () => {
     const definition = JSON.parse(WORKFLOW_V2_DEFINITION_TEMPLATE);
-    expect(definition).toMatchObject({ graphVersion: 1, nodes: [{ execModel: "script", executionMode: "script", script: { parameters: [{ source: "user" }], managerRisk: { level: "safe" } } }] });
+    expect(definition).toMatchObject({ graphVersion: 1, nodes: [{ execModel: "script", executionMode: "script", script: { parameters: [{ source: "user" }], managerRisk: { level: "safe" }, effectMode: "pure", idempotency: "safe_retry", stderrPolicy: "warn" } }] });
     expect(definition.nodes).toHaveLength(1);
     expect(definition.edges).toEqual([]);
     expect(definition.nodes.some((node: { kind: string }) => node.kind === "start" || node.kind === "end")).toBe(false);

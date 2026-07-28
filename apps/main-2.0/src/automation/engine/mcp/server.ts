@@ -74,6 +74,81 @@ function objectSchema(properties: Record<string, unknown>, required: string[] = 
   };
 }
 
+const workflowV2ScriptValueSchema = {
+  oneOf: [
+    { type: "string" },
+    { type: "number" },
+    { type: "boolean" },
+    { type: "object", additionalProperties: true },
+    { type: "array", items: {} },
+  ],
+};
+
+const workflowV2ScriptSchema = objectSchema({
+  executable: {
+    oneOf: [
+      objectSchema({ kind: { type: "string", enum: ["inline"] }, language: { type: "string", enum: ["python", "typescript", "bash"] }, code: { type: "string" } }, ["kind", "language", "code"]),
+      objectSchema({ kind: { type: "string", enum: ["command"] }, command: { type: "string" }, args: { type: "array", items: { type: "string" } } }, ["kind", "command"]),
+    ],
+  },
+  parameters: {
+    type: "array",
+    items: objectSchema({
+      key: { type: "string" },
+      label: { type: "string" },
+      location: { type: "string", enum: ["argument", "environment", "header", "query", "body", "stdin"] },
+      valueType: { type: "string", enum: ["string", "number", "boolean", "json", "secret", "file", "directory"] },
+      source: { type: "string", enum: ["user", "workflow", "upstream", "literal"] },
+      required: { type: "boolean" },
+      description: { type: "string" },
+      enum: { type: "array", items: { oneOf: [{ type: "string" }, { type: "number" }, { type: "boolean" }] } },
+      defaultValue: workflowV2ScriptValueSchema,
+      workflowPath: { type: "string" },
+      upstreamNodeId: { type: "string" },
+      upstreamOutputKey: { type: "string" },
+      literalValue: workflowV2ScriptValueSchema,
+    }, ["key", "label", "location", "valueType", "source", "required"]),
+  },
+  capabilities: {
+    type: "array",
+    items: { type: "string", enum: ["workspace_read", "workspace_write", "workspace_delete", "external_read", "external_write", "external_delete", "network_read", "network_write", "process_spawn", "shell_execute", "environment_read", "credential_read", "system_config_write"] },
+  },
+  managerRisk: objectSchema({ level: { type: "string", enum: ["safe", "read", "write", "dangerous"] }, rationale: { type: "string" } }, ["level", "rationale"]),
+  effectMode: { type: "string", enum: ["pure", "workspace_only", "brokered_external"] },
+  idempotency: { type: "string", enum: ["safe_retry", "keyed", "non_idempotent"] },
+  stderrPolicy: { type: "string", enum: ["ignore", "warn", "fail"] },
+  compensationAdapter: { type: "string" },
+  timeoutMs: { type: "integer", minimum: 1 },
+  outputSchema: {
+    type: "object",
+    properties: {
+      type: { type: "string", enum: ["object"] },
+      required: { type: "array", items: { type: "string" } },
+      properties: { type: "object", additionalProperties: true },
+    },
+    required: ["type"],
+    additionalProperties: false,
+  },
+}, ["executable", "parameters", "capabilities", "managerRisk", "effectMode", "idempotency", "stderrPolicy"]);
+
+const workflowTransactionPolicySchema = objectSchema({
+  defaultMode: { type: "string", enum: ["strict_atomic", "controlled", "direct"] },
+  approvalMode: { type: "string", enum: ["batch", "per_operation", "user_choice"] },
+  checkpoints: {
+    type: "array",
+    items: objectSchema({
+      id: { type: "string" },
+      title: { type: "string" },
+      afterNodeIds: { type: "array", items: { type: "string" } },
+      kind: { type: "string", enum: ["savepoint", "commit"] },
+      approval: { type: "string", enum: ["automatic", "required"] },
+    }, ["id", "title", "afterNodeIds", "kind", "approval"]),
+  },
+  retentionDays: { type: "integer", minimum: 1 },
+  onUnknown: { type: "string", enum: ["pause"] },
+  onConflict: { type: "string", enum: ["user_or_manager"] },
+}, ["defaultMode", "approvalMode", "checkpoints", "retentionDays", "onUnknown", "onConflict"]);
+
 const workflowV2DefinitionSchema = {
   type: "object",
   properties: {
@@ -92,13 +167,14 @@ const workflowV2DefinitionSchema = {
           role: { type: "string", enum: ["orchestrator", "executor", "reviewer"] },
           modelProfile: { type: "string", enum: ["fast", "balanced", "expert"] }, prompt: { type: "string" },
           outputFields: { type: "array", items: objectSchema({ key: { type: "string" }, required: { type: "boolean" }, description: { type: "string" } }, ["key"]) },
-          script: { type: "object", additionalProperties: true },
+          script: workflowV2ScriptSchema,
         },
         required: ["id", "kind", "title", "execModel", "executionMode", "outputFields"],
         additionalProperties: true,
       },
     },
     edges: { type: "array", items: objectSchema({ fromNodeId: { type: "string" }, toNodeId: { type: "string" } }, ["fromNodeId", "toNodeId"]) },
+    transactionPolicy: workflowTransactionPolicySchema,
   },
   required: ["workflowId", "graphVersion", "objective", "nodes", "edges"],
   additionalProperties: false,
@@ -235,7 +311,7 @@ export function mcpToolDefinitions(): McpToolDefinition[] {
     },
     {
       name: "workflow_create",
-      description: "Write an editable workflow DAG into the planning draft identified by workflowId. This never creates another top-level Workflow and does not confirm or publish the draft. Invalid graphs are rejected. Use interactive LLM nodes only to collect or clarify user input, and use script nodes for deterministic work such as echoing, copying, formatting, mapping, or passing values through unchanged.",
+      description: "Write an editable workflow DAG into the planning draft identified by workflowId. This never creates another top-level Workflow and does not confirm or publish the draft. Invalid graphs are rejected. Use interactive LLM nodes only to collect or clarify user input, and use script nodes for deterministic work such as echoing, copying, formatting, mapping, or passing values through unchanged. Governed script nodes must declare script.effectMode, script.idempotency, and script.stderrPolicy; strict_atomic brokered_external nodes must also use an available declarative Broker adapter and declare script.compensationAdapter. Strict scripts cannot declare unbrokered network capabilities. The current HTTP Broker does not expose response bodies as script outputs, so web research that feeds a downstream node must use an LLM research node with available web tools.",
       inputSchema: objectSchema(
         {
           workflowId: { type: "string" },
