@@ -545,7 +545,7 @@ export function resolveBridgeDiscoveryPath(): string {
   if (process.env.AGENT_RECALL_WORKFLOW_MCP_BRIDGE) return process.env.AGENT_RECALL_WORKFLOW_MCP_BRIDGE;
   if (process.platform === "darwin") return path.join(os.homedir(), "Library", "Application Support", "AgentRecall", "mcp-bridge.json");
   if (process.platform === "win32") return path.join(process.env.APPDATA || os.homedir(), "AgentRecall", "mcp-bridge.json");
-  return path.join(process.env.XDG_CONFIG_HOME || path.join(os.homedir(), ".config"), "agent-recall", "mcp-bridge.json");
+  return path.join(process.env.XDG_CONFIG_HOME || path.join(os.homedir(), ".config"), "agent-recall-v2", "mcp-bridge.json");
 }
 
 async function readBridgeDiscovery(): Promise<{ host: string; port: number; token: string }> {
@@ -608,7 +608,7 @@ async function handleJsonRpc(request: JsonRpcRequest): Promise<void> {
         result: {
           protocolVersion: "2024-11-05",
           capabilities: { tools: {} },
-          serverInfo: { name: "agent-recall", version: "0.1.0" },
+          serverInfo: { name: "agent-recall-v2", version: "0.1.0" },
         },
       });
       return;

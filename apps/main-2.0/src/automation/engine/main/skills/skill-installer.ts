@@ -47,7 +47,7 @@ async function pathExists(filePath: string): Promise<boolean> {
 }
 
 function defaultBundledSkillRoot(homeDir: string): string {
-  return path.join(homeDir, ".agent-recall", "automation-skills");
+  return path.join(homeDir, ".agent-recall-v2", "automation-skills");
 }
 
 function targetSkillDir(request: InstallSkillRequest | UninstallSkillRequest, homeDir: string): string {

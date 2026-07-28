@@ -142,7 +142,7 @@ describe("PostgreSQL MCP data facade", () => {
   it("resolves the private endpoint pointer and migration target schema", async () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), "agent-recall-mcp-"));
     try {
-      const pointerDirectory = path.join(home, ".agent-recall");
+      const pointerDirectory = path.join(home, ".agent-recall-v2");
       fs.mkdirSync(pointerDirectory);
       fs.writeFileSync(
         path.join(pointerDirectory, "database-url"),

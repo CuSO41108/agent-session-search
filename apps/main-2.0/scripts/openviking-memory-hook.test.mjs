@@ -19,7 +19,7 @@ function managedManifest(rootPath) {
     workspaces: [{
       id: "workspace-1",
       rootPath,
-      accountId: "agent-recall",
+      accountId: "agent-recall-v2",
       userId: "workspace_user",
       apiKey: "workspace-key",
     }],

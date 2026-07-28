@@ -309,7 +309,7 @@ export function SkillsPage({
 }
 
 export function isManagedSkill(skill: InstalledSkill): skill is ManagedSkill {
-  if (skill.source !== "agent-recall") return false;
+  if (skill.source !== "agent-recall-v2") return false;
   const candidate = skill as Partial<ManagedSkill>;
   return typeof candidate.managedId === "string"
     && Boolean(candidate.origin)

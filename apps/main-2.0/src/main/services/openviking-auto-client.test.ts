@@ -20,10 +20,10 @@ describe("AutoStartingOpenVikingClient", () => {
       getConnection,
       createClient,
     });
-    const auth = { accountId: "agent-recall", userId: "workspace_one", apiKey: "user-key" };
+    const auth = { accountId: "agent-recall-v2", userId: "workspace_one", apiKey: "user-key" };
 
     await client.searchMemories(auth, "query", 8);
-    await client.deleteWorkspaceUser("agent-recall", "workspace_one");
+    await client.deleteWorkspaceUser("agent-recall-v2", "workspace_one");
 
     expect(ensureRunning).toHaveBeenCalledTimes(2);
     expect(getConnection).toHaveBeenCalledTimes(2);
@@ -33,7 +33,7 @@ describe("AutoStartingOpenVikingClient", () => {
       rootApiKey: "root-key",
     });
     expect(downstream.searchMemories).toHaveBeenCalledWith(auth, "query", 8);
-    expect(downstream.deleteWorkspaceUser).toHaveBeenCalledWith("agent-recall", "workspace_one");
+    expect(downstream.deleteWorkspaceUser).toHaveBeenCalledWith("agent-recall-v2", "workspace_one");
   });
 
   it("replaces the cached gateway when the runtime endpoint changes", async () => {

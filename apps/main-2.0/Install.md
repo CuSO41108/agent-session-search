@@ -30,7 +30,7 @@ agent-recall
 
 ### 像普通 App 一样打开（macOS）
 
-如果不想每次都从终端启动，可以生成一个本地的 `AgentRecall.app`：
+如果不想每次都从终端启动，可以生成一个本地的 `agent-recall-v2.app`：
 
 ```bash
 agent-recall install-app

@@ -236,7 +236,7 @@ describe("WorkbenchPage cards", () => {
       name: "Design Review",
       description: "Review product interfaces.",
       agent: "codex",
-      source: "agent-recall",
+      source: "agent-recall-v2",
       path: "/app-skills/design-review/SKILL.md",
       directoryPath: "/app-skills/design-review",
       rootPath: "/app-skills",

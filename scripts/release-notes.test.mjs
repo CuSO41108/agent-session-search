@@ -15,6 +15,7 @@ test("parses feature and bug-fix sections as user-facing release copy", () => {
   const note = parseReleaseNote(`# 自动更新\n\n## 新增功能\n\n- 终端显示新版本。\n\n## Bug 修复\n\n- 修复重启失败。\n`);
   assert.deepEqual(note, {
     title: "自动更新",
+    target: "v1",
     features: ["终端显示新版本。"],
     fixes: ["修复重启失败。"],
   });
@@ -24,6 +25,24 @@ test("parses feature and bug-fix sections as user-facing release copy", () => {
 test("rejects missing and vague release notes", () => {
   assert.throws(() => parseReleaseNote("# Empty\n"), /at least one bullet/);
   assert.throws(() => parseReleaseNote("# Vague\n\n## Bug 修复\n\n- 修复一些问题\n"), /vague/);
+  assert.throws(
+    () => parseReleaseNote("# Invalid\n\n<!-- release-target: future -->\n\n## Bug 修复\n\n- Clear fix.\n"),
+    /invalid release target/,
+  );
+});
+
+test("routes V1 and V2 notes without publishing V2 notes in V1 releases", () => {
+  const v1 = parseReleaseNote("# Stable\n\n## Bug 修复\n\n- Stable fix.\n");
+  const v2 = parseReleaseNote("# Preview\n\n<!-- release-target: v2 -->\n\n## Bug 修复\n\n- Preview fix.\n");
+  const both = parseReleaseNote("# Shared\n\n<!-- release-target: both -->\n\n## Bug 修复\n\n- Shared fix.\n");
+  assert.equal(v1.target, "v1");
+  assert.equal(v2.target, "v2");
+  assert.equal(both.target, "both");
+  assert.deepEqual(
+    combineReleaseNotes([v1, v2, both], { target: "v1" }).fixes,
+    ["Stable fix.", "Shared fix."],
+  );
+  assert.doesNotMatch(renderReleaseNotes(v2), /release-target/);
 });
 
 test("repository guidance treats release notes as sanitized product copy", async () => {

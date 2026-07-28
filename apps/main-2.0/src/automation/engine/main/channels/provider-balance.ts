@@ -401,7 +401,7 @@ proxy_url = (os.environ.get("AGENT_RECALL_CODEX_PROXY") or "").strip()
 headers = {
     "Accept": "application/json",
     "Authorization": "Bearer " + token,
-    "User-Agent": "agent-recall",
+    "User-Agent": "agent-recall-v2",
 }
 if account:
     headers["X-Account-Id"] = account
@@ -473,7 +473,7 @@ async function doCodexUsageFetchRequest(
     const headers: Record<string, string> = {
       Accept: "application/json",
       Authorization: `Bearer ${accessToken}`,
-      "User-Agent": "agent-recall",
+      "User-Agent": "agent-recall-v2",
     };
     if (accountId) {
       headers["X-Account-Id"] = accountId;

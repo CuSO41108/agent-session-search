@@ -24,7 +24,7 @@ async function makeFakePackage() {
   const packagePath = await makeTempDir("agent-recall-app-pkg-");
   fs.mkdirSync(path.join(packagePath, "bin"), { recursive: true });
   fs.mkdirSync(path.join(packagePath, "assets"), { recursive: true });
-  fs.writeFileSync(path.join(packagePath, "package.json"), JSON.stringify({ name: "agent-recall", version: "1.2.3" }));
+  fs.writeFileSync(path.join(packagePath, "package.json"), JSON.stringify({ name: "agent-recall-v2", version: "1.2.3" }));
   fs.writeFileSync(path.join(packagePath, "bin", "agent-recall.cjs"), "// fake cli\n");
   fs.writeFileSync(path.join(packagePath, "assets", "app-icon.png"), "fake-png");
   return packagePath;
@@ -49,7 +49,7 @@ test("installMacosApp creates a launchable wrapper bundle", async () => {
 
   assert.equal(result.status, "installed");
   assert.deepEqual(result.warnings, []);
-  const appPath = path.join(appsDir, "AgentRecall.app");
+  const appPath = path.join(appsDir, "agent-recall-v2.app");
   assert.equal(result.appPath, appPath);
   const plist = fs.readFileSync(path.join(appPath, "Contents", "Info.plist"), "utf8");
   assert.match(plist, new RegExp(BUNDLE_IDENTIFIER));
@@ -57,7 +57,7 @@ test("installMacosApp creates a launchable wrapper bundle", async () => {
   const launcherPath = path.join(appPath, "Contents", "MacOS", "AgentRecall");
   const launcher = fs.readFileSync(launcherPath, "utf8");
   assert.match(launcher, /exec "\/fake\/node" ".*agent-recall\.cjs"/);
-  assert.match(launcher, /exec \/bin\/zsh -lc 'agent-recall'/);
+  assert.match(launcher, /exec \/bin\/zsh -lc 'agent-recall-v2'/);
   if (process.platform !== "win32") {
     // Windows has no Unix execute bits; chmod is a no-op there.
     assert.equal(fs.statSync(launcherPath).mode & 0o111, 0o111);
@@ -73,7 +73,7 @@ test("installMacosApp is idempotent and refuses foreign bundles", async () => {
   assert.equal(installMacosApp(options).status, "installed");
 
   const foreignDir = await makeTempDir("agent-recall-apps-foreign-");
-  const foreignApp = path.join(foreignDir, "AgentRecall.app", "Contents");
+  const foreignApp = path.join(foreignDir, "agent-recall-v2.app", "Contents");
   fs.mkdirSync(foreignApp, { recursive: true });
   fs.writeFileSync(path.join(foreignApp, "Info.plist"), "<key>CFBundleIdentifier</key><string>com.someone-else.app</string>");
   const refused = installMacosApp({ ...options, applicationsDirs: [foreignDir] });
@@ -94,7 +94,7 @@ test("installMacosApp falls back to the next writable directory", async () => {
     buildIcns: fakeBuildIcns,
   });
   assert.equal(result.status, "installed");
-  assert.equal(result.appPath, path.join(appsDir, "AgentRecall.app"));
+  assert.equal(result.appPath, path.join(appsDir, "agent-recall-v2.app"));
 });
 
 test("installMacosApp degrades to an icon-less bundle when icns generation fails", async () => {
@@ -109,7 +109,7 @@ test("installMacosApp degrades to an icon-less bundle when icns generation fails
   });
   assert.equal(result.status, "installed");
   assert.equal(result.warnings.length, 1);
-  assert.equal(fs.existsSync(path.join(appsDir, "AgentRecall.app", "Contents", "Resources", "AppIcon.icns")), false);
+  assert.equal(fs.existsSync(path.join(appsDir, "agent-recall-v2.app", "Contents", "Resources", "AppIcon.icns")), false);
 });
 
 test("installMacosApp reports unsupported on non-macOS platforms", async () => {
@@ -125,14 +125,14 @@ test("findInstalledMacosApp and uninstallMacosApp only touch our bundle", async 
   assert.equal(findInstalledMacosApp({ homeDir }), null);
 
   installMacosApp({ platform: "darwin", packagePath, nodePath: "/fake/node", applicationsDirs: [appsDir], buildIcns: fakeBuildIcns });
-  assert.equal(findInstalledMacosApp({ homeDir }), path.join(appsDir, "AgentRecall.app"));
+  assert.equal(findInstalledMacosApp({ homeDir }), path.join(appsDir, "agent-recall-v2.app"));
 
   const removed = uninstallMacosApp({ homeDir });
   assert.equal(removed.status, "removed");
-  assert.equal(fs.existsSync(path.join(appsDir, "AgentRecall.app")), false);
+  assert.equal(fs.existsSync(path.join(appsDir, "agent-recall-v2.app")), false);
   assert.equal(uninstallMacosApp({ homeDir }).status, "absent");
 
-  const foreignApp = path.join(appsDir, "AgentRecall.app", "Contents");
+  const foreignApp = path.join(appsDir, "agent-recall-v2.app", "Contents");
   fs.mkdirSync(foreignApp, { recursive: true });
   fs.writeFileSync(path.join(foreignApp, "Info.plist"), "<key>CFBundleIdentifier</key><string>com.someone-else.app</string>");
   assert.equal(uninstallMacosApp({ homeDir }).status, "absent");

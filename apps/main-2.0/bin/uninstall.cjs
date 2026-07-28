@@ -51,24 +51,24 @@ async function uninstall(options = {}) {
     if (process.platform === "darwin") {
       const macosApp = uninstallMacosApp({ homeDir });
       if (macosApp.status === "error") errors.push(`macOS app launcher: ${macosApp.detail}`);
-      else messages.push(macosApp.status === "removed" ? "Removed the AgentRecall.app launcher." : "macOS app launcher did not need changes.");
+      else messages.push(macosApp.status === "removed" ? "Removed the agent-recall-v2.app launcher." : "macOS app launcher did not need changes.");
     }
 
     const cacheFiles = [
-      path.join(homeDir, ".agent-recall", "update-check.json"),
-      path.join(homeDir, ".agent-recall", "update-install-status.json"),
-      path.join(homeDir, ".agent-recall", "app-process.json"),
+      path.join(homeDir, ".agent-recall-v2", "update-check.json"),
+      path.join(homeDir, ".agent-recall-v2", "update-install-status.json"),
+      path.join(homeDir, ".agent-recall-v2", "app-process.json"),
       path.join(homeDir, ".claude", "skill-usage.jsonl"),
     ];
     for (const filePath of cacheFiles) {
       try { fs.rmSync(filePath, { force: true }); } catch (error) { errors.push(`Cache ${filePath}: ${error instanceof Error ? error.message : String(error)}`); }
     }
     try {
-      fs.rmSync(path.join(homeDir, ".agent-recall", "session-sync-queue"), { recursive: true, force: true });
+      fs.rmSync(path.join(homeDir, ".agent-recall-v2", "session-sync-queue"), { recursive: true, force: true });
     } catch (error) {
       errors.push(`Session sync queue: ${error instanceof Error ? error.message : String(error)}`);
     }
-    messages.push("Removed AgentRecall integration caches.");
+    messages.push("Removed agent-recall-v2 integration caches.");
     messages.push("Session database, Supabase settings, update preference, and other user preferences were kept.");
     return { messages, errors };
   } finally {

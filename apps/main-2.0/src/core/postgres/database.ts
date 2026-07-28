@@ -54,7 +54,7 @@ export class PostgresDatabase implements PostgresQueryable {
       max: 8,
       connectionTimeoutMillis: 10_000,
       idleTimeoutMillis: 30_000,
-      application_name: "agent-recall",
+      application_name: "agent-recall-v2",
     });
     return new PostgresDatabase(pool as unknown as PostgresPool, options);
   }

@@ -150,7 +150,7 @@ function serializeCodex(
       timestamp: session.startedAt,
       cwd: session.projectPath,
       title: session.title,
-      originator: "agent-recall",
+      originator: "agent-recall-v2",
       cli_version: "migration",
       ...(includeVsCodeEvents
         ? {

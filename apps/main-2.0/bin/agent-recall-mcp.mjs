@@ -27,7 +27,7 @@ export function resolveAppVersion(packageUrl = new URL("../package.json", import
 export function resolveDatabaseUrl(env = process.env, home = homedir()) {
   const override = env.AGENT_RECALL_DATABASE_URL && env.AGENT_RECALL_DATABASE_URL.trim();
   if (override) return override;
-  const pointer = path.join(home, ".agent-recall", "database-url");
+  const pointer = path.join(home, ".agent-recall-v2", "database-url");
   try {
     if (!existsSync(pointer)) return null;
     return readFileSync(pointer, "utf8").trim() || null;
@@ -433,7 +433,7 @@ async function runServer() {
     application_name: "agent-recall-mcp",
   });
   await db.query("SELECT 1");
-  const server = new McpServer({ name: "agent-recall", version: resolveAppVersion() });
+  const server = new McpServer({ name: "agent-recall-v2", version: resolveAppVersion() });
   let migrateTargetSchema = null;
   try {
     migrateTargetSchema = await migrationTargetSchema(z);

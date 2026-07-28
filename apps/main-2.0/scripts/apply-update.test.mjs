@@ -11,9 +11,9 @@ const { applyStagedUpdate, relaunchInstalledApp } = require("../bin/apply-update
 test("swaps a validated staged package into place and removes the backup", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "agent-recall-apply-stage-"));
   try {
-    const livePackagePath = path.join(directory, "agent-recall");
+    const livePackagePath = path.join(directory, "agent-recall-v2");
     const stageRoot = path.join(directory, "stage");
-    const stagedPackagePath = path.join(stageRoot, "node_modules", "agent-recall");
+    const stagedPackagePath = path.join(stageRoot, "node_modules", "agent-recall-v2");
     const backupPath = path.join(directory, "backup");
     const statusPath = path.join(directory, "status.json");
     await mkdir(livePackagePath, { recursive: true });

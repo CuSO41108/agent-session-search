@@ -141,7 +141,7 @@ function normalizeOptions(options) {
     homeDir: opts.homeDir || process.env.AGENT_RECALL_TEST_HOME || os.homedir(),
     hookScriptPath: opts.hookScriptPath || path.join(__dirname, HOOK_SCRIPT_BASENAME),
     openCodePluginPath: opts.openCodePluginPath || path.join(__dirname, "openviking-opencode-plugin.mjs"),
-    manifestPath: opts.manifestPath || path.join(os.homedir(), ".agent-recall", "openviking", "hook-manifest.json"),
+    manifestPath: opts.manifestPath || path.join(os.homedir(), ".agent-recall-v2", "openviking", "hook-manifest.json"),
     nodePath: opts.nodePath || "node",
     integrations: {
       claude: opts.integrations?.claude === true,

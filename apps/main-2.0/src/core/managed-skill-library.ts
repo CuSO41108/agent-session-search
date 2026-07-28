@@ -29,7 +29,7 @@ export interface ManagedSkillInstallation {
 }
 
 export interface ManagedSkill extends InstalledSkill {
-  source: "agent-recall";
+  source: "agent-recall-v2";
   managedId: string;
   origin: ManagedSkillOrigin;
   installations: ManagedSkillInstallation[];
@@ -103,7 +103,7 @@ export class ManagedSkillLibrary {
         const metadata = this.readMetadata(managedId);
         return {
           ...skill,
-          source: "agent-recall",
+          source: "agent-recall-v2",
           managedId,
           origin: metadata?.origin ?? { kind: "local", label: "AgentRecall" },
           installations: INSTALL_TARGETS.map((target) => this.inspectInstallation(managedId, target)),

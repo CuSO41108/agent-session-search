@@ -175,7 +175,7 @@ export class AcpInteractiveClient {
     });
 
     const app = acp
-      .client({ name: "agent-recall" })
+      .client({ name: "agent-recall-v2" })
       .onRequest(acp.methods.client.session.requestPermission, ({ params, requestId }) =>
         this.handlePermissionRequest(params, requestId))
       .onNotification(acp.methods.client.session.update, ({ params }) => {
@@ -198,7 +198,7 @@ export class AcpInteractiveClient {
         connection.agent.request(acp.methods.agent.initialize, {
           protocolVersion: acp.PROTOCOL_VERSION,
           clientCapabilities: {},
-          clientInfo: { name: "agent-recall", version: "0.1.0" },
+          clientInfo: { name: "agent-recall-v2", version: "0.1.0" },
         }),
         ACP_ATTACH_TIMEOUT_MS,
         "ACP initialize",

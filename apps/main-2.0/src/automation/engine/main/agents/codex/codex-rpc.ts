@@ -72,7 +72,7 @@ export class CodexRpcClient {
     this.rl.on("line", (line) => this.handleLine(line));
 
     await this.request("initialize", {
-      clientInfo: { name: "agent-recall", title: "AgentRecall", version: "0.1.0" },
+      clientInfo: { name: "agent-recall-v2", title: "AgentRecall", version: "0.1.0" },
       capabilities: { experimentalApi: true },
     });
     this.notify("initialized", {});

@@ -22,7 +22,7 @@ export interface SessionSyncHookStatus {
 }
 
 export function sessionSyncQueueDirectory(homeDir = process.env.AGENT_RECALL_TEST_HOME || os.homedir()): string {
-  return process.env.AGENT_RECALL_SYNC_QUEUE || path.join(homeDir, ".agent-recall", "session-sync-queue");
+  return process.env.AGENT_RECALL_SYNC_QUEUE || path.join(homeDir, ".agent-recall-v2", "session-sync-queue");
 }
 
 export function readSessionSyncQueue(homeDir?: string): { events: SessionSyncQueueEvent[]; invalidFiles: string[] } {

@@ -552,7 +552,7 @@ describe("OpenVikingWorkspaceCredentialStore", () => {
     await mkdir(root, { recursive: true });
     const credentials = new OpenVikingWorkspaceCredentialStore(root);
     const auth = {
-      accountId: "agent-recall",
+      accountId: "agent-recall-v2",
       userId: "workspace_abcd",
       apiKey: "secret-key",
     };

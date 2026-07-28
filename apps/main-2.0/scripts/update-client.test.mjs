@@ -65,7 +65,7 @@ test("streams package bytes and reports monotonic download progress while stagin
   value.package.sha256 = createHash("sha256").update(bytes).digest("hex");
   const directory = await temporaryDirectory("agent-recall-update-stage-");
   const stageRoot = path.join(directory, "stage");
-  const packagePath = path.join(directory, "live", "agent-recall");
+  const packagePath = path.join(directory, "live", "agent-recall-v2");
   const progress = [];
   const stream = new ReadableStream({
     start(controller) {
@@ -84,11 +84,11 @@ test("streams package bytes and reports monotonic download progress while stagin
     packagePath,
     statusPath: path.join(directory, "status.json"),
     execFileImpl: async (_command, _args, options) => {
-      const installed = path.join(options.env.AGENT_RECALL_STAGE_ROOT, "node_modules", "agent-recall");
+      const installed = path.join(options.env.AGENT_RECALL_STAGE_ROOT, "node_modules", "agent-recall-v2");
       await mkdir(path.join(installed, "out", "main"), { recursive: true });
       await mkdir(path.join(installed, "bin"), { recursive: true });
       await mkdir(path.join(options.env.AGENT_RECALL_STAGE_ROOT, "node_modules", "electron"), { recursive: true });
-      await writeFile(path.join(installed, "package.json"), JSON.stringify({ name: "agent-recall", version: value.version }), "utf8");
+      await writeFile(path.join(installed, "package.json"), JSON.stringify({ name: "agent-recall-v2", version: value.version }), "utf8");
       await writeFile(path.join(installed, "out", "main", "index.js"), "", "utf8");
       await writeFile(path.join(installed, "bin", "agent-recall.cjs"), "", "utf8");
       await writeFile(
@@ -108,7 +108,7 @@ test("streams package bytes and reports monotonic download progress while stagin
     onProgress: (event) => progress.push(event),
   });
 
-  assert.equal(staged.stagedPackagePath, path.join(stageRoot, "node_modules", "agent-recall"));
+  assert.equal(staged.stagedPackagePath, path.join(stageRoot, "node_modules", "agent-recall-v2"));
   assert.deepEqual(
     progress.filter((event) => event.phase === "downloading").map((event) => event.percent),
     [50, 100],
@@ -288,7 +288,7 @@ test("refuses to install an update whose package checksum does not match", async
     installUpdate(value, {
       fetchImpl: async () => new Response("tampered package", { status: 200 }),
       statusPath: path.join(statusDirectory, "status.json"),
-      packagePath: path.join(statusDirectory, "prefix", "lib", "node_modules", "agent-recall"),
+      packagePath: path.join(statusDirectory, "prefix", "lib", "node_modules", "agent-recall-v2"),
     }),
     /checksum mismatch/,
   );
@@ -451,7 +451,7 @@ test("force-stops the installed application on Windows before replacing files", 
 
 test("stops a running npm-installed app when the saved process state is missing", async () => {
   const directory = await temporaryDirectory("agent-session-update-stop-app-");
-  const packagePath = path.join(directory, "prefix", "lib", "node_modules", "agent-recall");
+  const packagePath = path.join(directory, "prefix", "lib", "node_modules", "agent-recall-v2");
   const appEntry = path.join(packagePath, "out", "main", "index.js");
   const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
   await new Promise((resolve, reject) => {
@@ -489,7 +489,7 @@ test("installs through the public registry and records a completed status", asyn
   value.package.sha256 = createHash("sha256").update(bytes).digest("hex");
   const directory = await temporaryDirectory("agent-session-update-install-");
   const statusPath = path.join(directory, "status.json");
-  const packagePath = path.join(directory, "prefix", "lib", "node_modules", "agent-recall");
+  const packagePath = path.join(directory, "prefix", "lib", "node_modules", "agent-recall-v2");
   await mkdir(packagePath, { recursive: true });
   let invocation = null;
   let electronChecked = false;
@@ -524,7 +524,7 @@ test("restores the previous global package when post-install validation fails", 
   const value = manifest();
   value.package.sha256 = createHash("sha256").update(bytes).digest("hex");
   const directory = await temporaryDirectory("agent-session-update-package-rollback-");
-  const packagePath = path.join(directory, "prefix", "lib", "node_modules", "agent-recall");
+  const packagePath = path.join(directory, "prefix", "lib", "node_modules", "agent-recall-v2");
   const statusPath = path.join(directory, "status.json");
   await mkdir(packagePath, { recursive: true });
   await writeFile(path.join(packagePath, "marker.txt"), "old package", "utf8");
@@ -585,7 +585,7 @@ test("repairs an incomplete Electron runtime before reporting update success", a
 
 test("uses Node mode only for Node probes when launched by Electron", async () => {
   const directory = await temporaryDirectory("agent-session-electron-node-mode-");
-  const packagePath = path.join(directory, "agent-recall");
+  const packagePath = path.join(directory, "agent-recall-v2");
   const electronPath = path.join(packagePath, "node_modules", "electron");
   const relativeExecutable = process.platform === "darwin"
     ? path.join("Electron.app", "Contents", "MacOS", "Electron")
@@ -637,7 +637,7 @@ test("uses Node mode only for Node probes when launched by Electron", async () =
 
 test("restores real Electron metadata left by the legacy staging bridge", async () => {
   const directory = await temporaryDirectory("agent-session-electron-staging-bridge-");
-  const packagePath = path.join(directory, "agent-recall");
+  const packagePath = path.join(directory, "agent-recall-v2");
   const electronPath = path.join(packagePath, "node_modules", "electron");
   const relativeExecutable = process.platform === "darwin"
     ? path.join("Electron.app", "Contents", "MacOS", "Electron")
@@ -651,7 +651,7 @@ test("restores real Electron metadata left by the legacy staging bridge", async 
   const bridgedVersion = process.versions.node;
   await mkdir(packagePath, { recursive: true });
   await writeFile(path.join(packagePath, "package.json"), JSON.stringify({
-    name: "agent-recall",
+    name: "agent-recall-v2",
     dependencies: { electron: bridgedVersion },
   }), "utf8");
   await mkdir(path.join(electronPath, "dist", path.dirname(relativeExecutable)), { recursive: true });
@@ -695,7 +695,7 @@ test("restores real Electron metadata left by the legacy staging bridge", async 
 
 test("resumes a partially restored legacy Electron staging bridge", async () => {
   const directory = await temporaryDirectory("agent-session-electron-partial-staging-bridge-");
-  const packagePath = path.join(directory, "agent-recall");
+  const packagePath = path.join(directory, "agent-recall-v2");
   const electronPath = path.join(packagePath, "node_modules", "electron");
   const relativeExecutable = process.platform === "darwin"
     ? path.join("Electron.app", "Contents", "MacOS", "Electron")
@@ -709,7 +709,7 @@ test("resumes a partially restored legacy Electron staging bridge", async () => 
   await mkdir(path.join(electronPath, "dist", path.dirname(relativeExecutable)), { recursive: true });
   await mkdir(path.join(electronPath, "dist", path.dirname(relativeDefaultApp)), { recursive: true });
   await writeFile(path.join(packagePath, "package.json"), JSON.stringify({
-    name: "agent-recall",
+    name: "agent-recall-v2",
     dependencies: { electron: "42.3.0" },
   }), "utf8");
   await writeFile(
@@ -757,7 +757,7 @@ test("resumes a partially restored legacy Electron staging bridge", async () => 
 
 test("rejects a non-object legacy Electron staging bridge marker", async () => {
   const directory = await temporaryDirectory("agent-session-electron-invalid-staging-bridge-");
-  const packagePath = path.join(directory, "agent-recall");
+  const packagePath = path.join(directory, "agent-recall-v2");
   const electronPath = path.join(packagePath, "node_modules", "electron");
   await mkdir(electronPath, { recursive: true });
   await writeFile(path.join(electronPath, ".agent-recall-staging-bridge.json"), "null\n", "utf8");
@@ -770,7 +770,7 @@ test("rejects a non-object legacy Electron staging bridge marker", async () => {
 
 test("repairs a blocked Electron install after restoring packaged bridge metadata", async () => {
   const directory = await temporaryDirectory("agent-session-electron-blocked-staging-install-");
-  const packagePath = path.join(directory, "agent-recall");
+  const packagePath = path.join(directory, "agent-recall-v2");
   const electronPath = path.join(packagePath, "node_modules", "electron");
   const relativeExecutable = process.platform === "darwin"
     ? path.join("Electron.app", "Contents", "MacOS", "Electron")
@@ -785,7 +785,7 @@ test("repairs a blocked Electron install after restoring packaged bridge metadat
   const markerPath = path.join(electronPath, ".agent-recall-staging-bridge.json");
   await mkdir(electronPath, { recursive: true });
   await writeFile(path.join(packagePath, "package.json"), JSON.stringify({
-    name: "agent-recall",
+    name: "agent-recall-v2",
     dependencies: { electron: "24.15.0" },
   }), "utf8");
   await writeFile(path.join(electronPath, "package.json"), JSON.stringify({
@@ -844,7 +844,7 @@ test("replaces the macOS staging runtime after a legacy updater swaps the packag
   skip: process.platform !== "darwin",
 }, async () => {
   const directory = await temporaryDirectory("agent-session-electron-macos-staging-runtime-");
-  const packagePath = path.join(directory, "agent-recall");
+  const packagePath = path.join(directory, "agent-recall-v2");
   const electronPath = path.join(packagePath, "node_modules", "electron");
   const relativeExecutable = path.join("Electron.app", "Contents", "MacOS", "Electron");
   const relativeDefaultApp = path.join("Electron.app", "Contents", "Resources", "default_app.asar");
@@ -855,7 +855,7 @@ test("replaces the macOS staging runtime after a legacy updater swaps the packag
   await mkdir(path.dirname(executablePath), { recursive: true });
   await mkdir(path.dirname(defaultAppPath), { recursive: true });
   await writeFile(path.join(packagePath, "package.json"), JSON.stringify({
-    name: "agent-recall",
+    name: "agent-recall-v2",
     dependencies: { electron: "24.15.0" },
   }), "utf8");
   await writeFile(path.join(electronPath, "package.json"), JSON.stringify({
@@ -920,7 +920,7 @@ test("replaces the macOS staging runtime after a legacy updater swaps the packag
 
 test("uses a stable Node executable for Electron runtime checks after npm replaces Electron", async () => {
   const directory = await temporaryDirectory("agent-session-electron-stable-node-");
-  const packagePath = path.join(directory, "agent-recall");
+  const packagePath = path.join(directory, "agent-recall-v2");
   const electronPath = path.join(packagePath, "node_modules", "electron");
   const relativeExecutable = process.platform === "darwin"
     ? path.join("Electron.app", "Contents", "MacOS", "Electron")
@@ -975,7 +975,7 @@ test("uses a stable Node executable for Electron runtime checks after npm replac
 
 test("accepts a ready Electron runtime when the version probe has no output", async () => {
   const directory = await temporaryDirectory("agent-session-electron-blank-version-");
-  const packagePath = path.join(directory, "agent-recall");
+  const packagePath = path.join(directory, "agent-recall-v2");
   const electronPath = path.join(packagePath, "node_modules", "electron");
   const relativeExecutable = process.platform === "darwin"
     ? path.join("Electron.app", "Contents", "MacOS", "Electron")
@@ -1127,7 +1127,7 @@ test("retries transient ENOTEMPTY failures while removing the previous Electron 
 
 test("keeps a validated Electron repair when backup cleanup stays blocked", async () => {
   const directory = await temporaryDirectory("agent-session-electron-blocked-backup-cleanup-");
-  const packagePath = path.join(directory, "agent-recall");
+  const packagePath = path.join(directory, "agent-recall-v2");
   const electronPath = path.join(packagePath, "node_modules", "electron");
   const relativeExecutable = process.platform === "darwin"
     ? path.join("Electron.app", "Contents", "MacOS", "Electron")
@@ -1244,8 +1244,8 @@ test("restores Electron runtime files from a cached archive when install.js leav
 
 test("copies a same-version live Electron runtime before install.js or cache extract", async () => {
   const directory = await temporaryDirectory("agent-session-electron-runtime-source-");
-  const packagePath = path.join(directory, "staged", "agent-recall");
-  const runtimeSourcePath = path.join(directory, "live", "agent-recall");
+  const packagePath = path.join(directory, "staged", "agent-recall-v2");
+  const runtimeSourcePath = path.join(directory, "live", "agent-recall-v2");
   const relativeExecutable = process.platform === "darwin"
     ? path.join("Electron.app", "Contents", "MacOS", "Electron")
     : process.platform === "win32"

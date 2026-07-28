@@ -5,9 +5,9 @@ import { randomUUID } from "node:crypto";
 import { skillSyncFilesFromMetadata, type RemoteSkill, type SkillSyncFile } from "./skill-sync";
 
 export type SkillAgent = "codex" | "claude" | "codebuddy" | "qoder" | "trae";
-export type SkillPortableScope = "agent-recall" | "codex-user" | "claude-user" | "qoder-user" | "shared";
+export type SkillPortableScope = "agent-recall-v2" | "codex-user" | "claude-user" | "qoder-user" | "shared";
 export type SkillSource =
-  | "agent-recall"
+  | "agent-recall-v2"
   | "codex-user"
   | "codex-system"
   | "codex-shared"
@@ -144,7 +144,7 @@ export function listInstalledSkills(options: SkillManagerOptions = {}): Installe
   ];
   const roots: SkillRootConfig[] = [
     ...(options.managedRoot
-      ? [{ agent: "codex" as const, source: "agent-recall" as const, path: options.managedRoot }]
+      ? [{ agent: "codex" as const, source: "agent-recall-v2" as const, path: options.managedRoot }]
       : []),
     ...(options.managedOnly ? [] : defaultRoots),
   ];
@@ -188,7 +188,7 @@ export function listInstalledSkills(options: SkillManagerOptions = {}): Installe
 }
 
 export function portableScopeForSkillSource(source: SkillSource): SkillPortableScope | null {
-  if (source === "agent-recall") return "agent-recall";
+  if (source === "agent-recall-v2") return "agent-recall-v2";
   if (source === "codex-user") return "codex-user";
   if (source === "claude-user") return "claude-user";
   if (source === "qoder-user") return "qoder-user";
@@ -292,7 +292,7 @@ function skillRootForPortableScope(
   scope: SkillPortableScope,
   options: { homeDir: string; codexHome: string; managedRoot?: string },
 ): string {
-  if (scope === "agent-recall") {
+  if (scope === "agent-recall-v2") {
     if (!options.managedRoot) throw new Error("AgentRecall managed Skill root is required.");
     return options.managedRoot;
   }

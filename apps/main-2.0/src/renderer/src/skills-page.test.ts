@@ -22,7 +22,7 @@ const managedSkill: ManagedSkill = {
   name: "review",
   description: "Review code changes",
   agent: "codex",
-  source: "agent-recall",
+  source: "agent-recall-v2",
   path: "/library/review/SKILL.md",
   directoryPath: "/library/review",
   rootPath: "/library",

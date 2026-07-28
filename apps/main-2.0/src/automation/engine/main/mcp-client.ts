@@ -5,7 +5,7 @@ import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import type { McpServerDefinition, McpToolDefinition } from "../shared/mcp/types";
 
 export async function discoverMcpTools(server: McpServerDefinition): Promise<McpToolDefinition[]> {
-  const client = new Client({ name: "agent-recall", version: "0.1.0" });
+  const client = new Client({ name: "agent-recall-v2", version: "0.1.0" });
   const transport = server.transport === "http"
     ? new StreamableHTTPClientTransport(new URL(required(server.url, "HTTP URL")))
     : new StdioClientTransport({

@@ -20,7 +20,7 @@ test("OpenCode recalls before a managed prompt and captures the completed turn",
     workspaces: [{
       id: "workspace-1",
       rootPath: fs.realpathSync.native(project),
-      accountId: "agent-recall",
+      accountId: "agent-recall-v2",
       userId: "workspace_user",
       apiKey: "workspace-key",
     }],

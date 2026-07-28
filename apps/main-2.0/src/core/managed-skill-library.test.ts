@@ -62,7 +62,7 @@ describe("ManagedSkillLibrary local import", () => {
 
     expect(library.list().skills[0]).toMatchObject({
       managedId: "review-code",
-      source: "agent-recall",
+      source: "agent-recall-v2",
       origin: { kind: "local", label: "Codex" },
     });
   });

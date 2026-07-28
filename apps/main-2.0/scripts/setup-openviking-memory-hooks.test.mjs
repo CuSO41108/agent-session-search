@@ -24,7 +24,7 @@ test("reconciles Claude, Codex and OpenCode without replacing unrelated config",
     homeDir: testHome,
     hookScriptPath: "/app/bin/openviking-memory-hook.cjs",
     openCodePluginPath: "/app/bin/openviking-opencode-plugin.mjs",
-    manifestPath: path.join(testHome, ".agent-recall", "openviking", "hook-manifest.json"),
+    manifestPath: path.join(testHome, ".agent-recall-v2", "openviking", "hook-manifest.json"),
     nodePath: "/runtime/node",
     integrations: { claude: true, codex: true, opencode: true },
   };

@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 "use strict";
 
-// Generates a local AgentRecall.app wrapper so macOS users can launch the app
-// from Launchpad, Spotlight, or the Dock instead of typing `agent-recall` in a
+// Generates a local agent-recall-v2.app wrapper so macOS users can launch the app
+// from Launchpad, Spotlight, or the Dock instead of typing `agent-recall-v2` in a
 // terminal. The bundle is created on the user's machine, so it carries no
 // quarantine attribute and Gatekeeper does not demand code signing.
 // Self-contained CommonJS: no build output or dependencies required.
@@ -12,8 +12,8 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 
-const BUNDLE_IDENTIFIER = "com.agent-recall.launcher";
-const APP_BUNDLE_NAME = "AgentRecall.app";
+const BUNDLE_IDENTIFIER = "com.agent-recall-v2.launcher";
+const APP_BUNDLE_NAME = "agent-recall-v2.app";
 const APP_ICON_RELATIVE_PATH = path.join("assets", "app-icon.png");
 
 function candidateApplicationsDirs(homeDir) {
@@ -48,7 +48,7 @@ function isOurBundle(appPath) {
   return readBundleIdentifier(appPath) === BUNDLE_IDENTIFIER;
 }
 
-// Returns the path of a previously generated AgentRecall.app, or null.
+// Returns the path of a previously generated agent-recall-v2.app, or null.
 function findInstalledMacosApp(options = {}) {
   const homeDir = options.homeDir || os.homedir();
   for (const dir of candidateApplicationsDirs(homeDir)) {
@@ -63,8 +63,8 @@ function buildInfoPlist(version) {
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <key>CFBundleName</key><string>AgentRecall</string>
-  <key>CFBundleDisplayName</key><string>AgentRecall</string>
+  <key>CFBundleName</key><string>agent-recall-v2</string>
+  <key>CFBundleDisplayName</key><string>agent-recall-v2</string>
   <key>CFBundleIdentifier</key><string>${BUNDLE_IDENTIFIER}</string>
   <key>CFBundleVersion</key><string>${version}</string>
   <key>CFBundleShortVersionString</key><string>${version}</string>
@@ -85,7 +85,7 @@ function buildLauncherScript(nodePath, cliPath) {
 if [ -x "${nodePath}" ] && [ -f "${cliPath}" ]; then
   exec "${nodePath}" "${cliPath}"
 fi
-exec /bin/zsh -lc 'agent-recall'
+exec /bin/zsh -lc 'agent-recall-v2'
 `;
 }
 

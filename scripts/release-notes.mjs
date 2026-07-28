@@ -8,6 +8,7 @@ export const RELEASE_NOTE_HEADINGS = {
   features: "新增功能",
   fixes: "Bug 修复",
 };
+export const RELEASE_TARGETS = ["v1", "v2", "both"];
 
 const VAGUE_RELEASE_NOTE_PATTERNS = [
   /^优化代码[。.]?$/,
@@ -23,6 +24,12 @@ export function parseReleaseNote(markdown, filePath = "release note") {
   if (titleLines.length !== 1) errors.push("must contain exactly one level-one title");
 
   const title = titleLines[0]?.replace(/^#\s+/, "").trim() ?? "";
+  const targetMatches = [...String(markdown).matchAll(/<!--\s*release-target:\s*([^\s]+)\s*-->/giu)];
+  if (targetMatches.length > 1) errors.push("must contain at most one release target");
+  const target = targetMatches[0]?.[1]?.toLowerCase() ?? "v1";
+  if (!RELEASE_TARGETS.includes(target)) {
+    errors.push(`contains invalid release target: ${JSON.stringify(target)}`);
+  }
   const features = [];
   const fixes = [];
   let section = null;
@@ -47,7 +54,7 @@ export function parseReleaseNote(markdown, filePath = "release note") {
     errors.push(`must contain at least one bullet under "## ${RELEASE_NOTE_HEADINGS.features}" or "## ${RELEASE_NOTE_HEADINGS.fixes}"`);
   }
   if (errors.length > 0) throw new Error(`${filePath}: ${errors.join("; ")}`);
-  return { title, features, fixes };
+  return { title, target, features, fixes };
 }
 
 export function readReleaseNote(filePath) {
@@ -74,11 +81,16 @@ export function renderReleaseNotes(note) {
   return `${sections.join("\n\n")}\n`;
 }
 
-export function combineReleaseNotes(notes, title = "AgentRecall 更新") {
+export function combineReleaseNotes(notes, options = {}) {
+  const title = typeof options === "string" ? options : options.title ?? "AgentRecall 更新";
+  const target = typeof options === "string" ? undefined : options.target;
+  const selected = target
+    ? notes.filter((note) => (note.target ?? "v1") === target || note.target === "both")
+    : notes;
   return {
     title,
-    features: [...new Set(notes.flatMap((note) => note.features))],
-    fixes: [...new Set(notes.flatMap((note) => note.fixes))],
+    features: [...new Set(selected.flatMap((note) => note.features))],
+    fixes: [...new Set(selected.flatMap((note) => note.fixes))],
   };
 }
 
@@ -117,7 +129,8 @@ function printUsage() {
       "  node scripts/release-notes.mjs check-range [base-ref] [head-ref]\n" +
       "  node scripts/release-notes.mjs next-version <current-version> <file>\n" +
       "  node scripts/release-notes.mjs render <file>\n" +
-      "  node scripts/release-notes.mjs combine <file> [file...]\n",
+      "  node scripts/release-notes.mjs target <file>\n" +
+      "  node scripts/release-notes.mjs combine [--target v1|v2] <file> [file...]\n",
   );
 }
 
@@ -141,8 +154,19 @@ export function runCli(argv) {
     process.stdout.write(renderReleaseNotes(readReleaseNote(args[0])));
     return;
   }
+  if (command === "target" && args[0]) {
+    process.stdout.write(`${readReleaseNote(args[0]).target}\n`);
+    return;
+  }
   if (command === "combine" && args.length > 0) {
-    process.stdout.write(renderReleaseNotes(combineReleaseNotes(args.map(readReleaseNote))));
+    const targetIndex = args.indexOf("--target");
+    const target = targetIndex >= 0 ? args[targetIndex + 1] : undefined;
+    if (targetIndex >= 0 && (!target || !["v1", "v2"].includes(target))) {
+      throw new Error("combine --target must be v1 or v2");
+    }
+    const files = args.filter((_, index) => index !== targetIndex && index !== targetIndex + 1);
+    if (files.length === 0) throw new Error("combine requires at least one release-note file");
+    process.stdout.write(renderReleaseNotes(combineReleaseNotes(files.map(readReleaseNote), { target })));
     return;
   }
   printUsage();

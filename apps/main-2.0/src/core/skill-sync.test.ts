@@ -116,7 +116,7 @@ describe("skill sync", () => {
     expect(skillSyncFingerprint(localSkill({ source: "codex-shared", rootPath: "/tmp/.agents/skills", directoryPath: "/tmp/.agents/skills/review-code" }))).not.toBe(expected);
     expect(skillSyncFingerprint(localSkill({ directoryPath: "/tmp/.codex/skills/team/review-code" }))).not.toBe(expected);
     expect(skillSyncFingerprint(localSkill({
-      source: "agent-recall",
+      source: "agent-recall-v2",
       rootPath: "/tmp/agent-recall/skills",
       directoryPath: "/tmp/agent-recall/skills/review-code",
     }))).toBe(createHash("sha256").update("agent-recall/review-code").digest("hex"));
@@ -127,12 +127,12 @@ describe("skill sync", () => {
       url: "https://example.supabase.co",
       anonKey: "anon",
       fetchImpl: async () => new Response(JSON.stringify([versionRow({
-        portable_scope: "agent-recall",
+        portable_scope: "agent-recall-v2",
       })]), { status: 200 }),
     });
 
     await expect(client.listRemoteSkillVersions()).resolves.toEqual([
-      expect.objectContaining({ portableScope: "agent-recall", legacy: false }),
+      expect.objectContaining({ portableScope: "agent-recall-v2", legacy: false }),
     ]);
   });
 

@@ -55,10 +55,10 @@ describe("OpenVikingGateway", () => {
 
     await expect(gateway.health()).resolves.toBeUndefined();
     await expect(gateway.ensureWorkspaceUser({
-      accountId: "agent-recall",
+      accountId: "agent-recall-v2",
       userId: "workspace_abcd",
     })).resolves.toEqual({
-      accountId: "agent-recall",
+      accountId: "agent-recall-v2",
       userId: "workspace_abcd",
       apiKey: "workspace-key",
     });
@@ -70,7 +70,7 @@ describe("OpenVikingGateway", () => {
     ]);
     expect(requests[1].headers["x-api-key"]).toBe("root-key");
     expect(requests[2].body).toMatchObject({
-      account_id: "agent-recall",
+      account_id: "agent-recall-v2",
       admin_user_id: "workspace_abcd",
     });
   });
@@ -115,7 +115,7 @@ describe("OpenVikingGateway", () => {
   it("appends and commits sessions using only the workspace user's credentials", async () => {
     const gateway = new OpenVikingGateway({ baseUrl, rootApiKey: "root-key" });
     const auth: OpenVikingWorkspaceAuth = {
-      accountId: "agent-recall",
+      accountId: "agent-recall-v2",
       userId: "workspace_abcd",
       apiKey: "workspace-key",
     };
@@ -141,7 +141,7 @@ describe("OpenVikingGateway", () => {
     ]);
     for (const request of userRequests) {
       expect(request.headers["x-api-key"]).toBe("workspace-key");
-      expect(request.headers["x-openviking-account"]).toBe("agent-recall");
+      expect(request.headers["x-openviking-account"]).toBe("agent-recall-v2");
       expect(request.headers["x-openviking-user"]).toBe("workspace_abcd");
     }
   });
@@ -149,7 +149,7 @@ describe("OpenVikingGateway", () => {
   it("normalizes memory search, read, write and delete operations", async () => {
     const gateway = new OpenVikingGateway({ baseUrl, rootApiKey: "root-key" });
     const auth: OpenVikingWorkspaceAuth = {
-      accountId: "agent-recall",
+      accountId: "agent-recall-v2",
       userId: "workspace_abcd",
       apiKey: "workspace-key",
     };
@@ -177,7 +177,7 @@ describe("OpenVikingGateway", () => {
   it("lists nested event memories when the query is empty", async () => {
     const gateway = new OpenVikingGateway({ baseUrl, rootApiKey: "root-key" });
     const auth: OpenVikingWorkspaceAuth = {
-      accountId: "agent-recall",
+      accountId: "agent-recall-v2",
       userId: "workspace_abcd",
       apiKey: "workspace-key",
     };
@@ -225,7 +225,7 @@ describe("OpenVikingGateway", () => {
     const gateway = new OpenVikingGateway({ baseUrl, rootApiKey: "root-key" });
 
     const error = await gateway.searchMemories({
-      accountId: "agent-recall",
+      accountId: "agent-recall-v2",
       userId: "workspace_abcd",
       apiKey: "workspace-key",
     }, "query").catch((caught) => caught);
@@ -242,7 +242,7 @@ describe("OpenVikingGateway", () => {
   it("removes workspace user data through the root administration client", async () => {
     const gateway = new OpenVikingGateway({ baseUrl, rootApiKey: "root-key" });
 
-    await gateway.deleteWorkspaceUser("agent-recall", "workspace_abcd");
+    await gateway.deleteWorkspaceUser("agent-recall-v2", "workspace_abcd");
 
     expect(requests).toHaveLength(1);
     expect(requests[0]).toMatchObject({

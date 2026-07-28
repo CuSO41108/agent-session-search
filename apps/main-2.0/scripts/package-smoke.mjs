@@ -113,8 +113,8 @@ try {
     maxBuffer: 16 * 1024 * 1024,
   });
   const packageRoots = process.platform === "win32"
-    ? [path.join(prefix, "node_modules", "agent-recall")]
-    : [path.join(prefix, "lib", "node_modules", "agent-recall"), path.join(prefix, "node_modules", "agent-recall")];
+    ? [path.join(prefix, "node_modules", "agent-recall-v2")]
+    : [path.join(prefix, "lib", "node_modules", "agent-recall-v2"), path.join(prefix, "node_modules", "agent-recall-v2")];
   let installedRoot = null;
   for (const candidate of packageRoots) {
     try { await access(path.join(candidate, "package.json")); installedRoot = candidate; break; } catch { /* try the next npm layout */ }
@@ -168,7 +168,7 @@ try {
   const mcpResponses = await queryWorkflowMcp(workflowMcpEntry);
   const initialize = mcpResponses.find((item) => item.id === 1);
   const tools = mcpResponses.find((item) => item.id === 2)?.result?.tools;
-  if (initialize?.result?.serverInfo?.name !== "agent-recall") throw new Error("Packaged Workflow MCP returned the wrong server identity.");
+  if (initialize?.result?.serverInfo?.name !== "agent-recall-v2") throw new Error("Packaged Workflow MCP returned the wrong server identity.");
   if (!Array.isArray(tools) || !tools.some((tool) => tool.name === "workflow_create")) throw new Error("Packaged Workflow MCP did not advertise workflow_create.");
 
   await execFileAsync(npm, ["install", "--prefix", stageRoot, archive, "--ignore-scripts", "--no-audit", "--no-fund"], {
@@ -182,7 +182,7 @@ try {
     timeout: 10 * 60_000,
     maxBuffer: 16 * 1024 * 1024,
   });
-  const stagedRoot = path.join(stageRoot, "node_modules", "agent-recall");
+  const stagedRoot = path.join(stageRoot, "node_modules", "agent-recall-v2");
   await execFileAsync(process.execPath, [path.join(stagedRoot, "bin", "install-claude-statusline.cjs")], {
     cwd: stagedRoot,
     env: {

@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import path from "node:path";
 
-export const OPENVIKING_ACCOUNT_ID = "agent-recall";
+export const OPENVIKING_ACCOUNT_ID = "agent-recall-v2";
 export const OPENVIKING_LOCAL_EMBEDDING_MODEL = "BAAI/bge-small-zh-v1.5";
 
 export type OpenVikingEmbeddingMode = "local" | "remote";

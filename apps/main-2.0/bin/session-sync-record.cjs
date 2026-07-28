@@ -15,7 +15,7 @@ function defaultHomeDir() {
 }
 
 function queueDirectory(homeDir) {
-  return process.env.AGENT_RECALL_SYNC_QUEUE || path.join(homeDir || defaultHomeDir(), ".agent-recall", "session-sync-queue");
+  return process.env.AGENT_RECALL_SYNC_QUEUE || path.join(homeDir || defaultHomeDir(), ".agent-recall-v2", "session-sync-queue");
 }
 
 function cleanString(value, maxLength) {

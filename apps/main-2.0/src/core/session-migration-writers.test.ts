@@ -239,7 +239,7 @@ describe("writeMigratedSession", () => {
         timestamp: portable().startedAt,
         cwd: portable().projectPath,
         title: portable().title,
-        originator: "agent-recall",
+        originator: "agent-recall-v2",
         cli_version: "migration",
         model_provider: "openai",
       },

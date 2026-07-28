@@ -11,7 +11,7 @@ import {
 // On macOS that is ~/Library/Application Support/<appName>. The packaged app
 // sets its name to "AgentRecall"; in dev the lowercase package `name`
 // is used, so we probe both to be safe.
-const CONFIG_CANDIDATE_DIRS = ["AgentRecall", "agent-recall"];
+const CONFIG_CANDIDATE_DIRS = ["AgentRecall", "agent-recall-v2"];
 
 export interface McpSettingsOptions {
   env?: Record<string, string | undefined>;

@@ -66,7 +66,7 @@ function currentVersion(options = {}) {
 }
 
 function stateDirectory(homeDir = os.homedir()) {
-  return path.join(homeDir, ".agent-recall");
+  return path.join(homeDir, ".agent-recall-v2");
 }
 
 function defaultCachePath(homeDir = os.homedir()) {
@@ -500,7 +500,7 @@ async function stageUpdate(manifest, options = {}) {
   const stageRoot = options.stageRoot
     || path.join(path.dirname(packagePath), `.agent-recall-stage-${process.pid}-${randomUUID()}`);
   const archivePath = path.join(stageRoot, parsed.package.name);
-  const stagedPackagePath = path.join(stageRoot, "node_modules", "agent-recall");
+  const stagedPackagePath = path.join(stageRoot, "node_modules", "agent-recall-v2");
   const backupPath = path.join(path.dirname(packagePath), `.agent-recall-backup-${process.pid}-${randomUUID()}`);
   const statusPath = options.statusPath || installStatusPath(options.homeDir);
   await fsp.mkdir(stageRoot, { recursive: true });
@@ -554,7 +554,7 @@ async function stageUpdate(manifest, options = {}) {
       message: "正在检查应用和 Electron 运行时…",
     }));
     const stagedPackage = JSON.parse(await fsp.readFile(path.join(stagedPackagePath, "package.json"), "utf8"));
-    if (stagedPackage.name !== "agent-recall" || stagedPackage.version !== parsed.version) {
+    if (stagedPackage.name !== "agent-recall-v2" || stagedPackage.version !== parsed.version) {
       throw new Error("Staged update package metadata does not match the release.");
     }
     await Promise.all([
@@ -690,7 +690,7 @@ function globalPackageRoot(options = {}) {
     shell: process.platform === "win32",
   }).trim();
   if (!npmRoot) throw new Error("无法确定 npm 全局安装目录。");
-  return path.join(npmRoot, "agent-recall");
+  return path.join(npmRoot, "agent-recall-v2");
 }
 
 function nodeSubprocessEnvironment(baseEnvironment = {}) {
@@ -1130,7 +1130,7 @@ async function waitForProcessExit(pid, timeoutMs) {
 function globalCommandPath() {
   const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";
   const prefix = execFileSync(npmCommand, ["prefix", "-g"], { encoding: "utf8", shell: process.platform === "win32" }).trim();
-  return process.platform === "win32" ? path.join(prefix, "agent-recall.cmd") : path.join(prefix, "bin", "agent-recall");
+  return process.platform === "win32" ? path.join(prefix, "agent-recall-v2.cmd") : path.join(prefix, "bin", "agent-recall-v2");
 }
 
 function launchInstalledApp(options = {}) {

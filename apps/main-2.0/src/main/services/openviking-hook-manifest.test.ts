@@ -22,7 +22,7 @@ describe("OpenVikingHookManifestService", () => {
       credentials: {
         get: async (workspaceId) => workspaceId === "managed"
           ? {
-              accountId: "agent-recall",
+              accountId: "agent-recall-v2",
               userId: "workspace_user",
               apiKey: "workspace-key",
             }
