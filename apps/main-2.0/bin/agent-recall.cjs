@@ -49,7 +49,7 @@ async function scheduleUpdate(manifest, { stopApp }) {
 function launchApp() {
   // The `electron` dependency resolves to the path of the Electron executable.
   const electronPath = require("electron");
-  const appEntry = path.join(__dirname, "..", "out", "main", "index.js");
+  const appPath = path.join(__dirname, "..");
   const environment = { ...process.env };
   environment.AGENT_RECALL_NODE_PATH = process.execPath;
   if (environment.AGENT_RECALL_SOURCE_BUILD !== "1") {
@@ -58,7 +58,7 @@ function launchApp() {
     delete environment.AGENT_RECALL_RELEASE_BUILD;
   }
   delete environment.ELECTRON_RUN_AS_NODE;
-  const child = spawn(electronPath, [appEntry], { detached: true, stdio: "ignore", env: environment });
+  const child = spawn(electronPath, [appPath], { detached: true, stdio: "ignore", env: environment });
   child.on("error", (error) => {
     console.error("Failed to launch AgentRecall:", error.message);
     process.exitCode = 1;

@@ -180,7 +180,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PRODUCT_NAME = "agent-recall-v2";
 const TRAY_ICON_RELATIVE_PATH = path.join("assets", "tray-iconTemplate.png");
 const APP_ICON_RELATIVE_PATH = path.join("assets", "app-icon.png");
-const releaseUpdateRuntime = false;
+const releaseUpdateRuntime = process.env.AGENT_RECALL_RELEASE_BUILD === "1";
 
 const OPTIONAL_SOURCE_SETTINGS = OPTIONAL_SESSION_SOURCE_DESCRIPTORS.map((descriptor) => ({
   key: descriptor.optionalSetting,

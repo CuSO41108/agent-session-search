@@ -267,6 +267,9 @@ test("skips the same update version until a newer version is released", async ()
 test("terminal launcher marks npm-installed launches as release builds", () => {
   assert.match(launcherSource, /environment\.AGENT_RECALL_RELEASE_BUILD = "1"/);
   assert.match(launcherSource, /environment\.AGENT_RECALL_SOURCE_BUILD !== "1"/);
+  assert.match(launcherSource, /const appPath = path\.join\(__dirname, "\.\."\)/);
+  assert.match(launcherSource, /spawn\(electronPath, \[appPath\]/);
+  assert.doesNotMatch(launcherSource, /spawn\(electronPath, \[appEntry\]/);
 });
 
 test("terminal launcher continues with a validated Electron runtime after repair errors", () => {
