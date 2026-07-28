@@ -25,6 +25,8 @@
 
 AgentRecall 帮你把分散在不同 AI Coding Agent 里的本地会话找回来：统一索引、搜索、查看上下文，并在需要时继续或迁移会话。它优先面向个人本地使用，支持 macOS 与 Windows。
 
+> 本 README 介绍当前稳定的 AgentRecall 1.0。仓库中的 `apps/main-2.0` 是独立运行的 `agent-recall-v2` 开发版，两者不共享应用数据，也不提供自动导入。
+
 ## 核心能力
 
 | 能力 | 说明 |
@@ -90,9 +92,11 @@ agent-recall
 ```bash
 git clone https://github.com/zszz3/AgentRecall.git
 cd AgentRecall
-npm ci
-npm run dev
+npm run setup:v1
+npm run dev:v1
 ```
+
+开发 `agent-recall-v2` 时改用 `npm run setup:v2` 和 `npm run dev:v2`。两个应用分别位于 `apps/main-1.0` 与 `apps/main-2.0`，根目录命令负责统一测试、类型检查和构建。
 
 提交前请阅读 [CONTRIBUTING.md](./CONTRIBUTING.md)，并确保 `npm test`、`npm run typecheck` 与 `npm run release-note:check` 通过。
 

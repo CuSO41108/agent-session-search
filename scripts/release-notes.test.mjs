@@ -5,9 +5,11 @@ import { test } from "node:test";
 import {
   bumpVersion,
   combineReleaseNotes,
+  combineReleaseNotesForTarget,
   findAddedReleaseNoteFiles,
   parseReleaseNote,
   releaseBumpFor,
+  renderDualReleaseNotes,
   renderReleaseNotes,
 } from "./release-notes.mjs";
 
@@ -15,6 +17,7 @@ test("parses feature and bug-fix sections as user-facing release copy", () => {
   const note = parseReleaseNote(`# 自动更新\n\n## 新增功能\n\n- 终端显示新版本。\n\n## Bug 修复\n\n- 修复重启失败。\n`);
   assert.deepEqual(note, {
     title: "自动更新",
+    target: "v1",
     features: ["终端显示新版本。"],
     fixes: ["修复重启失败。"],
   });
@@ -24,6 +27,47 @@ test("parses feature and bug-fix sections as user-facing release copy", () => {
 test("rejects missing and vague release notes", () => {
   assert.throws(() => parseReleaseNote("# Empty\n"), /at least one bullet/);
   assert.throws(() => parseReleaseNote("# Vague\n\n## Bug 修复\n\n- 修复一些问题\n"), /vague/);
+  assert.throws(
+    () => parseReleaseNote("# Invalid\n\n<!-- release-target: future -->\n\n## Bug 修复\n\n- Clear fix.\n"),
+    /invalid release target/,
+  );
+});
+
+test("routes V1 and V2 notes without publishing V2 notes in V1 releases", () => {
+  const v1 = parseReleaseNote("# Stable\n\n## Bug 修复\n\n- Stable fix.\n");
+  const v2 = parseReleaseNote("# Preview\n\n<!-- release-target: v2 -->\n\n## Bug 修复\n\n- Preview fix.\n");
+  const both = parseReleaseNote("# Shared\n\n<!-- release-target: both -->\n\n## Bug 修复\n\n- Shared fix.\n");
+  assert.equal(v1.target, "v1");
+  assert.equal(v2.target, "v2");
+  assert.equal(both.target, "both");
+  assert.deepEqual(
+    combineReleaseNotes([v1, v2, both], { target: "v1" }).fixes,
+    ["Stable fix.", "Shared fix."],
+  );
+  assert.doesNotMatch(renderReleaseNotes(v2), /release-target/);
+});
+
+test("renders separate V1 and V2 sections from the same pending notes", () => {
+  const v1 = parseReleaseNote("# Stable\n\n## 新增功能\n\n- Stable feature.\n");
+  const v2 = parseReleaseNote("# Preview\n\n<!-- release-target: v2 -->\n\n## Bug 修复\n\n- Preview fix.\n");
+  const both = parseReleaseNote("# Shared\n\n<!-- release-target: both -->\n\n## Bug 修复\n\n- Shared fix.\n");
+
+  const rendered = renderDualReleaseNotes([v1, v2, both]);
+
+  assert.match(rendered, /^# AgentRecall 更新/m);
+  assert.match(rendered, /## AgentRecall 1\.0[\s\S]*### 新增功能[\s\S]*- Stable feature\.[\s\S]*### Bug 修复[\s\S]*- Shared fix\./);
+  assert.match(rendered, /## agent-recall-v2[\s\S]*### Bug 修复[\s\S]*- Preview fix\.[\s\S]*- Shared fix\./);
+  assert.doesNotMatch(rendered, /Preview fix\.[\s\S]*## agent-recall-v2/);
+});
+
+test("uses an explicit synchronization note when one release target has no changes", () => {
+  const v1 = parseReleaseNote("# Stable\n\n## Bug 修复\n\n- Stable fix.\n");
+
+  assert.deepEqual(combineReleaseNotesForTarget([v1], "v2", { includeEmpty: true }), {
+    title: "agent-recall-v2 更新",
+    features: [],
+    fixes: ["本次随统一版本同步发布，暂无单独的用户可见变化。"],
+  });
 });
 
 test("repository guidance treats release notes as sanitized product copy", async () => {
@@ -70,23 +114,40 @@ test("workflows require branch notes and publish accumulated changes every day o
   assert.match(noteWorkflow, /pull_request:/);
   assert.match(noteWorkflow, /release-notes\.mjs check-range/);
   assert.match(qualityWorkflow, /os:\s*\[ubuntu-latest, macos-latest, windows-latest\]/);
+  assert.match(qualityWorkflow, /npm run setup/);
   assert.match(qualityWorkflow, /- name: Test\s+if: runner\.os != 'Windows'\s+run: npm test/);
   assert.match(qualityWorkflow, /- name: Test update and install scripts \(Windows\)\s+if: runner\.os == 'Windows'\s+run: npm run test:scripts/);
   assert.match(qualityWorkflow, /- name: Typecheck\s+run: npm run typecheck/);
   assert.match(qualityWorkflow, /- name: Build\s+run: npm run build/);
+  assert.match(qualityWorkflow, /run: npm run package:smoke\s/);
+  assert.match(qualityWorkflow, /run: npm run package:smoke:v2/);
   assert.match(releaseWorkflow, /schedule:[\s\S]*cron:\s*["']0 2 \* \* \*["']/);
   assert.match(releaseWorkflow, /workflow_dispatch:/);
   assert.doesNotMatch(releaseWorkflow, /^\s{2}push:/m);
   assert.match(releaseWorkflow, /git describe --tags --abbrev=0 --match 'v\[0-9\]\*'/);
   assert.match(releaseWorkflow, /git diff --name-only --diff-filter=A "\$latest_tag" "\$RELEASE_SHA"/);
   assert.match(releaseWorkflow, /No unreleased user-facing changes; skipping application release/);
-  assert.match(releaseWorkflow, /release-notes\.mjs combine/);
+  assert.match(releaseWorkflow, /release-notes\.mjs target/);
+  assert.match(releaseWorkflow, /release-notes\.mjs combine --target v1 --include-empty/);
+  assert.match(releaseWorkflow, /release-notes\.mjs combine --target v2 --include-empty/);
+  assert.match(releaseWorkflow, /release-notes\.mjs dual/);
   assert.match(releaseWorkflow, /cancel-in-progress:\s*false/);
+  assert.match(releaseWorkflow, /working-directory: apps\/main-1\.0/);
   assert.match(releaseWorkflow, /npm test[\s\S]*npm run typecheck[\s\S]*npm run build/);
+  assert.match(releaseWorkflow, /npm run setup/);
+  assert.match(releaseWorkflow, /npm --prefix apps\/main-2\.0 version "\$VERSION" --no-git-tag-version/);
+  assert.match(releaseWorkflow, /cd apps\/main-1\.0 && node scripts\/pack-release\.mjs/);
+  assert.match(releaseWorkflow, /cd apps\/main-2\.0 && node scripts\/pack-release\.mjs/);
+  assert.match(releaseWorkflow, /apps\/main-1\.0\/scripts\/create-release-assets\.mjs/);
+  assert.match(releaseWorkflow, /apps\/main-2\.0\/scripts\/create-release-assets\.mjs/);
   assert.match(releaseWorkflow, /gh release upload/);
+  assert.match(releaseWorkflow, /agent-recall-v2-\$\{VERSION\}\.tgz/);
+  assert.match(releaseWorkflow, /agent-recall-v2\.tgz/);
+  assert.match(releaseWorkflow, /update-v2\.json/);
   assert.match(releaseWorkflow, /gh release view "\$TAG" --json isDraft --jq '\.isDraft'/);
   assert.match(releaseWorkflow, /already exists and is published; refusing to overwrite it/);
   assert.match(releaseWorkflow, /node scripts\/compute-release-version\.mjs/);
+  assert.match(releaseWorkflow, /node apps\/main-1\.0\/scripts\/create-release-assets\.mjs/);
   const releaseRequiredGuards = releaseWorkflow.match(
     /if: steps\.pending\.outputs\.publish == 'true' && steps\.version\.outputs\.release_required == 'true'/g,
   );

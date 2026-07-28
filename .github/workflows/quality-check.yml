@@ -27,9 +27,15 @@ jobs:
         with:
           node-version: 22
           cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            apps/main-1.0/package-lock.json
+            apps/main-2.0/package-lock.json
 
       - name: Install dependencies
-        run: npm ci
+        run: |
+          npm ci
+          npm run setup
 
       - name: Validate release note
         run: node scripts/release-notes.mjs check-range "origin/${{ github.base_ref }}" HEAD
@@ -48,5 +54,8 @@ jobs:
       - name: Build
         run: npm run build
 
-      - name: Smoke-test packaged install
+      - name: Smoke-test packaged V1 install
         run: npm run package:smoke
+
+      - name: Smoke-test packaged V2 install
+        run: npm run package:smoke:v2

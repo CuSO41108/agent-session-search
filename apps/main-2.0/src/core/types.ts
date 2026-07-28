@@ -1,0 +1,625 @@
+export type SessionSource =
+  | "claude-cli"
+  | "claude-app"
+  | "codex-cli"
+  | "codex-app"
+  | "tclaude-cli"
+  | "tcodex-cli"
+  | "codebuddy-cli"
+  | "codewiz-cli"
+  | "openclaw"
+  | "hermes"
+  | "opencode-cli"
+  | "zcode-cli"
+  | "cursor-agent"
+  | "trae"
+  | "qoder";
+export type SessionFormat = "claude" | "codex" | "codebuddy" | "codewiz" | "openclaw" | "hermes" | "opencode" | "zcode" | "cursor" | "trae" | "qoder";
+export type SessionSortBy = "smart" | "activity" | "created";
+export type EnvironmentKind = "local" | "wsl" | "ssh";
+export type EnvironmentSyncState = "idle" | "syncing" | "watching" | "disconnected" | "error";
+export type SshAuthMode = "none" | "identityFile";
+
+export interface SessionEnvironment {
+  id: string;
+  kind: EnvironmentKind;
+  label: string;
+  wslDistribution?: string | null;
+  hostAlias: string | null;
+  host: string | null;
+  user: string | null;
+  port: number | null;
+  authMode: SshAuthMode;
+  identityFile: string | null;
+  enabled: boolean;
+  syncState: EnvironmentSyncState;
+  lastSyncedAt: number | null;
+  lastError: string | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface EnvironmentUpsertInput {
+  id?: string;
+  kind: EnvironmentKind;
+  label: string;
+  wslDistribution?: string | null;
+  hostAlias?: string | null;
+  host?: string | null;
+  user?: string | null;
+  port?: number | null;
+  authMode?: SshAuthMode;
+  identityFile?: string | null;
+  enabled?: boolean;
+}
+
+export interface SessionMessage {
+  role: "user" | "assistant";
+  content: string;
+  timestamp: string;
+  index: number;
+  attachments?: SessionAttachment[];
+}
+
+export type SessionAttachmentStatus = "available" | "unsafe" | "missing" | "too_large";
+export type SessionAttachmentPreviewKind = "image" | "pdf" | "text" | "file";
+
+export interface SessionAttachment {
+  id: string;
+  fileName: string;
+  mimeType: string;
+  sizeBytes?: number;
+  previewKind: SessionAttachmentPreviewKind;
+  status: SessionAttachmentStatus;
+  source?: {
+    kind: "inline" | "path";
+    value: string;
+  };
+  remoteObjectKey?: string;
+  sha256?: string;
+}
+
+export interface SessionMessageEvent {
+  index: number;
+  timestamp: number;
+}
+
+export type MigrationAgent = "claude" | "codex" | "codebuddy" | "codewiz" | "cursor";
+export type MigrationTarget = MigrationAgent | "tclaude" | "tcodex";
+export type SessionMigrationStrategy = "complete" | "ai-compressed" | "locally-truncated";
+export type SessionMigrationStage = "reading" | "compressing" | "writing" | "indexing" | "launching";
+
+// Granular progress emitted from inside the AI compression loop. The compressor
+// summarizes the transcript chunk-by-chunk, then makes one final handoff call;
+// each completed unit reports back so the UI can render a percentage.
+export type MigrationCompressionPhase = "chunk" | "handoff";
+
+export interface MigrationCompressionEvent {
+  // Number of chunk summaries completed so far (0..totalChunks). Monotonic
+  // whether chunks are summarized sequentially or concurrently, so the percent
+  // bar never moves backwards. Reaches totalChunks when the final handoff begins.
+  completed: number;
+  // Number of chunk-summary calls (>=1); the final handoff is the +1th unit.
+  totalChunks: number;
+  phase: MigrationCompressionPhase;
+}
+
+export interface PortableSession {
+  sourceSessionKey: string;
+  sourceSessionId?: string;
+  sourceAgent: MigrationAgent;
+  title: string;
+  projectPath: string;
+  startedAt: string;
+  messages: SessionMessage[];
+  turnBoundaries?: number[];
+  isSubagent?: boolean;
+  parentSessionId?: string | null;
+  subagents?: PortableSession[];
+}
+
+export interface SessionMigrationProgress {
+  sessionKey: string;
+  target: MigrationTarget;
+  stage: SessionMigrationStage;
+  // 0-100 progress within the current stage. Only meaningful during
+  // "compressing" (the only stage with multiple discrete units of work).
+  percent?: number;
+  // Structured compression detail; the renderer localizes this into text.
+  compression?: MigrationCompressionEvent;
+}
+
+export interface SessionMigrationResult {
+  target: MigrationTarget;
+  targetSessionId: string;
+  targetFilePath: string;
+  strategy: SessionMigrationStrategy;
+  resumeCommand: string;
+  indexed: boolean;
+  launched: boolean;
+  restoredSubagentCount?: number;
+  warning?: string;
+}
+
+export interface SessionMigrationRequest {
+  sessionKey: string;
+  target: MigrationTarget;
+  throughTurnId?: string;
+}
+
+export interface SessionMigrationRecord {
+  id: string;
+  sourceSessionKey: string;
+  sourceAgent: MigrationAgent;
+  targetAgent: MigrationTarget;
+  targetSessionId: string;
+  targetFilePath: string;
+  strategy: SessionMigrationStrategy;
+  createdAt: number;
+}
+
+export type SessionTraceKind = "tool_call" | "tool_result" | "event";
+
+export interface SessionTraceEvent {
+  index: number;
+  kind: SessionTraceKind;
+  source: SessionFormat;
+  title: string;
+  detail: string;
+  timestamp: string;
+  callId?: string | null;
+  eventType?: string | null;
+  status?: "success" | "failure" | "unknown" | null;
+}
+
+export type SessionTurnStatus = "completed" | "failed" | "aborted";
+
+export interface SessionTurnSummary {
+  id: string;
+  turnIndex: number;
+  sourceMessageIndex: number | null;
+  synthetic: boolean;
+  status: SessionTurnStatus;
+  startedAt: string | null;
+  endedAt: string | null;
+  userPreview: string;
+  assistantPreview: string;
+  inputTokens: number;
+  outputTokens: number;
+  cachedInputTokens: number;
+  reasoningOutputTokens: number;
+  totalTokens: number;
+  errorCount: number;
+  toolNames: string[];
+  messageCount: number;
+  spanCount: number;
+}
+
+export interface SessionTurnMessage {
+  messageIndex: number;
+  sourceMessageIndex: number | null;
+  role: SessionMessage["role"];
+  content: string;
+  timestamp: string;
+  attachments?: SessionAttachment[];
+}
+
+export interface SessionTraceSpan {
+  id: string;
+  parentSpanId: string | null;
+  spanIndex: number;
+  kind: "tool" | "event";
+  name: string;
+  status: "running" | "completed" | "failed" | "aborted" | "unknown";
+  startedAt: string | null;
+  endedAt: string | null;
+  callId: string | null;
+  input: Record<string, unknown> | null;
+  output: Record<string, unknown> | null;
+  error: string | null;
+  attributes: Record<string, unknown>;
+}
+
+export interface SessionTurnDetail extends SessionTurnSummary {
+  messages: SessionTurnMessage[];
+  spans: SessionTraceSpan[];
+}
+
+export interface TokenUsage {
+  inputTokens: number;
+  outputTokens: number;
+  cachedInputTokens: number;
+  reasoningOutputTokens: number;
+  totalTokens: number;
+}
+
+export interface TokenUsageEvent extends TokenUsage {
+  timestamp: number;
+  dedupeKey: string;
+}
+
+export interface IndexedSession {
+  sessionKey: string;
+  rawId: string;
+  source: SessionSource;
+  projectPath: string;
+  filePath: string;
+  originalTitle: string;
+  firstQuestion: string;
+  timestamp: number;
+  fileMtimeMs: number;
+  fileSize: number;
+  prUrl: string | null;
+  prNumber: number | null;
+  gitBranch?: string | null;
+  tokenUsage?: TokenUsage;
+  environmentId?: string;
+  storageEnvironmentId?: string;
+  environmentKind?: EnvironmentKind;
+  environmentLabel?: string;
+  isSubagent?: boolean;
+  parentSessionId?: string | null;
+}
+
+export interface LoadedSession {
+  session: IndexedSession;
+  messages: SessionMessage[];
+  tokenEvents?: TokenUsageEvent[];
+  traceEvents?: SessionTraceEvent[];
+  executionEnvironmentHint?: {
+    kind: "ssh";
+    label: string;
+    hostAlias: string;
+  };
+}
+
+export type SessionSourceFilter = SessionSource | "claude" | "codex" | "all";
+
+export interface SearchOptions {
+  query?: string;
+  tag?: string;
+  projectPath?: string;
+  environmentId?: string | "all";
+  source?: SessionSourceFilter;
+  liveStatus?: "open" | "closed";
+  liveSessionKeys?: string[];
+  visibility?: "default" | "favorites" | "hidden";
+  sortBy?: SessionSortBy;
+  dateFrom?: number;
+  dateTo?: number;
+  limit?: number;
+  excludeSubagents?: boolean;
+  prioritizeFavorites?: boolean;
+}
+
+export interface ProjectQueryOptions {
+  excludeSubagents?: boolean;
+  environmentId?: string;
+}
+
+export interface TagListOptions {
+  environmentId?: string;
+  projectPath?: string;
+  projectEnvironmentId?: string;
+  excludeSubagents?: boolean;
+}
+
+export interface ProjectTagEntry {
+  environmentId: string;
+  projectPath: string;
+  tags: string[];
+}
+
+export type ProjectLabelKind = "path" | "codex-task-title" | "codex-task-untitled";
+
+export interface ProjectSummary {
+  path: string;
+  label: string;
+  labelKind: ProjectLabelKind;
+  labelSuffix: string | null;
+  sessionCount: number;
+  environmentId: string;
+  environmentLabel: string;
+  createdAt: number;
+  lastActivityAt: number;
+}
+
+export interface SessionSearchResult extends IndexedSession {
+  environmentId: string;
+  environmentKind: EnvironmentKind;
+  environmentLabel: string;
+  tokenUsage: TokenUsage;
+  customTitle: string | null;
+  displayTitle: string;
+  favorited: boolean;
+  hidden: boolean;
+  tags: string[];
+  matchSnippet: string | null;
+  lastOpenedAt: number | null;
+  lastResumedAt: number | null;
+  lastActivityAt: number;
+  messageCount: number;
+  aiSummary: string | null;
+  aiSummaryStale: boolean;
+  matchHits?: SessionMatchHit[];
+  messageMatchCount?: number;
+  metadataMatch?: "title" | "project" | "summary" | null;
+  bestTurn?: SessionTurnMatch | null;
+  turnMatchCount?: number;
+}
+
+export interface SessionMatchHit {
+  messageIndex: number;
+  role: SessionMessage["role"];
+  timestamp: string;
+  snippet: string;
+  matchedTerms: string[];
+  turnId?: string;
+  turnIndex?: number;
+}
+
+export interface SessionTurnMatch {
+  turnId: string;
+  turnIndex: number;
+  sourceMessageIndex: number | null;
+  startedAt: number | null;
+  snippet: string;
+  matchedTerms: string[];
+}
+
+export interface SessionSearchPage {
+  sessions: SessionSearchResult[];
+  totalCount: number;
+  hasMore: boolean;
+}
+
+export interface SessionStatsSummary extends TokenUsage {
+  sessionCount: number;
+  messageCount: number;
+}
+
+export interface SessionSourceStats extends SessionStatsSummary {
+  source: SessionSource;
+}
+
+export interface SessionDailyTokenUsage extends TokenUsage {
+  dayStart: number;
+  dayEndExclusive: number;
+}
+
+export type SessionStatsPeriod = "today" | "sevenDay" | "thirtyDay" | "allTime";
+export type SessionStatsTrendGranularity = "day" | "week" | "month";
+
+export interface SessionStatsOptions {
+  period?: SessionStatsPeriod;
+  excludeSubagents?: boolean;
+}
+
+export interface SessionStatsTrendBucket {
+  start: number;
+  end: number;
+  label: string;
+  totalTokens: number;
+}
+
+export interface SessionStatsTrend {
+  period: SessionStatsPeriod;
+  granularity: SessionStatsTrendGranularity | null;
+  buckets: SessionStatsTrendBucket[];
+}
+
+export interface SessionStats {
+  total: SessionStatsSummary;
+  bySource: SessionSourceStats[];
+  dailyTokenUsage: SessionDailyTokenUsage[];
+  range: {
+    period: SessionStatsPeriod;
+    since: number | null;
+    until: number;
+  };
+  // Totals for the immediately preceding comparable period (today→yesterday,
+  // 7d→prior 7d, 30d→prior 30d). Null for allTime, which has no comparison.
+  previousTotal: SessionStatsSummary | null;
+}
+
+export type UsageQuotaProvider = "codex" | "claude-code";
+export type UsageQuotaStatus = "supported" | "unsupported_api_key" | "not_configured" | "error";
+export type UsageQuotaFreshness = "fresh" | "stale" | "auth-required" | "unavailable";
+export type UsageQuotaFailureKind = "transient" | "auth" | "rate_limit" | "permanent";
+
+export interface UsageQuota {
+  key: string;
+  label: string;
+  usedPercent: number;
+  remainingPercent: number;
+  usedDisplay: string;
+  remainingDisplay: string;
+  resetsAt?: string;
+  stale?: boolean;
+}
+
+export interface UsageQuotaCard {
+  provider: UsageQuotaProvider;
+  displayName: string;
+  status: UsageQuotaStatus;
+  source?: string;
+  plan?: string;
+  quotas: UsageQuota[];
+  detail?: string;
+  errorKind?: UsageQuotaFailureKind;
+}
+
+export interface UsageQuotaSnapshot {
+  generatedAt: string;
+  providers: UsageQuotaCard[];
+  hiddenProviders?: UsageQuotaProvider[];
+  freshness?: UsageQuotaFreshness;
+  lastSuccessfulAt?: string;
+  error?: string;
+}
+
+export type LiveSessionFamily =
+  | "claude"
+  | "codex"
+  | "tclaude"
+  | "tcodex"
+  | "codebuddy"
+  | "codewiz"
+  | "openclaw"
+  | "hermes"
+  | "opencode"
+  | "zcode"
+  | "cursor"
+  | "trae"
+  | "qoder";
+
+export interface LiveSession {
+  family: LiveSessionFamily;
+  rawId: string;
+  pid: number;
+}
+
+export interface LiveSessionSnapshot {
+  generatedAt: string;
+  sessions: LiveSession[];
+  error?: string;
+}
+
+export interface ClaudeSessionIndexFile {
+  sessionId: string;
+  cwd: string;
+  startedAt: number;
+}
+
+export interface ClaudeAppSessionFile {
+  sessionId: string;
+  cliSessionId?: string;
+  cwd?: string;
+  originCwd?: string;
+  createdAt?: number;
+  lastActivityAt?: number;
+  title?: string;
+  prNumber?: number;
+  prUrl?: string;
+}
+
+export interface ClaudeConversationLine {
+  type: "user" | "assistant" | string;
+  timestamp?: string;
+  cwd?: string;
+  gitBranch?: string;
+  agentId?: string;
+  sessionId?: string;
+  isSidechain?: boolean;
+  message?: {
+    role: "user" | "assistant";
+    content?:
+      | string
+      | Array<{
+          type?: string;
+          text?: string;
+          id?: string;
+          name?: string;
+          input?: unknown;
+          tool_use_id?: string;
+          content?: unknown;
+        }>;
+  };
+}
+
+export interface CodexConversationLine {
+  type?: string;
+  timestamp?: string;
+  id?: string;
+  instructions?: string | null;
+  git?: {
+    cwd?: string;
+    branch?: string;
+    commit_hash?: string;
+    repository_url?: string;
+  };
+  role?: "user" | "assistant" | string;
+  content?: Array<{ type?: string; text?: string }>;
+  payload?: {
+    type?: string;
+    role?: "user" | "assistant" | "developer" | "system" | string;
+    content?: Array<{ type?: string; text?: string }>;
+    id?: string;
+    cwd?: string;
+    title?: string;
+    git?: {
+      branch?: string;
+      commit_hash?: string;
+      repository_url?: string;
+    };
+    originator?: string;
+    session_id?: string;
+    forked_from_id?: string;
+    thread_source?: string;
+    parent_thread_id?: string;
+    source?:
+      | string
+      | {
+          subagent?: {
+            thread_spawn?: {
+              parent_thread_id?: string;
+              depth?: number;
+              agent_path?: string | null;
+              agent_nickname?: string;
+              agent_role?: string | null;
+            };
+          };
+        };
+    name?: string;
+    arguments?: unknown;
+    call_id?: string;
+    output?: unknown;
+    command?: string;
+    parsed_cmd?: unknown;
+    stdout?: string;
+    stderr?: string;
+    aggregated_output?: string;
+    formatted_output?: string;
+    exit_code?: number;
+    status?: string;
+    success?: boolean;
+    changes?: unknown;
+    invocation?: unknown;
+    plugin_id?: string;
+    result?: unknown;
+    query?: string;
+    action?: unknown;
+    message?: string;
+    codex_error_info?: unknown;
+  };
+}
+
+export interface CodeBuddyConversationLine {
+  id?: string;
+  parentId?: string;
+  timestamp?: number;
+  type?: string;
+  role?: "user" | "assistant" | string;
+  content?: Array<{ type?: string; text?: string }>;
+  sessionId?: string;
+  cwd?: string;
+  gitBranch?: string;
+  providerData?: {
+    usage?: {
+      input_tokens?: number;
+      output_tokens?: number;
+      cached_input_tokens?: number;
+      cache_read_input_tokens?: number;
+      reasoning_output_tokens?: number;
+    };
+    rawUsage?: {
+      input_tokens?: number;
+      output_tokens?: number;
+      cached_input_tokens?: number;
+      cache_read_input_tokens?: number;
+      reasoning_output_tokens?: number;
+    };
+    model?: string;
+    messageId?: string;
+  };
+}
