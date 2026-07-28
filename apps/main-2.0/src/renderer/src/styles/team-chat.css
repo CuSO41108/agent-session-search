@@ -705,21 +705,60 @@
 .team-chat-setup-actions button,
 .team-chat-dialog footer button {
   display: inline-flex;
+  flex: 0 0 auto;
   align-items: center;
   justify-content: center;
   gap: 5px;
-  height: 31px;
-  padding: 0 12px;
+  min-width: 68px;
+  height: 32px;
+  padding: 0 13px;
   border-color: var(--border);
+  border-radius: 8px;
   background: var(--panel-subtle);
   font-size: 11px;
+  font-weight: 620;
+  white-space: nowrap;
+  transition:
+    border-color var(--duration-fast) var(--ease-out),
+    background var(--duration-fast) var(--ease-out),
+    color var(--duration-fast) var(--ease-out),
+    transform var(--duration-fast) var(--ease-out);
+}
+
+.team-chat-dialog footer button:hover:not(:disabled) {
+  border-color: var(--border-strong);
+  color: var(--text);
+  background: var(--panel-hover);
+}
+
+.team-chat-dialog footer .team-chat-dialog-cancel {
+  border-color: transparent;
+  color: var(--text-muted);
+  background: transparent;
 }
 
 .team-chat-setup-actions .primary,
 .team-chat-dialog footer .primary {
+  width: auto;
+  min-width: 112px;
+  min-height: 32px;
+  margin-bottom: 0;
+  padding: 0 16px;
   border-color: var(--accent);
   color: var(--accent-contrast);
   background: var(--accent);
+  box-shadow: 0 1px 2px color-mix(in srgb, var(--accent) 30%, transparent);
+}
+
+.team-chat-dialog footer .primary svg {
+  color: currentColor;
+}
+
+.team-chat-dialog footer .primary:hover:not(:disabled) {
+  border-color: var(--accent-hover);
+  color: var(--accent-contrast);
+  background: var(--accent-hover);
+  transform: translateY(-1px);
 }
 
 .team-chat-setup-error,

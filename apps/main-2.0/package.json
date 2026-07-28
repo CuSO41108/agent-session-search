@@ -75,6 +75,7 @@
     "@vitejs/plugin-react": "^4.3.4",
     "electron-vite": "^2.3.0",
     "esbuild": "^0.21.5",
+    "happy-dom": "^20.11.1",
     "tsx": "^4.23.1",
     "typescript": "^5.7.2",
     "vite": "^5.4.11",

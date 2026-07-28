@@ -23,12 +23,9 @@ import {
   useRef,
   useState,
   type FormEvent,
-  type ComponentPropsWithoutRef,
   type KeyboardEvent,
   type ReactElement,
 } from "react";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
 import type {
   CreateTeamChatRoomRequest,
   TeamChatConnectionStatus,
@@ -39,6 +36,7 @@ import type {
   TeamChatRoomSummary,
 } from "../../../../shared/team-chat";
 import { localize, type LanguageMode } from "../../language";
+import { Markdown } from "../../markdown";
 import { useAutomation } from "../automation/automation-provider";
 
 interface StreamDraft {
@@ -53,6 +51,14 @@ interface DraftStudioEmployee {
   localId: string;
   configuredAgentId: string;
   displayName: string;
+}
+
+interface StudioAgentOption {
+  id: string;
+  name: string;
+  runtimeAgentId: string;
+  modelId: string;
+  description: string;
 }
 
 const INITIAL_CONNECTION: TeamChatConnectionStatus = { state: "connecting" };
@@ -170,6 +176,7 @@ export function TeamChatPage({
   const [streams, setStreams] = useState<Record<string, StreamDraft>>({});
   const [resettingAgentIds, setResettingAgentIds] = useState<Set<string>>(() => new Set());
   const [createOpen, setCreateOpen] = useState(false);
+  const [addEmployeeOpen, setAddEmployeeOpen] = useState(false);
   const [roomActionsOpen, setRoomActionsOpen] = useState(false);
   const composerRef = useRef<HTMLTextAreaElement>(null);
   const transcriptEndRef = useRef<HTMLDivElement>(null);
@@ -296,6 +303,7 @@ export function TeamChatPage({
     setStreams({});
     setResettingAgentIds(new Set());
     setRoomActionsOpen(false);
+    setAddEmployeeOpen(false);
     setMentionMenuOpen(false);
     if (!selectedRoomId || connection.state !== "ready") {
       setActiveRoom(undefined);
@@ -480,6 +488,31 @@ export function TeamChatPage({
       room.id === updated.id
         ? { ...room, name: updated.name, updatedAt: updated.updatedAt }
         : room));
+    setFeedback(undefined);
+  };
+
+  const addRoomEmployee = async (member: {
+    configuredAgentId: string;
+    displayName: string;
+  }): Promise<void> => {
+    if (!activeRoom) return;
+    const updated = await api.updateRoom({
+      roomId: activeRoom.id,
+      members: [
+        ...activeRoom.agents.map((existing) => ({
+          memberId: existing.agentId,
+          configuredAgentId: existing.configuredAgentId,
+          displayName: existing.displayName,
+        })),
+        member,
+      ],
+    });
+    setActiveRoom((current) => current?.id === updated.id ? updated : current);
+    setRooms((current) => current.map((room) =>
+      room.id === updated.id
+        ? { ...room, agentCount: updated.agents.length, updatedAt: updated.updatedAt }
+        : room));
+    setAddEmployeeOpen(false);
     setFeedback(undefined);
   };
 
@@ -721,7 +754,20 @@ export function TeamChatPage({
           </section>
 
           <aside className="team-chat-members">
-            <div className="team-chat-rail-head"><span>{l("Employees", "员工")}</span></div>
+            <div className="team-chat-rail-head">
+              <span>{l("Employees", "员工")}</span>
+              {activeRoom ? (
+                <button
+                  type="button"
+                  onClick={() => setAddEmployeeOpen(true)}
+                  disabled={snapshot.configuredAgents.length === 0 || activeRoom.agents.length >= 24}
+                  title={l("Add employee", "添加员工")}
+                  aria-label={l("Add employee", "添加员工")}
+                >
+                  <Plus size={15} />
+                </button>
+              ) : null}
+            </div>
             <div className="team-chat-member-list">
               {activeRoom?.agents.map((member) => {
                 const available = snapshot.configuredAgents.some(
@@ -780,6 +826,16 @@ export function TeamChatPage({
         />
       ) : null}
 
+      {addEmployeeOpen && activeRoom ? (
+        <AddRoomEmployeeDialog
+          language={language}
+          agents={snapshot.configuredAgents}
+          existingNames={activeRoom.agents.map((member) => member.displayName)}
+          onAdd={addRoomEmployee}
+          onClose={() => setAddEmployeeOpen(false)}
+        />
+      ) : null}
+
     </div>
   );
 }
@@ -828,13 +884,7 @@ function CreateRoomDialog({
   onClose,
 }: {
   language: LanguageMode;
-  agents: Array<{
-    id: string;
-    name: string;
-    runtimeAgentId: string;
-    modelId: string;
-    description: string;
-  }>;
+  agents: StudioAgentOption[];
   defaultWorkDir: string;
   onPickDirectory: (defaultPath?: string) => Promise<string | undefined>;
   onCreate: (request: CreateTeamChatRoomRequest) => Promise<void>;
@@ -1018,6 +1068,116 @@ function CreateRoomDialog({
   );
 }
 
+function AddRoomEmployeeDialog({
+  language,
+  agents,
+  existingNames,
+  onAdd,
+  onClose,
+}: {
+  language: LanguageMode;
+  agents: StudioAgentOption[];
+  existingNames: string[];
+  onAdd: (member: { configuredAgentId: string; displayName: string }) => Promise<void>;
+  onClose: () => void;
+}): ReactElement {
+  const l = (en: string, zh: string) => localize(language, en, zh);
+  const [configuredAgentId, setConfiguredAgentId] = useState(agents[0]?.id ?? "");
+  const [displayName, setDisplayName] = useState(() =>
+    nextStudioEmployeeName(agents[0]?.name ?? "Employee", existingNames));
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string>();
+  const selectedAgent = agents.find((agent) => agent.id === configuredAgentId);
+
+  const submit = async (event: FormEvent): Promise<void> => {
+    event.preventDefault();
+    const name = displayName.trim();
+    if (!configuredAgentId || !name || busy) return;
+    setBusy(true);
+    setError(undefined);
+    try {
+      await onAdd({ configuredAgentId, displayName: name });
+    } catch (cause) {
+      setError(errorMessage(cause));
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div
+      className="team-chat-dialog-backdrop"
+      role="dialog"
+      aria-modal="true"
+      aria-label={l("Add employee", "添加员工")}
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget && !busy) onClose();
+      }}
+    >
+      <form className="team-chat-dialog" onSubmit={(event) => void submit(event)}>
+        <header>
+          <div>
+            <h3>{l("Add employee", "添加员工")}</h3>
+            <p>{l(
+              "Add another independent Runtime conversation to this room.",
+              "向这个房间添加一个拥有独立会话的 Runtime 员工。",
+            )}</p>
+          </div>
+          <button type="button" onClick={onClose} disabled={busy} aria-label={l("Close", "关闭")}>
+            <X size={16} />
+          </button>
+        </header>
+        <label className="team-chat-field">
+          <span>{l("Employee name", "员工名称")}</span>
+          <input
+            autoFocus
+            value={displayName}
+            disabled={busy}
+            maxLength={120}
+            aria-label={l("Employee name", "员工名称")}
+            onChange={(event) => setDisplayName(event.currentTarget.value)}
+          />
+        </label>
+        <label className="team-chat-field">
+          <span>Runtime</span>
+          <select
+            value={configuredAgentId}
+            disabled={busy}
+            aria-label={l("Runtime configuration", "Runtime 配置")}
+            onChange={(event) => {
+              const nextId = event.currentTarget.value;
+              const nextAgent = agents.find((agent) => agent.id === nextId);
+              setConfiguredAgentId(nextId);
+              if (nextAgent) setDisplayName(nextStudioEmployeeName(nextAgent.name, existingNames));
+            }}
+          >
+            {agents.map((agent) => (
+              <option key={agent.id} value={agent.id}>{agent.name}</option>
+            ))}
+          </select>
+        </label>
+        {selectedAgent ? (
+          <div className="team-chat-employee-meta">
+            <span>{selectedAgent.runtimeAgentId}</span>
+            <span>{selectedAgent.modelId}</span>
+            {selectedAgent.description ? <small>{selectedAgent.description}</small> : null}
+          </div>
+        ) : null}
+        {error ? <div className="team-chat-dialog-error" role="alert">{error}</div> : null}
+        <footer>
+          <button className="team-chat-dialog-cancel" type="button" onClick={onClose} disabled={busy}>
+            {l("Cancel", "取消")}
+          </button>
+          <button className="primary team-chat-dialog-confirm" type="submit" disabled={busy || !displayName.trim() || !configuredAgentId}>
+            {busy ? <LoaderCircle className="spin" size={14} /> : null}
+            {!busy ? <Plus size={14} /> : null}
+            {l("Add employee", "添加员工")}
+          </button>
+        </footer>
+      </form>
+    </div>
+  );
+}
+
 function TeamChatMessageCard({
   message,
   member,
@@ -1039,24 +1199,9 @@ function TeamChatMessageCard({
         <time>{formatMessageTime(message.createdAt, language)}</time>
       </header>
       <div className="team-chat-message-content">
-        <ReactMarkdown remarkPlugins={[remarkGfm]} components={{ a: TeamChatExternalLink }}>{message.content}</ReactMarkdown>
+        <Markdown text={message.content} language={language} />
       </div>
     </article>
-  );
-}
-
-function TeamChatExternalLink({ href, children, ...props }: ComponentPropsWithoutRef<"a">): ReactElement {
-  return (
-    <a
-      {...props}
-      href={href}
-      onClick={(event) => {
-        event.preventDefault();
-        if (href) void window.sessionSearch.openExternalLink(href);
-      }}
-    >
-      {children}
-    </a>
   );
 }
 
