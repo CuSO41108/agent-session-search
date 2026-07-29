@@ -16,6 +16,7 @@ import {
   MAX_SESSION_ATTACHMENT_BYTES,
   type MaterializedAttachment,
 } from "../session-attachments";
+import { codexTaskWorkspaceDate } from "../project-identity";
 import {
   deriveSessionTimeline,
   type DerivedRawEvent,
@@ -56,31 +57,6 @@ type ProjectSummaryDraft = ProjectSummary & {
   rootStartedAt: number;
   taskBasenameApplied: boolean;
 };
-
-function validIsoDate(value: string): boolean {
-  const match = /^(\d{4})-(\d{2})-(\d{2})$/u.exec(value);
-  if (!match) return false;
-  const year = Number(match[1]);
-  const month = Number(match[2]);
-  const day = Number(match[3]);
-  const date = new Date(Date.UTC(year, month - 1, day));
-  return date.getUTCFullYear() === year
-    && date.getUTCMonth() === month - 1
-    && date.getUTCDate() === day;
-}
-
-function codexTaskWorkspaceDate(projectPath: string): string | null {
-  const parts = projectParts(projectPath);
-  if (parts.length < 3) return null;
-  const codexSegment = parts.at(-3) || "";
-  const dateSegment = parts.at(-2) || "";
-  const taskSegment = parts.at(-1) || "";
-  return codexSegment.toLocaleLowerCase() === "codex"
-    && taskSegment
-    && validIsoDate(dateSegment)
-    ? dateSegment
-    : null;
-}
 
 function rootProjectTitle(row: {
   root_custom_title: string | null;
@@ -1445,6 +1421,31 @@ export class PostgresSessionRepository {
       await client.query("delete from agent_recall.sessions where session_key = $1", [legacyKey]);
       return true;
     });
+  }
+
+  async listSessionIdentitiesBySource(source: SessionSource): Promise<Array<{
+    sessionKey: string;
+    rawId: string;
+    storageEnvironmentId: string;
+  }>> {
+    const result = await this.database.query<{
+      session_key: string;
+      raw_id: string;
+      storage_environment_id: string;
+    }>(
+      `
+        select session_key, raw_id, storage_environment_id
+        from agent_recall.sessions
+        where source = $1
+        order by session_key
+      `,
+      [source],
+    );
+    return result.rows.map((row) => ({
+      sessionKey: row.session_key,
+      rawId: row.raw_id,
+      storageEnvironmentId: row.storage_environment_id,
+    }));
   }
 
   async listSessionKeysByFilePath(

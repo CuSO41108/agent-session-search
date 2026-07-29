@@ -337,6 +337,21 @@ export function registerAutomationIpc({
     return service.workflows.renameWorkflow(request.workflowId, request.title);
   });
   ready(AUTOMATION_CHANNELS.workflowDelete, (value: unknown) => service.workflows.deleteWorkflow(idSchema.parse(value)));
+  ready(AUTOMATION_CHANNELS.workflowCloneOfficial, (value: unknown) => service.portableWorkflows.cloneOfficialWorkflow(idSchema.parse(value)));
+  ready(AUTOMATION_CHANNELS.workflowImportBegin, () => service.portableWorkflows.beginImport());
+  ready(AUTOMATION_CHANNELS.workflowImportConfirm, (value: unknown) => {
+    const request = z.object({
+      previewToken: idSchema,
+      agentMappings: z.record(z.string().max(500), idSchema).optional(),
+      modelMappings: z.record(z.string().max(1000), idSchema).optional(),
+    }).strict().parse(value);
+    return service.portableWorkflows.confirmImport(request.previewToken, request);
+  });
+  ready(AUTOMATION_CHANNELS.workflowImportCancel, (value: unknown) => {
+    const request = z.object({ previewToken: idSchema }).strict().parse(value);
+    service.portableWorkflows.cancelImport(request.previewToken);
+  });
+  ready(AUTOMATION_CHANNELS.workflowExport, (value: unknown) => service.portableWorkflows.exportWorkflow(idSchema.parse(value)));
   ready(AUTOMATION_CHANNELS.workflowConfirm, (value: unknown) => service.workflows.confirmWorkflow(workflowRequestSchema.parse(value) as ConfirmWorkflowRequest));
   ready(AUTOMATION_CHANNELS.workflowReview, (value: unknown) => service.workflows.reviewWorkflow(workflowReviewSchema.parse(value) as ReviewWorkflowRequest));
   ready(AUTOMATION_CHANNELS.workflowReviewInterrupt, (value: unknown) => service.workflows.interruptWorkflowReview(workflowRequestSchema.parse(value) as InterruptWorkflowReviewRequest));

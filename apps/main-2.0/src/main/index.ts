@@ -7,6 +7,7 @@ import {
   ipcMain,
   Menu,
   nativeImage,
+  safeStorage,
   screen,
   shell,
   Tray,
@@ -124,9 +125,12 @@ import {
   OPENVIKING_RUNTIME_VERSION,
   resolveOpenVikingRuntimeManifest,
 } from "./services/openviking-artifact-resolver";
+import { resolveOpenVikingRuntimeArchitecture } from "./services/openviking-runtime-architecture";
 import { OpenVikingGateway } from "./services/openviking-client";
 import { OpenVikingControlService } from "./services/openviking-control-service";
 import { OpenVikingHookManifestService } from "./services/openviking-hook-manifest";
+import { SshCommandService } from "./services/ssh-command-service";
+import { SshCredentialService } from "./services/ssh-credential-service";
 import {
   OpenVikingMemoryService,
   OpenVikingWorkspaceCredentialStore,
@@ -161,6 +165,8 @@ import { SessionCommandService } from "./services/session-command-service";
 import { RemoteSessionAccess } from "./services/remote-session-access";
 import { bootstrapApplicationPaths } from "./app-path-bootstrap";
 import { startPostgresRuntime, type PostgresRuntime } from "./postgres/managed-postgres";
+import { WORKFLOW_PORTABLE_MAX_BYTES } from "../automation/engine/main/hub/workflow/workflow-portable-file";
+import { writeWorkflowExportFileAtomically } from "./services/workflow-portable-filesystem";
 import type {
   EnvironmentUpsertInput,
   MigrationAgent,
@@ -181,6 +187,7 @@ const PRODUCT_NAME = "agent-recall-v2";
 const TRAY_ICON_RELATIVE_PATH = path.join("assets", "tray-iconTemplate.png");
 const APP_ICON_RELATIVE_PATH = path.join("assets", "app-icon.png");
 const releaseUpdateRuntime = process.env.AGENT_RECALL_RELEASE_BUILD === "1";
+const openVikingRuntimeArch = resolveOpenVikingRuntimeArchitecture();
 
 const OPTIONAL_SOURCE_SETTINGS = OPTIONAL_SESSION_SOURCE_DESCRIPTORS.map((descriptor) => ({
   key: descriptor.optionalSetting,
@@ -325,6 +332,26 @@ const windowStateStore = new Store<SavedWindowState>({
   defaults: { width: 0, height: 0 },
 });
 
+const sshCredentialStore = new Store<{ passwords: Record<string, string> }>({
+  name: "ssh-credentials",
+  defaults: { passwords: {} },
+});
+const sshCredentialService = new SshCredentialService(sshCredentialStore, safeStorage);
+const sshCommandService = new SshCommandService({
+  getPassword: (environmentId) => sshCredentialService.getPassword(environmentId),
+});
+
+function runSshSessionCommand(environment: SessionEnvironment, remoteCommand: string): Promise<string> {
+  return sshCommandService.run(environment, remoteCommand);
+}
+
+function runSshHealthCommand(environment: SessionEnvironment, remoteCommand: string): Promise<string> {
+  return sshCommandService.run(environment, remoteCommand, {
+    maxBuffer: 512 * 1024,
+    timeout: 20_000,
+  });
+}
+
 function getSettings(): AppSettings {
   const settings = mergeAppSettings(defaultSettings, settingsStore.store);
   return {
@@ -351,7 +378,36 @@ function createAutomationService(): NativeAutomationService {
     appDataPath: app.getPath("appData"),
     bundledWorkflowsPath: bundledAutomationWorkflowsPath(),
     workflowMcpServerPath: path.join(app.getAppPath(), "out", "mcp", "workflow-entry.js"),
+    chooseWorkflowImportFile: chooseWorkflowImportFile,
+    chooseWorkflowExportPath: chooseWorkflowExportPath,
+    writeWorkflowExportFile: writeWorkflowExportFileAtomically,
   });
+}
+
+async function chooseWorkflowImportFile(): Promise<{ fileName: string; content: string } | undefined> {
+  const options: Electron.OpenDialogOptions = {
+    title: "Import workflow",
+    properties: ["openFile"],
+    filters: [{ name: "AgentRecall Workflow", extensions: ["agentrecall-workflow.json"] }],
+  };
+  const result = mainWindow ? await dialog.showOpenDialog(mainWindow, options) : await dialog.showOpenDialog(options);
+  const filePath = result.canceled ? undefined : result.filePaths[0];
+  if (!filePath) return undefined;
+  if (!filePath.toLowerCase().endsWith(".agentrecall-workflow.json")) throw new Error("WORKFLOW_IMPORT_FORMAT_UNSUPPORTED: Choose an .agentrecall-workflow.json file.");
+  const stat = await fs.stat(filePath);
+  if (stat.size > WORKFLOW_PORTABLE_MAX_BYTES) throw new Error("WORKFLOW_IMPORT_FILE_TOO_LARGE: Workflow file exceeds the 5 MiB limit.");
+  return { fileName: path.basename(filePath), content: await fs.readFile(filePath, "utf8") };
+}
+
+async function chooseWorkflowExportPath(defaultFileName: string): Promise<string | undefined> {
+  const options: Electron.SaveDialogOptions = {
+    title: "Export workflow",
+    defaultPath: path.join(app.getPath("documents"), defaultFileName),
+    filters: [{ name: "AgentRecall Workflow", extensions: ["agentrecall-workflow.json"] }],
+  };
+  const result = mainWindow ? await dialog.showSaveDialog(mainWindow, options) : await dialog.showSaveDialog(options);
+  if (result.canceled || !result.filePath) return undefined;
+  return result.filePath.toLowerCase().endsWith(".agentrecall-workflow.json") ? result.filePath : `${result.filePath}.agentrecall-workflow.json`;
 }
 
 async function pickAutomationDirectory(defaultPath?: string): Promise<string | undefined> {
@@ -454,6 +510,8 @@ const skillService = new SkillService({
 
 const remoteSessionAccess = new RemoteSessionAccess({
   getStore: () => store,
+  runSshCommand: runSshSessionCommand,
+  runSshHealthCommand,
 });
 
 const remoteSessionService = new RemoteSessionService({
@@ -713,13 +771,13 @@ async function buildDevelopmentOpenVikingRuntimeArtifact(
   rootDir: string,
   onProgress: (progress: OpenVikingRuntimeInstallProgress) => void,
 ): Promise<OpenVikingRuntimeManifest | null> {
-  const pythonRuntime = DEVELOPMENT_PYTHON_RUNTIMES[`${process.platform}-${process.arch}`];
+  const pythonRuntime = DEVELOPMENT_PYTHON_RUNTIMES[`${process.platform}-${openVikingRuntimeArch}`];
   if (!pythonRuntime) return null;
 
   const buildRoot = path.join(rootDir, "development-runtime-build");
   const buildHome = path.join(buildRoot, "home");
   const outputDir = path.join(buildRoot, "artifacts");
-  const artifactName = `openviking-runtime-${OPENVIKING_RUNTIME_VERSION}-${process.platform}-${process.arch}.tar.gz`;
+  const artifactName = `openviking-runtime-${OPENVIKING_RUNTIME_VERSION}-${process.platform}-${openVikingRuntimeArch}.tar.gz`;
   const archivePath = path.join(outputDir, artifactName);
   const manifestPath = `${archivePath}.json`;
   await fs.mkdir(buildHome, { recursive: true, mode: 0o700 });
@@ -737,7 +795,7 @@ async function buildDevelopmentOpenVikingRuntimeArtifact(
         "--platform",
         process.platform,
         "--arch",
-        process.arch,
+        openVikingRuntimeArch,
         "--build-home",
         buildHome,
         "--output-dir",
@@ -784,7 +842,7 @@ async function buildDevelopmentOpenVikingRuntimeArtifact(
   if (
     record.version !== OPENVIKING_RUNTIME_VERSION
     || record.platform !== process.platform
-    || record.arch !== process.arch
+    || record.arch !== openVikingRuntimeArch
     || record.file !== artifactName
     || record.archiveType !== "tar.gz"
     || typeof record.sha256 !== "string"
@@ -796,7 +854,7 @@ async function buildDevelopmentOpenVikingRuntimeArtifact(
   return {
     version: OPENVIKING_RUNTIME_VERSION,
     platform: process.platform,
-    arch: process.arch,
+    arch: openVikingRuntimeArch,
     url: pathToFileURL(archivePath).href,
     sha256: record.sha256,
     executablePath: record.executablePath,
@@ -852,6 +910,7 @@ function initializeOpenVikingMemory(): void {
   const runtime = new OpenVikingRuntimeService({
     rootDir,
     codexAuthBootstrapPath: codexAuthPath(process.env, app.getPath("home")),
+    arch: openVikingRuntimeArch,
     allowLocalRuntime: !releaseUpdateRuntime,
   });
   const model = new OpenVikingLocalModelManager({
@@ -888,7 +947,7 @@ function initializeOpenVikingMemory(): void {
     resolveRuntimeManifest: (onProgress) => resolveOpenVikingRuntimeManifest({
       appVersion: app.getVersion(),
       platform: process.platform,
-      arch: process.arch,
+      arch: openVikingRuntimeArch,
       releaseBaseUrl: process.env.AGENT_RECALL_OPENVIKING_RELEASE_BASE_URL,
       developmentFallback: releaseUpdateRuntime
         ? undefined
@@ -1289,6 +1348,8 @@ function remoteSyncErrorMessage(error: unknown): string {
 function ensureRemoteWatchManager(): RemoteWatchManager {
   if (!remoteWatchManager) {
     remoteWatchManager = new RemoteWatchManager({
+      startWatcher: (environment, onEvent, onUnavailable) =>
+        sshCommandService.watch(environment, onEvent, onUnavailable),
       syncEnvironment: (environment) => ensureRemoteEnvironmentLifecycle().syncFromWatcher(environment),
       onSyncError: (environment, error) => {
         void store.updateEnvironmentSyncState(
@@ -1332,6 +1393,7 @@ function ensureRemoteEnvironmentLifecycle(): RemoteEnvironmentLifecycle {
       store,
       syncEnvironment: async (environment) => {
         await syncRemoteEnvironment(store, environment, {
+          ...(environment.kind === "ssh" ? { runSsh: runSshSessionCommand } : {}),
           enabledOptionalSources: enabledRemoteOptionalSources(getSettings()),
         });
         if (environment.kind === "wsl") {
@@ -1341,6 +1403,8 @@ function ensureRemoteEnvironmentLifecycle(): RemoteEnvironmentLifecycle {
         }
       },
       watchManager: ensureRemoteWatchManager(),
+      onEnvironmentSaved: (environment, input) => sshCredentialService.saveForEnvironment(environment, input),
+      onEnvironmentDeleted: (environmentId) => sshCredentialService.deletePassword(environmentId),
       onEnvironmentsUpdated: emitEnvironmentsUpdated,
     });
   }
@@ -1572,6 +1636,7 @@ async function createSourceRemoteRestoreDependencies(
     record: (record) => store.recordSessionMigration(record),
     refreshIndex: async () => {
       await syncRemoteEnvironment(store, environment, {
+        ...(environment.kind === "ssh" ? { runSsh: runSshSessionCommand } : {}),
         enabledOptionalSources: enabledRemoteOptionalSources(getSettings()),
       });
       mainWindow?.webContents.send("environments-updated", await store.listEnvironments());
@@ -1820,13 +1885,10 @@ function runRemotePython(environment: SessionEnvironment, script: string, payloa
 }
 
 function runSshWithInput(environment: SessionEnvironment, remoteCommand: string, input: string): Promise<string> {
-  const args = buildRemoteSyncSshArgs(environment, remoteCommand);
-  return new Promise((resolve, reject) => {
-    const child = execFile("ssh", args, { maxBuffer: 128 * 1024 * 1024, timeout: 90_000 }, (error, stdout, stderr) => {
-      if (error) reject(new Error(stderr.trim() || error.message));
-      else resolve(stdout);
-    });
-    child.stdin?.end(input);
+  return sshCommandService.run(environment, remoteCommand, {
+    input,
+    maxBuffer: 128 * 1024 * 1024,
+    timeout: 90_000,
   });
 }
 
@@ -1999,7 +2061,10 @@ function registerIpc(): void {
     hasRemoteDetails: (sessionKey) => remoteSessionAccess.hasHydratedDetails(sessionKey),
     requireWslEnvironment: (session) => remoteSessionAccess.requireWslEnvironment(session),
     requireSshEnvironment: (session) => remoteSessionAccess.requireRemoteSshEnvironment(session),
-    fetchRemoteMessages: fetchRemoteSessionMessagePage,
+    fetchRemoteMessages: (environment, session, offset, limit) =>
+      fetchRemoteSessionMessagePage(environment, session, offset, limit, {
+        ...(environment.kind === "ssh" ? { runSsh: runSshSessionCommand } : {}),
+      }),
     loadLiveSessions: () => loadCachedLiveSessionSnapshot({
       includeTrae: getSettings().includeTrae,
       includeQoder: getSettings().includeQoder,
@@ -2226,7 +2291,10 @@ function registerIpc(): void {
   ipcMain.handle("environment:diagnose", async (_event, environmentId: string) => {
     const environment = await store.getEnvironment(environmentId);
     if (environment?.kind === "wsl") return diagnoseRemoteEnvironment(environment);
-    return diagnoseRemoteEnvironment(await remoteSessionAccess.requireSshEnvironment(environmentId));
+    return diagnoseRemoteEnvironment(
+      await remoteSessionAccess.requireSshEnvironment(environmentId),
+      { runSsh: runSshHealthCommand },
+    );
   });
   registerAppUpdateIpc(ipcMain, appUpdateService);
   registerQuotaIpc(ipcMain, quotaService);
@@ -2257,6 +2325,20 @@ function registerIpc(): void {
     }
     if ("remoteSyncEnabled" in settings && !next.remoteSyncEnabled) {
       remoteSessionService.disableSync();
+    }
+    // Enabling Eval re-installs an already-present usage hook so the active
+    // script is this app's copy, which captures the session linkage fields.
+    // Install alone reports "already" for any script with the same basename
+    // (e.g. the V1 copy), so remove our hook entry first, then re-add it.
+    if ("evalEnabled" in settings && next.evalEnabled && !previous.evalEnabled) {
+      try {
+        if (skillService.getUsageHookStatus()) {
+          skillService.uninstallUsageHook();
+          skillService.installUsageHook();
+        }
+      } catch (error) {
+        console.error(`Failed to refresh the skill usage hook for Eval: ${error instanceof Error ? error.message : String(error)}`);
+      }
     }
     await providerService.persistKeysFromUpdate(settings, next);
     settingsStore.set(providerService.removeStoredKeys(next));

@@ -35,6 +35,7 @@ import {
 import {
   PostgresSkillRepository,
   type SkillSyncBinding,
+  type SkillTriggerLink,
 } from "./postgres/skill-repository";
 import { findSessionFamily, type SessionFamily as SessionFamilyResult } from "./session-family";
 import type {
@@ -79,6 +80,8 @@ export type { TraceEventQueryOptions } from "./postgres/session-turn-repository"
 export type {
   SkillSyncBinding,
   SkillSyncDirection,
+  SkillTriggerLink,
+  SkillTriggerLinkState,
 } from "./postgres/skill-repository";
 
 export class SessionStore {
@@ -215,6 +218,15 @@ export class SessionStore {
   ): Promise<boolean> {
     await this.ready;
     return this.sessions.migrateSessionKeyPreservingUserState(legacyKey, targetKey);
+  }
+
+  async listSessionIdentitiesBySource(source: SessionSource): Promise<Array<{
+    sessionKey: string;
+    rawId: string;
+    storageEnvironmentId: string;
+  }>> {
+    await this.ready;
+    return this.sessions.listSessionIdentitiesBySource(source);
   }
 
   async listSessionKeysByFilePath(
@@ -470,6 +482,13 @@ export class SessionStore {
   async pruneSkillUsageSources(activePaths: readonly string[]): Promise<void> {
     await this.ready;
     await this.skills.pruneSkillUsageSources(activePaths);
+  }
+
+  async listRecentSkillTriggers(
+    options: { skill?: string; limit?: number } = {},
+  ): Promise<SkillTriggerLink[]> {
+    await this.ready;
+    return this.skills.listRecentSkillTriggers(options);
   }
 
   async getSkillUsageSnapshot(): Promise<SkillUsageSnapshot> {

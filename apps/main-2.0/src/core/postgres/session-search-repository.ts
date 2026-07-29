@@ -5,6 +5,7 @@ import type {
   SessionSearchPage,
   SessionSearchResult,
 } from "../types";
+import { LIVE_SESSION_INACTIVITY_TIMEOUT_MS } from "../refresh-policy";
 import type { PostgresDatabase } from "./database";
 import {
   SESSION_ACTIVITY_SQL,
@@ -91,10 +92,11 @@ export class PostgresSessionSearchRepository {
         filters.push("false");
       } else if (liveKeys.length > 0) {
         const placeholders = liveKeys.map((key) => bind(key)).join(", ");
+        const activeAfter = bind(new Date(Date.now() - LIVE_SESSION_INACTIVITY_TIMEOUT_MS).toISOString());
         filters.push(
           options.liveStatus === "open"
-            ? `${LIVE_SESSION_KEY_SQL} in (${placeholders})`
-            : `(${LIVE_SESSION_KEY_SQL} is null or ${LIVE_SESSION_KEY_SQL} not in (${placeholders}))`,
+            ? `(${LIVE_SESSION_KEY_SQL} in (${placeholders}) and ${SESSION_ACTIVITY_SQL} > ${activeAfter})`
+            : `(${LIVE_SESSION_KEY_SQL} is null or ${LIVE_SESSION_KEY_SQL} not in (${placeholders}) or ${SESSION_ACTIVITY_SQL} <= ${activeAfter})`,
         );
       }
     }

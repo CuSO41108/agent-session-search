@@ -508,7 +508,7 @@ select:focus-visible {
 
 .stats-metrics {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 6px;
 }
 
@@ -7594,6 +7594,9 @@ body.overlay-open .sidebar {
 /* ── Panel search bar (Ctrl+F in-conversation search) ── */
 
 .panel-search-bar {
+  position: sticky;
+  top: 0;
+  z-index: 2;
   display: flex;
   align-items: center;
   gap: 6px;

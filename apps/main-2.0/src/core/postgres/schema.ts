@@ -1085,4 +1085,31 @@ export const POSTGRES_MIGRATIONS: readonly PostgresMigration[] = [{
         ADD COLUMN IF NOT EXISTS source_available boolean NOT NULL DEFAULT true;
     `,
   ],
+}, {
+  version: 12,
+  name: "link skill usage events to indexed Sessions",
+  statements: [
+    `
+      ALTER TABLE agent_recall.skill_usage_events
+        ADD COLUMN IF NOT EXISTS session_id text,
+        ADD COLUMN IF NOT EXISTS cwd text;
+
+      CREATE INDEX IF NOT EXISTS skill_usage_events_session_idx
+        ON agent_recall.skill_usage_events (session_id)
+        WHERE session_id IS NOT NULL;
+    `,
+  ],
+}, {
+  version: 13,
+  name: "persist Workflow portable origin and review metadata",
+  statements: [
+    `
+      ALTER TABLE agent_recall.workflows
+        ADD COLUMN IF NOT EXISTS origin jsonb,
+        ADD COLUMN IF NOT EXISTS confirmed_revision integer,
+        ADD COLUMN IF NOT EXISTS reviewer_configured_agent_id text,
+        ADD COLUMN IF NOT EXISTS reviewer_model_id text,
+        ADD COLUMN IF NOT EXISTS generation_review jsonb;
+    `,
+  ],
 }];
