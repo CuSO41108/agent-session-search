@@ -755,6 +755,28 @@ export class SessionsStore {
     return migrated;
   }
 
+  listSessionIdentitiesBySource(source: SessionSource): Array<{
+    sessionKey: string;
+    rawId: string;
+    storageEnvironmentId: string;
+  }> {
+    return this.db
+      .prepare(
+        `SELECT
+           session_key AS sessionKey,
+           raw_id AS rawId,
+           storage_environment_id AS storageEnvironmentId
+         FROM sessions
+         WHERE source = ?
+         ORDER BY session_key`,
+      )
+      .all(source) as Array<{
+        sessionKey: string;
+        rawId: string;
+        storageEnvironmentId: string;
+      }>;
+  }
+
   listSessionKeysByFilePath(
     environmentId: string,
     filePaths: ReadonlySet<string>,

@@ -165,6 +165,14 @@ export class SessionStore {
     return this.sessions.migrateSessionKeyPreservingUserState(legacyKey, targetKey);
   }
 
+  listSessionIdentitiesBySource(source: SessionSource): Array<{
+    sessionKey: string;
+    rawId: string;
+    storageEnvironmentId: string;
+  }> {
+    return this.sessions.listSessionIdentitiesBySource(source);
+  }
+
   listSessionKeysByFilePath(
     environmentId: string,
     filePaths: ReadonlySet<string>,

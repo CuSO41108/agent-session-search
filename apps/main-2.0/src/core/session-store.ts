@@ -217,6 +217,15 @@ export class SessionStore {
     return this.sessions.migrateSessionKeyPreservingUserState(legacyKey, targetKey);
   }
 
+  async listSessionIdentitiesBySource(source: SessionSource): Promise<Array<{
+    sessionKey: string;
+    rawId: string;
+    storageEnvironmentId: string;
+  }>> {
+    await this.ready;
+    return this.sessions.listSessionIdentitiesBySource(source);
+  }
+
   async listSessionKeysByFilePath(
     environmentId: string,
     filePaths: ReadonlySet<string>,

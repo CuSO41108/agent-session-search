@@ -76,6 +76,7 @@ export async function syncLoadedSessionsInBatches(
   let total = 0;
   let pendingInBatch = 0;
   let sliceStartedAt = now();
+  let cursorSessionKeysByIdentity: Map<string, Set<string>> | null = null;
   const environments = await store.listEnvironments();
   const sshEnvironmentByHostAlias = new Map(
     environments
@@ -91,7 +92,33 @@ export async function syncLoadedSessionsInBatches(
       options.onEnvironmentsChanged,
     );
     try {
-      if (!options.forceReindex?.(item) && await store.isIndexedSessionFresh(item.session)) {
+      let sessionKeyMigrated = false;
+      if (item.session.source === "cursor-agent") {
+        if (!cursorSessionKeysByIdentity) {
+          cursorSessionKeysByIdentity = new Map();
+          for (const identity of await store.listSessionIdentitiesBySource("cursor-agent")) {
+            const key = `${identity.storageEnvironmentId}\u0000${identity.rawId}`;
+            const sessionKeys = cursorSessionKeysByIdentity.get(key) ?? new Set<string>();
+            sessionKeys.add(identity.sessionKey);
+            cursorSessionKeysByIdentity.set(key, sessionKeys);
+          }
+        }
+        const storageEnvironmentId =
+          item.session.storageEnvironmentId ?? item.session.environmentId ?? "local";
+        const identityKey = `${storageEnvironmentId}\u0000${item.session.rawId}`;
+        for (const previousKey of cursorSessionKeysByIdentity.get(identityKey) ?? []) {
+          if (previousKey === item.session.sessionKey) continue;
+          sessionKeyMigrated =
+            await store.migrateSessionKeyPreservingUserState(previousKey, item.session.sessionKey)
+            || sessionKeyMigrated;
+        }
+        cursorSessionKeysByIdentity.set(identityKey, new Set([item.session.sessionKey]));
+      }
+      if (
+        !sessionKeyMigrated
+        && !options.forceReindex?.(item)
+        && await store.isIndexedSessionFresh(item.session)
+      ) {
         await store.touchIndexedAtIfMissing(item.session.sessionKey);
         skipped++;
       } else {
