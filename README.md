@@ -71,19 +71,18 @@ agent-recall
 
 ## AgentRecall v2（开发版）
 
-v2 包含会话管理、远程同步、数字资产和用量统计，同时提供工作台、Chat、Workflow、Eval、Runtime、MCP 和目录记忆。
+v2 在会话管理、远程同步和用量统计之外，增加了可复用 Agent、多人 Chat、Workflow、Eval、MCP、目录记忆和 Skill 库。
 
 ### 功能
 
-- **工作台**：集中查看用量、模型额度、最近会话、Workflow、Chat、Runtime、MCP、Memory 和 Skills。卡片可以重新排序，常用入口可以直接从工作台打开。
-- **Session**：搜索、筛选和整理不同来源的会话，查看完整详情并执行 Resume、迁移、导出、AI 找会话和远程恢复。
-- **Chat**：创建共享项目目录的多 Agent 工作室。每名 Agent 保留独立会话，可以通过 `@名称` 指定谁响应，也可以归档或删除工作室。
-- **Workflow**：描述任务后生成可复用的工作流，检查并确认节点图，再运行各个 Agent 或脚本节点。运行期间可以处理追问、审批和异常恢复，并查看运行历史、节点消息和产出文件。
-- **Eval**：维护数据集和评估器，把数据集、Agent、评估器组合成实验，查看得分、通过率和失败 Case。
-- **Runtime**：配置执行器、Provider、模型和插件，测试连接并保存可复用 Agent。Chat、Workflow、Eval 和 MCP 会使用这里配置的 Agent。
-- **MCP**：管理 STDIO 或 HTTP MCP Server，测试连接并查看工具列表，再把需要的服务绑定到指定 Agent。
-- **Memory**：为选定目录建立相互隔离的长期记忆，导入已有会话，搜索、添加和删除记忆，并为 Codex、Claude Code 或 OpenCode 配置自动召回。
-- **Skills 与 Provider**：从本机导入 Skill，也可以搜索公共 Skill 后加入 Skill 库，再安装到指定 Agent。Provider 页面用于切换 Codex、Claude Code 和 AI 摘要所使用的模型与接口。
+- **工作台和 Session**：查看用量、模型额度和最近活动，搜索、筛选并整理不同来源的会话；详情页支持会话内查找、Resume、迁移、导出、AI 摘要和远程恢复。
+- **Runtime 和 Agent**：为 Codex、Claude Code、API、Hermes、OpenCode 或 OpenClaw 准备执行配置，再保存带有固定模型和用途说明的 Agent，供 Chat、Workflow、Eval 和 MCP 复用。
+- **多 Agent Chat**：创建共享项目目录的工作室，让多名员工保留独立上下文；通过 `@名称` 或接收者列表指定一个或多个 Agent 响应。
+- **Workflow**：描述任务并回答规划 Agent 的追问，生成、Review 和确认流程图后运行 Agent 或脚本节点；运行期间可以处理追问、审批、产物和异常恢复。
+- **Eval**：用固定数据集和评估器重复运行 Agent，查看平均分、通过率、失败 Case、评估原因和历史结果。
+- **MCP**：注册并测试 STDIO 或 HTTP MCP Server，查看工具列表，再把需要的服务绑定到指定 Agent 的新会话。
+- **目录 Memory**：为主动选择的项目目录建立彼此隔离的长期记忆，导入历史会话，维护手动记忆，并为 Codex、Claude Code 或 OpenCode 开启自动召回。
+- **Skills 和 Provider**：查看本机 Skill 或从公共仓库发现 Skill，加入 Skill 库后安装到 Codex、Claude Code 等编码 Agent；Provider 页面单独管理本机 Codex、Claude Code 和会话 AI 功能使用的服务。
 
 ### 从源码启动
 
