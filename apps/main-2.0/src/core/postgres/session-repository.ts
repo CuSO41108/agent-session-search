@@ -1292,6 +1292,31 @@ export class PostgresSessionRepository {
     });
   }
 
+  async listSessionIdentitiesBySource(source: SessionSource): Promise<Array<{
+    sessionKey: string;
+    rawId: string;
+    storageEnvironmentId: string;
+  }>> {
+    const result = await this.database.query<{
+      session_key: string;
+      raw_id: string;
+      storage_environment_id: string;
+    }>(
+      `
+        select session_key, raw_id, storage_environment_id
+        from agent_recall.sessions
+        where source = $1
+        order by session_key
+      `,
+      [source],
+    );
+    return result.rows.map((row) => ({
+      sessionKey: row.session_key,
+      rawId: row.raw_id,
+      storageEnvironmentId: row.storage_environment_id,
+    }));
+  }
+
   async listSessionKeysByFilePath(
     environmentId: string,
     filePaths: ReadonlySet<string>,

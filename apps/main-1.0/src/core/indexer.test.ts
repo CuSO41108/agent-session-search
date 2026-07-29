@@ -269,6 +269,100 @@ describe("indexer", () => {
     }
   });
 
+  it("rekeys a cached Cursor conversation when the same composer moves to a new workspace key", async () => {
+    const store = createInMemoryStore();
+    const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "agent-recall-cursor-rekey-"));
+    const stateDbPath = path.join(homeDir, "Cursor", "User", "globalStorage", "state.vscdb");
+    fs.mkdirSync(path.dirname(stateDbPath), { recursive: true });
+    const db = new DatabaseSync(stateDbPath);
+    db.exec(`
+      CREATE TABLE composerHeaders (
+        composerId TEXT PRIMARY KEY,
+        createdAt INTEGER,
+        isSubagent INTEGER,
+        value TEXT
+      );
+      CREATE TABLE cursorDiskKV (key TEXT PRIMARY KEY, value BLOB);
+    `);
+    db.prepare("INSERT INTO composerHeaders (composerId, createdAt, isSubagent, value) VALUES (?, ?, 0, ?)").run(
+      "same-composer",
+      Date.parse("2026-07-29T10:00:00Z"),
+      JSON.stringify({
+        name: "Moved Cursor session",
+        workspaceIdentifier: { uri: { scheme: "file", fsPath: "/repo/new" } },
+      }),
+    );
+    db.prepare("INSERT INTO cursorDiskKV (key, value) VALUES (?, ?)").run(
+      "bubbleId:same-composer:user-1",
+      JSON.stringify({
+        bubbleId: "user-1",
+        type: 1,
+        text: "Current Cursor prompt",
+        createdAt: "2026-07-29T10:00:00Z",
+      }),
+    );
+    db.close();
+    const stat = fs.statSync(stateDbPath);
+    const cached = session(99);
+    cached.session = {
+      ...cached.session,
+      sessionKey: "cursor:repo-old:same-composer",
+      rawId: "same-composer",
+      source: "cursor-agent",
+      filePath: stateDbPath,
+      fileMtimeMs: stat.mtimeMs,
+      fileSize: stat.size,
+    };
+    cached.messages = [{
+      role: "user",
+      content: "Cached Cursor prompt",
+      timestamp: "2026-07-28T10:00:00Z",
+      index: 0,
+    }];
+    store.upsertIndexedSession(cached.session, cached.messages);
+    store.upsertIndexedSession({
+      ...cached.session,
+      sessionKey: "cursor:repo-new:same-composer",
+      projectPath: "/repo/new",
+      originalTitle: "Moved Cursor session",
+      firstQuestion: "Current Cursor prompt",
+      timestamp: Date.parse("2026-07-29T10:00:00Z"),
+    }, [{
+      role: "user",
+      content: "Current Cursor prompt",
+      timestamp: "2026-07-29T10:00:00Z",
+      index: 0,
+    }]);
+    store.setCustomTitle(cached.session.sessionKey, "Remembered Cursor title");
+    store.setFavorited(cached.session.sessionKey, true);
+    store.addTag(cached.session.sessionKey, "cursor-work");
+
+    try {
+      await syncDefaultSessionsInBatches(store, {
+        batchSize: 1,
+        loadOptions: {
+          homeDir,
+          includeCursorAgent: true,
+          cursorStateDbPath: stateDbPath,
+        },
+      });
+
+      expect(store.getSession("cursor:repo-old:same-composer")).toBeNull();
+      expect(store.getSession("cursor:repo-new:same-composer")).toMatchObject({
+        rawId: "same-composer",
+        sourceAvailable: true,
+        displayTitle: "Remembered Cursor title",
+        favorited: true,
+        tags: ["cursor-work"],
+        messageCount: 1,
+      });
+      expect(store.searchSessions({ query: "Cached Cursor prompt", limit: 10 })).toHaveLength(0);
+      expect(store.searchSessions({ query: "Current Cursor prompt", limit: 10 })).toHaveLength(1);
+    } finally {
+      fs.rmSync(homeDir, { recursive: true, force: true });
+    }
+  });
+
   it("continues removing Codex records after their individual source file disappears", async () => {
     const store = createInMemoryStore();
     const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "agent-recall-missing-codex-"));
