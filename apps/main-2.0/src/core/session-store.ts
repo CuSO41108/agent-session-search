@@ -163,7 +163,7 @@ export class SessionStore {
 
   async listIndexedSessionFiles(
     environmentId = "local",
-  ): Promise<Array<{ filePath: string; fileMtimeMs: number; fileSize: number; indexedAt: number }>> {
+  ): Promise<Array<{ sessionKey: string; source: SessionSource; filePath: string; fileMtimeMs: number; fileSize: number; indexedAt: number }>> {
     await this.ready;
     return this.sessions.listIndexedSessionFiles(environmentId);
   }
@@ -459,6 +459,11 @@ export class SessionStore {
   ): Promise<SessionTraceEvent[]> {
     await this.ready;
     return this.turns.getTraceEvents(sessionKey, options);
+  }
+
+  async getTokenEvents(sessionKey: string): Promise<TokenUsageEvent[]> {
+    await this.ready;
+    return this.sessions.getTokenEvents(sessionKey);
   }
 
   async isSkillUsageSourceFresh(source: SkillUsageSource): Promise<boolean> {

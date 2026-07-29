@@ -227,6 +227,16 @@ describe("PostgreSQL Turn search", () => {
     ]);
   });
 
+  it("keeps an old open session on the first unfiltered page", async () => {
+    const page = await searchRepository.searchSessionPage({
+      limit: 1,
+      liveSessionKeys: ["claude:two"],
+    });
+
+    expect(page.sessions[0]?.sessionKey).toBe("codex:two");
+    expect(page.totalCount).toBe(4);
+  });
+
   it("moves a detected session from closed back to open after a new conversation", async () => {
     const now = Date.now();
     const staleAt = new Date(now - 25 * 60 * 60 * 1000).toISOString();

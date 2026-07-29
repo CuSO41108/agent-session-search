@@ -50,7 +50,7 @@ import {
 } from "../../core/skill-sync";
 import {
   listSkillUsageSources,
-  readSkillUsageSourceEvents,
+  readSkillUsageSourceEventsAsync,
   usageForSkill,
   type SkillUsageEvent,
   type SkillUsageAgent,
@@ -111,7 +111,7 @@ export interface SkillServiceOperations {
   skillProjectDirsFromIndexedProjects: typeof skillProjectDirsFromIndexedProjects;
   usageForSkill: typeof usageForSkill;
   listSkillUsageSources: typeof listSkillUsageSources;
-  readSkillUsageSourceEvents: typeof readSkillUsageSourceEvents;
+  readSkillUsageSourceEvents: typeof readSkillUsageSourceEventsAsync;
   isSyncableSkill: typeof isSyncableSkill;
   portableSkillLocation: typeof portableSkillLocation;
   skillSyncLocalContentHash: typeof skillSyncLocalContentHash;
@@ -155,7 +155,7 @@ const defaultOperations: SkillServiceOperations = {
   skillProjectDirsFromIndexedProjects,
   usageForSkill,
   listSkillUsageSources,
-  readSkillUsageSourceEvents,
+  readSkillUsageSourceEvents: readSkillUsageSourceEventsAsync,
   isSyncableSkill,
   portableSkillLocation,
   skillSyncLocalContentHash,
@@ -325,7 +325,10 @@ export class SkillService {
         skipped += 1;
         continue;
       }
-      await store.upsertSkillUsageSource(source, this.operations.readSkillUsageSourceEvents(source));
+      await store.upsertSkillUsageSource(
+        source,
+        await this.operations.readSkillUsageSourceEvents(source),
+      );
       refreshed += 1;
     }
     await store.pruneSkillUsageSources(sources.map((source) => source.path));

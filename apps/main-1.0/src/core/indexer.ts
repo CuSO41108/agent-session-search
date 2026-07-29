@@ -175,7 +175,23 @@ function resolveExecutionEnvironment(
 }
 
 export function syncDefaultSessionsInBatches(store: SessionStore, options: BatchIndexOptions = {}): Promise<IndexStatus> {
-  const indexedFiles = sessionFileSnapshots(store.listIndexedSessionFiles());
+  const storedFiles = store.listIndexedSessionFiles();
+  const indexedFiles = sessionFileSnapshots(storedFiles);
+  const incrementalCodexSessions = new Map<string, { offset: number; loaded: LoadedSession }>();
+  for (const file of storedFiles) {
+    if (file.source !== "codex-cli" && file.source !== "codex-app" && file.source !== "tcodex-cli") continue;
+    const session = store.getSession(file.sessionKey);
+    if (!session) continue;
+    incrementalCodexSessions.set(file.filePath, {
+      offset: file.fileSize,
+      loaded: {
+        session,
+        messages: store.getAllMessages(file.sessionKey),
+        tokenEvents: store.getTokenEvents(file.sessionKey),
+        traceEvents: store.getTraceEvents(file.sessionKey),
+      },
+    });
+  }
   const dependencyChangedFiles = new Set<string>();
   let fileSkipped = 0;
   const loadOptions = options.loadOptions ?? {};
@@ -185,6 +201,7 @@ export function syncDefaultSessionsInBatches(store: SessionStore, options: Batch
   const scannedSessionKeys = new Set<string>();
   const rawLoaded = loadDefaultSessionsIterator({
     ...loadOptions,
+    incrementalCodexSessions,
     shouldSkipFile: (filePath, stat, dependencyMtimeMs = 0) => {
       scannedFilePaths.add(filePath);
       const customDecision = shouldSkipFile?.(filePath, stat, dependencyMtimeMs);
@@ -192,6 +209,7 @@ export function syncDefaultSessionsInBatches(store: SessionStore, options: Batch
       const snapshot = findSessionFileSnapshot(indexedFiles, filePath, stat);
       if (snapshot !== undefined && dependencyMtimeMs > snapshot.indexedAt) {
         dependencyChangedFiles.add(filePath);
+        incrementalCodexSessions.delete(filePath);
       }
       return snapshot !== undefined && snapshot.indexedAt > 0 && dependencyMtimeMs <= snapshot.indexedAt;
     },
