@@ -47,6 +47,10 @@ export interface SkillUsageEvent {
   agent: SkillUsageAgent;
   skill: string;
   timestamp: number;
+  // Present only for claude-hook records written since the hook started
+  // capturing its PostToolUse payload. Older records stay unlinked.
+  sessionId?: string;
+  cwd?: string;
 }
 
 export interface SkillUsageSource {
@@ -240,7 +244,7 @@ export function usageForSkill(
   return snapshot.byName[skillName.trim().toLowerCase()] ?? null;
 }
 
-function parseUsageLine(line: string): { skill: string; timestamp: number } | null {
+function parseUsageLine(line: string): { skill: string; timestamp: number; sessionId?: string; cwd?: string } | null {
   let parsed: unknown;
   try {
     parsed = JSON.parse(line);
@@ -250,7 +254,18 @@ function parseUsageLine(line: string): { skill: string; timestamp: number } | nu
   if (!isRecord(parsed)) return null;
   const skill = parsed.skill;
   if (typeof skill !== "string" || !skill.trim()) return null;
-  return { skill: skill.trim(), timestamp: timestampFrom(parsed.ts) };
+  const sessionId = optionalText((parsed as { session_id?: unknown }).session_id);
+  const cwd = optionalText((parsed as { cwd?: unknown }).cwd);
+  return {
+    skill: skill.trim(),
+    timestamp: timestampFrom(parsed.ts),
+    ...(sessionId ? { sessionId } : {}),
+    ...(cwd ? { cwd } : {}),
+  };
+}
+
+function optionalText(value: unknown): string {
+  return typeof value === "string" && value.trim() ? value.trim() : "";
 }
 
 function readSessionFileUsageEvents(source: SkillUsageSource): SkillUsageEvent[] {
