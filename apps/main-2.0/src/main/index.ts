@@ -165,6 +165,8 @@ import { SessionCommandService } from "./services/session-command-service";
 import { RemoteSessionAccess } from "./services/remote-session-access";
 import { bootstrapApplicationPaths } from "./app-path-bootstrap";
 import { startPostgresRuntime, type PostgresRuntime } from "./postgres/managed-postgres";
+import { WORKFLOW_PORTABLE_MAX_BYTES } from "../automation/engine/main/hub/workflow/workflow-portable-file";
+import { writeWorkflowExportFileAtomically } from "./services/workflow-portable-filesystem";
 import type {
   EnvironmentUpsertInput,
   MigrationAgent,
@@ -376,7 +378,36 @@ function createAutomationService(): NativeAutomationService {
     appDataPath: app.getPath("appData"),
     bundledWorkflowsPath: bundledAutomationWorkflowsPath(),
     workflowMcpServerPath: path.join(app.getAppPath(), "out", "mcp", "workflow-entry.js"),
+    chooseWorkflowImportFile: chooseWorkflowImportFile,
+    chooseWorkflowExportPath: chooseWorkflowExportPath,
+    writeWorkflowExportFile: writeWorkflowExportFileAtomically,
   });
+}
+
+async function chooseWorkflowImportFile(): Promise<{ fileName: string; content: string } | undefined> {
+  const options: Electron.OpenDialogOptions = {
+    title: "Import workflow",
+    properties: ["openFile"],
+    filters: [{ name: "AgentRecall Workflow", extensions: ["agentrecall-workflow.json"] }],
+  };
+  const result = mainWindow ? await dialog.showOpenDialog(mainWindow, options) : await dialog.showOpenDialog(options);
+  const filePath = result.canceled ? undefined : result.filePaths[0];
+  if (!filePath) return undefined;
+  if (!filePath.toLowerCase().endsWith(".agentrecall-workflow.json")) throw new Error("WORKFLOW_IMPORT_FORMAT_UNSUPPORTED: Choose an .agentrecall-workflow.json file.");
+  const stat = await fs.stat(filePath);
+  if (stat.size > WORKFLOW_PORTABLE_MAX_BYTES) throw new Error("WORKFLOW_IMPORT_FILE_TOO_LARGE: Workflow file exceeds the 5 MiB limit.");
+  return { fileName: path.basename(filePath), content: await fs.readFile(filePath, "utf8") };
+}
+
+async function chooseWorkflowExportPath(defaultFileName: string): Promise<string | undefined> {
+  const options: Electron.SaveDialogOptions = {
+    title: "Export workflow",
+    defaultPath: path.join(app.getPath("documents"), defaultFileName),
+    filters: [{ name: "AgentRecall Workflow", extensions: ["agentrecall-workflow.json"] }],
+  };
+  const result = mainWindow ? await dialog.showSaveDialog(mainWindow, options) : await dialog.showSaveDialog(options);
+  if (result.canceled || !result.filePath) return undefined;
+  return result.filePath.toLowerCase().endsWith(".agentrecall-workflow.json") ? result.filePath : `${result.filePath}.agentrecall-workflow.json`;
 }
 
 async function pickAutomationDirectory(defaultPath?: string): Promise<string | undefined> {

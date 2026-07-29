@@ -1099,4 +1099,17 @@ export const POSTGRES_MIGRATIONS: readonly PostgresMigration[] = [{
         WHERE session_id IS NOT NULL;
     `,
   ],
+}, {
+  version: 13,
+  name: "persist Workflow portable origin and review metadata",
+  statements: [
+    `
+      ALTER TABLE agent_recall.workflows
+        ADD COLUMN IF NOT EXISTS origin jsonb,
+        ADD COLUMN IF NOT EXISTS confirmed_revision integer,
+        ADD COLUMN IF NOT EXISTS reviewer_configured_agent_id text,
+        ADD COLUMN IF NOT EXISTS reviewer_model_id text,
+        ADD COLUMN IF NOT EXISTS generation_review jsonb;
+    `,
+  ],
 }];
