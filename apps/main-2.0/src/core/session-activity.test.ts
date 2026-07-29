@@ -195,7 +195,10 @@ describe("live session detection", () => {
       JSON.stringify({ type: "event_msg", payload: { type: "task_started" } }),
       JSON.stringify({
         type: "response_item",
-        payload: { type: "message", content: `${"x".repeat(70_000)} mentions "type":"task_complete" without completing` },
+        payload: {
+          type: "function_call_output",
+          output: `data:image/png;base64,${"x".repeat(2 * 1024 * 1024)}`,
+        },
       }),
     ].join("\n") + "\n");
     fs.writeFileSync(secondSessionFile, [

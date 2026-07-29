@@ -1,6 +1,7 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { scanCompleteJsonlAsync } from "./codex-jsonl-stream";
 
 // Aggregates skill usage from two local sources:
 // - Claude Code PostToolUse hook records in ~/.claude/skill-usage.jsonl.
@@ -103,6 +104,20 @@ export function readSkillUsageSourceEvents(source: SkillUsageSource): SkillUsage
   return readCodexSessionFileUsageEvents(source.path);
 }
 
+export async function readSkillUsageSourceEventsAsync(source: SkillUsageSource): Promise<SkillUsageEvent[]> {
+  if (source.kind === "claude-hook") return readClaudeUsageEvents(source.path) ?? [];
+  const events: SkillUsageEvent[] = [];
+  try {
+    await scanCompleteJsonlAsync(source.path, {
+      shouldParseLine: (line) => line.length <= 512 * 1024,
+      onRecord: (record) => events.push(...parseCodexUsageRecord(record)),
+    });
+  } catch {
+    return [];
+  }
+  return events;
+}
+
 function addUsageEvents(byKey: Map<string, SkillUsageStat>, byAgentKey: Map<string, SkillUsageStat>, events: SkillUsageEvent[]): number {
   let added = 0;
   for (const event of events) {
@@ -198,6 +213,10 @@ function parseCodexUsageLine(line: string): SkillUsageEvent[] {
   } catch {
     return [];
   }
+  return parseCodexUsageRecord(parsed);
+}
+
+function parseCodexUsageRecord(parsed: unknown): SkillUsageEvent[] {
   if (!isRecord(parsed) || parsed.type !== "response_item") return [];
   const payload = recordField(parsed, "payload");
   if (!payload || payload.type !== "function_call") return [];

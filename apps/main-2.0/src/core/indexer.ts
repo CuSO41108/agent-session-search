@@ -203,13 +203,16 @@ export async function syncDefaultSessionsInBatches(
       if (!previous) return undefined;
       const session = await store.getSession(previous.sessionKey);
       if (!session) return undefined;
+      const messages = await store.getAllMessages(previous.sessionKey);
+      const tokenEvents = await store.getTokenEvents(previous.sessionKey);
+      const traceEvents = await store.getTraceEvents(previous.sessionKey);
       return {
         offset: previous.offset,
         loaded: {
           session,
-          messages: await store.getAllMessages(previous.sessionKey),
-          tokenEvents: await store.getTokenEvents(previous.sessionKey),
-          traceEvents: await store.getTraceEvents(previous.sessionKey),
+          messages,
+          tokenEvents,
+          traceEvents,
         },
       };
     },

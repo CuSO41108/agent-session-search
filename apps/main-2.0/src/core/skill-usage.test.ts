@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { loadSkillUsage, usageForSkill } from "./skill-usage";
+import { loadSkillUsage, readSkillUsageSourceEventsAsync, usageForSkill } from "./skill-usage";
 
 function writeUsageLog(lines: string[]): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "session-search-usage-"));
@@ -162,6 +162,46 @@ describe("skill usage", () => {
     expect(usageForSkill(snapshot, "brainstorming", "codex")?.count).toBe(2);
 
     fs.rmSync(path.dirname(usagePath), { recursive: true, force: true });
+    fs.rmSync(path.dirname(codexSessionsDir), { recursive: true, force: true });
+  });
+
+  it("streams Codex usage logs without parsing oversized image rows", async () => {
+    const codexSessionsDir = writeCodexSession([
+      JSON.stringify({
+        type: "response_item",
+        payload: {
+          type: "function_call_output",
+          output: `data:image/png;base64,${"x".repeat(2 * 1024 * 1024)}`,
+        },
+      }),
+      JSON.stringify({
+        type: "response_item",
+        timestamp: "2026-06-05T10:00:00.000Z",
+        payload: {
+          type: "function_call",
+          name: "shell_command",
+          arguments: JSON.stringify({
+            command: "cat /tmp/session-search-fixtures/.codex/skills/tdd/SKILL.md",
+          }),
+        },
+      }),
+    ]);
+    const filePath = path.join(codexSessionsDir, "2026", "06", "01", "rollout.jsonl");
+    const stat = fs.statSync(filePath);
+
+    const events = await readSkillUsageSourceEventsAsync({
+      agent: "codex",
+      kind: "codex-session",
+      path: filePath,
+      mtimeMs: stat.mtimeMs,
+      fileSize: stat.size,
+    });
+
+    expect(events).toEqual([{
+      agent: "codex",
+      skill: "tdd",
+      timestamp: Date.parse("2026-06-05T10:00:00.000Z"),
+    }]);
     fs.rmSync(path.dirname(codexSessionsDir), { recursive: true, force: true });
   });
 });
