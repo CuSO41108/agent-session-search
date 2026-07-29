@@ -189,6 +189,7 @@ const mcpServerSchema = z.object({
   env: z.record(z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/), z.string().max(512)),
   enabled: z.boolean(),
   tools: z.array(mcpToolSchema).max(5_000),
+  disabledTools: z.array(z.string().max(8_192)).max(5_000).optional(),
   status: z.enum(["untested", "connected", "error"]),
   lastError: z.string().max(20_000).optional(),
   lastTestedAt: z.number().finite().optional(),

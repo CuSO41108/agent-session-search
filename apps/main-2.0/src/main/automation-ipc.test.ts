@@ -169,6 +169,30 @@ describe("registerAutomationIpc", () => {
     expect(registry.upsert).not.toHaveBeenCalled();
   });
 
+  it("persists disabled tools through the mcpSave schema boundary", async () => {
+    const { invoke, registry } = setup();
+    const server = {
+      id: "docs",
+      name: "Docs",
+      transport: "stdio",
+      command: "node",
+      args: ["server.js"],
+      env: {},
+      enabled: true,
+      tools: [{ name: "search", inputSchema: {} }],
+      disabledTools: ["search"],
+      status: "untested",
+      createdAt: 1,
+      updatedAt: 1,
+    };
+
+    await invoke(AUTOMATION_CHANNELS.mcpSave, server);
+
+    expect(registry.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({ disabledTools: ["search"] }),
+    );
+  });
+
   it("refreshes runtime MCP state and removes stale Agent bindings after deletion", async () => {
     const { invoke, hub, registry } = setup();
 

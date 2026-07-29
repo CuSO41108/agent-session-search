@@ -480,6 +480,7 @@ export const POSTGRES_MIGRATIONS: readonly PostgresMigration[] = [{
         url text,
         env jsonb NOT NULL,
         enabled boolean NOT NULL DEFAULT true,
+        disabled_tools jsonb NOT NULL DEFAULT '[]'::jsonb,
         status text NOT NULL DEFAULT 'untested',
         last_error text,
         last_tested_at timestamptz,
@@ -1110,6 +1111,15 @@ export const POSTGRES_MIGRATIONS: readonly PostgresMigration[] = [{
         ADD COLUMN IF NOT EXISTS reviewer_configured_agent_id text,
         ADD COLUMN IF NOT EXISTS reviewer_model_id text,
         ADD COLUMN IF NOT EXISTS generation_review jsonb;
+    `,
+  ],
+}, {
+  version: 14,
+  name: "track disabled MCP tools per server",
+  statements: [
+    `
+      ALTER TABLE agent_recall.mcp_servers
+        ADD COLUMN IF NOT EXISTS disabled_tools jsonb NOT NULL DEFAULT '[]'::jsonb;
     `,
   ],
 }];
