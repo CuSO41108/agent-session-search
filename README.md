@@ -25,7 +25,7 @@
 
 AgentRecall 帮你把分散在不同 AI Coding Agent 里的本地会话找回来：统一索引、搜索、查看上下文，并在需要时继续或迁移会话。它优先面向个人本地使用，支持 macOS 与 Windows。
 
-> 第一次使用 AgentRecall？查看 [AgentRecall 1.0 使用指南](./docs/guide.md)，了解搜索、会话整理、Resume、远程会话、跨设备同步、Skills 和 MCP 等功能。
+> 第一次使用 AgentRecall？查看 [AgentRecall 1.0 使用指南](./docs/v1/guide.md)，了解搜索、会话整理、Resume、远程会话、跨设备同步、Skills 和 MCP 等功能。
 
 > 本 README 介绍当前稳定的 AgentRecall 1.0。仓库中的 `apps/main-2.0` 是独立运行的 `agent-recall-v2` 开发版，两者不共享应用数据，也不提供自动导入。
 

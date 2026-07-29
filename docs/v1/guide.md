@@ -1,14 +1,14 @@
 # AgentRecall 1.0 使用指南
 
-[返回项目首页](../README.md)
+[返回项目首页](../../README.md)
 
 AgentRecall 把 Claude Code、Codex 等 AI Coding Agent 的历史会话集中到一个桌面应用中。你可以搜索过去的对话、查看完整上下文、整理重要记录，也可以继续或迁移会话。
 
-![AgentRecall 主界面](../assets/show.png)
+![AgentRecall 主界面](../../assets/show.png)
 
 ## 1. AgentRecall 能做什么
 
-AgentRecall 默认读取 Claude Code 和 Codex 会话。CodeBuddy、CodeWiz、TClaude、TCodex、OpenClaw、Hermes、OpenCode、ZCode、Cursor Agent、Trae、Qoder 等来源可以在 **设置 → 可选来源** 中开启。
+AgentRecall 默认只启用 Claude Code 和 Codex。CodeBuddy、CodeWiz、TClaude、TCodex、OpenClaw、Hermes、OpenCode、ZCode、Cursor Agent、Trae、Qoder 都需要在 **设置 → 可选来源** 中手动开启。
 
 打开应用后，已有会话会出现在主界面。左侧按环境、项目、来源、收藏和隐藏状态浏览，顶部用于搜索和打开各项功能。
 
@@ -27,7 +27,7 @@ agent-recall
 
 首次打开时，等待会话加载完成。如果刚结束的会话没有出现，点击左侧的 **更新索引**。需要使用其他 Agent 时，进入 **设置 → 可选来源** 开启对应来源，再更新一次索引。
 
-macOS 用户还可以执行 `agent-recall install-app`，之后从 Launchpad、Spotlight 或 Dock 直接启动。安装、更新、回滚和卸载说明见 [Install.md](../Install.md)。
+macOS 用户还可以执行 `agent-recall install-app`，之后从 Launchpad、Spotlight 或 Dock 直接启动。安装、更新、回滚和卸载说明见 [Install.md](../../Install.md)。
 
 ## 3. 搜索、查看和整理会话
 
@@ -68,7 +68,7 @@ macOS 用户还可以执行 `agent-recall install-app`，之后从 Launchpad、S
 
 点击 **迁移到…**，选择 Claude Code、Codex、CodeBuddy、CodeWiz、Cursor Agent、TClaude 或 TCodex。迁移完成后会打开新的目标会话；如果自动打开失败，界面会给出可复制的恢复命令。
 
-TClaude 和 TCodex 需要先在 **设置 → 可选来源** 中开启。某个来源或环境不支持迁移时，迁移入口会隐藏或不可用。
+迁移到 CodeBuddy、CodeWiz、Cursor Agent、TClaude 或 TCodex 前，需要先在 **设置 → 可选来源** 中开启对应 Agent。某个来源或环境不支持迁移时，迁移入口会隐藏或不可用。
 
 ### 导出会话
 
