@@ -123,6 +123,23 @@ describe("platform application resolution", () => {
     });
   });
 
+  it("defaults and normalizes OpenViking extraction settings", () => {
+    expect(defaultSettings.openVikingExtractionModel).toBe("");
+    expect(defaultSettings.openVikingExtractionReasoningEffort).toBe("medium");
+
+    expect(mergeAppSettings(defaultSettings, {
+      openVikingExtractionModel: " gpt-5.6-sol ",
+      openVikingExtractionReasoningEffort: "high",
+    })).toMatchObject({
+      openVikingExtractionModel: "gpt-5.6-sol",
+      openVikingExtractionReasoningEffort: "high",
+    });
+
+    expect(mergeAppSettings(defaultSettings, {
+      openVikingExtractionReasoningEffort: "ultra" as "medium",
+    }).openVikingExtractionReasoningEffort).toBe("medium");
+  });
+
   it("defaults and normalizes the complete migration token limit", () => {
     expect(defaultSettings.migrationCompleteTokenLimit).toBe(100_000);
     expect(mergeAppSettings(defaultSettings, {

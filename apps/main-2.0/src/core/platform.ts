@@ -61,6 +61,8 @@ interface ResumeOptions {
 
 type ResumeOpenOptions = Pick<ResumeOptions, "skipPermissions" | "platform" | "homeDir" | "sshTarget" | "sshArgs" | "wslDistribution">;
 
+export type OpenVikingExtractionReasoningEffort = "low" | "medium" | "high";
+
 export interface AppSettings {
   defaultTerminal: TerminalChoice;
   globalShortcut: GlobalShortcut;
@@ -92,6 +94,8 @@ export interface AppSettings {
   openVikingOpenCodeEnabled: boolean;
   openVikingEmbeddingMode: "local" | "remote";
   openVikingLocalEmbeddingModel: "BAAI/bge-small-zh-v1.5";
+  openVikingExtractionModel: string;
+  openVikingExtractionReasoningEffort: OpenVikingExtractionReasoningEffort;
   hideCodexQuota: boolean;
   hideClaudeQuota: boolean;
   autoCheckUpdates: boolean;
@@ -160,6 +164,8 @@ export const defaultSettings: AppSettings = {
   openVikingOpenCodeEnabled: false,
   openVikingEmbeddingMode: "local",
   openVikingLocalEmbeddingModel: "BAAI/bge-small-zh-v1.5",
+  openVikingExtractionModel: "",
+  openVikingExtractionReasoningEffort: "medium",
   hideCodexQuota: false,
   hideClaudeQuota: false,
   autoCheckUpdates: true,
@@ -203,6 +209,12 @@ export function mergeAppSettings(previous: AppSettings, updates: AppSettingsUpda
     openVikingOpenCodeEnabled: Boolean(merged.openVikingOpenCodeEnabled),
     openVikingEmbeddingMode: merged.openVikingEmbeddingMode === "remote" ? "remote" : "local",
     openVikingLocalEmbeddingModel: "BAAI/bge-small-zh-v1.5",
+    openVikingExtractionModel: String(merged.openVikingExtractionModel ?? "").trim(),
+    openVikingExtractionReasoningEffort:
+      merged.openVikingExtractionReasoningEffort === "low"
+      || merged.openVikingExtractionReasoningEffort === "high"
+        ? merged.openVikingExtractionReasoningEffort
+        : "medium",
     showInDock: merged.showInDock !== false,
     summarySource: merged.summarySource === "claude" || merged.summarySource === "custom" ? merged.summarySource : "codex",
     skillAiRuntimeId: String(merged.skillAiRuntimeId ?? "").trim(),
