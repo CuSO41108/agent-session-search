@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
+import { createHash, randomBytes } from "node:crypto";
+import { mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -10,9 +10,39 @@ import {
   assertTrustedPythonArchiveUrl,
   buildRuntimeArtifactFromUrl,
   buildRuntimePlan,
+  createRuntimeArchive,
   runtimeArchiveRoot,
   runtimeArtifactName,
 } from "./build-openviking-runtime.mjs";
+
+test("runtime packaging reports real archive bytes and generation speed", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "agent-recall-runtime-packaging-progress-"));
+  const sourceDir = path.join(root, "source");
+  const outputPath = path.join(root, "runtime.tar.gz");
+  const progress = [];
+  try {
+    await mkdir(sourceDir);
+    await writeFile(path.join(sourceDir, "fixture.bin"), randomBytes(8 * 1024 * 1024));
+
+    await createRuntimeArchive({
+      sourceDir,
+      outputPath,
+      progressIntervalMs: 1,
+      onProgress: (event) => progress.push(event),
+    });
+
+    assert.deepEqual(progress[0], {
+      phase: "packaging-runtime",
+      downloadedBytes: 0,
+    });
+    assert.equal(progress.at(-1).downloadedBytes, (await stat(outputPath)).size);
+    assert.ok(progress.every((event, index) =>
+      index === 0 || event.downloadedBytes >= progress[index - 1].downloadedBytes));
+    assert.ok(progress.some((event) => event.bytesPerSecond > 0));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
 
 test("runtime artifact names pin OpenViking and target platform", () => {
   assert.equal(

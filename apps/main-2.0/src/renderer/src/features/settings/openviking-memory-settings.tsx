@@ -76,11 +76,16 @@ export function OpenVikingMemorySettings({
       ((runtimeProgress.downloadedBytes ?? 0) / runtimeProgress.totalBytes) * 100,
     ))
     : null;
-  const runtimeProgressSize = runtimeProgress?.downloadedBytes !== undefined
-    ? runtimeProgress.totalBytes
-      ? `${(runtimeProgress.downloadedBytes / 1_000_000).toFixed(1)} / ${(runtimeProgress.totalBytes / 1_000_000).toFixed(1)} MB`
-      : `${(runtimeProgress.downloadedBytes / 1_000_000).toFixed(1)} MB`
-    : null;
+  const runtimeDownloadedMb = runtimeProgress?.downloadedBytes === undefined
+    ? null
+    : (runtimeProgress.downloadedBytes / 1_000_000).toFixed(1);
+  const runtimeProgressSize = runtimeDownloadedMb === null
+    ? null
+    : runtimeProgress?.totalBytes
+      ? `${runtimeDownloadedMb} / ${(runtimeProgress.totalBytes / 1_000_000).toFixed(1)} MB`
+      : runtimeProgress?.phase === "packaging-runtime"
+        ? l(`Generated ${runtimeDownloadedMb} MB`, `已生成 ${runtimeDownloadedMb} MB`)
+        : `${runtimeDownloadedMb} MB`;
   const runtimeDownloadSpeed = runtimeProgress?.bytesPerSecond
     ? `${(runtimeProgress.bytesPerSecond / 1_000_000).toFixed(1)} MB/s`
     : null;
