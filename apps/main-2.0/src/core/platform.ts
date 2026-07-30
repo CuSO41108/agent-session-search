@@ -26,8 +26,16 @@ import {
 } from "./terminal-title";
 import { sessionSourceDescriptor } from "./session-sources";
 import type { MigrationTarget, SessionSearchResult, SessionSource } from "./types";
+import {
+  OPENVIKING_EXTRACTION_REASONING_EFFORTS,
+  type OpenVikingExtractionReasoningEffort,
+} from "./openviking-settings";
 
 export { type TerminalChoice, defaultTerminalFor, normalizeTerminal, terminalOptionsFor } from "./terminal-options";
+export {
+  OPENVIKING_EXTRACTION_REASONING_EFFORTS,
+  type OpenVikingExtractionReasoningEffort,
+} from "./openviking-settings";
 export {
   defaultApiConfig,
   defaultClaudeApiConfig,
@@ -60,8 +68,6 @@ interface ResumeOptions {
 }
 
 type ResumeOpenOptions = Pick<ResumeOptions, "skipPermissions" | "platform" | "homeDir" | "sshTarget" | "sshArgs" | "wslDistribution">;
-
-export type OpenVikingExtractionReasoningEffort = "low" | "medium" | "high";
 
 export interface AppSettings {
   defaultTerminal: TerminalChoice;
@@ -210,11 +216,11 @@ export function mergeAppSettings(previous: AppSettings, updates: AppSettingsUpda
     openVikingEmbeddingMode: merged.openVikingEmbeddingMode === "remote" ? "remote" : "local",
     openVikingLocalEmbeddingModel: "BAAI/bge-small-zh-v1.5",
     openVikingExtractionModel: String(merged.openVikingExtractionModel ?? "").trim(),
-    openVikingExtractionReasoningEffort:
-      merged.openVikingExtractionReasoningEffort === "low"
-      || merged.openVikingExtractionReasoningEffort === "high"
-        ? merged.openVikingExtractionReasoningEffort
-        : "medium",
+    openVikingExtractionReasoningEffort: OPENVIKING_EXTRACTION_REASONING_EFFORTS.includes(
+      merged.openVikingExtractionReasoningEffort as OpenVikingExtractionReasoningEffort,
+    )
+      ? merged.openVikingExtractionReasoningEffort
+      : "medium",
     showInDock: merged.showInDock !== false,
     summarySource: merged.summarySource === "claude" || merged.summarySource === "custom" ? merged.summarySource : "codex",
     skillAiRuntimeId: String(merged.skillAiRuntimeId ?? "").trim(),

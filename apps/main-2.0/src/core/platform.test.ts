@@ -129,14 +129,14 @@ describe("platform application resolution", () => {
 
     expect(mergeAppSettings(defaultSettings, {
       openVikingExtractionModel: " gpt-5.6-sol ",
-      openVikingExtractionReasoningEffort: "high",
+      openVikingExtractionReasoningEffort: "ultra",
     })).toMatchObject({
       openVikingExtractionModel: "gpt-5.6-sol",
-      openVikingExtractionReasoningEffort: "high",
+      openVikingExtractionReasoningEffort: "ultra",
     });
 
     expect(mergeAppSettings(defaultSettings, {
-      openVikingExtractionReasoningEffort: "ultra" as "medium",
+      openVikingExtractionReasoningEffort: "unsupported" as "medium",
     }).openVikingExtractionReasoningEffort).toBe("medium");
   });
 

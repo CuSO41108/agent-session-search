@@ -55,9 +55,12 @@ describe("OpenViking directory memory UI", () => {
 
     expect(html).toContain("记忆提取");
     expect(html).toContain("摘要 Provider");
-    expect(html).toContain("跟随 Provider");
     expect(html).toContain("gpt-5.6-sol");
     expect(html).toContain('value="medium"');
+    expect(html).toContain('value="xhigh"');
+    expect(html).toContain('value="max"');
+    expect(html).toContain('value="ultra"');
+    expect(html).not.toContain("跟随");
   });
 
   it("explains when the summary Provider cannot extract memories", () => {
@@ -70,6 +73,39 @@ describe("OpenViking directory memory UI", () => {
 
     expect(html).toContain("Claude CLI");
     expect(html).toContain("暂不支持");
+  });
+
+  it("shows the exact missing custom Provider field in a compact extraction layout", async () => {
+    const html = renderToStaticMarkup(createElement(OpenVikingMemorySettings, {
+      language: "zh",
+      settings: {
+        ...defaultSettings,
+        summarySource: "custom",
+        summaryApiConfig: {
+          ...defaultSettings.summaryApiConfig,
+          customProviderName: "CodexZH",
+          customApiFormat: "openai_chat",
+          customBaseUrl: "https://api.codexzh.com/v1",
+          customApiKey: "",
+          customModel: "gpt-5.5",
+        },
+      },
+      saving: false,
+      onSettingsChange: () => undefined,
+    }));
+    const css = await readFile(
+      path.join(process.cwd(), "src/renderer/src/styles/openviking-memory.css"),
+      "utf8",
+    );
+
+    expect(html).toContain("CodexZH");
+    expect(html).toContain("缺少 API Key");
+    expect(html).not.toContain("地址、API Key 和模型");
+    expect(html).toContain('value="gpt-5.5" selected=""');
+    expect(html).toContain('value="gpt-5.6-sol"');
+    expect(html).not.toContain("跟随");
+    expect(html).toContain("openviking-extraction-fields");
+    expect(css).toMatch(/\.openviking-extraction-fields\s*\{[^}]*grid-template-columns:/su);
   });
 
   it("renders live runtime download stages, byte counts and a progress bar", async () => {

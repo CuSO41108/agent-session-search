@@ -915,6 +915,57 @@
   color: var(--danger);
 }
 
+.openviking-extraction-fields {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(140px, 180px);
+  gap: 9px;
+}
+
+.openviking-extraction-field {
+  display: grid;
+  min-width: 0;
+  gap: 6px;
+  padding: 11px 12px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius);
+  background: var(--panel-subtle);
+}
+
+.openviking-extraction-field > span {
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.openviking-extraction-field > input,
+.openviking-extraction-field > select {
+  width: 100%;
+  min-width: 0;
+  height: 36px;
+  padding: 0 11px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  outline: 0;
+  background: var(--panel-bg);
+  color: var(--text);
+  font-size: 12.5px;
+}
+
+.openviking-extraction-field > input:focus,
+.openviking-extraction-field > select:focus {
+  border-color: var(--accent-line);
+  box-shadow: 0 0 0 3px var(--accent-ring);
+}
+
+.openviking-extraction-field > small {
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: 10.5px;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .openviking-integration-toggle {
   min-height: 52px;
 }

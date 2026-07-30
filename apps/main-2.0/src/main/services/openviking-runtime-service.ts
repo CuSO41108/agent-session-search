@@ -23,6 +23,7 @@ import type {
   OpenVikingRuntimeInstallProgress,
   OpenVikingRuntimeStatus,
 } from "../../core/openviking-memory";
+import type { OpenVikingExtractionReasoningEffort } from "../../core/platform";
 
 const OPENVIKING_SERVER_BOOTSTRAP = [
   "from openviking_cli.server_bootstrap import main",
@@ -55,7 +56,7 @@ export interface OpenVikingServerConfig {
     model: string;
     api_base?: string;
     api_key?: string;
-    reasoning_effort?: "low" | "medium" | "high";
+    reasoning_effort?: OpenVikingExtractionReasoningEffort;
   };
 }
 
