@@ -353,9 +353,6 @@ export class NativeAutomationService {
     this.hubInstance.setWorkflowMcpManagedToken(this.bridge.token);
     await this.hubInstance.initialize();
     void this.teamChat.connect().catch(() => undefined);
-    void this.hubInstance.refreshDiscoverableModelCatalogs().catch((error) => {
-      console.warn("Failed to refresh AgentRecall automation model catalogs:", error);
-    });
   }
 
   async requirePrepared(): Promise<void> {
