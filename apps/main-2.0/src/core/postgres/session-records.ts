@@ -111,7 +111,7 @@ export const SESSION_TURN_SUMMARY_SQL = `
     (
       select count(*)::int
       from agent_recall.trace_spans spans
-      where spans.turn_id = turns.id
+      where spans.turn_id = turns.id and spans.kind = 'tool'
     ) as span_count
   from agent_recall.session_turns turns
 `;

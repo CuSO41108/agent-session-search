@@ -373,6 +373,7 @@ describe("deriveSessionTimeline", () => {
     });
 
     expect(timeline.turns[0].spans).toHaveLength(2);
+    expect(timeline.turns[0].errorCount).toBe(0);
     expect(timeline.turns[0].toolNames).toEqual([]);
   });
 

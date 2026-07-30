@@ -297,9 +297,23 @@ describe("PostgresSessionRepository", () => {
   });
 
   it("lists lightweight Turn summaries in conversation order", async () => {
-    await repository.upsertIndexedSession(session(), messages, tokens, traces);
+    const tracesWithRichEvent: SessionTraceEvent[] = [
+      ...traces,
+      {
+        index: 2,
+        kind: "event",
+        source: "codex",
+        title: "Plan",
+        detail: "Retry after fixing the cache",
+        timestamp: "2026-07-20T08:01:01.000Z",
+        eventType: "codex.plan",
+        status: "failed",
+      },
+    ];
+    await repository.upsertIndexedSession(session(), messages, tokens, tracesWithRichEvent);
 
-    await expect(turnsRepository.listSessionTurns("codex:session-a")).resolves.toMatchObject([
+    const turns = await turnsRepository.listSessionTurns("codex:session-a");
+    expect(turns).toMatchObject([
       {
         turnIndex: 0,
         sourceMessageIndex: 0,
@@ -327,6 +341,10 @@ describe("PostgresSessionRepository", () => {
         spanCount: 0,
       },
     ]);
+    await expect(turnsRepository.getSessionTurn("codex:session-a", turns[1].id)).resolves.toMatchObject({
+      spanCount: 0,
+      spans: [expect.objectContaining({ kind: "event", name: "Plan" })],
+    });
   });
 
   it("loads one Turn trajectory and rejects a mismatched Session", async () => {

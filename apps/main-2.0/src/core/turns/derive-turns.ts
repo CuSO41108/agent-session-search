@@ -473,7 +473,8 @@ function buildTurns(
         totalTokens: 0,
       },
     );
-    const errorCount = spans.filter((span) => span.status === "failed").length;
+    const toolSpans = spans.filter(isToolSpan);
+    const errorCount = toolSpans.filter((span) => span.status === "failed").length;
     const inferredStatus = errorCount > 0 ? "failed" : "completed";
     const fallbackTimeRange = turnTimeRange(draft);
     const lifecycle = lifecycleProjection(draft);
@@ -496,7 +497,7 @@ function buildTurns(
       searchText: [userText, assistantText].filter(Boolean).join("\n\n"),
       ...tokenUsage,
       errorCount,
-      toolNames: [...new Set(spans.filter(isToolSpan).map((span) => span.name))],
+      toolNames: [...new Set(toolSpans.map((span) => span.name))],
       derivationVersion: TURN_DERIVATION_VERSION,
       messages,
       spans,
