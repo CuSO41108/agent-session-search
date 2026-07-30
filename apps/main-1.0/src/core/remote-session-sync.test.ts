@@ -17,6 +17,7 @@ import {
   remotePortableSessionFrom,
   remoteSessionContentHash,
   remoteSessionId,
+  remoteSessionSearchText,
   REMOTE_SESSION_TABLE,
   SupabaseRemoteSessionClient,
 } from "./remote-session-sync";
@@ -155,6 +156,50 @@ describe("remote session sync model", () => {
     expect(first.payload.content_hash).toBe(second.payload.content_hash);
     expect(first.payload.search_text).toContain("Login is broken");
     expect(first.payload.search_text).toContain("Fixed the login bug");
+  });
+
+  it("keeps terminal Turn summaries but excludes hidden lifecycle starts from snapshots", () => {
+    const detail = buildRemoteSessionSnapshot(
+      SESSION,
+      [{ ...MESSAGES[1], phase: "final_answer", sourceTurnId: "turn-1" }],
+      [
+        {
+          index: 4,
+          kind: "event",
+          source: "codex",
+          title: "Turn started",
+          detail: "",
+          timestamp: "2026-07-03T10:00:00.000Z",
+          eventType: "codex.turn.started",
+          status: "running",
+          sourceTurnId: "turn-1",
+        },
+        {
+          index: 5,
+          kind: "event",
+          source: "codex",
+          title: "Turn completed",
+          detail: "",
+          timestamp: "2026-07-03T10:01:00.000Z",
+          eventType: "codex.turn.completed",
+          status: "completed",
+          sourceTurnId: "turn-1",
+          attributes: { durationMs: 60_000 },
+        },
+      ],
+      10_000,
+    );
+
+    expect(detail.messages[0]).toMatchObject({ phase: "final_answer", sourceTurnId: "turn-1" });
+    expect(detail.traceEvents).toEqual([
+      expect.objectContaining({
+        index: 0,
+        eventType: "codex.turn.completed",
+        sourceTurnId: "turn-1",
+        attributes: { durationMs: 60_000 },
+      }),
+    ]);
+    expect(remoteSessionSearchText(SESSION, detail.messages, detail.traceEvents)).not.toContain("Turn started");
   });
 
   it("builds upload payloads for indexed SSH remote sessions", () => {
@@ -605,6 +650,19 @@ describe("remote session sync model", () => {
     });
     expect(rejected.messages).toEqual([]);
     expect(rejected.traceEvents).toEqual([]);
+  });
+
+  it.each([1, 2, 3] as const)("reads schema %s snapshots without newer optional fields", (schemaVersion) => {
+    const parsed = parseDetailSnapshot({
+      ...buildRemoteSessionSnapshot(SESSION, MESSAGES, [], 10_000),
+      schemaVersion,
+      ...(schemaVersion === 3
+        ? { sourceArchive: { schemaVersion: 1, entries: [] } }
+        : {}),
+    });
+
+    expect(parsed.messages).toEqual(MESSAGES);
+    expect(parsed.traceEvents).toEqual([]);
   });
 
   it("preserves subagent relationships in portable sessions and defaults older payloads", () => {

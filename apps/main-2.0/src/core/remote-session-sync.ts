@@ -4,8 +4,15 @@ import { constants as zlibConstants, gzip, gzipSync, gunzip } from "node:zlib";
 import { migrationAgentForSource } from "./session-migration";
 import type { SessionStore, SessionSyncBinding } from "./session-store";
 import { TRACE_DETAIL_PREVIEW_MAX_CHARS } from "./trace-detail";
-import { normalizeSessionTraceStatus } from "./trace-presentation";
-import type { MigrationAgent, PortableSession, SessionMessage, SessionSearchResult, SessionTraceEvent } from "./types";
+import { normalizeSessionTraceStatus, tracePresentation } from "./trace-presentation";
+import type {
+  MigrationAgent,
+  PortableSession,
+  SessionMessage,
+  SessionSearchResult,
+  SessionTraceEvent,
+  SessionTurnSummary,
+} from "./types";
 
 export const REMOTE_SESSION_TABLE = "agent_session_remote_sessions";
 export const REMOTE_SESSION_BUCKET = "agent-session-remote";
@@ -280,13 +287,61 @@ export function buildRemoteSessionSnapshot(
   now = Date.now(),
 ): RemoteSessionDetailSnapshot {
   const { sourceAvailable: _sourceAvailable, ...snapshotSession } = session;
+  const visibleTraceEvents = traceEvents
+    .filter((event) => tracePresentation(event).visibility !== "hidden")
+    .map((event, index) => ({ ...event, index }));
   return {
     schemaVersion: 1,
     exportedAt: now,
     session: snapshotSession,
     messages,
-    traceEvents,
+    traceEvents: visibleTraceEvents,
   };
+}
+
+function remoteTurnSummaryTraceEvents(
+  session: SessionSearchResult,
+  turns: readonly SessionTurnSummary[],
+  traceEvents: readonly SessionTraceEvent[],
+): SessionTraceEvent[] {
+  if (migrationAgentForSource(session.source) !== "codex") return [];
+  const existingTerminalTurns = new Set(
+    traceEvents
+      .filter((event) => tracePresentation(event).category === "lifecycle"
+        && tracePresentation(event).visibility === "turn_summary")
+      .map((event) => event.sourceTurnId)
+      .filter((turnId): turnId is string => Boolean(turnId)),
+  );
+  return turns.flatMap((turn, offset) => {
+    const sourceTurnId = turn.sourceTurnId || null;
+    if (!sourceTurnId || existingTerminalTurns.has(sourceTurnId)) return [];
+    const aborted = turn.status === "aborted";
+    const title = aborted ? "Turn aborted" : turn.status === "failed" ? "Turn failed" : "Turn completed";
+    const attributes: Record<string, unknown> = {
+      toolCount: turn.spanCount,
+      errorCount: turn.errorCount,
+    };
+    if (turn.startedAt) attributes.startedAt = turn.startedAt;
+    if (turn.endedAt) attributes.endedAt = turn.endedAt;
+    if (turn.durationMs !== null && turn.durationMs !== undefined) attributes.durationMs = turn.durationMs;
+    if (turn.timeToFirstTokenMs !== null && turn.timeToFirstTokenMs !== undefined) {
+      attributes.timeToFirstTokenMs = turn.timeToFirstTokenMs;
+    }
+    if (turn.abortReason) attributes.abortReason = turn.abortReason;
+    return [{
+      index: traceEvents.length + offset,
+      kind: "event",
+      source: "codex",
+      title,
+      detail: turn.abortReason || "",
+      timestamp: turn.endedAt || turn.startedAt || "",
+      callId: null,
+      eventType: aborted ? "codex.turn.aborted" : "codex.turn.completed",
+      status: turn.status,
+      sourceTurnId,
+      attributes,
+    }];
+  });
 }
 
 export function remoteSessionSearchText(
@@ -414,6 +469,7 @@ export function buildRemoteSessionPayload(options: {
 export async function buildRemoteSessionUploadFromStore(
   store: Pick<SessionStore, "getSession" | "getAllMessages" | "getTraceEvents">
     & Partial<Pick<SessionStore, "searchSessions">>
+    & Partial<Pick<SessionStore, "listSessionTurns">>
     & Partial<Pick<SessionStore, "getAttachmentFile" | "getSessionSourceArtifacts">>,
   sessionKey: string,
   now = Date.now(),
@@ -431,12 +487,17 @@ export async function buildRemoteSessionUploadFromStore(
   attachmentObjects: RemoteSessionStorageObjectUpload[];
   sourceObjects: RemoteSessionStorageObjectUpload[];
 }> {
-  const [session, messages, traceEvents] = await Promise.all([
+  const [session, messages, traceEvents, turns] = await Promise.all([
     store.getSession(sessionKey),
     store.getAllMessages(sessionKey),
     store.getTraceEvents(sessionKey),
+    store.listSessionTurns?.(sessionKey) ?? Promise.resolve([]),
   ]);
   if (!session) throw new Error("Session not found.");
+  const snapshotTraceEvents = [
+    ...traceEvents,
+    ...remoteTurnSummaryTraceEvents(session, turns, traceEvents),
+  ];
   const portable = remotePortableSessionFrom(session, messages);
   const relatedSessions = await store.searchSessions?.({ limit: 100_000, excludeSubagents: false }) ?? [];
   const childrenByParentId = new Map<string, SessionSearchResult[]>();
@@ -586,7 +647,7 @@ export async function buildRemoteSessionUploadFromStore(
     ? { schemaVersion: 1 as const, entries: sourceArchiveEntries }
     : preservedSourceArchive;
   const detail: RemoteSessionDetailSnapshot = {
-    ...buildRemoteSessionSnapshot(session, remoteMessages, traceEvents, now),
+    ...buildRemoteSessionSnapshot(session, remoteMessages, snapshotTraceEvents, now),
     schemaVersion: sourceArchive ? 3 : 2,
     ...(sourceArchive ? { sourceArchive } : {}),
   };

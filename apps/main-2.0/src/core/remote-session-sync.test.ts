@@ -20,7 +20,7 @@ import {
   REMOTE_SESSION_TABLE,
   SupabaseRemoteSessionClient,
 } from "./remote-session-sync";
-import type { PortableSession, SessionSearchResult } from "./types";
+import type { PortableSession, SessionSearchResult, SessionTurnSummary } from "./types";
 
 const SESSION: SessionSearchResult = {
   sessionKey: "codex:abc",
@@ -155,6 +155,72 @@ describe("remote session sync model", () => {
     expect(first.payload.content_hash).toBe(second.payload.content_hash);
     expect(first.payload.search_text).toContain("Login is broken");
     expect(first.payload.search_text).toContain("Fixed the login bug");
+  });
+
+  it("projects V2 Turn lifecycle summaries into flat remote snapshots", async () => {
+    const turn: SessionTurnSummary = {
+      id: "internal-turn-1",
+      turnIndex: 0,
+      sourceMessageIndex: 0,
+      sourceTurnId: "turn-1",
+      synthetic: false,
+      status: "completed",
+      startedAt: "2026-07-03T10:00:00.000Z",
+      endedAt: "2026-07-03T10:01:00.000Z",
+      durationMs: 60_000,
+      timeToFirstTokenMs: 500,
+      abortReason: null,
+      userPreview: "Login is broken",
+      assistantPreview: "Update auth state handling",
+      inputTokens: 1,
+      outputTokens: 2,
+      cachedInputTokens: 0,
+      reasoningOutputTokens: 0,
+      totalTokens: 3,
+      errorCount: 0,
+      toolNames: ["exec"],
+      messageCount: 2,
+      spanCount: 1,
+    };
+    const hiddenStart = {
+      index: 0,
+      kind: "event" as const,
+      source: "codex" as const,
+      title: "Turn started",
+      detail: "",
+      timestamp: turn.startedAt!,
+      eventType: "codex.turn.started",
+      status: "running" as const,
+      sourceTurnId: "turn-1",
+    };
+    const built = await buildRemoteSessionUploadFromStore({
+      getSession: async () => SESSION,
+      getAllMessages: async () => [{
+        ...MESSAGES[1],
+        phase: "final_answer" as const,
+        sourceTurnId: "turn-1",
+      }],
+      getTraceEvents: async () => [hiddenStart],
+      listSessionTurns: async () => [turn],
+    }, SESSION.sessionKey, 12_000);
+
+    expect(built.detail.messages[0]).toMatchObject({ phase: "final_answer", sourceTurnId: "turn-1" });
+    expect(built.detail.traceEvents).toEqual([
+      expect.objectContaining({
+        index: 0,
+        eventType: "codex.turn.completed",
+        status: "completed",
+        sourceTurnId: "turn-1",
+        attributes: expect.objectContaining({
+          durationMs: 60_000,
+          timeToFirstTokenMs: 500,
+          toolCount: 1,
+          errorCount: 0,
+        }),
+      }),
+    ]);
+    expect(built.payload.trace_event_count).toBe(1);
+    expect(built.payload.search_text).not.toContain("Turn started");
   });
 
   it("builds upload payloads for indexed SSH remote sessions", async () => {
@@ -570,6 +636,19 @@ describe("remote session sync model", () => {
     });
     expect(rejected.messages).toEqual([]);
     expect(rejected.traceEvents).toEqual([]);
+  });
+
+  it.each([1, 2, 3] as const)("reads schema %s snapshots without newer optional fields", (schemaVersion) => {
+    const parsed = parseDetailSnapshot({
+      ...buildRemoteSessionSnapshot(SESSION, MESSAGES, [], 10_000),
+      schemaVersion,
+      ...(schemaVersion === 3
+        ? { sourceArchive: { schemaVersion: 1, entries: [] } }
+        : {}),
+    });
+
+    expect(parsed.messages).toEqual(MESSAGES);
+    expect(parsed.traceEvents).toEqual([]);
   });
 
   it("preserves subagent relationships in portable sessions and defaults older payloads", () => {

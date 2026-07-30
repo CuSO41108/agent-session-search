@@ -4,7 +4,7 @@ import { constants as zlibConstants, gzip, gzipSync, gunzip } from "node:zlib";
 import { migrationAgentForSource } from "./session-migration";
 import type { SessionStore, SessionSyncBinding } from "./session-store";
 import { TRACE_DETAIL_PREVIEW_MAX_CHARS } from "./trace-detail";
-import { normalizeSessionTraceStatus } from "./trace-presentation";
+import { normalizeSessionTraceStatus, tracePresentation } from "./trace-presentation";
 import type { MigrationAgent, PortableSession, SessionMessage, SessionSearchResult, SessionTraceEvent } from "./types";
 
 export const REMOTE_SESSION_TABLE = "agent_session_remote_sessions";
@@ -280,12 +280,15 @@ export function buildRemoteSessionSnapshot(
   now = Date.now(),
 ): RemoteSessionDetailSnapshot {
   const { sourceAvailable: _sourceAvailable, ...snapshotSession } = session;
+  const visibleTraceEvents = traceEvents
+    .filter((event) => tracePresentation(event).visibility !== "hidden")
+    .map((event, index) => ({ ...event, index }));
   return {
     schemaVersion: 1,
     exportedAt: now,
     session: snapshotSession,
     messages,
-    traceEvents,
+    traceEvents: visibleTraceEvents,
   };
 }
 
