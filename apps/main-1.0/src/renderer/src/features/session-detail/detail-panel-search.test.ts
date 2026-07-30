@@ -178,15 +178,44 @@ describe("detail panel conversation search", () => {
         status: "completed",
         sourceTurnId: "turn-1",
       },
+      {
+        index: 2,
+        kind: "event",
+        source: "codex",
+        title: "Reasoning",
+        detail: "Checked the parser.",
+        timestamp: "2026-07-29T00:00:03.000Z",
+        eventType: "codex.reasoning_summary",
+        status: "completed",
+        sourceTurnId: "turn-1",
+      },
+      {
+        index: 3,
+        kind: "tool_call",
+        source: "codex",
+        title: "Read",
+        detail: "src/parser.ts",
+        timestamp: "2026-07-29T00:00:04.000Z",
+        eventType: "codex.tool.read",
+        status: "running",
+        sourceTurnId: "turn-1",
+      },
     ];
 
     const timeline = conversationTimeline(props.messages, lifecycle);
     expect(timeline.map((item) => item.key)).toEqual([
       "message:0",
       "message:1",
+      "trace:2",
+      "trace:3",
       "trace:1",
     ]);
-    expect(filterConversationTimeline(timeline, "all", false).map((item) => item.key)).toContain("trace:1");
+    expect(filterConversationTimeline(timeline, "all", false).map((item) => item.key)).toEqual([
+      "message:0",
+      "message:1",
+      "trace:2",
+      "trace:1",
+    ]);
   });
 
   it("labels commentary while leaving final answers unchanged", async () => {

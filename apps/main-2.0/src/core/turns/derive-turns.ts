@@ -276,6 +276,13 @@ function attributeTimestamp(value: unknown): string | null {
   return typeof value === "string" || typeof value === "number" ? timestampString(value) : null;
 }
 
+function isToolSpan(span: DerivedTraceSpan): boolean {
+  const traceKind = span.attributes.traceKind;
+  const kind = traceKind === "tool_call" || traceKind === "tool_result" ? traceKind : "event";
+  const eventType = typeof span.attributes.eventType === "string" ? span.attributes.eventType : null;
+  return tracePresentation({ kind, eventType }).category === "tool";
+}
+
 function buildSpans(turnId: string, traceEvents: readonly SessionTraceEvent[]): DerivedTraceSpan[] {
   const spans: DerivedTraceSpan[] = [];
   const calls = new Map<string, DerivedTraceSpan>();
@@ -489,7 +496,7 @@ function buildTurns(
       searchText: [userText, assistantText].filter(Boolean).join("\n\n"),
       ...tokenUsage,
       errorCount,
-      toolNames: [...new Set(spans.map((span) => span.name))],
+      toolNames: [...new Set(spans.filter(isToolSpan).map((span) => span.name))],
       derivationVersion: TURN_DERIVATION_VERSION,
       messages,
       spans,

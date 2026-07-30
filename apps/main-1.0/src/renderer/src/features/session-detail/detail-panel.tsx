@@ -97,8 +97,7 @@ export function filterConversationTimeline(
     if (item.kind === "trace") {
       const presentation = tracePresentation(item.event);
       if (presentation.visibility === "hidden") return false;
-      if (presentation.category === "lifecycle") return true;
-      return showTools;
+      return presentation.category !== "tool" || showTools;
     }
     return roleFilter === "all" || item.message.role === roleFilter;
   });

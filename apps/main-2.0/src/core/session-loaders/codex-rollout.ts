@@ -303,6 +303,319 @@ function itemToolTrace(
   };
 }
 
+function plaintextAgentMessage(content: unknown): string {
+  if (!Array.isArray(content)) return "";
+  const text: string[] = [];
+  for (const value of content) {
+    const part = record(value);
+    if (!part) continue;
+    const type = normalizeItemType(stringValue(part.type));
+    if (type === "encryptedcontent") return "";
+    if (type === "inputtext" && typeof part.text === "string") text.push(part.text);
+  }
+  return text.join("\n").trim();
+}
+
+function contextAttributes(value: unknown): Record<string, unknown> {
+  const source = record(value) ?? {};
+  return sanitizeCodexTraceValue({
+    model: source.model,
+    cwd: source.cwd,
+    currentDate: source.current_date ?? source.currentDate,
+    timezone: source.timezone,
+    approvalPolicy: source.approval_policy ?? source.approvalPolicy,
+    approvalsReviewer: source.approvals_reviewer ?? source.approvalsReviewer,
+    sandboxPolicy: source.sandbox_policy ?? source.sandboxPolicy,
+    permissionProfile: source.permission_profile ?? source.permissionProfile,
+    reasoningEffort: source.reasoning_effort ?? source.reasoningEffort ?? source.effort,
+    reasoningSummary: source.reasoning_summary ?? source.reasoningSummary ?? source.summary,
+    personality: source.personality,
+    collaborationMode: source.collaboration_mode ?? source.collaborationMode,
+    multiAgentVersion: source.multi_agent_version ?? source.multiAgentVersion,
+    realtimeActive: source.realtime_active ?? source.realtimeActive,
+    network: source.network,
+  }) as Record<string, unknown>;
+}
+
+function richItemTrace(
+  row: Record<string, unknown>,
+  wrapper: Record<string, unknown>,
+  type: string,
+  item: Record<string, unknown>,
+  sourceTurnId: string | null,
+): TraceEventDraft | null {
+  const itemId = stringValue(item.id);
+  if (!itemId) return null;
+  const attributes = itemTimingAttributes(wrapper, `item_completed:${itemId}`, type);
+  let title = "";
+  let detail = "";
+  let eventType = "";
+  let status: SessionTraceEvent["status"] = "completed";
+  let callId: string | null = null;
+
+  if (type === "reasoning") {
+    detail = collectText(item.summary_text ?? item.summary).join("\n").trim();
+    if (!detail) return null;
+    title = "Reasoning summary";
+    eventType = "codex.reasoning_summary";
+  } else if (type === "plan") {
+    detail = stringValue(item.text).trim();
+    if (!detail) return null;
+    title = "Plan";
+    eventType = "codex.plan";
+  } else if (type === "enteredreviewmode") {
+    title = "Entered review mode";
+    eventType = "codex.review.entered";
+    detail = formatCodexToolDetail({
+      target: item.target,
+      hint: item.user_facing_hint ?? item.userFacingHint,
+    }, null);
+  } else if (type === "exitedreviewmode") {
+    title = "Exited review mode";
+    eventType = "codex.review.exited";
+    detail = formatCodexToolDetail(null, item.review_output ?? item.reviewOutput);
+  } else if (type === "collabagenttoolcall") {
+    const tool = stringValue(item.tool) || "agent collaboration";
+    title = `agent · ${tool}`;
+    eventType = "codex.collaboration.tool";
+    status = toolStatus(item.status);
+    callId = itemId;
+    const collab = sanitizeCodexTraceValue({
+      tool: item.tool,
+      senderThreadId: item.sender_thread_id ?? item.senderThreadId,
+      receiverThreadIds: item.receiver_thread_ids ?? item.receiverThreadIds,
+      receiverAgents: item.receiver_agents ?? item.receiverAgents,
+      model: item.model,
+      agentsStates: item.agents_states ?? item.agentsStates,
+    });
+    attributes.collaboration = collab;
+    detail = formatCodexToolDetail(collab, null);
+  } else if (type === "subagentactivity") {
+    const activity = stringValue(item.kind) || "activity";
+    title = `subagent · ${activity}`;
+    eventType = "codex.collaboration.activity";
+    const collaboration = sanitizeCodexTraceValue({
+      kind: item.kind,
+      agentThreadId: item.agent_thread_id ?? item.agentThreadId,
+      agentPath: item.agent_path ?? item.agentPath,
+    });
+    attributes.collaboration = collaboration;
+    detail = formatCodexToolDetail(collaboration, null);
+  } else if (type === "contextcompaction") {
+    title = "Context compacted";
+    eventType = "codex.context.compaction";
+  } else {
+    return null;
+  }
+
+  return {
+    kind: "event",
+    source: "codex",
+    title,
+    detail: truncateTraceDetail(detail),
+    timestamp: completedTimestamp(row, wrapper),
+    callId,
+    eventType,
+    status,
+    sourceTurnId,
+    attributes,
+  };
+}
+
+function richResponseTrace(
+  row: Record<string, unknown>,
+  payload: Record<string, unknown>,
+  sourceTurnId: string | null,
+): TraceEventDraft | null {
+  const type = stringValue(payload.type);
+  const responseItemId = stringValue(payload.id);
+  const codex = {
+    rawType: type,
+    ...(responseItemId ? { sourceItemId: `response_item:${responseItemId}` } : {}),
+  };
+  if (type === "reasoning") {
+    const detail = collectText(payload.summary).join("\n").trim();
+    if (!detail) return null;
+    return {
+      kind: "event",
+      source: "codex",
+      title: "Reasoning summary",
+      detail: truncateTraceDetail(detail),
+      timestamp: stringValue(row.timestamp),
+      callId: null,
+      eventType: "codex.reasoning_summary",
+      status: "completed",
+      sourceTurnId,
+      attributes: { codex },
+    };
+  }
+  if (type === "agent_message") {
+    const detail = plaintextAgentMessage(payload.content);
+    if (!detail) return null;
+    const attributes = {
+      codex,
+      collaboration: sanitizeCodexTraceValue({
+        author: payload.author,
+        recipient: payload.recipient,
+      }),
+    };
+    return {
+      kind: "event",
+      source: "codex",
+      title: "Agent message",
+      detail: truncateTraceDetail(detail),
+      timestamp: stringValue(row.timestamp),
+      callId: null,
+      eventType: "codex.collaboration.message",
+      status: "completed",
+      sourceTurnId,
+      attributes,
+    };
+  }
+  if (type === "compaction" || type === "context_compaction") {
+    return {
+      kind: "event",
+      source: "codex",
+      title: "Context compacted",
+      detail: "",
+      timestamp: stringValue(row.timestamp),
+      callId: null,
+      eventType: "codex.context.compaction",
+      status: "completed",
+      sourceTurnId,
+      attributes: { codex },
+    };
+  }
+  return null;
+}
+
+function richEventTrace(
+  row: Record<string, unknown>,
+  payload: Record<string, unknown>,
+  sourceTurnId: string | null,
+): TraceEventDraft | null {
+  const type = stringValue(payload.type);
+  const base = {
+    kind: "event" as const,
+    source: "codex" as const,
+    timestamp: stringValue(row.timestamp),
+    callId: null,
+    status: "completed" as const,
+    sourceTurnId,
+  };
+  if (type === "agent_reasoning") {
+    const detail = stringValue(payload.text).trim();
+    return detail ? {
+      ...base,
+      title: "Reasoning summary",
+      detail: truncateTraceDetail(detail),
+      eventType: "codex.reasoning_summary",
+      attributes: { codex: { rawType: type } },
+    } : null;
+  }
+  if (type === "plan_update") {
+    const plan = sanitizeCodexTraceValue({
+      explanation: payload.explanation,
+      plan: payload.plan,
+    });
+    return {
+      ...base,
+      title: "Plan",
+      detail: formatCodexToolDetail(plan, null),
+      eventType: "codex.plan",
+      attributes: { codex: { rawType: type }, plan },
+    };
+  }
+  if (type === "entered_review_mode" || type === "exited_review_mode") {
+    const entered = type === "entered_review_mode";
+    const value = entered
+      ? { target: payload.target, hint: payload.user_facing_hint ?? payload.userFacingHint }
+      : payload.review_output ?? payload.reviewOutput;
+    return {
+      ...base,
+      title: entered ? "Entered review mode" : "Exited review mode",
+      detail: entered ? formatCodexToolDetail(value, null) : formatCodexToolDetail(null, value),
+      eventType: entered ? "codex.review.entered" : "codex.review.exited",
+      attributes: { codex: { rawType: type } },
+    };
+  }
+  if (type === "thread_goal_updated") {
+    const goal = record(payload.goal);
+    const value = sanitizeCodexTraceValue({
+      objective: goal?.objective,
+      status: goal?.status,
+      tokenBudget: goal?.tokenBudget ?? goal?.token_budget,
+      tokensUsed: goal?.tokensUsed ?? goal?.tokens_used,
+      timeUsedSeconds: goal?.timeUsedSeconds ?? goal?.time_used_seconds,
+    });
+    return {
+      ...base,
+      title: "Goal updated",
+      detail: formatCodexToolDetail(value, null),
+      eventType: "codex.goal.updated",
+      attributes: { codex: { rawType: type }, goal: value },
+    };
+  }
+  if (type === "thread_settings_applied") {
+    const settings = contextAttributes(payload.thread_settings ?? payload.threadSettings);
+    return {
+      ...base,
+      title: "Thread settings",
+      detail: formatCodexToolDetail(settings, null),
+      eventType: "codex.thread.settings",
+      attributes: { codex: { rawType: type }, settings },
+    };
+  }
+  if (type === "context_compacted") {
+    return {
+      ...base,
+      title: "Context compacted",
+      detail: "",
+      eventType: "codex.context.compaction",
+      attributes: { codex: { rawType: type } },
+    };
+  }
+  if (type === "sub_agent_activity") {
+    const collaboration = sanitizeCodexTraceValue({
+      kind: payload.kind,
+      agentThreadId: payload.agent_thread_id ?? payload.agentThreadId,
+      agentPath: payload.agent_path ?? payload.agentPath,
+    });
+    return {
+      ...base,
+      title: `subagent · ${stringValue(payload.kind) || "activity"}`,
+      detail: formatCodexToolDetail(collaboration, null),
+      eventType: "codex.collaboration.activity",
+      attributes: { codex: { rawType: type }, collaboration },
+    };
+  }
+  if (type.startsWith("collab_")) {
+    const action = type.replace(/^collab_/, "").replace(/_(begin|end)$/u, "").replaceAll("_", " ");
+    const isEnd = type.endsWith("_end");
+    const collaboration = sanitizeCodexTraceValue({
+      senderThreadId: payload.sender_thread_id,
+      receiverThreadId: payload.receiver_thread_id,
+      receiverThreadIds: payload.receiver_thread_ids,
+      newThreadId: payload.new_thread_id,
+      receiverAgentNickname: payload.receiver_agent_nickname,
+      receiverAgentRole: payload.receiver_agent_role,
+      status: payload.status,
+      statuses: payload.statuses,
+      agentStatuses: payload.agent_statuses,
+    });
+    return {
+      ...base,
+      title: `agent · ${action}`,
+      detail: formatCodexToolDetail(collaboration, null),
+      callId: stringValue(payload.call_id) || null,
+      eventType: "codex.collaboration.tool",
+      status: isEnd ? toolStatus(payload.status) : "running",
+      attributes: { codex: { rawType: type }, collaboration },
+    };
+  }
+  return null;
+}
+
 function emptyResult(
   overrides: Partial<CodexRolloutRecordResult> = {},
 ): CodexRolloutRecordResult {
@@ -329,10 +642,27 @@ function mergeTraceValue(preferred: unknown, fallback: unknown): unknown {
 export function dedupeCodexTraceEvents(events: TraceEventDraft[]): SessionTraceEvent[] {
   const merged: TraceEventDraft[] = [];
   const callIndexes = new Map<string, number>();
+  const codexAttributes = (event: TraceEventDraft) => record(event.attributes?.codex);
   const isCompletedItem = (event: TraceEventDraft) => {
-    const codex = record(event.attributes?.codex);
+    const codex = codexAttributes(event);
     return typeof codex?.sourceItemId === "string"
       && codex.sourceItemId.startsWith("item_completed:");
+  };
+  const semanticKeys = (event: TraceEventDraft): string[] => {
+    const keys: string[] = [];
+    const sourceItemId = stringValue(codexAttributes(event)?.sourceItemId);
+    if (sourceItemId) {
+      const separator = sourceItemId.indexOf(":");
+      keys.push(`${event.eventType || event.kind}:item:${sourceItemId.slice(separator + 1)}`);
+    }
+    if (event.eventType === "codex.thread.settings") {
+      keys.push(`${event.eventType}:${event.detail}`);
+    }
+    if (event.eventType === "codex.reasoning_summary") {
+      const detail = event.detail.normalize("NFKC").trim().replace(/\s+/gu, " ");
+      keys.push(`${event.eventType}:${event.sourceTurnId || ""}:${detail}`);
+    }
+    return keys;
   };
   const rank = (event: TraceEventDraft) =>
     isCompletedItem(event) ? 4 : event.kind === "tool_result" ? 3 : event.kind === "event" ? 2 : 1;
@@ -379,7 +709,45 @@ export function dedupeCodexTraceEvents(events: TraceEventDraft[]): SessionTraceE
     };
   }
 
-  return merged.map((event, index) => ({ ...event, index }));
+  const normalized: TraceEventDraft[] = [];
+  const semanticIndexes = new Map<string, number>();
+  for (const event of merged) {
+    const keys = event.callId ? [] : semanticKeys(event);
+    const existingIndex = keys.map((key) => semanticIndexes.get(key)).find(
+      (index): index is number => index !== undefined,
+    );
+    if (existingIndex === undefined) {
+      for (const key of keys) semanticIndexes.set(key, normalized.length);
+      normalized.push(event);
+      continue;
+    }
+    const existing = normalized[existingIndex];
+    const primary = isCompletedItem(event) ? event : existing;
+    const secondary = primary === event ? existing : event;
+    normalized[existingIndex] = {
+      ...secondary,
+      ...primary,
+      attributes: {
+        ...(secondary.attributes ?? {}),
+        ...(primary.attributes ?? {}),
+      },
+    };
+    for (const key of keys) semanticIndexes.set(key, existingIndex);
+  }
+  const reasoningSignature = (event: TraceEventDraft) =>
+    `${event.sourceTurnId || ""}:${event.detail.normalize("NFKC").trim().replace(/\s+/gu, " ")}`;
+  const completedReasoning = new Set(
+    normalized
+      .filter((event) => event.eventType === "codex.reasoning_summary" && isCompletedItem(event))
+      .map(reasoningSignature),
+  );
+  return normalized
+    .filter((event) =>
+      event.eventType !== "codex.reasoning_summary"
+      || isCompletedItem(event)
+      || !completedReasoning.has(reasoningSignature(event)),
+    )
+    .map((event, index) => ({ ...event, index }));
 }
 
 export class CodexRolloutAccumulator {
@@ -415,10 +783,36 @@ export class CodexRolloutAccumulator {
     const uniqueActiveTurnId = this.activeTurnIds.size === 1
       ? this.activeTurnIds.values().next().value as string
       : null;
-    if (row.type === "response_item") {
+    if (row.type === "turn_context") {
+      const sourceTurnId = stringValue(payload.turn_id) || uniqueActiveTurnId;
+      const settings = contextAttributes(payload);
       return emptyResult({
-        message: responseMessageContext(payload, uniqueActiveTurnId),
-        sourceTurnId: uniqueActiveTurnId,
+        sourceTurnId,
+        traceEvents: [{
+          kind: "event",
+          source: "codex",
+          title: "Turn context",
+          detail: formatCodexToolDetail(settings, null),
+          timestamp: stringValue(row.timestamp),
+          callId: null,
+          eventType: "codex.thread.settings",
+          status: "completed",
+          sourceTurnId,
+          attributes: { codex: { rawType: "turn_context" }, settings },
+        }],
+      });
+    }
+    if (row.type === "response_item") {
+      const message = responseMessageContext(payload, uniqueActiveTurnId);
+      const metadata = record(payload.internal_chat_message_metadata_passthrough);
+      const sourceTurnId = message?.sourceTurnId
+        ?? stringValue(metadata?.turn_id)
+        ?? uniqueActiveTurnId;
+      const richTrace = richResponseTrace(row, payload, sourceTurnId);
+      return emptyResult({
+        message,
+        sourceTurnId,
+        traceEvents: richTrace ? [richTrace] : [],
       });
     }
     if (row.type === "item_completed" || (row.type === "event_msg" && payload.type === "item_completed")) {
@@ -451,15 +845,19 @@ export class CodexRolloutAccumulator {
           }
         : null;
       const toolTrace = itemToolTrace(row, payload, decoded.type, decoded.payload, sourceTurnId);
+      const richTrace = richItemTrace(row, payload, decoded.type, decoded.payload, sourceTurnId);
       return emptyResult({
         completedMessage,
         sourceTurnId,
-        traceEvents: toolTrace ? [toolTrace] : [],
+        traceEvents: [toolTrace, richTrace].filter((trace): trace is TraceEventDraft => trace !== null),
       });
     }
     if (row.type !== "event_msg") return emptyResult();
 
     const rawType = stringValue(payload.type);
+    const sourceTurnId = stringValue(payload.turn_id) || stringValue(payload.turnId) || uniqueActiveTurnId;
+    const richTrace = richEventTrace(row, payload, sourceTurnId);
+    if (richTrace) return emptyResult({ sourceTurnId, traceEvents: [richTrace] });
     if (rawType === "task_started") {
       const sourceTurnId = stringValue(payload.turn_id) || null;
       if (sourceTurnId) this.activeTurnIds.add(sourceTurnId);

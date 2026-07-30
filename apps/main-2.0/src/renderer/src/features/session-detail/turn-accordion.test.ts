@@ -115,13 +115,39 @@ describe("TurnAccordion", () => {
     ]);
   });
 
-  it("omits tool spans when tool calls are hidden", async () => {
+  it("omits tool spans but keeps rich traces when tool calls are hidden", async () => {
     const feature = await loadTurnAccordion();
     expect(feature).not.toBeNull();
     if (!feature) return;
 
-    expect(feature.buildTurnTimeline(detail, false).map((item: { key: string }) => item.key)).toEqual([
+    const detailWithReasoning: SessionTurnDetail = {
+      ...detail,
+      spans: [
+        ...detail.spans,
+        {
+          id: "span-2",
+          parentSpanId: null,
+          spanIndex: 1,
+          kind: "event",
+          name: "Reasoning",
+          status: "completed",
+          startedAt: "2026-07-24T08:00:02.500Z",
+          endedAt: "2026-07-24T08:00:02.500Z",
+          callId: null,
+          input: null,
+          output: { text: "Checked the parser." },
+          error: null,
+          attributes: {
+            traceKind: "event",
+            eventType: "codex.reasoning_summary",
+          },
+        },
+      ],
+    };
+
+    expect(feature.buildTurnTimeline(detailWithReasoning, false).map((item: { key: string }) => item.key)).toEqual([
       "message:0",
+      "span:span-2",
       "message:1",
     ]);
   });

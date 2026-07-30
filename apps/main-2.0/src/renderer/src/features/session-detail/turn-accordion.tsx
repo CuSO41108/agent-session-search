@@ -3,6 +3,7 @@ import type { ReactElement } from "react";
 import { AlertCircle, ArrowRightLeft, ChevronDown, ChevronRight, Clock3, LoaderCircle, RotateCw, Wrench } from "lucide-react";
 
 import { formatMessageTime } from "../../../../core/format-session";
+import { tracePresentation } from "../../../../core/trace-presentation";
 import type {
   SessionTraceSpan,
   SessionTurnDetail,
@@ -111,6 +112,14 @@ export function buildTurnTimeline(
   detail: SessionTurnDetail,
   showTools = true,
 ): TurnTimelineItem[] {
+  const visibleSpans = showTools
+    ? detail.spans
+    : detail.spans.filter((span) => {
+        const traceKind = span.attributes.traceKind;
+        const kind = traceKind === "tool_call" || traceKind === "tool_result" ? traceKind : "event";
+        const eventType = typeof span.attributes.eventType === "string" ? span.attributes.eventType : null;
+        return tracePresentation({ kind, eventType }).category !== "tool";
+      });
   const items: TurnTimelineItem[] = [
     ...detail.messages.map((message) => ({
       kind: "message" as const,
@@ -119,15 +128,13 @@ export function buildTurnTimeline(
       order: message.messageIndex * 2,
       message,
     })),
-    ...(showTools
-      ? detail.spans.map((span) => ({
+    ...visibleSpans.map((span) => ({
           kind: "span" as const,
           key: `span:${span.id}`,
           timestampMs: timestampMs(span.startedAt),
           order: span.spanIndex * 2 + 1,
           span,
-        }))
-      : []),
+        })),
   ];
 
   return items.sort((left, right) => {

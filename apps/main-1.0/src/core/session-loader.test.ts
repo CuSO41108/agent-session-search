@@ -1080,6 +1080,173 @@ describe("Codex session loading", () => {
     expect(JSON.stringify(loaded?.traceEvents)).not.toContain("extension-opaque-result");
   });
 
+  it("normalizes safe reasoning, annotation, collaboration, and context traces", () => {
+    const completed = (item: Record<string, unknown>, second: number) => ({
+      type: "event_msg",
+      timestamp: `2026-07-30T08:00:${String(second).padStart(2, "0")}Z`,
+      payload: {
+        type: "item_completed",
+        turn_id: "turn-1",
+        completed_at_ms: Date.parse(`2026-07-30T08:00:${String(second).padStart(2, "0")}Z`),
+        item,
+      },
+    });
+    const settings = {
+      model: "gpt-5",
+      cwd: "/repo",
+      approval_policy: "on_request",
+      sandbox_policy: { type: "workspace-write" },
+      permission_profile: { type: "workspace-write" },
+      reasoning_effort: "high",
+      personality: "pragmatic",
+      collaboration_mode: { mode: "default" },
+      world_state: "must-not-index-world-state",
+    };
+    const rows: unknown[] = [
+      {
+        type: "session_meta",
+        timestamp: "2026-07-30T08:00:00Z",
+        payload: { id: "codex-rich", cwd: "/repo", history_mode: "paginated" },
+      },
+      {
+        type: "event_msg",
+        timestamp: "2026-07-30T08:00:01Z",
+        payload: { type: "task_started", turn_id: "turn-1" },
+      },
+      {
+        type: "response_item",
+        timestamp: "2026-07-30T08:00:02Z",
+        payload: {
+          type: "reasoning",
+          id: "reason-1",
+          summary: [{ type: "summary_text", text: "检查索引边界" }],
+          content: [{ type: "reasoning_text", text: "must-not-index-raw-reasoning" }],
+          encrypted_content: "must-not-index-encrypted-reasoning",
+        },
+      },
+      {
+        type: "event_msg",
+        timestamp: "2026-07-30T08:00:03Z",
+        payload: { type: "agent_reasoning", text: "检查索引边界" },
+      },
+      {
+        type: "event_msg",
+        timestamp: "2026-07-30T08:00:03.500Z",
+        payload: { type: "agent_reasoning_raw_content", text: "must-not-index-legacy-raw" },
+      },
+      completed({
+        type: "Reasoning",
+        id: "reason-1",
+        summary_text: ["检查索引边界"],
+        raw_content: ["must-not-index-item-raw"],
+      }, 4),
+      completed({ type: "Plan", id: "plan-1", text: "1. 检查\n2. 修复" }, 5),
+      completed({
+        type: "EnteredReviewMode",
+        id: "review-in",
+        target: { type: "uncommitted_changes" },
+        user_facing_hint: "Reviewing changes",
+      }, 6),
+      completed({
+        type: "ExitedReviewMode",
+        id: "review-out",
+        review_output: { findings: "No blockers" },
+      }, 7),
+      completed({
+        type: "CollabAgentToolCall",
+        id: "collab-1",
+        tool: "spawn_agent",
+        status: "completed",
+        sender_thread_id: "parent-thread",
+        receiver_thread_ids: ["child-thread"],
+        receiver_agents: [{ thread_id: "child-thread", agent_nickname: "reviewer" }],
+        prompt: "must-not-index-collab-prompt",
+        agents_states: { "child-thread": "completed" },
+      }, 8),
+      completed({
+        type: "SubAgentActivity",
+        id: "activity-1",
+        kind: "started",
+        agent_thread_id: "child-thread",
+        agent_path: "reviewer",
+      }, 9),
+      completed({ type: "ContextCompaction", id: "compact-1" }, 10),
+      {
+        type: "response_item",
+        timestamp: "2026-07-30T08:00:11Z",
+        payload: {
+          type: "agent_message",
+          id: "agent-message-1",
+          author: "reviewer",
+          recipient: "parent",
+          content: [{ type: "input_text", text: "Review complete" }],
+        },
+      },
+      {
+        type: "response_item",
+        timestamp: "2026-07-30T08:00:12Z",
+        payload: {
+          type: "agent_message",
+          id: "agent-message-encrypted",
+          author: "reviewer",
+          recipient: "parent",
+          content: [{ type: "encrypted_content", encrypted_content: "must-not-index-agent-message" }],
+        },
+      },
+      {
+        type: "event_msg",
+        timestamp: "2026-07-30T08:00:13Z",
+        payload: {
+          type: "thread_goal_updated",
+          turnId: "turn-1",
+          goal: {
+            objective: "Finish parser",
+            status: "active",
+            tokenBudget: 2_000,
+            tokensUsed: 500,
+            timeUsedSeconds: 10,
+            private_state: "must-not-index-goal-private-state",
+          },
+        },
+      },
+      {
+        type: "event_msg",
+        timestamp: "2026-07-30T08:00:14Z",
+        payload: { type: "thread_settings_applied", thread_settings: settings },
+      },
+      {
+        type: "event_msg",
+        timestamp: "2026-07-30T08:00:15Z",
+        payload: { type: "thread_settings_applied", thread_settings: settings },
+      },
+      {
+        type: "turn_context",
+        timestamp: "2026-07-30T08:00:16Z",
+        payload: { ...settings, turn_id: "turn-1", timezone: "Asia/Shanghai" },
+      },
+    ];
+
+    const loaded = loadCodexSessionRows("/tmp/codex-rich.jsonl", rows);
+    const eventTypes = loaded?.traceEvents?.map((event) => event.eventType) ?? [];
+    const serialized = JSON.stringify(loaded?.traceEvents);
+
+    expect(eventTypes.filter((type) => type === "codex.reasoning_summary")).toHaveLength(1);
+    expect(eventTypes.filter((type) => type === "codex.thread.settings")).toHaveLength(2);
+    expect(eventTypes).toEqual(expect.arrayContaining([
+      "codex.plan",
+      "codex.review.entered",
+      "codex.review.exited",
+      "codex.goal.updated",
+      "codex.context.compaction",
+      "codex.collaboration.tool",
+      "codex.collaboration.activity",
+      "codex.collaboration.message",
+    ]));
+    expect(serialized).toContain("Review complete");
+    expect(serialized).toContain("permissionProfile");
+    expect(serialized).not.toMatch(/must-not-index/);
+  });
+
   it("caps large Codex trace details during loading", () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "session-search-"));
     const filePath = path.join(dir, "rollout.jsonl");

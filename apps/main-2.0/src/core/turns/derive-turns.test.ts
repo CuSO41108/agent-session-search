@@ -336,6 +336,46 @@ describe("deriveSessionTimeline", () => {
     }]);
   });
 
+  it("keeps rich Codex traces visible without counting them as tool names", () => {
+    const timeline = deriveSessionTimeline({
+      sessionKey: "codex:rich-traces",
+      messages: [{
+        role: "user",
+        content: "review this",
+        timestamp: "2026-07-30T08:00:00.000Z",
+        index: 0,
+        sourceTurnId: "turn-1",
+      }],
+      traceEvents: [
+        {
+          index: 0,
+          kind: "event",
+          source: "codex",
+          title: "Reasoning summary",
+          detail: "Checked the parser boundary",
+          timestamp: "2026-07-30T08:00:01.000Z",
+          eventType: "codex.reasoning_summary",
+          status: "completed",
+          sourceTurnId: "turn-1",
+        },
+        {
+          index: 1,
+          kind: "event",
+          source: "codex",
+          title: "Plan",
+          detail: "Run focused tests",
+          timestamp: "2026-07-30T08:00:02.000Z",
+          eventType: "codex.plan",
+          status: "completed",
+          sourceTurnId: "turn-1",
+        },
+      ],
+    });
+
+    expect(timeline.turns[0].spans).toHaveLength(2);
+    expect(timeline.turns[0].toolNames).toEqual([]);
+  });
+
   it("generates stable identifiers independent of input array order", () => {
     const sameTimeTokenEvents = tokenEvents.map((event) => ({
       ...event,

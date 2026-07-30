@@ -632,18 +632,6 @@ function extractCodexEventTrace(
     ];
   }
 
-  if (eventType === "context_compacted") {
-    return [
-      {
-        ...common,
-        kind: "event",
-        title: eventType,
-        detail: stringifyDetail(payload),
-        status: "unknown",
-      },
-    ];
-  }
-
   return [];
 }
 

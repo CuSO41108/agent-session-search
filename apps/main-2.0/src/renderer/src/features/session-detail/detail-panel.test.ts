@@ -129,6 +129,28 @@ describe("Session detail trajectory controls", () => {
         status: "completed",
         sourceTurnId: "turn-1",
       },
+      {
+        index: 2,
+        kind: "event",
+        source: "codex",
+        title: "Reasoning",
+        detail: "Checked the parser.",
+        timestamp: "2026-07-27T08:00:03.000Z",
+        eventType: "codex.reasoning_summary",
+        status: "completed",
+        sourceTurnId: "turn-1",
+      },
+      {
+        index: 3,
+        kind: "tool_call",
+        source: "codex",
+        title: "Read",
+        detail: "src/parser.ts",
+        timestamp: "2026-07-27T08:00:04.000Z",
+        eventType: "codex.tool.read",
+        status: "running",
+        sourceTurnId: "turn-1",
+      },
     ];
     const timeline = conversationTimeline([
       {
@@ -140,9 +162,15 @@ describe("Session detail trajectory controls", () => {
       },
     ], lifecycle);
 
-    expect(timeline.map((item) => item.key)).toEqual(["message:0", "trace:1"]);
+    expect(timeline.map((item) => item.key)).toEqual([
+      "message:0",
+      "trace:2",
+      "trace:3",
+      "trace:1",
+    ]);
     expect(filterConversationTimeline(timeline, "all", false).map((item) => item.key)).toEqual([
       "message:0",
+      "trace:2",
       "trace:1",
     ]);
   });
