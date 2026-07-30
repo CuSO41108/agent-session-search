@@ -155,8 +155,8 @@ describe("ZCode session loader", () => {
     const longOutput = "x".repeat(TRACE_DETAIL_PREVIEW_MAX_CHARS + 500);
     const tools = [
       ["running", "call-running", "unknown", ""],
-      ["completed", "call-completed", "success", longOutput],
-      ["error", "call-error", "failure", "command failed"],
+      ["completed", "call-completed", "completed", longOutput],
+      ["error", "call-error", "failed", "command failed"],
       ["cancelled", "call-cancelled", "unknown", "cancelled by user"],
     ] as const;
     tools.forEach(([status, callId, _expectedStatus, output], index) => {
