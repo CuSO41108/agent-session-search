@@ -55,6 +55,7 @@ export interface OpenVikingServerConfig {
     model: string;
     api_base?: string;
     api_key?: string;
+    reasoning_effort?: "low" | "medium" | "high";
   };
 }
 
