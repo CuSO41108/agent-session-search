@@ -7,8 +7,8 @@ Skill，后续按同一框架扩展到 Workflow、Rules 等资产。本文定义
 整合方式、核心设计原则、术语和分期边界；各阶段的实现要求见对应的 phase 文
 档，随迭代持续补充并回填 PR 链接：
 
-- [阶段一：Skill 触发与会话的关联地基](./phase-01-skill-session-linkage.md)
-- 阶段二：Skill 实况报告（审计侧最小版）——待设计
+- [阶段一：Skill 触发与会话的关联地基](./phase-01-skill-session-linkage.md)（已合并，[PR #246](https://github.com/zszz3/AgentRecall/pull/246)）
+- [阶段二：Skill 实况报告（审计侧最小版）](./phase-02-skill-live-report.md)（设计中）
 - 后续阶段：回归执行器、用例挖掘、报告与对比——待设计
 
 Eval 能力只在 V2 交付，且为**默认关闭的可选功能**：设置中提供 Eval 开关
@@ -118,7 +118,20 @@ Eval 页采用**对象视角**而非机械件视角：用户进入时回答的�
 
 ## 7. 当前实现边界
 
-尚无已实现部分。文档先行，每个阶段合并后在此更新实际边界与 PR 链接。
+阶段一已合并（[PR #246](https://github.com/zszz3/AgentRecall/pull/246)）：
+
+- Eval 为设置中默认关闭的开关；开启时若 usage hook 已安装会先卸后装，
+  确保生效脚本为 V2 版本；
+- Claude hook 记录新增 `session_id`/`cwd`；`skill_usage_events` 新增同名可空
+  列（迁移 v12）；
+- 关联在查询期解析：claude-hook 事件走 `session_id → sessions.raw_id`
+  （限本地存储环境），会话文件扫描出的事件走 `source_path →
+  sessions.file_path`（含 Codex、Cursor、Qoder 等全部会话文件来源），
+  turn 级按时间区间尽力解析；三档结果 linked-turn / linked-session /
+  unlinked，历史无键事件保持 unlinked；
+- Eval 页为对象视角最小骨架：Skills tab（触发列表 + 关联会话跳转）、
+  Experiments tab（原有实验功能）、Workflows/Rules 锁定态；
+- 审计指标、findings、回归执行器均未实现（阶段二及后续）。
 
 ## 8. 决策记录
 
@@ -131,3 +144,5 @@ Eval 页采用**对象视角**而非机械件视角：用户进入时回答的�
 | hook 改动仅在 V2，Eval 为默认关闭的开关功能 | V1/V2 双写 hook 脚本 | Eval 是 V2 独有功能，hook 字段扩展只服务 Eval；开启 Eval 时 V2 重新注册 hook 即可保证生效脚本是 V2 版本；用户此后若从 V1 重装 hook，新记录退化为未关联，属可接受的优雅降级 |
 | 历史无关联键事件不做时间窗猜测归因 | 按时间戳弱匹配到会话 | 假关联污染审计结论，违背证据阶梯原则；旧事件标记未关联，仅进总量统计 |
 | 评测数据不物化进 hook 采集 | 材料调研中出现的"hook 采集全量执行数据"方案 | 该方案适用于没有会话索引库的场景；AgentRecall 的索引库已持有全部所需数据，重复采集冗余且只对未来生效 |
+| 版本关联键 = hook 触发时只读 SKILL.md 算 sha256 | 复刻 sync 侧全目录 content hash；阶段二不采版本键 | `skill_sync_bindings` 无版本历史，同源 hash 映射不回版本号，切分只需 hash 自身稳定；全目录遍历对 hook 过重且形成算法两处维护；越早开始采，版本切分数据越早可用 |
+| 表现层只做三个纯 SQL 描述性信号（token/时长/错误占比），不打分不排名 | trace_spans 重试模式挖掘；"触发后重复请求"语义信号 | 重试启发式易误报推后；语义信号是伪 Outcome 归因，违反证据阶梯，永久不做 |

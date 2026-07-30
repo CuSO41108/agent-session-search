@@ -1122,4 +1122,13 @@ export const POSTGRES_MIGRATIONS: readonly PostgresMigration[] = [{
         ADD COLUMN IF NOT EXISTS disabled_tools jsonb NOT NULL DEFAULT '[]'::jsonb;
     `,
   ],
+}, {
+  version: 15,
+  name: "record the skill version hash on usage events",
+  statements: [
+    `
+      ALTER TABLE agent_recall.skill_usage_events
+        ADD COLUMN IF NOT EXISTS skill_hash text;
+    `,
+  ],
 }];
