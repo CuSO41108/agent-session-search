@@ -316,6 +316,11 @@ describe("indexer", () => {
         [
           "",
           JSON.stringify({
+            type: "session_meta",
+            timestamp: "2026-06-01T10:01:30Z",
+            payload: { id: "codex-custom-tail", cwd: "/repo", history_mode: "paginated" },
+          }),
+          JSON.stringify({
             type: "response_item",
             timestamp: "2026-06-01T10:02:00Z",
             payload: {
@@ -343,16 +348,43 @@ describe("indexer", () => {
       expect(warm.indexed).toBe(1);
       expect(await store.getTraceEvents("codex:codex-custom-tail")).toEqual([
         expect.objectContaining({
-          kind: "tool_call",
+          kind: "tool_result",
           title: "exec",
-          detail: "console.log('tail')",
           callId: "custom-tail-1",
+          eventType: "codex.custom_tool",
         }),
+      ]);
+
+      fs.appendFileSync(filePath, `${JSON.stringify({
+        type: "event_msg",
+        timestamp: "2026-06-01T10:04:00Z",
+        payload: {
+          type: "item_completed",
+          turn_id: "turn-tail",
+          completed_at_ms: Date.parse("2026-06-01T10:04:00Z"),
+          item: {
+            type: "DynamicToolCall",
+            id: "custom-tail-1",
+            namespace: "workspace",
+            tool: "exec",
+            arguments: "console.log('tail')",
+            status: "completed",
+            content_items: [{ text: "tail complete" }],
+            success: true,
+          },
+        },
+      })}\n`);
+      await syncDefaultSessionsInBatches(store, { batchSize: 1, loadOptions: { homeDir } });
+
+      expect(await store.getTraceEvents("codex:codex-custom-tail")).toEqual([
         expect.objectContaining({
           kind: "tool_result",
-          title: "tool output",
-          detail: "tail",
+          title: "workspace.exec",
           callId: "custom-tail-1",
+          eventType: "codex.dynamic_tool",
+          attributes: expect.objectContaining({
+            codex: { sourceItemId: "item_completed:custom-tail-1", rawType: "dynamictoolcall" },
+          }),
         }),
       ]);
     } finally {
@@ -366,11 +398,20 @@ describe("indexer", () => {
     const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "agent-recall-v2-codex-lifecycle-tail-"));
     try {
       const filePath = writeCodexSession(homeDir, "codex-lifecycle-tail", "original question", "Lifecycle Tail");
-      fs.appendFileSync(filePath, `\n${JSON.stringify({
-        type: "event_msg",
-        timestamp: "2026-06-01T10:01:00Z",
-        payload: { type: "task_started", turn_id: "turn-tail" },
-      })}\n`);
+      fs.appendFileSync(filePath, [
+        "",
+        JSON.stringify({
+          type: "session_meta",
+          timestamp: "2026-06-01T10:00:30Z",
+          payload: { id: "codex-lifecycle-tail", cwd: "/repo", history_mode: "paginated" },
+        }),
+        JSON.stringify({
+          type: "event_msg",
+          timestamp: "2026-06-01T10:01:00Z",
+          payload: { type: "task_started", turn_id: "turn-tail" },
+        }),
+        "",
+      ].join("\n"));
       await syncDefaultSessionsInBatches(store, { batchSize: 1, loadOptions: { homeDir } });
 
       expect((await store.getCodexIncrementalState("codex:codex-lifecycle-tail")).activeTurnIds).toEqual(["turn-tail"]);
@@ -411,6 +452,33 @@ describe("indexer", () => {
         messageProvenance: expect.arrayContaining([
           { messageIndex: 1, sourceRecordId: "response_item:answer-tail" },
         ]),
+      });
+
+      fs.appendFileSync(filePath, `${JSON.stringify({
+        type: "event_msg",
+        timestamp: "2026-06-01T10:04:00Z",
+        payload: {
+          type: "item_completed",
+          turn_id: "turn-tail",
+          completed_at_ms: Date.parse("2026-06-01T10:04:00Z"),
+          item: {
+            type: "AgentMessage",
+            id: "answer-tail",
+            phase: "final_answer",
+            content: [{ type: "output_text", text: "authoritative tail complete" }],
+          },
+        },
+      })}\n`);
+      await syncDefaultSessionsInBatches(store, { batchSize: 1, loadOptions: { homeDir } });
+
+      expect((await store.getAllMessages("codex:codex-lifecycle-tail")).at(-1)).toMatchObject({
+        content: "authoritative tail complete",
+        sourceTurnId: "turn-tail",
+        phase: "final_answer",
+      });
+      expect((await store.getCodexIncrementalState("codex:codex-lifecycle-tail")).messageProvenance).toContainEqual({
+        messageIndex: 1,
+        sourceRecordId: "item_completed:answer-tail",
       });
     } finally {
       await store.close();

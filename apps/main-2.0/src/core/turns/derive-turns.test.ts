@@ -296,6 +296,46 @@ describe("deriveSessionTimeline", () => {
     });
   });
 
+  it("projects a completed paginated tool item into one span with structured input and output", () => {
+    const timeline = deriveSessionTimeline({
+      sessionKey: "codex:completed-tool",
+      messages: [{
+        role: "user",
+        content: "list files",
+        timestamp: "2026-07-30T08:00:00.000Z",
+        index: 0,
+        sourceTurnId: "turn-1",
+      }],
+      traceEvents: [{
+        index: 0,
+        kind: "tool_result",
+        source: "codex",
+        title: "shell · ls",
+        detail: "input and output preview",
+        timestamp: "2026-07-30T08:00:02.000Z",
+        callId: "command-1",
+        eventType: "codex.command_execution",
+        status: "completed",
+        sourceTurnId: "turn-1",
+        attributes: {
+          startedAt: "2026-07-30T08:00:01.000Z",
+          endedAt: "2026-07-30T08:00:02.000Z",
+          input: { command: "ls" },
+          output: { stdout: "file.txt", exitCode: 0 },
+        },
+      }],
+    });
+
+    expect(timeline.turns[0].spans).toMatchObject([{
+      callId: "command-1",
+      status: "completed",
+      startedAt: "2026-07-30T08:00:01.000Z",
+      endedAt: "2026-07-30T08:00:02.000Z",
+      input: { command: "ls" },
+      output: { stdout: "file.txt", exitCode: 0 },
+    }]);
+  });
+
   it("generates stable identifiers independent of input array order", () => {
     const sameTimeTokenEvents = tokenEvents.map((event) => ({
       ...event,

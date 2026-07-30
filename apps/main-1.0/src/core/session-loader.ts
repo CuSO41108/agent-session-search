@@ -4,7 +4,12 @@ import * as path from "node:path";
 import { createRequire } from "node:module";
 import { cleanTitle, cursorTimestampFromRow, getAdapter, isMeaningfulUserMessage } from "./format-adapters";
 import { scanCompleteJsonl } from "./codex-jsonl-stream";
-import { CodexRolloutAccumulator } from "./session-loaders/codex-rollout";
+import {
+  CodexRolloutAccumulator,
+  dedupeCodexTraceEvents,
+  formatCodexToolDetail,
+  sanitizeCodexTraceValue,
+} from "./session-loaders/codex-rollout";
 import { truncateTraceDetail } from "./trace-detail";
 import type {
   CodeBuddyConversationLine,
@@ -195,8 +200,10 @@ function extractMessages(rows: unknown[], format: SessionFormat): SessionMessage
 
 function codexVisibleConversationRows(rows: unknown[]): unknown[] {
   const adapter = getAdapter("codex");
+  const rollout = new CodexRolloutAccumulator();
   const preamble: unknown[] = [];
   const turns: unknown[][] = [];
+  const seenUserRecords = new Set<string>();
   let currentTurn: unknown[] | null = null;
 
   for (const row of rows) {
@@ -209,10 +216,23 @@ function codexVisibleConversationRows(rows: unknown[]): unknown[] {
       continue;
     }
 
+    const result = rollout.consume(row);
+    const completedMessage = result.completedMessage;
     const parsed = adapter.parseLine(row);
-    if (parsed?.role === "user" && isMeaningfulUserMessage(parsed.content)) {
+    const responseUser = rollout.historyMode === "legacy" && parsed?.role === "user";
+    const completedUser = completedMessage?.role === "user"
+      && !seenUserRecords.has(completedMessage.replacesSourceRecordId);
+    const userContent = responseUser
+      ? parsed.content
+      : completedMessage?.role === "user"
+        ? completedMessage.content
+        : "";
+    if ((responseUser || completedUser) && userContent && isMeaningfulUserMessage(userContent)) {
       currentTurn = [row];
       turns.push(currentTurn);
+      if (responseUser && result.message?.sourceRecordId) {
+        seenUserRecords.add(result.message.sourceRecordId);
+      }
     } else if (currentTurn) {
       currentTurn.push(row);
     } else {
@@ -373,51 +393,124 @@ function extractClaudeTraceEvents(rows: unknown[]): TraceEventDraft[] {
   return events;
 }
 
-function extractCodexResponseTrace(row: Record<string, unknown>): TraceEventDraft[] {
+function extractCodexResponseTrace(
+  row: Record<string, unknown>,
+  sourceTurnId: string | null = null,
+): TraceEventDraft[] {
   if (row.type !== "response_item") return [];
   const payload = objectField(row, "payload");
   if (!payload) return [];
   const payloadType = stringField(payload, "type");
+  const callId = stringField(payload, "call_id") || stringField(payload, "id") || null;
+  const status = stringField(payload, "status");
+  const normalizedStatus: SessionTraceEvent["status"] =
+    status === "in_progress" ? "running"
+      : status === "completed" ? "completed"
+        : status === "failed" ? "failed"
+          : "unknown";
 
-  if (payloadType === "function_call" || payloadType === "custom_tool_call") {
-    const args = payloadType === "custom_tool_call"
-      ? unknownField(payload, "input")
-      : parseMaybeJson(unknownField(payload, "arguments"));
-    const name = stringField(payload, "name") || "tool";
+  if (
+    payloadType === "function_call"
+    || payloadType === "custom_tool_call"
+    || payloadType === "local_shell_call"
+    || payloadType === "tool_search_call"
+  ) {
+    const args =
+      payloadType === "custom_tool_call" ? unknownField(payload, "input")
+        : payloadType === "local_shell_call" ? unknownField(payload, "action")
+          : payloadType === "tool_search_call" ? unknownField(payload, "arguments")
+            : parseMaybeJson(unknownField(payload, "arguments"));
+    const namespace = stringField(payload, "namespace");
+    const fallbackName =
+      payloadType === "local_shell_call" ? "shell"
+        : payloadType === "tool_search_call" ? stringField(payload, "execution") || "tool search"
+          : "tool";
+    const rawName = stringField(payload, "name") || fallbackName;
+    const name = namespace ? `${namespace}.${rawName}` : rawName;
     const summary = firstStringField(args, ["command", "cmd", "query", "path", "file_path", "url"]);
+    const eventType =
+      payloadType === "function_call" ? "codex.function_call"
+        : payloadType === "custom_tool_call" ? "codex.custom_tool"
+          : payloadType === "local_shell_call" ? "codex.local_shell"
+            : "codex.tool_search";
+    const safeInput = sanitizeCodexTraceValue(args);
     return [
       {
-        kind: "tool_call",
+        kind: payloadType === "local_shell_call"
+          && normalizedStatus !== "unknown"
+          && normalizedStatus !== "running"
+          ? "tool_result"
+          : "tool_call",
         source: "codex",
         title: titleWithSummary(name, summary),
-        detail: stringifyDetail(args),
+        detail: formatCodexToolDetail(safeInput, null),
         timestamp: stringField(row, "timestamp"),
-        callId: stringField(payload, "call_id") || null,
-        eventType: null,
-        status: "unknown",
+        callId,
+        eventType,
+        status: normalizedStatus,
+        sourceTurnId,
+        attributes: { input: safeInput },
       },
     ];
   }
 
-  if (payloadType === "function_call_output" || payloadType === "custom_tool_call_output") {
+  if (
+    payloadType === "function_call_output"
+    || payloadType === "custom_tool_call_output"
+    || payloadType === "tool_search_output"
+  ) {
+    const output = payloadType === "tool_search_output"
+      ? { status: unknownField(payload, "status"), tools: unknownField(payload, "tools") }
+      : unknownField(payload, "output");
+    const safeOutput = sanitizeCodexTraceValue(output);
+    const eventType =
+      payloadType === "function_call_output" ? "codex.function_call"
+        : payloadType === "custom_tool_call_output" ? "codex.custom_tool"
+          : "codex.tool_search";
     return [
       {
         kind: "tool_result",
         source: "codex",
-        title: "tool output",
-        detail: stringifyDetail(unknownField(payload, "output")),
+        title: payloadType === "tool_search_output"
+          ? stringField(payload, "execution") || "tool search"
+          : "tool output",
+        detail: formatCodexToolDetail(null, safeOutput),
         timestamp: stringField(row, "timestamp"),
-        callId: stringField(payload, "call_id") || null,
-        eventType: null,
-        status: "unknown",
+        callId,
+        eventType,
+        status: normalizedStatus === "unknown" ? "completed" : normalizedStatus,
+        sourceTurnId,
+        attributes: { output: safeOutput },
       },
     ];
+  }
+
+  if (payloadType === "web_search_call" || payloadType === "image_generation_call") {
+    const input = payloadType === "web_search_call"
+      ? unknownField(payload, "action")
+      : { revisedPrompt: unknownField(payload, "revised_prompt") };
+    const safeInput = sanitizeCodexTraceValue(input);
+    return [{
+      kind: normalizedStatus === "running" ? "tool_call" : "tool_result",
+      source: "codex",
+      title: payloadType === "web_search_call" ? "web search" : "image generation",
+      detail: formatCodexToolDetail(safeInput, null),
+      timestamp: stringField(row, "timestamp"),
+      callId,
+      eventType: payloadType === "web_search_call" ? "codex.web_search" : "codex.image_generation",
+      status: normalizedStatus,
+      sourceTurnId,
+      attributes: { input: safeInput },
+    }];
   }
 
   return [];
 }
 
-function extractCodexEventTrace(row: Record<string, unknown>): TraceEventDraft[] {
+function extractCodexEventTrace(
+  row: Record<string, unknown>,
+  sourceTurnId: string | null = null,
+): TraceEventDraft[] {
   if (row.type !== "event_msg") return [];
   const payload = objectField(row, "payload");
   const eventType = stringField(payload, "type");
@@ -428,6 +521,7 @@ function extractCodexEventTrace(row: Record<string, unknown>): TraceEventDraft[]
     timestamp: stringField(row, "timestamp"),
     callId: stringField(payload, "call_id") || null,
     eventType,
+    sourceTurnId,
   };
 
   if (eventType === "exec_command_end") {
@@ -448,6 +542,20 @@ function extractCodexEventTrace(row: Record<string, unknown>): TraceEventDraft[]
           output,
         ]),
         status: statusFromExit(typeof unknownField(payload, "exit_code") === "number" ? numberField(payload, "exit_code") : undefined),
+        attributes: {
+          input: sanitizeCodexTraceValue({
+            command: unknownField(payload, "command"),
+            cwd: unknownField(payload, "cwd"),
+            parsedCommand: unknownField(payload, "parsed_cmd"),
+          }),
+          output: sanitizeCodexTraceValue({
+            stdout: unknownField(payload, "stdout"),
+            stderr: unknownField(payload, "stderr"),
+            aggregatedOutput: unknownField(payload, "aggregated_output"),
+            formattedOutput: unknownField(payload, "formatted_output"),
+            exitCode: unknownField(payload, "exit_code"),
+          }),
+        },
       },
     ];
   }
@@ -464,6 +572,14 @@ function extractCodexEventTrace(row: Record<string, unknown>): TraceEventDraft[]
           unknownField(payload, "changes") ? `changes:\n${stringifyDetail(unknownField(payload, "changes"))}` : "",
         ]),
         status: statusFromExit(undefined, typeof unknownField(payload, "success") === "boolean" ? Boolean(unknownField(payload, "success")) : undefined),
+        attributes: {
+          input: sanitizeCodexTraceValue({ changes: unknownField(payload, "changes") }),
+          output: sanitizeCodexTraceValue({
+            stdout: unknownField(payload, "stdout"),
+            stderr: unknownField(payload, "stderr"),
+            success: unknownField(payload, "success"),
+          }),
+        },
       },
     ];
   }
@@ -478,6 +594,10 @@ function extractCodexEventTrace(row: Record<string, unknown>): TraceEventDraft[]
         title: titleWithSummary("mcp", invocationName || stringField(payload, "plugin_id")),
         detail: stringifyDetail(unknownField(payload, "result") || invocation),
         status: "unknown",
+        attributes: {
+          input: sanitizeCodexTraceValue(invocation),
+          output: sanitizeCodexTraceValue(unknownField(payload, "result")),
+        },
       },
     ];
   }
@@ -490,6 +610,12 @@ function extractCodexEventTrace(row: Record<string, unknown>): TraceEventDraft[]
         title: titleWithSummary("web_search", stringField(payload, "query")),
         detail: stringifyDetail(unknownField(payload, "action")),
         status: "unknown",
+        attributes: {
+          input: sanitizeCodexTraceValue({
+            query: unknownField(payload, "query"),
+            action: unknownField(payload, "action"),
+          }),
+        },
       },
     ];
   }
@@ -526,7 +652,12 @@ function extractCodexTraceEvents(rows: unknown[]): TraceEventDraft[] {
   const events: TraceEventDraft[] = [];
   for (const row of rows) {
     if (!isRecord(row)) continue;
-    events.push(...extractCodexResponseTrace(row), ...extractCodexEventTrace(row), ...rollout.consume(row).traceEvents);
+    const result = rollout.consume(row);
+    events.push(
+      ...extractCodexResponseTrace(row, result.sourceTurnId),
+      ...extractCodexEventTrace(row, result.sourceTurnId),
+      ...result.traceEvents,
+    );
   }
   return events;
 }
@@ -541,10 +672,45 @@ function extractCodexMessages(rows: unknown[]): {
   const rollout = new CodexRolloutAccumulator();
   const messages: SessionMessage[] = [];
   const messageProvenance: Array<{ messageIndex: number; sourceRecordId: string | null }> = [];
+  const provenanceIndexes = new Map<string, number>();
   for (const row of rows) {
-    const context = rollout.consume(row).message;
+    const result = rollout.consume(row);
+    const context = result.message;
+    if (result.completedMessage) {
+      const completed = result.completedMessage;
+      const replacement = provenanceIndexes.get(completed.replacesSourceRecordId) ?? -1;
+      const nextMessage: SessionMessage = {
+        role: completed.role,
+        content: completed.content,
+        timestamp: completed.timestamp,
+        index: replacement >= 0 ? replacement : messages.length,
+        sourceTurnId: completed.sourceTurnId,
+        phase: completed.phase,
+        ...(replacement >= 0 && messages[replacement].attachments
+          ? { attachments: messages[replacement].attachments }
+          : {}),
+      };
+      if (replacement >= 0) {
+        messages[replacement] = nextMessage;
+        messageProvenance[replacement] = {
+          messageIndex: replacement,
+          sourceRecordId: completed.sourceRecordId,
+        };
+        provenanceIndexes.delete(completed.replacesSourceRecordId);
+        provenanceIndexes.set(completed.sourceRecordId, replacement);
+      } else if (completed.role !== "user" || isMeaningfulUserMessage(completed.content)) {
+        messages.push(nextMessage);
+        messageProvenance.push({
+          messageIndex: nextMessage.index,
+          sourceRecordId: completed.sourceRecordId,
+        });
+        provenanceIndexes.set(completed.sourceRecordId, nextMessage.index);
+      }
+      continue;
+    }
     const parsed = adapter.parseLine(row);
     if (!parsed || (parsed.role === "user" && !isMeaningfulUserMessage(parsed.content))) continue;
+    if (rollout.historyMode === "paginated" && parsed.role === "user") continue;
     const index = messages.length;
     messages.push({
       ...parsed,
@@ -552,7 +718,9 @@ function extractCodexMessages(rows: unknown[]): {
       sourceTurnId: context?.sourceTurnId ?? null,
       phase: parsed.role === "assistant" ? context?.phase ?? null : null,
     });
-    messageProvenance.push({ messageIndex: index, sourceRecordId: context?.sourceRecordId ?? null });
+    const sourceRecordId = context?.sourceRecordId ?? null;
+    messageProvenance.push({ messageIndex: index, sourceRecordId });
+    if (sourceRecordId) provenanceIndexes.set(sourceRecordId, index);
   }
   return {
     messages,
@@ -571,7 +739,7 @@ function dedupeTraceEvents(events: TraceEventDraft[]): SessionTraceEvent[] {
 
 function extractTraceEvents(rows: unknown[], format: SessionFormat): SessionTraceEvent[] {
   if (format === "claude") return dedupeTraceEvents(extractClaudeTraceEvents(rows));
-  if (format === "codex") return dedupeTraceEvents(extractCodexTraceEvents(rows));
+  if (format === "codex") return dedupeCodexTraceEvents(extractCodexTraceEvents(rows));
   return [];
 }
 
@@ -1093,11 +1261,14 @@ function scanCodexSessionFile(filePath: string, base?: { offset: number; loaded:
   const allTraceEvents: TraceEventDraft[] = [...(base?.loaded.traceEvents ?? [])];
   const rollout = new CodexRolloutAccumulator(base?.loaded.codexIncrementalState);
   const messageProvenance = new Map<SessionMessage, string | null>();
+  const provenanceMessages = new Map<string, SessionMessage>();
   for (const message of allMessages) {
-    messageProvenance.set(
-      message,
-      base?.loaded.codexIncrementalState?.messageProvenance.find((entry) => entry.messageIndex === message.index)?.sourceRecordId ?? null,
-    );
+    const sourceRecordId =
+      base?.loaded.codexIncrementalState?.messageProvenance.find(
+        (entry) => entry.messageIndex === message.index,
+      )?.sourceRecordId ?? null;
+    messageProvenance.set(message, sourceRecordId);
+    if (sourceRecordId) provenanceMessages.set(sourceRecordId, message);
   }
   const preamble: StreamedCodexTurn = { messages: [...allMessages], traceEvents: [...allTraceEvents] };
   const turns: StreamedCodexTurn[] = [];
@@ -1155,7 +1326,9 @@ function scanCodexSessionFile(filePath: string, base?: { offset: number; loaded:
 
         const rolloutRecord = rollout.consume(row);
         const parsedMessage = adapter.parseLine(row);
-        const message = parsedMessage && (parsedMessage.role !== "user" || isMeaningfulUserMessage(parsedMessage.content))
+        let message = parsedMessage
+          && !(rollout.historyMode === "paginated" && parsedMessage.role === "user")
+          && (parsedMessage.role !== "user" || isMeaningfulUserMessage(parsedMessage.content))
           ? {
               ...parsedMessage,
               index: 0,
@@ -1163,12 +1336,49 @@ function scanCodexSessionFile(filePath: string, base?: { offset: number; loaded:
               phase: parsedMessage.role === "assistant" ? rolloutRecord.message?.phase ?? null : null,
             }
           : null;
+        if (rolloutRecord.completedMessage) {
+          const completed = rolloutRecord.completedMessage;
+          const existing = provenanceMessages.get(completed.replacesSourceRecordId);
+          if (existing) {
+            Object.assign(existing, {
+              role: completed.role,
+              content: completed.content,
+              timestamp: completed.timestamp,
+              sourceTurnId: completed.sourceTurnId,
+              phase: completed.phase,
+            });
+            messageProvenance.set(existing, completed.sourceRecordId);
+            provenanceMessages.delete(completed.replacesSourceRecordId);
+            provenanceMessages.set(completed.sourceRecordId, existing);
+            message = null;
+          } else if (completed.role !== "user" || isMeaningfulUserMessage(completed.content)) {
+            message = {
+              role: completed.role,
+              content: completed.content,
+              timestamp: completed.timestamp,
+              index: 0,
+              sourceTurnId: completed.sourceTurnId,
+              phase: completed.phase,
+            };
+          }
+        }
         const traces = isRecord(row)
-          ? [...extractCodexResponseTrace(row), ...extractCodexEventTrace(row), ...rolloutRecord.traceEvents]
+          ? [
+              ...extractCodexResponseTrace(row, rolloutRecord.sourceTurnId),
+              ...extractCodexEventTrace(row, rolloutRecord.sourceTurnId),
+              ...rolloutRecord.traceEvents,
+            ]
           : [];
         if (message) {
           allMessages.push(message);
-          messageProvenance.set(message, rolloutRecord.message?.sourceRecordId ?? null);
+          messageProvenance.set(
+            message,
+            rolloutRecord.completedMessage?.sourceRecordId
+              ?? rolloutRecord.message?.sourceRecordId
+              ?? null,
+          );
+          const sourceRecordId = messageProvenance.get(message);
+          if (sourceRecordId) provenanceMessages.set(sourceRecordId, message);
         }
         allTraceEvents.push(...traces);
 
@@ -1202,7 +1412,7 @@ function scanCodexSessionFile(filePath: string, base?: { offset: number; loaded:
       ...(base?.loaded.tokenEvents ?? []),
       ...extractCodexTokenEvents(base ? tokenRows.map(stripCodexCumulativeUsage) : tokenRows),
     ],
-    traceEvents: dedupeTraceEvents(visibleTraces),
+    traceEvents: dedupeCodexTraceEvents(visibleTraces),
     codexIncrementalState: {
       historyMode: rollout.historyMode,
       messageProvenance: visibleMessages.map((message, messageIndex) => ({

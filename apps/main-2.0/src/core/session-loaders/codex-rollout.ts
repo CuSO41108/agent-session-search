@@ -4,6 +4,7 @@ import type {
   SessionMessage,
   SessionTraceEvent,
 } from "../types";
+import { truncateTraceDetail } from "../trace-detail";
 
 type TraceEventDraft = Omit<SessionTraceEvent, "index">;
 
@@ -22,6 +23,16 @@ export type NormalizedCodexFact =
 
 export interface CodexRolloutRecordResult {
   message: Extract<NormalizedCodexFact, { kind: "message" }> | null;
+  completedMessage: {
+    role: SessionMessage["role"];
+    content: string;
+    timestamp: string;
+    sourceTurnId: string | null;
+    phase: Exclude<SessionMessage["phase"], undefined>;
+    sourceRecordId: string;
+    replacesSourceRecordId: string;
+  } | null;
+  sourceTurnId: string | null;
   traceEvents: TraceEventDraft[];
 }
 
@@ -79,6 +90,298 @@ function errorDetail(value: unknown): string {
   return stringValue(error.message) || stringValue(error.error) || "";
 }
 
+function normalizeItemType(value: string): string {
+  return value.replaceAll(/[^a-z0-9]/giu, "").toLocaleLowerCase();
+}
+
+function completedItem(value: unknown): { type: string; payload: Record<string, unknown> } | null {
+  const item = record(value);
+  if (!item) return null;
+  const taggedType = stringValue(item.type);
+  if (taggedType) return { type: normalizeItemType(taggedType), payload: item };
+  for (const [key, payload] of Object.entries(item)) {
+    const object = record(payload);
+    if (object) return { type: normalizeItemType(key), payload: object };
+  }
+  return null;
+}
+
+function collectText(value: unknown): string[] {
+  if (typeof value === "string") return value ? [value] : [];
+  if (Array.isArray(value)) return value.flatMap(collectText);
+  const object = record(value);
+  if (!object) return [];
+  if (typeof object.text === "string") return object.text ? [object.text] : [];
+  return Object.entries(object)
+    .filter(([key]) => !key.toLocaleLowerCase().includes("encrypted"))
+    .flatMap(([, nested]) => collectText(nested));
+}
+
+function sanitizeCodexTraceValuePart(value: unknown, key = ""): unknown {
+  if (typeof value === "string") {
+    const normalizedKey = key.toLocaleLowerCase();
+    const opaqueField = normalizedKey === "image_url"
+      || normalizedKey === "audio_url"
+      || normalizedKey === "result"
+      || normalizedKey === "data";
+    const looksLikeEncodedBinary = value.length > 1_024 && /^[a-z0-9+/=\r\n]+$/iu.test(value);
+    if (opaqueField && (value.startsWith("data:") || looksLikeEncodedBinary)) {
+      return "[binary omitted]";
+    }
+    return truncateTraceDetail(value);
+  }
+  if (Array.isArray(value)) return value.map((item) => sanitizeCodexTraceValuePart(item));
+  const object = record(value);
+  if (!object) return value;
+  return Object.fromEntries(
+    Object.entries(object)
+      .filter(([nestedKey]) => !nestedKey.toLocaleLowerCase().includes("encrypted"))
+      .map(([nestedKey, nestedValue]) => [nestedKey, sanitizeCodexTraceValuePart(nestedValue, nestedKey)]),
+  );
+}
+
+export function sanitizeCodexTraceValue(value: unknown): unknown {
+  const sanitized = sanitizeCodexTraceValuePart(value);
+  if (!sanitized || typeof sanitized !== "object") return sanitized;
+  const serialized = JSON.stringify(sanitized);
+  return serialized.length > 0 && truncateTraceDetail(serialized) !== serialized
+    ? { preview: truncateTraceDetail(serialized), truncated: true }
+    : sanitized;
+}
+
+function detailSection(label: string, value: unknown): string {
+  if (value === null || value === undefined || value === "") return "";
+  const text = typeof value === "string" ? value : JSON.stringify(sanitizeCodexTraceValue(value), null, 2);
+  return text ? `${label}:\n${text}` : "";
+}
+
+export function formatCodexToolDetail(input: unknown, output: unknown): string {
+  return truncateTraceDetail(
+    [detailSection("input", input), detailSection("output", output)].filter(Boolean).join("\n\n"),
+  );
+}
+
+function completedTimestamp(row: Record<string, unknown>, payload: Record<string, unknown>): string {
+  const milliseconds = nonNegativeNumber(payload.completed_at_ms);
+  if (milliseconds !== null && milliseconds > 0) return new Date(milliseconds).toISOString();
+  return stringValue(row.timestamp);
+}
+
+function itemTimingAttributes(
+  payload: Record<string, unknown>,
+  sourceRecordId: string,
+  rawType: string,
+): Record<string, unknown> {
+  const startedAtMs = nonNegativeNumber(payload.started_at_ms);
+  const completedAtMs = nonNegativeNumber(payload.completed_at_ms);
+  const attributes: Record<string, unknown> = {
+    codex: { sourceItemId: sourceRecordId, rawType },
+  };
+  if (startedAtMs !== null && startedAtMs > 0) attributes.startedAt = new Date(startedAtMs).toISOString();
+  if (completedAtMs !== null && completedAtMs > 0) attributes.endedAt = new Date(completedAtMs).toISOString();
+  if (startedAtMs !== null && completedAtMs !== null && completedAtMs >= startedAtMs) {
+    attributes.durationMs = completedAtMs - startedAtMs;
+  }
+  return attributes;
+}
+
+function toolStatus(value: unknown): SessionTraceEvent["status"] {
+  const status = stringValue(value).toLocaleLowerCase();
+  if (status === "in_progress" || status === "inprogress" || status === "running") return "running";
+  if (status === "failed" || status === "error") return "failed";
+  if (status === "declined" || status === "aborted" || status === "cancelled") return "aborted";
+  if (status === "completed" || status === "success" || status === "succeeded") return "completed";
+  return "unknown";
+}
+
+function itemToolTrace(
+  row: Record<string, unknown>,
+  wrapper: Record<string, unknown>,
+  type: string,
+  item: Record<string, unknown>,
+  sourceTurnId: string | null,
+): TraceEventDraft | null {
+  const itemId = stringValue(item.id);
+  if (!itemId) return null;
+  const sourceRecordId = `item_completed:${itemId}`;
+  const attributes = itemTimingAttributes(wrapper, sourceRecordId, type);
+  if (item.duration !== null && item.duration !== undefined) {
+    attributes.itemDuration = sanitizeCodexTraceValue(item.duration);
+  }
+  let title = "";
+  let input: unknown;
+  let output: unknown;
+  let eventType = "";
+  let status = toolStatus(item.status);
+
+  if (type === "commandexecution") {
+    const command = Array.isArray(item.command) ? item.command.join(" ") : stringValue(item.command);
+    title = command ? `shell · ${command}` : "shell";
+    eventType = "codex.command_execution";
+    input = { command, cwd: item.cwd, parsedCommand: item.parsed_cmd };
+    output = {
+      stdout: item.stdout,
+      stderr: item.stderr,
+      aggregatedOutput: item.aggregated_output,
+      formattedOutput: item.formatted_output,
+      exitCode: item.exit_code,
+    };
+  } else if (type === "dynamictoolcall") {
+    const namespace = stringValue(item.namespace);
+    const tool = stringValue(item.tool) || "dynamic tool";
+    title = namespace ? `${namespace}.${tool}` : tool;
+    eventType = "codex.dynamic_tool";
+    input = item.arguments;
+    output = item.error || item.content_items || { success: item.success };
+    if (item.success === false) status = "failed";
+  } else if (type === "mcptoolcall") {
+    title = [stringValue(item.server), stringValue(item.tool)].filter(Boolean).join(".") || "MCP tool";
+    eventType = "codex.mcp_tool";
+    input = item.arguments;
+    output = item.error || item.result;
+  } else if (type === "websearch") {
+    title = stringValue(item.query) ? `web search · ${stringValue(item.query)}` : "web search";
+    eventType = "codex.web_search";
+    input = { query: item.query, action: item.action };
+    output = item.results;
+    status = "completed";
+  } else if (type === "imageview") {
+    title = stringValue(item.path) ? `view image · ${stringValue(item.path)}` : "view image";
+    eventType = "codex.image_view";
+    input = { path: item.path };
+    status = "completed";
+  } else if (type === "imagegeneration") {
+    title = "image generation";
+    eventType = "codex.image_generation";
+    input = { revisedPrompt: item.revised_prompt };
+    output = { savedPath: item.saved_path };
+  } else if (type === "extension") {
+    const extensionKind = stringValue(item.kind);
+    if (extensionKind === "image_gen.generation") {
+      title = "image generation";
+      eventType = "codex.image_generation";
+      input = { revisedPrompt: item.revisedPrompt ?? item.revised_prompt };
+      output = { savedPath: item.savedPath ?? item.saved_path };
+    } else if (extensionKind === "web.search") {
+      title = stringValue(item.query) ? `web search · ${stringValue(item.query)}` : "web search";
+      eventType = "codex.web_search";
+      input = { query: item.query, action: item.action };
+      output = item.results;
+      status = "completed";
+    } else if (extensionKind === "clock.sleep") {
+      const durationMs = nonNegativeNumber(item.durationMs ?? item.duration_ms);
+      title = durationMs === null ? "wait" : `wait · ${durationMs} ms`;
+      eventType = "codex.extension.sleep";
+      input = durationMs === null ? null : { durationMs };
+      status = "completed";
+    } else {
+      return null;
+    }
+  } else if (type === "filechange") {
+    title = "apply patch";
+    eventType = "codex.file_change";
+    input = { changes: item.changes, autoApproved: item.auto_approved };
+    output = { stdout: item.stdout, stderr: item.stderr };
+    if (status === "unknown") status = "completed";
+  } else {
+    return null;
+  }
+
+  attributes.input = sanitizeCodexTraceValue(input);
+  attributes.output = sanitizeCodexTraceValue(output);
+  return {
+    kind: "tool_result",
+    source: "codex",
+    title,
+    detail: formatCodexToolDetail(input, output),
+    timestamp: completedTimestamp(row, wrapper),
+    callId: itemId,
+    eventType,
+    status,
+    sourceTurnId,
+    attributes,
+  };
+}
+
+function emptyResult(
+  overrides: Partial<CodexRolloutRecordResult> = {},
+): CodexRolloutRecordResult {
+  return {
+    message: null,
+    completedMessage: null,
+    sourceTurnId: null,
+    traceEvents: [],
+    ...overrides,
+  };
+}
+
+function mergeTraceValue(preferred: unknown, fallback: unknown): unknown {
+  const preferredRecord = record(preferred);
+  const fallbackRecord = record(fallback);
+  if (preferredRecord && fallbackRecord) return { ...fallbackRecord, ...preferredRecord };
+  if (preferredRecord) return preferredRecord;
+  if (fallbackRecord && preferred !== null && preferred !== undefined) {
+    return { ...fallbackRecord, responseValue: preferred };
+  }
+  return preferred ?? fallback;
+}
+
+export function dedupeCodexTraceEvents(events: TraceEventDraft[]): SessionTraceEvent[] {
+  const merged: TraceEventDraft[] = [];
+  const callIndexes = new Map<string, number>();
+  const isCompletedItem = (event: TraceEventDraft) => {
+    const codex = record(event.attributes?.codex);
+    return typeof codex?.sourceItemId === "string"
+      && codex.sourceItemId.startsWith("item_completed:");
+  };
+  const rank = (event: TraceEventDraft) =>
+    isCompletedItem(event) ? 4 : event.kind === "tool_result" ? 3 : event.kind === "event" ? 2 : 1;
+
+  for (const event of events) {
+    if (!event.callId) {
+      merged.push(event);
+      continue;
+    }
+    const existingIndex = callIndexes.get(event.callId);
+    if (existingIndex === undefined) {
+      callIndexes.set(event.callId, merged.length);
+      merged.push(event);
+      continue;
+    }
+
+    const existing = merged[existingIndex];
+    const primary = rank(event) >= rank(existing) ? event : existing;
+    const secondary = primary === event ? existing : event;
+    const call = event.kind === "tool_call" ? event : existing.kind === "tool_call" ? existing : null;
+    const primaryInput = primary.attributes?.input ?? (primary.kind === "tool_call" ? primary.detail || null : null);
+    const secondaryInput = secondary.attributes?.input ?? (call === secondary ? secondary.detail || null : null);
+    const primaryOutput = primary.attributes?.output
+      ?? (primary.kind === "tool_call" ? null : primary.detail || null);
+    const secondaryOutput = secondary.attributes?.output
+      ?? (secondary.kind === "tool_call" ? null : secondary.detail || null);
+    const input = mergeTraceValue(primaryInput, secondaryInput);
+    const output = mergeTraceValue(primaryOutput, secondaryOutput);
+    merged[existingIndex] = {
+      ...secondary,
+      ...primary,
+      title: isCompletedItem(primary)
+        ? primary.title
+        : call?.title || primary.title,
+      detail: formatCodexToolDetail(input, output),
+      eventType: primary.eventType || secondary.eventType,
+      sourceTurnId: primary.sourceTurnId || secondary.sourceTurnId,
+      attributes: {
+        ...(secondary.attributes ?? {}),
+        ...(primary.attributes ?? {}),
+        input: sanitizeCodexTraceValue(input),
+        output: sanitizeCodexTraceValue(output),
+      },
+    };
+  }
+
+  return merged.map((event, index) => ({ ...event, index }));
+}
+
 export class CodexRolloutAccumulator {
   private currentHistoryMode: CodexHistoryMode;
   private readonly activeTurnIds = new Set<string>();
@@ -100,25 +403,61 @@ export class CodexRolloutAccumulator {
 
   consume(value: unknown): CodexRolloutRecordResult {
     const row = record(value);
-    if (!row) return { message: null, traceEvents: [] };
+    if (!row) return emptyResult();
     const payload = record(row.payload);
-    if (!payload) return { message: null, traceEvents: [] };
+    if (!payload) return emptyResult();
 
     if (row.type === "session_meta") {
       this.currentHistoryMode = historyMode(payload.history_mode);
-      return { message: null, traceEvents: [] };
+      return emptyResult();
     }
 
     const uniqueActiveTurnId = this.activeTurnIds.size === 1
       ? this.activeTurnIds.values().next().value as string
       : null;
     if (row.type === "response_item") {
-      return {
+      return emptyResult({
         message: responseMessageContext(payload, uniqueActiveTurnId),
-        traceEvents: [],
-      };
+        sourceTurnId: uniqueActiveTurnId,
+      });
     }
-    if (row.type !== "event_msg") return { message: null, traceEvents: [] };
+    if (row.type === "item_completed" || (row.type === "event_msg" && payload.type === "item_completed")) {
+      const sourceTurnId = stringValue(payload.turn_id) || uniqueActiveTurnId;
+      const decoded = completedItem(payload.item);
+      if (!decoded) return emptyResult({ sourceTurnId });
+      const itemId = stringValue(decoded.payload.id);
+      const sourceRecordId = itemId ? `item_completed:${itemId}` : "";
+      const messageType: SessionMessage["role"] | null = decoded.type === "usermessage"
+        ? "user"
+        : decoded.type === "agentmessage"
+          ? "assistant"
+          : null;
+      const messageContent = messageType ? collectText(decoded.payload.content).join("").trim() : "";
+      const rawPhase = stringValue(decoded.payload.phase);
+      const phase: Exclude<SessionMessage["phase"], undefined> =
+        rawPhase === "commentary" || rawPhase === "final_answer" ? rawPhase : null;
+      const completedMessage = this.currentHistoryMode === "paginated"
+        && messageType
+        && itemId
+        && messageContent
+        ? {
+            role: messageType,
+            content: messageContent,
+            timestamp: completedTimestamp(row, payload),
+            sourceTurnId,
+            phase: messageType === "assistant" ? phase : null,
+            sourceRecordId,
+            replacesSourceRecordId: `response_item:${itemId}`,
+          }
+        : null;
+      const toolTrace = itemToolTrace(row, payload, decoded.type, decoded.payload, sourceTurnId);
+      return emptyResult({
+        completedMessage,
+        sourceTurnId,
+        traceEvents: toolTrace ? [toolTrace] : [],
+      });
+    }
+    if (row.type !== "event_msg") return emptyResult();
 
     const rawType = stringValue(payload.type);
     if (rawType === "task_started") {
@@ -133,8 +472,8 @@ export class CodexRolloutAccumulator {
       if (modelContextWindow !== null) attributes.modelContextWindow = modelContextWindow;
       const collaborationModeKind = stringValue(payload.collaboration_mode_kind);
       if (collaborationModeKind) attributes.collaborationModeKind = collaborationModeKind;
-      return {
-        message: null,
+      return emptyResult({
+        sourceTurnId,
         traceEvents: [{
           kind: "event",
           source: "codex",
@@ -147,7 +486,7 @@ export class CodexRolloutAccumulator {
           sourceTurnId,
           attributes,
         }],
-      };
+      });
     }
 
     if (rawType === "task_complete") {
@@ -164,8 +503,8 @@ export class CodexRolloutAccumulator {
       if (durationMs !== null) attributes.durationMs = durationMs;
       if (timeToFirstTokenMs !== null) attributes.timeToFirstTokenMs = timeToFirstTokenMs;
       if (error) attributes.error = error;
-      return {
-        message: null,
+      return emptyResult({
+        sourceTurnId,
         traceEvents: [{
           kind: "event",
           source: "codex",
@@ -178,7 +517,7 @@ export class CodexRolloutAccumulator {
           sourceTurnId,
           attributes,
         }],
-      };
+      });
     }
 
     if (rawType === "turn_aborted") {
@@ -193,8 +532,8 @@ export class CodexRolloutAccumulator {
       if (endedAt) attributes.endedAt = endedAt;
       if (durationMs !== null) attributes.durationMs = durationMs;
       if (abortReason) attributes.abortReason = abortReason;
-      return {
-        message: null,
+      return emptyResult({
+        sourceTurnId,
         traceEvents: [{
           kind: "event",
           source: "codex",
@@ -207,9 +546,9 @@ export class CodexRolloutAccumulator {
           sourceTurnId,
           attributes,
         }],
-      };
+      });
     }
 
-    return { message: null, traceEvents: [] };
+    return emptyResult();
   }
 }
