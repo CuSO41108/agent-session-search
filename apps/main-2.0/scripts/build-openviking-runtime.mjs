@@ -17,6 +17,13 @@ import { pipeline } from "node:stream/promises";
 import { fileURLToPath } from "node:url";
 import * as tar from "tar";
 
+const WINDOWS_X64_LLAMA_CPP_WHEEL = [
+  "llama-cpp-python @ ",
+  "https://github.com/abetlen/llama-cpp-python/releases/download/v0.3.34/",
+  "llama_cpp_python-0.3.34-py3-none-win_amd64.whl",
+  "#sha256=6526fff614e5ef7e439e6369e076a78073e45e1d791dbe1d5e5d42661f46ca1a",
+].join("");
+
 export function runtimeArtifactName({ version, platform, arch }) {
   assertToken(version, "version");
   assertToken(platform, "platform");
@@ -67,6 +74,9 @@ export function buildRuntimePlan(input) {
       "pip",
       "install",
       "--disable-pip-version-check",
+      ...(input.platform === "win32" && input.arch === "x64"
+        ? [WINDOWS_X64_LLAMA_CPP_WHEEL]
+        : []),
       `openviking[local-embed]==${input.version}`,
     ],
   };
