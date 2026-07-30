@@ -527,6 +527,51 @@ describe("remote session sync model", () => {
     expect(parseDetailSnapshot(detail).traceEvents[0]?.status).toBe("completed");
   });
 
+  it("validates optional Turn metadata and bounded trace attributes in detail snapshots", () => {
+    const base = buildRemoteSessionSnapshot(SESSION, MESSAGES, [], 10_000);
+    const trace = {
+      index: 0,
+      kind: "event",
+      source: "codex",
+      title: "Plan",
+      detail: "Inspect the parser",
+      timestamp: "2026-07-20T08:00:00.000Z",
+      eventType: "codex.plan",
+      sourceTurnId: "turn-1",
+      attributes: { plan: { step: "Inspect the parser" } },
+    };
+    const parsed = parseDetailSnapshot({
+      ...base,
+      messages: [{
+        ...MESSAGES[0],
+        phase: "commentary",
+        sourceTurnId: "turn-1",
+      }],
+      traceEvents: [trace],
+    });
+
+    expect(parsed.messages[0]).toMatchObject({ phase: "commentary", sourceTurnId: "turn-1" });
+    expect(parsed.traceEvents[0]).toMatchObject({
+      sourceTurnId: "turn-1",
+      attributes: { plan: { step: "Inspect the parser" } },
+    });
+
+    const rejected = parseDetailSnapshot({
+      ...base,
+      messages: [
+        { ...MESSAGES[0], phase: "draft" },
+        { ...MESSAGES[0], sourceTurnId: 42 },
+      ],
+      traceEvents: [
+        { ...trace, sourceTurnId: 42 },
+        { ...trace, attributes: "not-an-object" },
+        { ...trace, attributes: { text: "x".repeat(50_000) } },
+      ],
+    });
+    expect(rejected.messages).toEqual([]);
+    expect(rejected.traceEvents).toEqual([]);
+  });
+
   it("preserves subagent relationships in portable sessions and defaults older payloads", () => {
     const portable = remotePortableSessionFrom(
       { ...SESSION, isSubagent: true, parentSessionId: "parent-1" },

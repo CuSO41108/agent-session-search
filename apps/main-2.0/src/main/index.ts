@@ -1374,7 +1374,7 @@ function ensureWslSessionIndexer(): WslSessionIndexer {
       store,
       fetchSessionFile: (environment, session) => fetchRemoteSessionFilePayload(environment, session),
       loadSession: (environment, payload, summary) =>
-        loadWslSessionDetailPayload(environment, payload, summary, { includeTraceEvents: false }),
+        loadWslSessionDetailPayload(environment, payload, summary, { includeTraceEvents: true }),
       onComplete: (environment, result) => {
         if (result.indexed > 0) emitEnvironmentsUpdated();
       },

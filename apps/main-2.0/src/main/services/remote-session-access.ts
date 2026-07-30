@@ -93,7 +93,12 @@ export class RemoteSessionAccess {
   }
 
   async hasHydratedDetails(sessionKey: string): Promise<boolean> {
-    return (await this.dependencies.getStore().getMessages(sessionKey, 0, 1)).length > 0;
+    const store = this.dependencies.getStore();
+    const session = await store.getSession(sessionKey);
+    return Boolean(
+      session
+      && await store.isSessionContentFresh(sessionKey, session.fileMtimeMs, session.fileSize),
+    );
   }
 
   async ensureDetails(sessionKey: string): Promise<void> {
@@ -136,7 +141,12 @@ export class RemoteSessionAccess {
       ...(environment.kind === "ssh" ? { runSsh: this.dependencies.runSshCommand } : {}),
     });
     if (environment.kind === "wsl") {
-      const loaded = loadWslSessionDetailPayload(environment, payload, session);
+      const loaded = loadWslSessionDetailPayload(
+        environment,
+        payload,
+        session,
+        { includeTraceEvents: true },
+      );
       if (loaded) {
         await store.upsertIndexedSession(
           loaded.session,

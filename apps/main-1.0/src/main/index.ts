@@ -583,7 +583,11 @@ async function ensureRemoteResumePreflight(session: SessionSearchResult): Promis
 }
 
 function hasHydratedRemoteDetails(sessionKey: string): boolean {
-  return store.getMessages(sessionKey, 0, 1).length > 0;
+  const session = store.getSession(sessionKey);
+  return Boolean(
+    session
+    && store.isSessionContentFresh(sessionKey, session.fileMtimeMs, session.fileSize),
+  );
 }
 
 async function ensureRemoteSessionDetailsLoaded(sessionKey: string): Promise<void> {
@@ -601,7 +605,12 @@ async function ensureRemoteSessionDetailsLoaded(sessionKey: string): Promise<voi
     const environment = store.getEnvironment(latest.environmentId);
     if (environment?.kind === "wsl") {
       const payload = await fetchRemoteSessionFilePayload(environment, latest);
-      const loaded = loadWslSessionDetailPayload(environment, payload, latest);
+      const loaded = loadWslSessionDetailPayload(
+        environment,
+        payload,
+        latest,
+        { includeTraceEvents: true },
+      );
       if (loaded) {
         store.upsertIndexedSession(
           loaded.session,

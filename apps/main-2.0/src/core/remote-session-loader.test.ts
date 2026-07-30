@@ -226,16 +226,14 @@ describe("remote session loader", () => {
     expect(loaded?.messages.map((message) => message.content)).toEqual(["detail question", "detail answer"]);
     expect(loaded?.traceEvents).toEqual([
       expect.objectContaining({
-        kind: "tool_call",
-        title: "exec",
-        detail: "console.log('remote')",
-        callId: "remote-custom-1",
-      }),
-      expect.objectContaining({
         kind: "tool_result",
-        title: "tool output",
-        detail: "remote",
+        title: "exec",
+        status: "completed",
         callId: "remote-custom-1",
+        attributes: {
+          input: "console.log('remote')",
+          output: "remote",
+        },
       }),
     ]);
   });
