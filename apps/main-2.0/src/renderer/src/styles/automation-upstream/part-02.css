@@ -793,6 +793,7 @@
   z-index: 100;
   background: var(--panel);
   box-shadow: 0 12px 30px color-mix(in srgb, var(--ink) 20%, transparent);
+  -webkit-app-region: no-drag;
 }
 
 .workflow-graph-layer {

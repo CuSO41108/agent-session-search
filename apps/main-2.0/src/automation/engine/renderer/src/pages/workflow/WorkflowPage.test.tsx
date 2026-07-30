@@ -1,7 +1,11 @@
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, test } from "vitest";
 import type { WorkflowController } from "./workflow-controller";
 import { WorkflowPage } from "./WorkflowPage";
+
+const workflowStyles = readFileSync(resolve("src/renderer/src/styles/automation-upstream/part-02.css"), "utf8");
 
 function controller(definitionReady: boolean): WorkflowController {
   return {
@@ -12,6 +16,14 @@ function controller(definitionReady: boolean): WorkflowController {
     onObjectiveChange: () => undefined, onSelectConfiguredAgent: () => undefined, onSelectReviewerConfiguredAgent: () => undefined, onBuildDefinition: () => undefined, onReplyChange: () => undefined, onSendReply: () => undefined, onUpdateNode: () => undefined, onRunWorkflow: () => undefined, onResetSession: () => undefined,
   };
 }
+
+describe("WorkflowPage macOS interactions", () => {
+  test("keeps the expanded graph close button clickable inside the macOS titlebar drag area", () => {
+    const closeRule = workflowStyles.match(/\.workflow-graph-close\s*\{([^}]*)\}/)?.[1];
+
+    expect(closeRule).toContain("-webkit-app-region: no-drag");
+  });
+});
 
 describe("WorkflowPage input ownership", () => {
   test("renders the planning composer before a workflow graph exists", () => {
