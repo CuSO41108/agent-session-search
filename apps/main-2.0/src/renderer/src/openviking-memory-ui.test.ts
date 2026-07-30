@@ -40,6 +40,38 @@ describe("OpenViking directory memory UI", () => {
     expect(html).toContain("OpenCode");
   });
 
+  it("configures memory extraction through the summary Provider", () => {
+    const html = renderToStaticMarkup(createElement(OpenVikingMemorySettings, {
+      language: "zh",
+      settings: {
+        ...defaultSettings,
+        summarySource: "codex",
+        openVikingExtractionModel: "gpt-5.6-sol",
+        openVikingExtractionReasoningEffort: "medium",
+      },
+      saving: false,
+      onSettingsChange: () => undefined,
+    }));
+
+    expect(html).toContain("记忆提取");
+    expect(html).toContain("摘要 Provider");
+    expect(html).toContain("跟随 Provider");
+    expect(html).toContain("gpt-5.6-sol");
+    expect(html).toContain('value="medium"');
+  });
+
+  it("explains when the summary Provider cannot extract memories", () => {
+    const html = renderToStaticMarkup(createElement(OpenVikingMemorySettings, {
+      language: "zh",
+      settings: { ...defaultSettings, summarySource: "claude" },
+      saving: false,
+      onSettingsChange: () => undefined,
+    }));
+
+    expect(html).toContain("Claude CLI");
+    expect(html).toContain("暂不支持");
+  });
+
   it("renders live runtime download stages, byte counts and a progress bar", async () => {
     const source = await readFile(
       path.join(process.cwd(), "src/renderer/src/features/settings/openviking-memory-settings.tsx"),

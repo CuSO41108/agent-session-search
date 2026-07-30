@@ -740,6 +740,7 @@
 }
 
 .openviking-component-list,
+.openviking-extraction-settings,
 .openviking-integration-settings {
   display: grid;
   gap: 9px;
@@ -866,9 +867,52 @@
   color: var(--danger);
 }
 
+.openviking-extraction-settings,
 .openviking-integration-settings {
   padding-top: 5px;
   border-top: 1px solid var(--border-subtle);
+}
+
+.openviking-extraction-provider {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 10px 12px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius);
+  background: var(--panel-subtle);
+}
+
+.openviking-extraction-provider > div {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.openviking-extraction-provider strong {
+  color: var(--text);
+  font-size: 12px;
+}
+
+.openviking-extraction-provider span,
+.openviking-extraction-provider small {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.openviking-extraction-provider small {
+  text-align: right;
+}
+
+.openviking-extraction-provider.error {
+  border-color: color-mix(in srgb, var(--danger) 28%, transparent);
+  background: var(--danger-bg);
+}
+
+.openviking-extraction-provider.error small {
+  color: var(--danger);
 }
 
 .openviking-integration-toggle {

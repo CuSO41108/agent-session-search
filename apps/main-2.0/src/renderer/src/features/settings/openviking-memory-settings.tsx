@@ -9,7 +9,11 @@ import {
   RefreshCw,
 } from "lucide-react";
 
-import type { AppSettings, AppSettingsUpdate } from "../../../../core/platform";
+import type {
+  AppSettings,
+  AppSettingsUpdate,
+  OpenVikingExtractionReasoningEffort,
+} from "../../../../core/platform";
 import type {
   OpenVikingMemorySnapshot,
   OpenVikingRuntimeInstallPhase,
@@ -34,6 +38,7 @@ export function OpenVikingMemorySettings({
   const [snapshot, setSnapshot] = useState<OpenVikingMemorySnapshot | null>(null);
   const [action, setAction] = useState<ComponentAction>(null);
   const [error, setError] = useState<string | null>(null);
+  const [extractionModel, setExtractionModel] = useState(settings?.openVikingExtractionModel ?? "");
 
   const refresh = useCallback(async () => {
     setSnapshot(await window.sessionSearch.getOpenVikingMemorySnapshot());
@@ -42,6 +47,10 @@ export function OpenVikingMemorySettings({
   useEffect(() => {
     void refresh().catch((cause) => setError(errorMessage(cause)));
   }, [refresh]);
+
+  useEffect(() => {
+    setExtractionModel(settings?.openVikingExtractionModel ?? "");
+  }, [settings?.openVikingExtractionModel]);
 
   useEffect(() => {
     if (
@@ -94,6 +103,39 @@ export function OpenVikingMemorySettings({
     : (snapshot.runtime.installedBytes / 1_000_000).toFixed(1);
   const modelInstalled = Boolean(snapshot?.model.installed);
   const controlsDisabled = !enabled || saving || action !== null;
+  const summarySource = settings?.summarySource ?? "custom";
+  const summaryConfig = settings?.summaryApiConfig;
+  const providerName = summarySource === "codex"
+    ? "Codex"
+    : summarySource === "claude"
+      ? "Claude CLI"
+      : summaryConfig?.customProviderName || l("Custom Provider", "自定义 Provider");
+  const extractionProviderError = summarySource === "claude"
+    ? l(
+      "Claude CLI is not currently supported for memory extraction. Choose Codex or a custom OpenAI Chat Provider on the Provider page.",
+      "记忆提取暂不支持 Claude CLI，请在 Provider 页面改用 Codex 或自定义 OpenAI Chat Provider。",
+    )
+    : summarySource === "custom" && summaryConfig?.customApiFormat !== "openai_chat"
+      ? l(
+        "Memory extraction currently supports custom OpenAI Chat Providers only.",
+        "记忆提取暂不支持该格式，目前仅支持自定义 OpenAI Chat Provider。",
+      )
+      : summarySource === "custom" && (
+        !summaryConfig?.customBaseUrl.trim()
+        || !summaryConfig.customApiKey.trim()
+        || !(extractionModel.trim() || summaryConfig.customModel.trim())
+      )
+        ? l(
+          "Complete the summary Provider URL, API key, and model before starting Memory.",
+          "请先在 Provider 页面补全摘要 Provider 的地址、API Key 和模型。",
+        )
+        : null;
+  const saveExtractionModel = () => {
+    const normalized = extractionModel.trim();
+    if (normalized !== (settings?.openVikingExtractionModel ?? "")) {
+      onSettingsChange({ openVikingExtractionModel: normalized });
+    }
+  };
 
   return (
     <section className="settings-pane openviking-settings-pane">
@@ -217,6 +259,64 @@ export function OpenVikingMemorySettings({
             </button>
           ) : null}
         </div>
+      </div>
+
+      <div className="openviking-extraction-settings">
+        <div className="settings-pane-head compact">
+          <h3>{l("Memory extraction", "记忆提取")}</h3>
+          <p>{l(
+            "Uses the summary Provider configured on the Provider page.",
+            "复用 Provider 页面配置的摘要 Provider。",
+          )}</p>
+        </div>
+        <div className={`openviking-extraction-provider${extractionProviderError ? " error" : ""}`}>
+          <div>
+            <strong>{l("Summary Provider", "摘要 Provider")}</strong>
+            <span>{providerName}</span>
+          </div>
+          <small>{extractionProviderError ?? l("Ready for memory extraction", "可用于记忆提取")}</small>
+        </div>
+        <label className="settings-field">
+          <div className="settings-field-text">
+            <span className="settings-field-title">{l("Model override", "提取模型")}</span>
+            <span className="settings-field-sub">{l(
+              "Leave blank to follow the summary Provider model.",
+              "留空时跟随摘要 Provider 的模型。",
+            )}</span>
+          </div>
+          <input
+            type="text"
+            value={extractionModel}
+            placeholder={l("Follow Provider", "跟随 Provider")}
+            disabled={!settings || saving}
+            onChange={(event) => setExtractionModel(event.currentTarget.value)}
+            onBlur={saveExtractionModel}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") event.currentTarget.blur();
+            }}
+          />
+        </label>
+        <label className="settings-field">
+          <div className="settings-field-text">
+            <span className="settings-field-title">{l("Reasoning effort", "推理强度")}</span>
+            <span className="settings-field-sub">{l(
+              "Controls how much reasoning the extraction model uses.",
+              "控制提取模型用于分析记忆的推理量。",
+            )}</span>
+          </div>
+          <select
+            value={settings?.openVikingExtractionReasoningEffort ?? "medium"}
+            disabled={!settings || saving}
+            onChange={(event) => onSettingsChange({
+              openVikingExtractionReasoningEffort:
+                event.currentTarget.value as OpenVikingExtractionReasoningEffort,
+            })}
+          >
+            <option value="low">low</option>
+            <option value="medium">medium</option>
+            <option value="high">high</option>
+          </select>
+        </label>
       </div>
 
       <div className="openviking-integration-settings">
