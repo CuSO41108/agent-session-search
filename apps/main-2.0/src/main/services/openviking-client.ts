@@ -20,6 +20,7 @@ export interface OpenVikingTaskRef {
 
 export interface SaveOpenVikingMemoryInput {
   id?: string;
+  uri?: string;
   title: string;
   content: string;
 }
@@ -203,12 +204,24 @@ export class OpenVikingGateway implements OpenVikingClientPort {
     input: SaveOpenVikingMemoryInput,
   ): Promise<OpenVikingMemoryItem> {
     return this.normalize(async () => {
-      const id = input.id?.trim() || randomUUID();
-      if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/u.test(id)) {
-        throw new Error("OpenViking manual memory ID is invalid.");
+      const existingUri = input.uri?.trim();
+      let uri: string;
+      if (existingUri) {
+        if (!/^viking:\/\/user\/memories\/(?:(?:identity|soul)\.md|manual\/[A-Za-z0-9][A-Za-z0-9_-]{0,127}\.md)$/u.test(existingUri)) {
+          throw new Error("Only manual, identity, and soul memories can be edited.");
+        }
+        uri = existingUri;
+      } else {
+        const id = input.id?.trim() || randomUUID();
+        if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/u.test(id)) {
+          throw new Error("OpenViking manual memory ID is invalid.");
+        }
+        uri = `viking://user/memories/manual/${id}.md`;
       }
-      const uri = `viking://user/memories/manual/${id}.md`;
-      await this.workspaceClient(auth).write(uri, input.content, { wait: true });
+      await this.workspaceClient(auth).write(uri, input.content, {
+        mode: existingUri ? "replace" : "create",
+        wait: true,
+      });
       return {
         id: uri,
         workspaceId: "",

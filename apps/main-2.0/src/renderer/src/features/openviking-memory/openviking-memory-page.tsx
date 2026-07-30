@@ -135,8 +135,9 @@ export function OpenVikingMemoryPage({
   }, [enabled, workspace?.id, workspace?.importState, query]);
 
   const ready = snapshot?.runtime.state !== "not-installed" && snapshot?.model.installed;
-  const manualMemoryId = selected ? manualIdFromUri(selected.id) : null;
-  const canEditSelected = Boolean(selected && (!selected.id || manualMemoryId));
+  const editableMemoryUri = selected ? editableUriForMemory(selected.id) : null;
+  const identityMemory = selected ? isIdentityMemory(selected.id) : false;
+  const canEditSelected = Boolean(selected && (!selected.id || editableMemoryUri));
 
   const toggleCategory = (category: OpenVikingMemoryCategory) => {
     setCollapsedCategories((current) => {
@@ -224,7 +225,7 @@ export function OpenVikingMemoryPage({
     if (!workspace || !selected || !canEditSelected || !draftTitle.trim()) return;
     void run("save", async () => {
       const saved = await window.sessionSearch.saveOpenVikingMemory(workspace.id, {
-        ...(manualMemoryId ? { id: manualMemoryId } : {}),
+        ...(editableMemoryUri ? { uri: editableMemoryUri } : {}),
         title: draftTitle.trim(),
         content: draftContent,
       });
@@ -510,7 +511,13 @@ export function OpenVikingMemoryPage({
                           placeholder={l("What should agents remember?", "希望 Agent 记住什么？")}
                         />
                         <footer>
-                          <span>{canEditSelected ? l("Manual memory", "手动记忆") : l("Generated memory · read only", "自动生成的记忆 · 只读")}</span>
+                          <span>{
+                            identityMemory
+                              ? l("Identity memory", "身份记忆")
+                              : canEditSelected
+                                ? l("Manual memory", "手动记忆")
+                                : l("Generated memory · read only", "自动生成的记忆 · 只读")
+                          }</span>
                           <div>
                             {selected.id ? (
                               <button type="button" className="danger" onClick={deleteMemory} disabled={action !== null}>
@@ -569,9 +576,15 @@ function CircleStopIcon(): ReactElement {
   return <span className="openviking-stop-icon" aria-hidden="true" />;
 }
 
-function manualIdFromUri(uri: string): string | null {
-  const match = /^viking:\/\/user\/memories\/manual\/([A-Za-z0-9_-]+)\.md$/u.exec(uri);
-  return match?.[1] ?? null;
+function editableUriForMemory(uri: string): string | null {
+  return /^viking:\/\/user\/memories\/(?:(?:identity|soul)\.md|manual\/[A-Za-z0-9][A-Za-z0-9_-]{0,127}\.md)$/u.test(uri)
+    ? uri
+    : null;
+}
+
+function isIdentityMemory(uri: string): boolean {
+  const candidate = uri.split("/").at(-1)?.toLowerCase();
+  return candidate === "identity.md" || candidate === "soul.md";
 }
 
 function importProgress(workspace: OpenVikingWorkspace): string {

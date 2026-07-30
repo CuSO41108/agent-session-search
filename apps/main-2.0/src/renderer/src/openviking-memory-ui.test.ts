@@ -90,6 +90,17 @@ describe("OpenViking directory memory UI", () => {
     expect(source).toContain("已导入 ${workspace.importedTurns} / ${workspace.totalTurns}");
   });
 
+  it("allows identity and soul memories to be edited in place", async () => {
+    const source = await readFile(
+      path.join(process.cwd(), "src/renderer/src/features/openviking-memory/openviking-memory-page.tsx"),
+      "utf8",
+    );
+
+    expect(source).toContain('candidate === "identity.md" || candidate === "soul.md"');
+    expect(source).toContain("uri: editableMemoryUri");
+    expect(source).toContain('l("Identity memory", "身份记忆")');
+  });
+
   it("loads existing memories without requiring a search query", async () => {
     const source = await readFile(
       path.join(process.cwd(), "src/renderer/src/features/openviking-memory/openviking-memory-page.tsx"),
@@ -113,6 +124,26 @@ describe("OpenViking directory memory UI", () => {
     expect(css).toMatch(/\.openviking-memory-browser\s*\{[^}]*grid-template-rows:[^;]*minmax\(0,\s*1fr\);[^}]*min-height:\s*0;/su);
     expect(css).toMatch(/\.openviking-memory-content\s*\{[^}]*min-height:\s*0;[^}]*overflow:\s*hidden;/su);
     expect(css).toMatch(/\.openviking-result-list\s*\{[^}]*min-height:\s*0;[^}]*overflow-y:\s*auto;/su);
+  });
+
+  it("keeps memory detail actions horizontal when the panel is narrow", async () => {
+    const css = await readFile(
+      path.join(process.cwd(), "src/renderer/src/styles/openviking-memory.css"),
+      "utf8",
+    );
+
+    expect(css).toMatch(/\.openviking-memory-detail > footer > div\s*\{[^}]*flex:\s*0 0 auto;/su);
+    expect(css).toMatch(/\.openviking-memory-detail > footer > div > button\s*\{[^}]*white-space:\s*nowrap;/su);
+  });
+
+  it("keeps memory detail actions inside the panel when its height is limited", async () => {
+    const css = await readFile(
+      path.join(process.cwd(), "src/renderer/src/styles/openviking-memory.css"),
+      "utf8",
+    );
+
+    expect(css).toMatch(/\.openviking-memory-detail\s*\{[^}]*grid-template-rows:\s*auto auto minmax\(0,\s*1fr\) auto;[^}]*overflow:\s*hidden;/su);
+    expect(css).toMatch(/\.openviking-memory-detail > textarea\s*\{[^}]*min-height:\s*0;/su);
   });
 
   it("renders accessible collapsible memory category groups", async () => {

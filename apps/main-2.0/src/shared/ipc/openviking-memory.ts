@@ -13,6 +13,7 @@ const memoryUriInput = z.string().trim().min(1).max(8_192)
   .refine((value) => !value.includes("\0"), "Memory URI must not contain NUL.");
 const memoryInput = z.object({
   id: z.string().trim().min(1).max(128).regex(/^[A-Za-z0-9_-]+$/u).optional(),
+  uri: memoryUriInput.optional(),
   title: z.string().trim().min(1).max(200),
   content: z.string().max(1_048_576),
 }).strict();

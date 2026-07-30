@@ -171,7 +171,51 @@ describe("OpenVikingGateway", () => {
       content: "Keep directory isolation",
     });
     expect(saved.id).toBe("viking://user/memories/manual/manual-1.md");
+    expect(requests.find((request) => request.path === "/api/v1/content/write")?.body).toMatchObject({
+      uri: "viking://user/memories/manual/manual-1.md",
+      content: "Keep directory isolation",
+      mode: "create",
+      wait: true,
+    });
     await gateway.deleteMemory(auth, saved.id);
+  });
+
+  it("updates an editable identity memory in place", async () => {
+    const gateway = new OpenVikingGateway({ baseUrl, rootApiKey: "root-key" });
+    const auth: OpenVikingWorkspaceAuth = {
+      accountId: "agent-recall-v2",
+      userId: "workspace_abcd",
+      apiKey: "workspace-key",
+    };
+
+    const saved = await gateway.saveMemory(auth, {
+      uri: "viking://user/memories/identity.md",
+      title: "identity.md",
+      content: "# Identity\n\n- Name: 小王",
+    });
+
+    expect(saved.id).toBe("viking://user/memories/identity.md");
+    expect(requests.find((request) => request.path === "/api/v1/content/write")?.body).toMatchObject({
+      uri: "viking://user/memories/identity.md",
+      content: "# Identity\n\n- Name: 小王",
+      mode: "replace",
+      wait: true,
+    });
+  });
+
+  it("does not allow arbitrary generated memories to be overwritten", async () => {
+    const gateway = new OpenVikingGateway({ baseUrl, rootApiKey: "root-key" });
+
+    await expect(gateway.saveMemory({
+      accountId: "agent-recall-v2",
+      userId: "workspace_abcd",
+      apiKey: "workspace-key",
+    }, {
+      uri: "viking://user/memories/experiences/generated.md",
+      title: "generated.md",
+      content: "overwrite",
+    })).rejects.toThrow("Only manual, identity, and soul memories can be edited.");
+    expect(requests).toHaveLength(0);
   });
 
   it("lists nested event memories when the query is empty", async () => {
