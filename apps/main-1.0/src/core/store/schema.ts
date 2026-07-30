@@ -42,7 +42,8 @@ export function migrateSessionStore(db: SessionStoreDatabase): void {
       content_indexed_mtime_ms REAL NOT NULL DEFAULT 0,
       content_indexed_size INTEGER NOT NULL DEFAULT 0,
       is_subagent INTEGER NOT NULL DEFAULT 0,
-      parent_session_id TEXT
+      parent_session_id TEXT,
+      codex_history_mode TEXT
     );
 
     CREATE TABLE IF NOT EXISTS environments (
@@ -70,6 +71,9 @@ export function migrateSessionStore(db: SessionStoreDatabase): void {
       role TEXT NOT NULL,
       content TEXT NOT NULL,
       timestamp TEXT NOT NULL,
+      source_turn_id TEXT,
+      phase TEXT,
+      source_record_id TEXT,
       PRIMARY KEY (session_key, message_index),
       FOREIGN KEY (session_key) REFERENCES sessions(session_key) ON DELETE CASCADE
     );
@@ -121,6 +125,8 @@ export function migrateSessionStore(db: SessionStoreDatabase): void {
       call_id TEXT,
       event_type TEXT,
       status TEXT,
+      source_turn_id TEXT,
+      attributes_json TEXT,
       PRIMARY KEY (session_key, trace_index),
       FOREIGN KEY (session_key) REFERENCES sessions(session_key) ON DELETE CASCADE
     );
@@ -280,6 +286,12 @@ export function migrateSessionStore(db: SessionStoreDatabase): void {
   addColumnIfMissing(db, "sessions", "content_indexed_size", "INTEGER NOT NULL DEFAULT 0");
   const addedSubagentColumn = addColumnIfMissing(db, "sessions", "is_subagent", "INTEGER NOT NULL DEFAULT 0");
   addColumnIfMissing(db, "sessions", "parent_session_id", "TEXT");
+  addColumnIfMissing(db, "sessions", "codex_history_mode", "TEXT");
+  addColumnIfMissing(db, "messages", "source_turn_id", "TEXT");
+  addColumnIfMissing(db, "messages", "phase", "TEXT");
+  addColumnIfMissing(db, "messages", "source_record_id", "TEXT");
+  addColumnIfMissing(db, "trace_events", "source_turn_id", "TEXT");
+  addColumnIfMissing(db, "trace_events", "attributes_json", "TEXT");
   addColumnIfMissing(db, "environments", "wsl_distribution", "TEXT");
   if (addedSubagentColumn) {
     db

@@ -107,6 +107,84 @@ describe("PostgresSessionRepository", () => {
     await database.close();
   });
 
+  it("round-trips Codex lifecycle Turns and private incremental state", async () => {
+    const lifecycleMessages: SessionMessage[] = [{
+      role: "assistant",
+      content: "done",
+      timestamp: "2026-07-30T08:00:01.000Z",
+      index: 0,
+      sourceTurnId: "turn-1",
+      phase: "final_answer",
+    }];
+    const lifecycleTraces: SessionTraceEvent[] = [
+      {
+        index: 0,
+        kind: "event",
+        source: "codex",
+        title: "Turn started",
+        detail: "",
+        timestamp: "2026-07-30T08:00:00.000Z",
+        eventType: "codex.turn.started",
+        status: "running",
+        sourceTurnId: "turn-1",
+        attributes: { startedAt: "2026-07-30T08:00:00.000Z" },
+      },
+      {
+        index: 1,
+        kind: "event",
+        source: "codex",
+        title: "Turn completed",
+        detail: "",
+        timestamp: "2026-07-30T08:00:03.000Z",
+        eventType: "codex.turn.completed",
+        status: "completed",
+        sourceTurnId: "turn-1",
+        attributes: {
+          endedAt: "2026-07-30T08:00:03.000Z",
+          durationMs: 3_000,
+          timeToFirstTokenMs: 200,
+        },
+      },
+    ];
+    await repository.upsertIndexedSession(
+      session({ sessionKey: "codex:lifecycle", rawId: "lifecycle" }),
+      lifecycleMessages,
+      [],
+      lifecycleTraces,
+      {
+        historyMode: "paginated",
+        messageProvenance: [{ messageIndex: 0, sourceRecordId: "response_item:answer-1" }],
+        activeTurnIds: [],
+      },
+    );
+
+    const turns = await turnsRepository.listSessionTurns("codex:lifecycle");
+    expect(turns).toMatchObject([{
+      sourceTurnId: "turn-1",
+      status: "completed",
+      durationMs: 3_000,
+      timeToFirstTokenMs: 200,
+      spanCount: 0,
+    }]);
+    expect(await turnsRepository.getAllMessages("codex:lifecycle")).toMatchObject([{
+      sourceTurnId: "turn-1",
+      phase: "final_answer",
+    }]);
+    expect(await turnsRepository.getTraceEvents("codex:lifecycle")).toMatchObject([
+      { sourceTurnId: "turn-1", eventType: "codex.turn.started" },
+      {
+        sourceTurnId: "turn-1",
+        eventType: "codex.turn.completed",
+        attributes: { durationMs: 3_000 },
+      },
+    ]);
+    expect(await turnsRepository.getCodexIncrementalState("codex:lifecycle")).toEqual({
+      historyMode: "paginated",
+      messageProvenance: [{ messageIndex: 0, sourceRecordId: "response_item:answer-1" }],
+      activeTurnIds: [],
+    });
+  });
+
   it("atomically replaces derived content while preserving user-owned state", async () => {
     await repository.upsertIndexedSession(session(), messages, tokens, traces);
     await repository.setCustomTitle("codex:session-a", "My login investigation");

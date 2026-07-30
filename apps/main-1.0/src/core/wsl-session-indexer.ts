@@ -95,7 +95,13 @@ export class WslSessionIndexer {
           const loaded = this.loadSession(environment, payload, session);
           if (!loaded) throw new Error("WSL session file could not be parsed.");
           stage = "store";
-          this.store.upsertIndexedSession(loaded.session, loaded.messages, loaded.tokenEvents, loaded.traceEvents);
+          this.store.upsertIndexedSession(
+            loaded.session,
+            loaded.messages,
+            loaded.tokenEvents,
+            loaded.traceEvents,
+            loaded.codexIncrementalState,
+          );
           this.failedVersions.delete(session.sessionKey);
           indexed += 1;
         } catch (error) {

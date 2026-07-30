@@ -421,7 +421,7 @@ export async function syncRemoteEnvironment(
     const loaded = loadRemoteSessionPayloads(environment, payloads);
     for (const item of loaded) {
       migrateLegacyRemoteSessionRecord(store, item.session);
-      store.upsertIndexedSession(item.session, item.messages, item.tokenEvents, item.traceEvents);
+      store.upsertIndexedSession(item.session, item.messages, item.tokenEvents, item.traceEvents, item.codexIncrementalState);
     }
     store.updateEnvironmentSyncState(environment.id, "watching", { lastSyncedAt: Date.now(), lastError: null });
     return { environmentId: environment.id, indexed: enabledSummaries.length + loaded.length, error: null };
@@ -456,7 +456,7 @@ async function syncWslEnvironment(
       payloads.filter((payload) => isSupportedWslSource(payloadSourceForPayload(payload))),
     );
     for (const item of loaded) {
-      store.upsertIndexedSession(item.session, item.messages, item.tokenEvents, item.traceEvents);
+      store.upsertIndexedSession(item.session, item.messages, item.tokenEvents, item.traceEvents, item.codexIncrementalState);
     }
     store.updateEnvironmentSyncState(environment.id, "watching", { lastSyncedAt: Date.now(), lastError: null });
     return { environmentId: environment.id, indexed: enabledSummaries.length + loaded.length, error: null };

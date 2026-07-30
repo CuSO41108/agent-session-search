@@ -29,6 +29,60 @@ function indexedSession(overrides: Partial<IndexedSession> = {}): IndexedSession
 }
 
 describe("SessionsStore", () => {
+  it("round-trips Codex lifecycle fields and reconstructs private incremental state", () => {
+    const db = new DatabaseSync(":memory:");
+    try {
+      migrateSessionStore(db);
+      const store = new SessionsStore(db, new EnvironmentStore(db));
+      const session = indexedSession();
+      store.upsertIndexedSession(
+        session,
+        [{
+          role: "assistant",
+          content: "done",
+          timestamp: "2026-07-30T08:00:01.000Z",
+          index: 0,
+          sourceTurnId: "turn-1",
+          phase: "final_answer",
+        }],
+        [],
+        [{
+          index: 0,
+          kind: "event",
+          source: "codex",
+          title: "Turn started",
+          detail: "",
+          timestamp: "2026-07-30T08:00:00.000Z",
+          eventType: "codex.turn.started",
+          status: "running",
+          sourceTurnId: "turn-1",
+          attributes: { startedAt: "2026-07-30T08:00:00.000Z" },
+        }],
+        {
+          historyMode: "paginated",
+          messageProvenance: [{ messageIndex: 0, sourceRecordId: "response_item:message-1" }],
+          activeTurnIds: ["turn-1"],
+        },
+      );
+
+      expect(store.getMessages(session.sessionKey)).toMatchObject([{
+        sourceTurnId: "turn-1",
+        phase: "final_answer",
+      }]);
+      expect(store.getTraceEvents(session.sessionKey)).toMatchObject([{
+        sourceTurnId: "turn-1",
+        attributes: { startedAt: "2026-07-30T08:00:00.000Z" },
+      }]);
+      expect(store.getCodexIncrementalState(session.sessionKey)).toEqual({
+        historyMode: "paginated",
+        messageProvenance: [{ messageIndex: 0, sourceRecordId: "response_item:message-1" }],
+        activeTurnIds: ["turn-1"],
+      });
+    } finally {
+      db.close();
+    }
+  });
+
   it("normalizes legacy trace statuses when reading SQLite rows", () => {
     const db = new DatabaseSync(":memory:");
     try {

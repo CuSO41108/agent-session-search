@@ -18,6 +18,119 @@ import {
 import { TRACE_DETAIL_PREVIEW_MAX_CHARS } from "./trace-detail";
 
 describe("Codex session loading", () => {
+  it("preserves Codex message phases and normalizes turn lifecycle metadata", () => {
+    const rows = [
+      {
+        type: "session_meta",
+        timestamp: "2026-07-30T08:00:00Z",
+        payload: { id: "codex-lifecycle", cwd: "/repo", history_mode: "paginated" },
+      },
+      {
+        type: "event_msg",
+        timestamp: "2026-07-30T08:00:01Z",
+        payload: {
+          type: "task_started",
+          turn_id: "turn-1",
+          started_at: 1_775_059_201,
+          trace_id: "trace-1",
+          model_context_window: 200_000,
+        },
+      },
+      {
+        type: "response_item",
+        timestamp: "2026-07-30T08:00:02Z",
+        payload: {
+          type: "message",
+          id: "message-1",
+          role: "assistant",
+          phase: "commentary",
+          internal_chat_message_metadata_passthrough: { turn_id: "turn-1" },
+          content: [{ type: "output_text", text: "正在检查" }],
+        },
+      },
+      {
+        type: "response_item",
+        timestamp: "2026-07-30T08:00:03Z",
+        payload: {
+          type: "message",
+          id: "message-2",
+          role: "assistant",
+          phase: "final_answer",
+          internal_chat_message_metadata_passthrough: { turn_id: "turn-1" },
+          content: [{ type: "output_text", text: "检查完成" }],
+        },
+      },
+      {
+        type: "event_msg",
+        timestamp: "2026-07-30T08:00:04Z",
+        payload: {
+          type: "task_complete",
+          turn_id: "turn-1",
+          started_at: 1_775_059_201,
+          completed_at: 1_775_059_204,
+          duration_ms: 3_000,
+          time_to_first_token_ms: 250,
+          last_agent_message: "检查完成",
+        },
+      },
+    ];
+
+    const loaded = loadCodexSessionRows("/tmp/codex-lifecycle.jsonl", rows);
+
+    expect(loaded?.messages).toMatchObject([
+      { content: "正在检查", sourceTurnId: "turn-1", phase: "commentary" },
+      { content: "检查完成", sourceTurnId: "turn-1", phase: "final_answer" },
+    ]);
+    expect(loaded?.traceEvents).toMatchObject([
+      {
+        eventType: "codex.turn.started",
+        status: "running",
+        sourceTurnId: "turn-1",
+        attributes: { traceId: "trace-1", modelContextWindow: 200_000 },
+      },
+      {
+        eventType: "codex.turn.completed",
+        status: "completed",
+        sourceTurnId: "turn-1",
+        attributes: { durationMs: 3_000, timeToFirstTokenMs: 250 },
+      },
+    ]);
+    expect(loaded?.codexIncrementalState).toEqual({
+      historyMode: "paginated",
+      messageProvenance: [
+        { messageIndex: 0, sourceRecordId: "response_item:message-1" },
+        { messageIndex: 1, sourceRecordId: "response_item:message-2" },
+      ],
+      activeTurnIds: [],
+    });
+  });
+
+  it("only assigns an id-less abort to a uniquely active Codex turn", () => {
+    const meta = { type: "session_meta", payload: { id: "codex-abort", cwd: "/repo" } };
+    const started = (turnId: string) => ({ type: "event_msg", payload: { type: "task_started", turn_id: turnId } });
+
+    const unique = loadCodexSessionRows("/tmp/codex-abort.jsonl", [
+      meta,
+      started("turn-1"),
+      { type: "event_msg", payload: { type: "turn_aborted", reason: "interrupted", duration_ms: 10 } },
+    ]);
+    const ambiguous = loadCodexSessionRows("/tmp/codex-abort-ambiguous.jsonl", [
+      meta,
+      started("turn-1"),
+      started("turn-2"),
+      { type: "event_msg", payload: { type: "turn_aborted", reason: "replaced" } },
+    ]);
+
+    expect(unique?.traceEvents?.at(-1)).toMatchObject({
+      eventType: "codex.turn.aborted",
+      status: "aborted",
+      sourceTurnId: "turn-1",
+      attributes: { abortReason: "interrupted", durationMs: 10 },
+    });
+    expect(ambiguous?.traceEvents?.at(-1)?.sourceTurnId).toBeNull();
+    expect(ambiguous?.codexIncrementalState?.activeTurnIds).toEqual(["turn-1", "turn-2"]);
+  });
+
   it("detects current and legacy subagent metadata without treating ordinary forks as subagents", () => {
     expect(
       parseCodexSessionMetaLine({

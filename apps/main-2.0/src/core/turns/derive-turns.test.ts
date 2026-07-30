@@ -85,6 +85,119 @@ const tokenEvents: TokenUsageEvent[] = [
 ];
 
 describe("deriveSessionTimeline", () => {
+  it("groups by Codex source turn id and projects lifecycle without creating spans", () => {
+    const sourceMessages: SessionMessage[] = [
+      {
+        role: "user",
+        content: "first",
+        timestamp: "2026-07-30T08:00:00.000Z",
+        index: 0,
+        sourceTurnId: "turn-a",
+      },
+      {
+        role: "user",
+        content: "second",
+        timestamp: "2026-07-30T08:00:00.500Z",
+        index: 1,
+        sourceTurnId: "turn-b",
+      },
+      {
+        role: "assistant",
+        content: "first done",
+        timestamp: "2026-07-30T08:00:02.000Z",
+        index: 2,
+        sourceTurnId: "turn-a",
+        phase: "final_answer",
+      },
+    ];
+    const lifecycle: SessionTraceEvent[] = [
+      {
+        index: 0,
+        kind: "event",
+        source: "codex",
+        title: "Turn started",
+        detail: "",
+        timestamp: "2026-07-30T08:00:00.000Z",
+        eventType: "codex.turn.started",
+        status: "running",
+        sourceTurnId: "turn-a",
+        attributes: { startedAt: "2026-07-30T08:00:00.000Z" },
+      },
+      {
+        index: 1,
+        kind: "event",
+        source: "codex",
+        title: "Turn completed",
+        detail: "",
+        timestamp: "2026-07-30T08:00:03.000Z",
+        eventType: "codex.turn.completed",
+        status: "completed",
+        sourceTurnId: "turn-a",
+        attributes: {
+          endedAt: "2026-07-30T08:00:03.000Z",
+          durationMs: 3_000,
+          timeToFirstTokenMs: 125,
+        },
+      },
+      {
+        index: 2,
+        kind: "event",
+        source: "codex",
+        title: "Turn aborted",
+        detail: "replaced",
+        timestamp: "2026-07-30T08:00:01.000Z",
+        eventType: "codex.turn.aborted",
+        status: "aborted",
+        sourceTurnId: "turn-b",
+        attributes: { abortReason: "replaced", durationMs: 500 },
+      },
+    ];
+
+    const timeline = deriveSessionTimeline({
+      sessionKey: "codex:source-turns",
+      messages: sourceMessages,
+      traceEvents: lifecycle,
+      codexIncrementalState: {
+        historyMode: "paginated",
+        messageProvenance: [
+          { messageIndex: 0, sourceRecordId: "response_item:user-a" },
+          { messageIndex: 1, sourceRecordId: "response_item:user-b" },
+          { messageIndex: 2, sourceRecordId: "response_item:answer-a" },
+        ],
+        activeTurnIds: [],
+      },
+    });
+
+    expect(timeline.turns).toHaveLength(2);
+    expect(timeline.turns[0]).toMatchObject({
+      sourceMessageIndex: 0,
+      sourceTurnId: "turn-a",
+      status: "completed",
+      durationMs: 3_000,
+      timeToFirstTokenMs: 125,
+      spans: [],
+    });
+    expect(timeline.turns[0].messages[1].metadata).toEqual({
+      sourceTurnId: "turn-a",
+      phase: "final_answer",
+      codex: { sourceItemId: "response_item:answer-a" },
+    });
+    expect(timeline.turns[1]).toMatchObject({
+      sourceMessageIndex: 1,
+      sourceTurnId: "turn-b",
+      status: "aborted",
+      durationMs: 500,
+      abortReason: "replaced",
+      spans: [],
+    });
+    expect(timeline.turns[0].id).toBe(
+      deriveSessionTimeline({
+        sessionKey: "codex:source-turns",
+        messages: sourceMessages.map((message) => ({ ...message, sourceTurnId: null })),
+      }).turns[0].id,
+    );
+  });
+
   it("creates one searchable Turn per user request and pairs tool calls with their results", () => {
     const timeline = deriveSessionTimeline({
       sessionKey: "codex:test",

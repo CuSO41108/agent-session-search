@@ -60,10 +60,14 @@ export interface SessionTurnSummaryRow extends Record<string, unknown> {
   id: string;
   turn_index: number | string;
   source_message_index: number | string | null;
+  source_turn_id: string | null;
   synthetic: boolean;
   status: SessionTurnStatus;
   started_at: Date | string | null;
   ended_at: Date | string | null;
+  duration_ms: number | string | null;
+  time_to_first_token_ms: number | string | null;
+  abort_reason: string | null;
   user_preview: string;
   assistant_preview: string;
   input_tokens: number | string;
@@ -82,10 +86,14 @@ export const SESSION_TURN_SUMMARY_SQL = `
     turns.id,
     turns.turn_index,
     turns.source_message_index,
+    turns.source_turn_id,
     turns.synthetic,
     turns.status,
     turns.started_at,
     turns.ended_at,
+    turns.duration_ms,
+    turns.time_to_first_token_ms,
+    turns.abort_reason,
     left(turns.user_text, 320) as user_preview,
     left(turns.assistant_text, 180) as assistant_preview,
     turns.input_tokens,
@@ -178,10 +186,14 @@ export function sessionTurnSummaryFromRow(row: SessionTurnSummaryRow): SessionTu
     id: row.id,
     turnIndex: numberValue(row.turn_index),
     sourceMessageIndex: row.source_message_index === null ? null : numberValue(row.source_message_index),
+    sourceTurnId: row.source_turn_id,
     synthetic: row.synthetic,
     status: row.status,
     startedAt: nullableIsoValue(row.started_at),
     endedAt: nullableIsoValue(row.ended_at),
+    durationMs: row.duration_ms === null ? null : numberValue(row.duration_ms),
+    timeToFirstTokenMs: row.time_to_first_token_ms === null ? null : numberValue(row.time_to_first_token_ms),
+    abortReason: row.abort_reason,
     userPreview: row.user_preview || "",
     assistantPreview: row.assistant_preview || "",
     inputTokens: numberValue(row.input_tokens),

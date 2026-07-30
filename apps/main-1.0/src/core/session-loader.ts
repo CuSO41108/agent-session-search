@@ -4,12 +4,14 @@ import * as path from "node:path";
 import { createRequire } from "node:module";
 import { cleanTitle, cursorTimestampFromRow, getAdapter, isMeaningfulUserMessage } from "./format-adapters";
 import { scanCompleteJsonl } from "./codex-jsonl-stream";
+import { CodexRolloutAccumulator } from "./session-loaders/codex-rollout";
 import { truncateTraceDetail } from "./trace-detail";
 import type {
   CodeBuddyConversationLine,
   ClaudeAppSessionFile,
   ClaudeConversationLine,
   ClaudeSessionIndexFile,
+  CodexHistoryMode,
   CodexConversationLine,
   IndexedSession,
   LoadedSession,
@@ -77,6 +79,7 @@ export function parseCodexSessionMetaLine(parsed: unknown): {
   originator?: string;
   isSubagent: boolean;
   parentSessionId: string | null;
+  historyMode?: CodexHistoryMode;
 } | null {
   if (!parsed || typeof parsed !== "object") return null;
 
@@ -96,6 +99,7 @@ export function parseCodexSessionMetaLine(parsed: unknown): {
       originator: line.payload.originator,
       isSubagent: parentSessionId !== null,
       parentSessionId,
+      historyMode: (line.payload as { history_mode?: unknown }).history_mode === "paginated" ? "paginated" : "legacy",
     };
   }
 
@@ -107,6 +111,7 @@ export function parseCodexSessionMetaLine(parsed: unknown): {
       gitBranch: line.git?.branch,
       isSubagent: false,
       parentSessionId: null,
+      historyMode: "legacy",
     };
   }
 
@@ -131,6 +136,7 @@ function findCodexSessionMeta(rows: unknown[]): NonNullable<ReturnType<typeof pa
       originator: result.originator || parsed.originator,
       isSubagent: result.isSubagent || parsed.isSubagent,
       parentSessionId: result.parentSessionId || parsed.parentSessionId,
+      historyMode: result.historyMode === "paginated" || parsed.historyMode === "paginated" ? "paginated" : "legacy",
     };
   }
   return result;
@@ -500,7 +506,7 @@ function extractCodexEventTrace(row: Record<string, unknown>): TraceEventDraft[]
     ];
   }
 
-  if (eventType === "turn_aborted" || eventType === "context_compacted") {
+  if (eventType === "context_compacted") {
     return [
       {
         ...common,
@@ -516,12 +522,44 @@ function extractCodexEventTrace(row: Record<string, unknown>): TraceEventDraft[]
 }
 
 function extractCodexTraceEvents(rows: unknown[]): TraceEventDraft[] {
+  const rollout = new CodexRolloutAccumulator();
   const events: TraceEventDraft[] = [];
   for (const row of rows) {
     if (!isRecord(row)) continue;
-    events.push(...extractCodexResponseTrace(row), ...extractCodexEventTrace(row));
+    events.push(...extractCodexResponseTrace(row), ...extractCodexEventTrace(row), ...rollout.consume(row).traceEvents);
   }
   return events;
+}
+
+function extractCodexMessages(rows: unknown[]): {
+  messages: SessionMessage[];
+  messageProvenance: Array<{ messageIndex: number; sourceRecordId: string | null }>;
+  historyMode: CodexHistoryMode;
+  activeTurnIds: string[];
+} {
+  const adapter = getAdapter("codex");
+  const rollout = new CodexRolloutAccumulator();
+  const messages: SessionMessage[] = [];
+  const messageProvenance: Array<{ messageIndex: number; sourceRecordId: string | null }> = [];
+  for (const row of rows) {
+    const context = rollout.consume(row).message;
+    const parsed = adapter.parseLine(row);
+    if (!parsed || (parsed.role === "user" && !isMeaningfulUserMessage(parsed.content))) continue;
+    const index = messages.length;
+    messages.push({
+      ...parsed,
+      index,
+      sourceTurnId: context?.sourceTurnId ?? null,
+      phase: parsed.role === "assistant" ? context?.phase ?? null : null,
+    });
+    messageProvenance.push({ messageIndex: index, sourceRecordId: context?.sourceRecordId ?? null });
+  }
+  return {
+    messages,
+    messageProvenance,
+    historyMode: rollout.historyMode,
+    activeTurnIds: rollout.getActiveTurnIds(),
+  };
 }
 
 function dedupeTraceEvents(events: TraceEventDraft[]): SessionTraceEvent[] {
@@ -954,10 +992,14 @@ export function loadCodexSessionRows(
   if (!meta) return null;
 
   const visibleRows = codexVisibleConversationRows(rows);
-  const messages = extractMessages(visibleRows, "codex");
+  const extracted = extractCodexMessages(visibleRows);
   const tokenEvents = extractCodexTokenEvents(rows);
   const traceEvents = options.includeTraceEvents === false ? [] : extractTraceEvents(visibleRows, "codex");
-  return createLoadedCodexSession(filePath, meta, messages, tokenEvents, traceEvents, options);
+  return createLoadedCodexSession(filePath, meta, extracted.messages, tokenEvents, traceEvents, options, {
+    historyMode: meta.historyMode ?? extracted.historyMode,
+    messageProvenance: extracted.messageProvenance,
+    activeTurnIds: extracted.activeTurnIds,
+  });
 }
 
 export function loadCodexSessionFile(filePath: string, title?: string, updatedAt?: string): LoadedSession | null {
@@ -967,7 +1009,7 @@ export function loadCodexSessionFile(filePath: string, title?: string, updatedAt
     title,
     updatedAt,
     stat: { ...safeStat(filePath), size: scanned.committedOffset },
-  });
+  }, scanned.codexIncrementalState);
 }
 
 function walkJsonlFiles(dir: string): string[] {
@@ -1004,6 +1046,7 @@ function createLoadedCodexSession(
     sourceOverride?: SessionSource;
     stat?: VirtualSessionFileStat;
   },
+  codexIncrementalState?: LoadedSession["codexIncrementalState"],
 ): LoadedSession {
   const tokenUsage = tokenUsageFromEvents(tokenEvents);
   const question = firstQuestion(messages);
@@ -1023,7 +1066,17 @@ function createLoadedCodexSession(
     parentSessionId: meta.parentSessionId,
     stat: options.stat,
   });
-  return { session, messages, tokenEvents, traceEvents };
+  return {
+    session,
+    messages,
+    tokenEvents,
+    traceEvents,
+    codexIncrementalState: codexIncrementalState ?? {
+      historyMode: meta.historyMode ?? "legacy",
+      messageProvenance: messages.map((message) => ({ messageIndex: message.index, sourceRecordId: null })),
+      activeTurnIds: [],
+    },
+  };
 }
 
 function scanCodexSessionFile(filePath: string, base?: { offset: number; loaded: LoadedSession }): {
@@ -1031,12 +1084,21 @@ function scanCodexSessionFile(filePath: string, base?: { offset: number; loaded:
   messages: SessionMessage[];
   tokenEvents: TokenUsageEvent[];
   traceEvents: SessionTraceEvent[];
+  codexIncrementalState: NonNullable<LoadedSession["codexIncrementalState"]>;
   committedOffset: number;
 } | null {
   if (base && safeStat(filePath).size < base.offset) return scanCodexSessionFile(filePath);
   const adapter = getAdapter("codex");
   const allMessages: SessionMessage[] = [...(base?.loaded.messages ?? [])];
   const allTraceEvents: TraceEventDraft[] = [...(base?.loaded.traceEvents ?? [])];
+  const rollout = new CodexRolloutAccumulator(base?.loaded.codexIncrementalState);
+  const messageProvenance = new Map<SessionMessage, string | null>();
+  for (const message of allMessages) {
+    messageProvenance.set(
+      message,
+      base?.loaded.codexIncrementalState?.messageProvenance.find((entry) => entry.messageIndex === message.index)?.sourceRecordId ?? null,
+    );
+  }
   const preamble: StreamedCodexTurn = { messages: [...allMessages], traceEvents: [...allTraceEvents] };
   const turns: StreamedCodexTurn[] = [];
   const tokenRows: unknown[] = [];
@@ -1050,6 +1112,7 @@ function scanCodexSessionFile(filePath: string, base?: { offset: number; loaded:
     originator: base.loaded.session.source === "codex-app" ? "Codex Desktop" : undefined,
     isSubagent: base.loaded.session.isSubagent ?? false,
     parentSessionId: base.loaded.session.parentSessionId ?? null,
+    historyMode: base.loaded.codexIncrementalState?.historyMode ?? "legacy",
   } : null;
   let invalidRollback = false;
   let committedOffset = base?.offset ?? 0;
@@ -1069,6 +1132,7 @@ function scanCodexSessionFile(filePath: string, base?: { offset: number; loaded:
             originator: meta.originator || parsedMeta.originator,
             isSubagent: meta.isSubagent || parsedMeta.isSubagent,
             parentSessionId: meta.parentSessionId || parsedMeta.parentSessionId,
+            historyMode: meta.historyMode === "paginated" || parsedMeta.historyMode === "paginated" ? "paginated" : "legacy",
           } : parsedMeta;
         }
 
@@ -1089,12 +1153,23 @@ function scanCodexSessionFile(filePath: string, base?: { offset: number; loaded:
           }
         }
 
+        const rolloutRecord = rollout.consume(row);
         const parsedMessage = adapter.parseLine(row);
         const message = parsedMessage && (parsedMessage.role !== "user" || isMeaningfulUserMessage(parsedMessage.content))
-          ? { ...parsedMessage, index: 0 }
+          ? {
+              ...parsedMessage,
+              index: 0,
+              sourceTurnId: rolloutRecord.message?.sourceTurnId ?? null,
+              phase: parsedMessage.role === "assistant" ? rolloutRecord.message?.phase ?? null : null,
+            }
           : null;
-        const traces = isRecord(row) ? [...extractCodexResponseTrace(row), ...extractCodexEventTrace(row)] : [];
-        if (message) allMessages.push(message);
+        const traces = isRecord(row)
+          ? [...extractCodexResponseTrace(row), ...extractCodexEventTrace(row), ...rolloutRecord.traceEvents]
+          : [];
+        if (message) {
+          allMessages.push(message);
+          messageProvenance.set(message, rolloutRecord.message?.sourceRecordId ?? null);
+        }
         allTraceEvents.push(...traces);
 
         if (message?.role === "user") {
@@ -1128,6 +1203,14 @@ function scanCodexSessionFile(filePath: string, base?: { offset: number; loaded:
       ...extractCodexTokenEvents(base ? tokenRows.map(stripCodexCumulativeUsage) : tokenRows),
     ],
     traceEvents: dedupeTraceEvents(visibleTraces),
+    codexIncrementalState: {
+      historyMode: rollout.historyMode,
+      messageProvenance: visibleMessages.map((message, messageIndex) => ({
+        messageIndex,
+        sourceRecordId: messageProvenance.get(message) ?? null,
+      })),
+      activeTurnIds: rollout.getActiveTurnIds(),
+    },
     committedOffset,
   };
 }
@@ -1177,7 +1260,7 @@ export function* loadCodexSessionsIterator(
       updatedAt: indexedTitle?.updatedAt,
       sourceOverride,
       stat: { ...stat, size: scanned.committedOffset },
-    });
+    }, scanned.codexIncrementalState);
     yield loaded;
   }
 }

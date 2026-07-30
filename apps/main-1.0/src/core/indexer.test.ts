@@ -362,6 +362,62 @@ describe("indexer", () => {
     }
   });
 
+  it("restores an active Codex turn when lifecycle records arrive in separate scans", async () => {
+    const store = createInMemoryStore();
+    const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "agent-recall-codex-lifecycle-tail-"));
+    try {
+      const filePath = writeCodexSession(homeDir, "codex-lifecycle-tail", "original question", "Lifecycle Tail");
+      fs.appendFileSync(filePath, `\n${JSON.stringify({
+        type: "event_msg",
+        timestamp: "2026-06-01T10:01:00Z",
+        payload: { type: "task_started", turn_id: "turn-tail" },
+      })}\n`);
+      await syncDefaultSessionsInBatches(store, { batchSize: 1, loadOptions: { homeDir } });
+
+      expect(store.getCodexIncrementalState("codex:codex-lifecycle-tail").activeTurnIds).toEqual(["turn-tail"]);
+
+      fs.appendFileSync(filePath, [
+        JSON.stringify({
+          type: "response_item",
+          timestamp: "2026-06-01T10:02:00Z",
+          payload: {
+            type: "message",
+            id: "answer-tail",
+            role: "assistant",
+            phase: "final_answer",
+            content: [{ type: "output_text", text: "tail complete" }],
+          },
+        }),
+        JSON.stringify({
+          type: "event_msg",
+          timestamp: "2026-06-01T10:03:00Z",
+          payload: { type: "task_complete", turn_id: "turn-tail", duration_ms: 2_000 },
+        }),
+        "",
+      ].join("\n"));
+      await syncDefaultSessionsInBatches(store, { batchSize: 1, loadOptions: { homeDir } });
+
+      expect(store.getAllMessages("codex:codex-lifecycle-tail").at(-1)).toMatchObject({
+        content: "tail complete",
+        sourceTurnId: "turn-tail",
+        phase: "final_answer",
+      });
+      expect(store.getTraceEvents("codex:codex-lifecycle-tail").at(-1)).toMatchObject({
+        eventType: "codex.turn.completed",
+        sourceTurnId: "turn-tail",
+        attributes: { durationMs: 2_000 },
+      });
+      expect(store.getCodexIncrementalState("codex:codex-lifecycle-tail")).toMatchObject({
+        activeTurnIds: [],
+        messageProvenance: expect.arrayContaining([
+          { messageIndex: 1, sourceRecordId: "response_item:answer-tail" },
+        ]),
+      });
+    } finally {
+      fs.rmSync(homeDir, { recursive: true, force: true });
+    }
+  });
+
   it("keeps a Cursor conversation as cache when its row disappears from the shared database", async () => {
     const store = createInMemoryStore();
     const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "agent-recall-cursor-cache-"));

@@ -207,16 +207,33 @@ export interface SessionTraceEvent {
   attributes?: Record<string, unknown>;
 }
 
+export type CodexHistoryMode = "legacy" | "paginated";
+
+export interface CodexMessageProvenance {
+  messageIndex: number;
+  sourceRecordId: string | null;
+}
+
+export interface CodexIncrementalState {
+  historyMode: CodexHistoryMode;
+  messageProvenance: CodexMessageProvenance[];
+  activeTurnIds: string[];
+}
+
 export type SessionTurnStatus = "completed" | "failed" | "aborted";
 
 export interface SessionTurnSummary {
   id: string;
   turnIndex: number;
   sourceMessageIndex: number | null;
+  sourceTurnId?: string | null;
   synthetic: boolean;
   status: SessionTurnStatus;
   startedAt: string | null;
   endedAt: string | null;
+  durationMs?: number | null;
+  timeToFirstTokenMs?: number | null;
+  abortReason?: string | null;
   userPreview: string;
   assistantPreview: string;
   inputTokens: number;
@@ -236,6 +253,8 @@ export interface SessionTurnMessage {
   role: SessionMessage["role"];
   content: string;
   timestamp: string;
+  sourceTurnId?: string | null;
+  phase?: SessionMessage["phase"];
   attachments?: SessionAttachment[];
 }
 
@@ -301,6 +320,7 @@ export interface LoadedSession {
   messages: SessionMessage[];
   tokenEvents?: TokenUsageEvent[];
   traceEvents?: SessionTraceEvent[];
+  codexIncrementalState?: CodexIncrementalState;
   executionEnvironmentHint?: {
     kind: "ssh";
     label: string;

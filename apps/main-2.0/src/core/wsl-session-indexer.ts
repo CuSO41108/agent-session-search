@@ -102,6 +102,7 @@ export class WslSessionIndexer {
             loaded.messages,
             loaded.tokenEvents,
             loaded.traceEvents,
+            loaded.codexIncrementalState,
           );
           this.failedVersions.delete(session.sessionKey);
           indexed += 1;

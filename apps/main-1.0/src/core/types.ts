@@ -200,6 +200,19 @@ export interface SessionTraceEvent {
   attributes?: Record<string, unknown>;
 }
 
+export type CodexHistoryMode = "legacy" | "paginated";
+
+export interface CodexMessageProvenance {
+  messageIndex: number;
+  sourceRecordId: string | null;
+}
+
+export interface CodexIncrementalState {
+  historyMode: CodexHistoryMode;
+  messageProvenance: CodexMessageProvenance[];
+  activeTurnIds: string[];
+}
+
 export interface TokenUsage {
   inputTokens: number;
   outputTokens: number;
@@ -241,6 +254,7 @@ export interface LoadedSession {
   messages: SessionMessage[];
   tokenEvents?: TokenUsageEvent[];
   traceEvents?: SessionTraceEvent[];
+  codexIncrementalState?: CodexIncrementalState;
   executionEnvironmentHint?: {
     kind: "ssh";
     label: string;

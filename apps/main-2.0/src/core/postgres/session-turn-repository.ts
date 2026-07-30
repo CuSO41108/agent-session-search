@@ -1,4 +1,5 @@
 import type {
+  CodexIncrementalState,
   SessionAttachment,
   SessionMessage,
   SessionTraceEvent,
@@ -30,6 +31,20 @@ function attachmentsFromMetadata(
     (attachment): attachment is SessionAttachment =>
       Boolean(attachment && typeof attachment === "object" && !Array.isArray(attachment)),
   );
+}
+
+function messageFieldsFromMetadata(
+  value: Record<string, unknown> | string | null,
+): Pick<SessionMessage, "sourceTurnId" | "phase"> {
+  const metadata = value === null ? {} : jsonValue(value);
+  const sourceTurnId = typeof metadata.sourceTurnId === "string" ? metadata.sourceTurnId : null;
+  const phase = metadata.phase === "commentary" || metadata.phase === "final_answer"
+    ? metadata.phase
+    : null;
+  return {
+    ...(sourceTurnId ? { sourceTurnId } : {}),
+    ...(phase ? { phase } : {}),
+  };
 }
 
 export interface TraceEventQueryOptions {
@@ -125,6 +140,7 @@ export class PostgresSessionTurnRepository {
         role: row.role,
         content: row.content,
         timestamp: isoValue(row.occurred_at),
+        ...messageFieldsFromMetadata(row.metadata),
         ...(attachmentsFromMetadata(row.metadata)
           ? { attachments: attachmentsFromMetadata(row.metadata) }
           : {}),
@@ -175,6 +191,7 @@ export class PostgresSessionTurnRepository {
         content: row.content,
         timestamp: isoValue(row.occurred_at),
         index: numberValue(row.source_message_index),
+        ...messageFieldsFromMetadata(row.metadata),
         ...(attachments ? { attachments } : {}),
       };
     });
@@ -182,6 +199,61 @@ export class PostgresSessionTurnRepository {
 
   async getAllMessages(sessionKey: string): Promise<SessionMessage[]> {
     return this.getMessages(sessionKey, 0, 2_147_483_647);
+  }
+
+  async getCodexIncrementalState(sessionKey: string): Promise<CodexIncrementalState> {
+    const [sessionResult, messageResult, lifecycleResult] = await Promise.all([
+      this.database.query<{ codex_history_mode: string | null }>(
+        "select codex_history_mode from agent_recall.sessions where session_key = $1",
+        [sessionKey],
+      ),
+      this.database.query<{
+        source_message_index: number | string;
+        metadata: Record<string, unknown> | string;
+      }>(
+        `
+          select messages.source_message_index, messages.metadata
+          from agent_recall.turn_messages messages
+          join agent_recall.session_turns turns on turns.id = messages.turn_id
+          where turns.session_key = $1
+          order by messages.source_message_index
+        `,
+        [sessionKey],
+      ),
+      this.database.query<{ payload: Record<string, unknown> | string }>(
+        `
+          select payload
+          from agent_recall.session_raw_events
+          where session_key = $1
+            and kind = 'trace'
+            and payload->>'eventType' in (
+              'codex.turn.started', 'codex.turn.completed', 'codex.turn.aborted'
+            )
+          order by event_index
+        `,
+        [sessionKey],
+      ),
+    ]);
+    const activeTurnIds = new Set<string>();
+    for (const row of lifecycleResult.rows) {
+      const payload = jsonValue(row.payload);
+      const sourceTurnId = typeof payload.sourceTurnId === "string" ? payload.sourceTurnId : "";
+      if (!sourceTurnId) continue;
+      if (payload.eventType === "codex.turn.started") activeTurnIds.add(sourceTurnId);
+      else activeTurnIds.delete(sourceTurnId);
+    }
+    return {
+      historyMode: sessionResult.rows[0]?.codex_history_mode === "paginated" ? "paginated" : "legacy",
+      messageProvenance: messageResult.rows.map((row) => {
+        const metadata = jsonValue(row.metadata);
+        const codex = jsonValue(metadata.codex);
+        return {
+          messageIndex: numberValue(row.source_message_index),
+          sourceRecordId: typeof codex.sourceItemId === "string" ? codex.sourceItemId : null,
+        };
+      }),
+      activeTurnIds: [...activeTurnIds],
+    };
   }
 
   async getTraceEvents(
@@ -215,6 +287,9 @@ export class PostgresSessionTurnRepository {
     return result.rows.map((row) => {
       const payload = jsonValue(row.payload);
       const status = normalizeSessionTraceStatus(payload.status);
+      const attributes = payload.attributes && typeof payload.attributes === "object" && !Array.isArray(payload.attributes)
+        ? payload.attributes as Record<string, unknown>
+        : null;
       return {
         index: numberValue(payload.traceIndex),
         kind: payload.kind as SessionTraceEvent["kind"],
@@ -225,6 +300,8 @@ export class PostgresSessionTurnRepository {
         ...(payload.callId ? { callId: String(payload.callId) } : {}),
         ...(payload.eventType ? { eventType: String(payload.eventType) } : {}),
         ...(status ? { status } : {}),
+        ...(payload.sourceTurnId ? { sourceTurnId: String(payload.sourceTurnId) } : {}),
+        ...(attributes && Object.keys(attributes).length > 0 ? { attributes } : {}),
       };
     });
   }

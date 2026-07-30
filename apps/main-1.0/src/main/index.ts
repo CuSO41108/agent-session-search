@@ -602,13 +602,29 @@ async function ensureRemoteSessionDetailsLoaded(sessionKey: string): Promise<voi
     if (environment?.kind === "wsl") {
       const payload = await fetchRemoteSessionFilePayload(environment, latest);
       const loaded = loadWslSessionDetailPayload(environment, payload, latest);
-      if (loaded) store.upsertIndexedSession(loaded.session, loaded.messages, loaded.tokenEvents, loaded.traceEvents);
+      if (loaded) {
+        store.upsertIndexedSession(
+          loaded.session,
+          loaded.messages,
+          loaded.tokenEvents,
+          loaded.traceEvents,
+          loaded.codexIncrementalState,
+        );
+      }
       return;
     }
     if (!environment || environment.kind !== "ssh") throw new Error("SSH environment is not available for this remote session.");
     const payload = await fetchRemoteSessionFilePayload(environment, latest, { runSsh: runSshSessionCommand });
     const loaded = loadRemoteSessionDetailPayload(environment, payload, latest);
-    if (loaded) store.upsertIndexedSession(loaded.session, loaded.messages, loaded.tokenEvents, loaded.traceEvents);
+    if (loaded) {
+      store.upsertIndexedSession(
+        loaded.session,
+        loaded.messages,
+        loaded.tokenEvents,
+        loaded.traceEvents,
+        loaded.codexIncrementalState,
+      );
+    }
   })().finally(() => {
     remoteDetailLoads.delete(sessionKey);
   });

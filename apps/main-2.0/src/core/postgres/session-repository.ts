@@ -1,4 +1,5 @@
 import type {
+  CodexIncrementalState,
   IndexedSession,
   ProjectQueryOptions,
   ProjectSummary,
@@ -306,24 +307,30 @@ async function insertTurns(
     await client.query(
       `
         insert into agent_recall.session_turns (
-          id, session_key, turn_index, source_message_index, synthetic, status,
-          started_at, ended_at, user_text, assistant_text, tool_text, search_text,
+          id, session_key, turn_index, source_message_index, source_turn_id, synthetic, status,
+          started_at, ended_at, duration_ms, time_to_first_token_ms, abort_reason,
+          user_text, assistant_text, tool_text, search_text,
           input_tokens, output_tokens, cached_input_tokens, reasoning_output_tokens,
           total_tokens, error_count, tool_names, derivation_version
         )
         select
-          id, $1, turn_index, source_message_index, synthetic, status,
-          started_at, ended_at, user_text, assistant_text, tool_text, search_text,
+          id, $1, turn_index, source_message_index, source_turn_id, synthetic, status,
+          started_at, ended_at, duration_ms, time_to_first_token_ms, abort_reason,
+          user_text, assistant_text, tool_text, search_text,
           input_tokens, output_tokens, cached_input_tokens, reasoning_output_tokens,
           total_tokens, error_count, tool_names, derivation_version
         from jsonb_to_recordset($2::jsonb) as records(
           id text,
           turn_index integer,
           source_message_index integer,
+          source_turn_id text,
           synthetic boolean,
           status text,
           started_at timestamptz,
           ended_at timestamptz,
+          duration_ms bigint,
+          time_to_first_token_ms bigint,
+          abort_reason text,
           user_text text,
           assistant_text text,
           tool_text text,
@@ -342,10 +349,14 @@ async function insertTurns(
         id: turn.id,
         turn_index: turn.turnIndex,
         source_message_index: turn.sourceMessageIndex,
+        source_turn_id: turn.sourceTurnId,
         synthetic: turn.synthetic,
         status: turn.status,
         started_at: turn.startedAt,
         ended_at: turn.endedAt,
+        duration_ms: turn.durationMs,
+        time_to_first_token_ms: turn.timeToFirstTokenMs,
+        abort_reason: turn.abortReason,
         user_text: turn.userText,
         assistant_text: turn.assistantText,
         tool_text: turn.toolText,
@@ -451,6 +462,7 @@ export class PostgresSessionRepository {
     messages: readonly SessionMessage[],
     tokenEvents: readonly TokenUsageEvent[] = [],
     traceEvents: readonly SessionTraceEvent[] = [],
+    codexIncrementalState?: CodexIncrementalState,
   ): Promise<void> {
     let remainingAttachmentBytes = MAX_SESSION_ATTACHMENT_BYTES;
     const attachmentRows: Array<MaterializedAttachment & { messageIndex: number }> = [];
@@ -495,6 +507,7 @@ export class PostgresSessionRepository {
       messages: persistedMessages,
       tokenEvents: persistedTokenEvents,
       traceEvents: persistedTraceEvents,
+      codexIncrementalState,
     });
     const tokenUsage = tokenUsageFromEvents(persistedTokenEvents, session.tokenUsage);
     const environmentId = session.environmentId || "local";
@@ -522,13 +535,14 @@ export class PostgresSessionRepository {
             original_title, first_question, started_at, file_mtime_ms, file_size,
             pr_url, pr_number, message_count, turn_count, input_tokens, output_tokens,
             cached_input_tokens, reasoning_output_tokens, total_tokens, indexed_at,
-            content_indexed_mtime_ms, content_indexed_size, is_subagent, parent_session_id
+            content_indexed_mtime_ms, content_indexed_size, is_subagent, parent_session_id,
+            codex_history_mode
           )
           values (
             $1, $2, $3, $4, $5, $6, $7,
             $8, $9, $10, $11, $12,
             $13, $14, $15, $16, $17, $18,
-            $19, $20, $21, now(), $22, $23, $24, $25
+            $19, $20, $21, now(), $22, $23, $24, $25, $26
           )
           on conflict (session_key) do update set
             raw_id = excluded.raw_id,
@@ -556,6 +570,7 @@ export class PostgresSessionRepository {
             content_indexed_size = excluded.content_indexed_size,
             is_subagent = excluded.is_subagent,
             parent_session_id = excluded.parent_session_id,
+            codex_history_mode = excluded.codex_history_mode,
             source_available = true
         `,
         [
@@ -584,6 +599,7 @@ export class PostgresSessionRepository {
           session.fileSize,
           Boolean(session.isSubagent),
           session.parentSessionId ?? null,
+          codexIncrementalState?.historyMode ?? null,
         ],
       );
 

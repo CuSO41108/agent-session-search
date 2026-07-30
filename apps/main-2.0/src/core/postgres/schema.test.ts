@@ -193,6 +193,10 @@ describe("AgentRecall PostgreSQL schema", () => {
       expect.objectContaining({ column_name: "search_vector", udt_name: "tsvector", is_generated: "ALWAYS" }),
       expect.objectContaining({ column_name: "tool_names", udt_name: "_text" }),
       expect.objectContaining({ column_name: "derivation_version", udt_name: "int4" }),
+      expect.objectContaining({ column_name: "source_turn_id", udt_name: "text" }),
+      expect.objectContaining({ column_name: "duration_ms", udt_name: "int8" }),
+      expect.objectContaining({ column_name: "time_to_first_token_ms", udt_name: "int8" }),
+      expect.objectContaining({ column_name: "abort_reason", udt_name: "text" }),
     ]));
 
     const indexes = await database.query<{ indexname: string }>(`
@@ -204,6 +208,7 @@ describe("AgentRecall PostgreSQL schema", () => {
       "session_turns_search_vector_idx",
       "session_turns_search_text_trgm_idx",
       "trace_spans_parent_idx",
+      "session_turns_source_turn_idx",
       "evaluation_results_subject_idx",
     ]));
 

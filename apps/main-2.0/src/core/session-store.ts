@@ -42,6 +42,7 @@ import {
 } from "./postgres/skill-repository";
 import { findSessionFamily, type SessionFamily as SessionFamilyResult } from "./session-family";
 import type {
+  CodexIncrementalState,
   EnvironmentSyncState,
   EnvironmentUpsertInput,
   IndexedSession,
@@ -129,6 +130,7 @@ export class SessionStore {
     messages: readonly SessionMessage[],
     tokenEvents: readonly TokenUsageEvent[] = [],
     traceEvents: readonly SessionTraceEvent[] = [],
+    codexIncrementalState?: CodexIncrementalState,
   ): Promise<void> {
     await this.ready;
     const sanitizedMessages = messages.map((message) => {
@@ -140,7 +142,13 @@ export class SessionStore {
       const detail = event.detail.replaceAll("\u0000", "");
       return title === event.title && detail === event.detail ? event : { ...event, title, detail };
     });
-    await this.sessions.upsertIndexedSession(session, sanitizedMessages, tokenEvents, sanitizedTraceEvents);
+    await this.sessions.upsertIndexedSession(
+      session,
+      sanitizedMessages,
+      tokenEvents,
+      sanitizedTraceEvents,
+      codexIncrementalState,
+    );
   }
 
   async isIndexedSessionFresh(session: IndexedSession): Promise<boolean> {
@@ -442,6 +450,11 @@ export class SessionStore {
   async getAllMessages(sessionKey: string): Promise<SessionMessage[]> {
     await this.ready;
     return this.turns.getAllMessages(sessionKey);
+  }
+
+  async getCodexIncrementalState(sessionKey: string): Promise<CodexIncrementalState> {
+    await this.ready;
+    return this.turns.getCodexIncrementalState(sessionKey);
   }
 
   async getAttachmentFile(sessionKey: string, attachmentId: string) {
