@@ -145,6 +145,34 @@ describe("TurnAccordion", () => {
     expect(html).not.toContain("file contents");
   });
 
+  it("shows lifecycle timing and presents the last live Turn as running", async () => {
+    const feature = await loadTurnAccordion();
+    expect(feature).not.toBeNull();
+    if (!feature) return;
+
+    const html = renderToStaticMarkup(createElement(feature.TurnAccordion, {
+      sessionKey: "session-a",
+      turns: [{
+        ...summary,
+        durationMs: 3_250,
+        timeToFirstTokenMs: 180,
+        errorCount: 2,
+        toolNames: ["Read", "Shell"],
+      }],
+      loading: false,
+      live: true,
+      matchedTurnId: null,
+      query: "",
+      language: "zh",
+      onLoadTurn: async () => detail,
+    }));
+
+    expect(html).toContain("进行中");
+    expect(html).toContain("3.3s");
+    expect(html).toContain("TTFT 180ms");
+    expect(html).toContain('class="turn-status running"');
+  });
+
   it("renders a turn context menu with only the migration command", async () => {
     const feature = await loadTurnAccordion();
     expect(feature).not.toBeNull();

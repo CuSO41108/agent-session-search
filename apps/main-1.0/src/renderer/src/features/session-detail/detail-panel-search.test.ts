@@ -6,8 +6,8 @@ import { act, createElement, type ComponentProps } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { SessionSearchResult } from "../../../../core/types";
-import { DetailPanel } from "./detail-panel";
+import type { SessionSearchResult, SessionTraceEvent } from "../../../../core/types";
+import { conversationTimeline, DetailPanel, filterConversationTimeline } from "./detail-panel";
 
 const styles = readFileSync(resolve("src/renderer/src/styles.css"), "utf8");
 const noop = () => undefined;
@@ -152,5 +152,84 @@ describe("detail panel conversation search", () => {
     });
 
     expect(document.activeElement).toBe(input);
+  });
+
+  it("hides lifecycle starts but keeps a terminal lifecycle event after the final message", () => {
+    const lifecycle: SessionTraceEvent[] = [
+      {
+        index: 0,
+        kind: "event",
+        source: "codex",
+        title: "Turn started",
+        detail: "",
+        timestamp: "2026-07-29T00:00:00.500Z",
+        eventType: "codex.turn.started",
+        status: "running",
+        sourceTurnId: "turn-1",
+      },
+      {
+        index: 1,
+        kind: "event",
+        source: "codex",
+        title: "Turn completed",
+        detail: "",
+        timestamp: "2026-07-29T00:00:05.000Z",
+        eventType: "codex.turn.completed",
+        status: "completed",
+        sourceTurnId: "turn-1",
+      },
+    ];
+
+    const timeline = conversationTimeline(props.messages, lifecycle);
+    expect(timeline.map((item) => item.key)).toEqual([
+      "message:0",
+      "message:1",
+      "trace:1",
+    ]);
+    expect(filterConversationTimeline(timeline, "all", false).map((item) => item.key)).toContain("trace:1");
+  });
+
+  it("labels commentary while leaving final answers unchanged", async () => {
+    await act(async () => root.render(createElement(DetailPanel, {
+      ...props,
+      messages: [
+        {
+          role: "assistant",
+          content: "checking",
+          timestamp: "2026-07-29T00:00:00.000Z",
+          index: 0,
+          phase: "commentary",
+        },
+        {
+          role: "assistant",
+          content: "done",
+          timestamp: "2026-07-29T00:00:01.000Z",
+          index: 1,
+          phase: "final_answer",
+        },
+      ],
+    })));
+
+    expect(container.querySelectorAll(".message.commentary")).toHaveLength(1);
+    expect(container.querySelector(".message-phase")?.textContent).toBe("过程说明");
+  });
+
+  it("renders an accessible lifecycle status label even when tools are hidden", async () => {
+    await act(async () => root.render(createElement(DetailPanel, {
+      ...props,
+      traceEvents: [{
+        index: 0,
+        kind: "event",
+        source: "codex",
+        title: "Turn completed",
+        detail: "",
+        timestamp: "2026-07-29T00:00:03.000Z",
+        eventType: "codex.turn.completed",
+        status: "completed",
+        sourceTurnId: "turn-1",
+      }],
+    })));
+
+    expect(container.querySelector(".trace-status-label")?.textContent).toBe("已完成");
   });
 });

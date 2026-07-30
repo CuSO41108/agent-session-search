@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { ReactElement } from "react";
 import { ArrowRightLeft, ChevronDown, ChevronUp, CloudUpload, Container, Copy, Download, Edit3, FolderOpen, Laptop, Paperclip, Play, Search, Server, Sparkles, Star, Tag, Terminal as TerminalIcon, Trash2, X } from "lucide-react";
 import { formatMessageTime } from "../../../../core/format-session";
+import { tracePresentation } from "../../../../core/trace-presentation";
 import type { SessionMessage, SessionSearchResult, SessionTraceEvent } from "../../../../core/types";
 import { formatTokenCount } from "../../format-count";
 import { hasTokenUsage } from "../../session-ui";
@@ -50,14 +51,18 @@ function messageTimelineItem(message: SessionMessage): ConversationTimelineItem 
   };
 }
 
-function conversationTimeline(messages: SessionMessage[], traceEvents: SessionTraceEvent[]): ConversationTimelineItem[] {
+export function conversationTimeline(messages: SessionMessage[], traceEvents: SessionTraceEvent[]): ConversationTimelineItem[] {
   const messageTimes = messages.map((message) => timestampMs(message.timestamp)).filter((time): time is number => time !== null);
   const minMessageTime = messageTimes.length > 0 ? Math.min(...messageTimes) : null;
   const maxMessageTime = messageTimes.length > 0 ? Math.max(...messageTimes) : null;
+  const presentableTraceEvents = traceEvents.filter(
+    (event) => tracePresentation(event).visibility !== "hidden",
+  );
   const visibleTraceEvents =
     messages.length === 0
-      ? traceEvents
-      : traceEvents.filter((event) => {
+      ? presentableTraceEvents
+      : presentableTraceEvents.filter((event) => {
+          if (event.sourceTurnId) return true;
           const time = timestampMs(event.timestamp);
           return time === null || minMessageTime === null || maxMessageTime === null || (time >= minMessageTime && time <= maxMessageTime);
         });
@@ -89,7 +94,12 @@ export function filterConversationTimeline(
   showTools: boolean,
 ): ConversationTimelineItem[] {
   return items.filter((item) => {
-    if (item.kind === "trace") return showTools;
+    if (item.kind === "trace") {
+      const presentation = tracePresentation(item.event);
+      if (presentation.visibility === "hidden") return false;
+      if (presentation.category === "lifecycle") return true;
+      return showTools;
+    }
     return roleFilter === "all" || item.message.role === roleFilter;
   });
 }
@@ -194,12 +204,15 @@ export function DetailPanel({
   const context = matchedContextMessages;
   const actionRunning = actionStatus?.kind === "running";
   const l = (en: string, zh: string) => localize(language, en, zh);
+  const traceCount = traceEvents.filter(
+    (event) => tracePresentation(event).visibility !== "hidden",
+  ).length;
   const detailMeta = [
     session.projectPath || l("No project", "无项目"),
     new Date(session.timestamp).toLocaleString(),
     l(`${session.messageCount} messages`, `${session.messageCount} 条消息`),
     ...(hasTokenUsage(session.tokenUsage) ? [l(`${formatTokenCount(session.tokenUsage.totalTokens)} tokens`, `${formatTokenCount(session.tokenUsage.totalTokens)} token`)] : []),
-    ...(traceEvents.length > 0 ? [l(`${traceEvents.length} trace events`, `${traceEvents.length} 条轨迹`)] : []),
+    ...(traceCount > 0 ? [l(`${traceCount} trace events`, `${traceCount} 条轨迹`)] : []),
   ];
   const bodyRef = useRef<HTMLDivElement>(null);
   const pendingInitialScrollRef = useRef<string | null>(session.sessionKey);
@@ -687,9 +700,12 @@ function MessageBlock({
   const useMarkdown = message.role === "assistant" && !highlight;
 
   return (
-    <div className={`message ${message.role} ${highlight ? "match-context" : ""} ${target ? "match-target" : ""}`} data-message-index={message.index} data-timeline-key={timelineKey}>
+    <div className={`message ${message.role} ${message.phase === "commentary" ? "commentary" : ""} ${highlight ? "match-context" : ""} ${target ? "match-target" : ""}`} data-message-index={message.index} data-timeline-key={timelineKey}>
       <div className="message-head">
         <strong>{message.role === "user" ? localize(language, "User", "用户") : localize(language, "Assistant", "助手")}</strong>
+        {message.phase === "commentary"
+          ? <span className="message-phase">{localize(language, "Process note", "过程说明")}</span>
+          : null}
         <span>{formatMessageTime(message.timestamp)}</span>
       </div>
       {useMarkdown ? (
@@ -763,6 +779,14 @@ function traceStatusSymbol(event: SessionTraceEvent): string {
   return "•";
 }
 
+function traceStatusLabel(event: SessionTraceEvent, language: LanguageMode): string {
+  if (event.status === "running") return localize(language, "Running", "进行中");
+  if (event.status === "completed") return localize(language, "Completed", "已完成");
+  if (event.status === "failed") return localize(language, "Failed", "失败");
+  if (event.status === "aborted") return localize(language, "Interrupted", "已中断");
+  return localize(language, "Status unknown", "状态未知");
+}
+
 const TRACE_TRUNCATE_LIMIT = 2400;
 
 function TraceEventBlock({ event, language, timelineKey }: { event: SessionTraceEvent; language: LanguageMode; timelineKey: string }): ReactElement {
@@ -780,6 +804,7 @@ function TraceEventBlock({ event, language, timelineKey }: { event: SessionTrace
         <strong>
           <span className="trace-symbol">{traceStatusSymbol(event)}</span>
           {event.title}
+          <span className="trace-status-label">{traceStatusLabel(event, language)}</span>
         </strong>
         <span>{formatMessageTime(event.timestamp)}</span>
       </summary>

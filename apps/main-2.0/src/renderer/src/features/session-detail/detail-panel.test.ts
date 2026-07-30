@@ -2,8 +2,9 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
-import type { SessionSearchResult, SessionTurnSummary } from "../../../../core/types";
+import type { SessionSearchResult, SessionTraceEvent, SessionTurnSummary } from "../../../../core/types";
 import { SessionDetails, type SessionDetailsActions } from "../sessions/session-details";
+import { conversationTimeline, filterConversationTimeline } from "./detail-panel";
 
 const session: SessionSearchResult = {
   sessionKey: "codex:session-a",
@@ -104,6 +105,48 @@ function renderDetails(): string {
 }
 
 describe("Session detail trajectory controls", () => {
+  it("keeps source-linked terminal lifecycle events outside the legacy message window", () => {
+    const lifecycle: SessionTraceEvent[] = [
+      {
+        index: 0,
+        kind: "event",
+        source: "codex",
+        title: "Turn started",
+        detail: "",
+        timestamp: "2026-07-27T08:00:01.000Z",
+        eventType: "codex.turn.started",
+        status: "running",
+        sourceTurnId: "turn-1",
+      },
+      {
+        index: 1,
+        kind: "event",
+        source: "codex",
+        title: "Turn completed",
+        detail: "",
+        timestamp: "2026-07-27T08:00:09.000Z",
+        eventType: "codex.turn.completed",
+        status: "completed",
+        sourceTurnId: "turn-1",
+      },
+    ];
+    const timeline = conversationTimeline([
+      {
+        role: "assistant",
+        content: "done",
+        timestamp: "2026-07-27T08:00:02.000Z",
+        index: 0,
+        sourceTurnId: "turn-1",
+      },
+    ], lifecycle);
+
+    expect(timeline.map((item) => item.key)).toEqual(["message:0", "trace:1"]);
+    expect(filterConversationTimeline(timeline, "all", false).map((item) => item.key)).toEqual([
+      "message:0",
+      "trace:1",
+    ]);
+  });
+
   it("keeps trajectory controls outside the scrollable conversation body", () => {
     const html = renderDetails();
     const toolbarIndex = html.indexOf('class="detail-timeline-toolbar"');
