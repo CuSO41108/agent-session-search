@@ -625,6 +625,8 @@ function processIsAlive(pid: number): boolean {
     timeout: 2_000,
   });
   const state = result.stdout?.trim();
-  if (!state) return true;
+  if (!state) {
+    return result.status !== 1 || Boolean(result.stderr?.trim());
+  }
   return !state.startsWith("Z");
 }
