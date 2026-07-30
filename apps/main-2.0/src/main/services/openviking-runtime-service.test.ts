@@ -32,6 +32,25 @@ async function temporaryRoot(): Promise<string> {
   return root;
 }
 
+async function withFakePs<T>(
+  root: string,
+  script: string,
+  operation: () => Promise<T>,
+): Promise<T> {
+  const binDir = path.join(root, "fake-bin");
+  const executable = path.join(binDir, "ps");
+  await mkdir(binDir, { recursive: true });
+  await writeFile(executable, `#!/bin/sh\n${script}\n`);
+  await chmod(executable, 0o755);
+  const originalPath = process.env.PATH;
+  process.env.PATH = binDir;
+  try {
+    return await operation();
+  } finally {
+    process.env.PATH = originalPath;
+  }
+}
+
 function manifest(
   overrides: Partial<OpenVikingRuntimeManifest> = {},
 ): OpenVikingRuntimeManifest {
@@ -45,6 +64,25 @@ function manifest(
     archiveType: "tar.gz",
     ...overrides,
   };
+}
+
+async function runtimeWithPersistedCurrentProcess(
+  root: string,
+): Promise<OpenVikingRuntimeService> {
+  await writeFile(
+    path.join(root, "active-runtime.json"),
+    JSON.stringify(manifest({ platform: process.platform, arch: process.arch })),
+  );
+  await writeFile(
+    path.join(root, "runtime-state.json"),
+    JSON.stringify({ pid: process.pid, port: 21933 }),
+  );
+  return new OpenVikingRuntimeService({
+    rootDir: root,
+    codexAuthBootstrapPath: path.join(root, "synthetic-codex-home", "auth.json"),
+    platform: process.platform,
+    arch: process.arch,
+  });
 }
 
 class FakeChild extends EventEmitter {
@@ -168,6 +206,7 @@ describe("OpenVikingRuntimeService", () => {
       },
       vlm: { provider: "openai-codex", model: "gpt-5.4" },
     });
+    expect(child.listenerCount("exit")).toBe(1);
 
     await expect(service.getStatus()).resolves.toMatchObject({
       state: "running",
@@ -488,6 +527,30 @@ describe("OpenVikingRuntimeService", () => {
     });
     await expect(readFile(path.join(root, "runtime-state.json"), "utf8")).rejects.toThrow();
   });
+
+  it.runIf(process.platform !== "win32")(
+    "treats a zombie persisted process as stopped",
+    async () => {
+      const root = await temporaryRoot();
+      const service = await runtimeWithPersistedCurrentProcess(root);
+      await withFakePs(root, 'printf "Z\\n"', async () => {
+        await expect(service.getStatus()).resolves.toMatchObject({ state: "stopped" });
+        await expect(readFile(path.join(root, "runtime-state.json"), "utf8")).rejects.toThrow();
+      });
+    },
+  );
+
+  it.runIf(process.platform !== "win32")(
+    "treats a persisted process that disappears before ps returns as stopped",
+    async () => {
+      const root = await temporaryRoot();
+      const service = await runtimeWithPersistedCurrentProcess(root);
+      await withFakePs(root, "exit 1", async () => {
+        await expect(service.getStatus()).resolves.toMatchObject({ state: "stopped" });
+        await expect(readFile(path.join(root, "runtime-state.json"), "utf8")).rejects.toThrow();
+      });
+    },
+  );
 
   it("uses the packaged Windows Python instead of the non-relocatable pip launcher", async () => {
     const root = await temporaryRoot();
