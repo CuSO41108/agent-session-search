@@ -11,9 +11,32 @@ import {
   buildRuntimeArtifactFromUrl,
   buildRuntimePlan,
   createRuntimeArchive,
+  patchCodexResponsesAdapter,
   runtimeArchiveRoot,
   runtimeArtifactName,
 } from "./build-openviking-runtime.mjs";
+
+test("runtime patch forwards configured reasoning effort to Codex Responses", () => {
+  const source = [
+    "        response_kwargs: Dict[str, Any] = {",
+    '            "model": model,',
+    "        }",
+    '        tools = _convert_tools_for_responses(kwargs.get("tools"))',
+    "        if tools:",
+    '            response_kwargs["tools"] = tools',
+    "        stream = client.responses.create(**response_kwargs, stream=True)",
+    "",
+  ].join("\n");
+
+  const patched = patchCodexResponsesAdapter(source);
+
+  assert.match(patched, /reasoning_effort = kwargs\.get\("reasoning_effort"\)/u);
+  assert.match(patched, /response_kwargs\["reasoning"\] = \{"effort": reasoning_effort\}/u);
+  assert.throws(
+    () => patchCodexResponsesAdapter("unexpected source"),
+    /unsupported OpenViking Codex adapter/u,
+  );
+});
 
 test("runtime packaging reports real archive bytes and generation speed", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "agent-recall-runtime-packaging-progress-"));
@@ -55,7 +78,7 @@ test("runtime build revisions keep the upstream OpenViking package version", asy
   const root = await mkdtemp(path.join(tmpdir(), "agent-recall-runtime-revision-"));
   try {
     const plan = buildRuntimePlan({
-      version: "0.4.11-r2",
+      version: "0.4.11-r3",
       platform: "darwin",
       arch: "arm64",
       buildHome: path.join(root, "home"),
@@ -66,10 +89,10 @@ test("runtime build revisions keep the upstream OpenViking package version", asy
 
     assert.equal(
       plan.outputPath,
-      path.join(root, "output", "openviking-runtime-0.4.11-r2-darwin-arm64.tar.gz"),
+      path.join(root, "output", "openviking-runtime-0.4.11-r3-darwin-arm64.tar.gz"),
     );
     assert.ok(plan.pipArgs.includes("openviking[local-embed]==0.4.11"));
-    assert.ok(!plan.pipArgs.includes("openviking[local-embed]==0.4.11-r2"));
+    assert.ok(!plan.pipArgs.includes("openviking[local-embed]==0.4.11-r3"));
   } finally {
     await rm(root, { recursive: true, force: true });
   }

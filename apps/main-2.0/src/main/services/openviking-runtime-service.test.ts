@@ -456,7 +456,7 @@ describe("OpenVikingRuntimeService", () => {
       codexAuthBootstrapPath: path.join(root, "synthetic-codex-home", "auth.json"),
       platform: "darwin",
       arch: "arm64",
-      version: "0.4.11-r2",
+      version: "0.4.11-r3",
     });
 
     await expect(service.getStatus()).resolves.toEqual({ state: "not-installed" });
