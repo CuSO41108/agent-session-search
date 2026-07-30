@@ -114,9 +114,14 @@ export function useWorkflowDraft({
   }, [activeWorkflow, invalidatePendingWorkflowRequest]);
 
   const setWorkflowObjective = useCallback<Dispatch<SetStateAction<string>>>((value) => {
+    const workflowId = activeWorkflowIdRef.current;
+    if (typeof value !== "function") {
+      if (workflowId) workflowObjectiveDraftsRef.current.set(workflowId, value);
+      setWorkflowObjectiveInput(value);
+      return;
+    }
     setWorkflowObjectiveInput((current) => {
-      const next = typeof value === "function" ? value(current) : value;
-      const workflowId = activeWorkflowIdRef.current;
+      const next = value(current);
       if (workflowId) workflowObjectiveDraftsRef.current.set(workflowId, next);
       return next;
     });

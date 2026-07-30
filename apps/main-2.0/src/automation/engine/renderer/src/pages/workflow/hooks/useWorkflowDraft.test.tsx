@@ -73,6 +73,20 @@ describe("useWorkflowDraft local objective drafts", () => {
     expect(controller.workflowObjective).toBe("draft for B");
   });
 
+  it("captures a typed value synchronously before an immediate workflow switch", async () => {
+    const workflowA = workflow("workflow-a");
+    const workflowB = workflow("workflow-b");
+    await render(snapshot(workflowA));
+
+    await act(async () => {
+      controller.setWorkflowObjective("last typed value");
+      root.render(<Harness value={snapshot(workflowB)} capture={(next) => { controller = next; }} />);
+    });
+    await render(snapshot(workflowA));
+
+    expect(controller.workflowObjective).toBe("last typed value");
+  });
+
   it("clears the active workflow's retained objective when its local draft is reset", async () => {
     const workflowA = workflow("workflow-a");
     const workflowB = workflow("workflow-b");
