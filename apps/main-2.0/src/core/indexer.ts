@@ -264,6 +264,7 @@ export async function syncDefaultSessionsInBatches(
   const incrementalCodexFiles = new Map<string, { offset: number; sessionKey: string }>();
   for (const file of storedFiles) {
     if (file.source !== "codex-cli" && file.source !== "codex-app" && file.source !== "tcodex-cli") continue;
+    if (file.fileMtimeMs <= 0) continue;
     incrementalCodexFiles.set(file.filePath, {
       offset: file.fileSize,
       sessionKey: file.sessionKey,

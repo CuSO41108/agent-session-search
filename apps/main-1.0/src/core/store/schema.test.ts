@@ -140,6 +140,87 @@ describe("session store schema", () => {
     }
   });
 
+  it("invalidates only Codex content freshness while preserving user state", () => {
+    const db = new DatabaseSync(":memory:");
+    try {
+      migrateSessionStore(db);
+      db.prepare("DELETE FROM data_migrations WHERE id = 'codex-session-semantics-v2'").run();
+      const insert = db.prepare(`
+        INSERT INTO sessions (
+          session_key, raw_id, source, project_path, file_path,
+          original_title, first_question, timestamp, file_mtime_ms, file_size,
+          content_indexed_mtime_ms, content_indexed_size,
+          custom_title, favorited, hidden
+        ) VALUES (?, ?, ?, '/repo', ?, 'Title', 'Question', 1, 123, 456, 123, 456, ?, 1, 1)
+      `);
+      for (const source of ["codex-cli", "codex-app", "tcodex-cli"]) {
+        insert.run(`${source}:session`, source, source, `/tmp/${source}.jsonl`, `Custom ${source}`);
+      }
+      insert.run("claude-cli:session", "claude", "claude-cli", "/tmp/claude.jsonl", "Custom Claude");
+      db.prepare("INSERT INTO tags (name) VALUES ('keep-me')").run();
+      const tag = db.prepare("SELECT id FROM tags WHERE name = 'keep-me'").get() as { id: number };
+      db.prepare("INSERT INTO session_tags (session_key, tag_id) VALUES ('codex-cli:session', ?)").run(tag.id);
+
+      migrateSessionStore(db);
+
+      const rows = db.prepare(`
+        SELECT session_key, file_mtime_ms, file_size,
+          content_indexed_mtime_ms, content_indexed_size,
+          custom_title, favorited, hidden
+        FROM sessions
+        ORDER BY session_key
+      `).all();
+      expect(rows).toEqual([
+        {
+          session_key: "claude-cli:session",
+          file_mtime_ms: 123,
+          file_size: 456,
+          content_indexed_mtime_ms: 123,
+          content_indexed_size: 456,
+          custom_title: "Custom Claude",
+          favorited: 1,
+          hidden: 1,
+        },
+        ...["codex-app", "codex-cli", "tcodex-cli"].map((source) => ({
+          session_key: `${source}:session`,
+          file_mtime_ms: 0,
+          file_size: 456,
+          content_indexed_mtime_ms: 0,
+          content_indexed_size: 0,
+          custom_title: `Custom ${source}`,
+          favorited: 1,
+          hidden: 1,
+        })),
+      ]);
+      expect(db.prepare(`
+        SELECT tags.name
+        FROM tags
+        JOIN session_tags ON session_tags.tag_id = tags.id
+        WHERE session_tags.session_key = 'codex-cli:session'
+      `).get()).toEqual({ name: "keep-me" });
+
+      db.prepare(`
+        UPDATE sessions
+        SET file_mtime_ms = 789,
+            content_indexed_mtime_ms = 789,
+            content_indexed_size = 456
+        WHERE session_key = 'codex-cli:session'
+      `).run();
+      migrateSessionStore(db);
+      expect(db.prepare(`
+        SELECT file_mtime_ms, content_indexed_mtime_ms, content_indexed_size
+        FROM sessions
+        WHERE session_key = 'codex-cli:session'
+      `).get()).toEqual({
+        file_mtime_ms: 789,
+        content_indexed_mtime_ms: 789,
+        content_indexed_size: 456,
+      });
+    } finally {
+      db.close();
+    }
+  });
+
   it("invalidates session relation and branch metadata exactly once", () => {
     const db = new DatabaseSync(":memory:");
     try {

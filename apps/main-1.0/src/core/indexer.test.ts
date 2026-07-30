@@ -4,8 +4,9 @@ import * as path from "node:path";
 import { createRequire } from "node:module";
 import { describe, expect, it, vi } from "vitest";
 import { indexMigratedSessionFile, syncDefaultSessionsInBatches, syncLoadedSessionsInBatches } from "./indexer";
-import { createInMemoryStore } from "./session-store";
+import { createInMemoryStore, SessionStore } from "./session-store";
 import { writeMigratedSession } from "./session-migration-writers";
+import { migrateSessionStore } from "./store/schema";
 import type { IndexedSession, LoadedSession, MigrationTarget, PortableSession, SessionSource } from "./types";
 
 const require = createRequire(import.meta.url);
@@ -276,6 +277,58 @@ describe("indexer", () => {
       expect(warm).toMatchObject({ indexed: 0, skipped: 1, total: 1 });
       expect(store.searchSessions({ query: "original question", limit: 10 })).toHaveLength(1);
     } finally {
+      fs.rmSync(homeDir, { recursive: true, force: true });
+    }
+  });
+
+  it("rebuilds invalidated Codex sessions from the file head before resuming normal skips", async () => {
+    const db = new DatabaseSync(":memory:");
+    const store = new SessionStore(db);
+    const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "agent-recall-codex-freshness-"));
+    try {
+      writeCodexSession(homeDir, "codex-freshness", "fresh question", "Freshness");
+      await syncDefaultSessionsInBatches(store, { batchSize: 1, loadOptions: { homeDir } });
+      const sessionKey = "codex:codex-freshness";
+      const existing = store.getSession(sessionKey)!;
+      store.upsertIndexedSession(
+        existing,
+        store.getAllMessages(sessionKey),
+        store.getTokenEvents(sessionKey),
+        [{
+          index: 0,
+          kind: "event",
+          source: "codex",
+          title: "stale trace that is not in the source",
+          detail: "",
+          timestamp: "2026-06-01T10:01:00Z",
+        }],
+      );
+      db.prepare("DELETE FROM data_migrations WHERE id = 'codex-session-semantics-v2'").run();
+      migrateSessionStore(db);
+      expect(db.prepare(`
+        SELECT file_mtime_ms, content_indexed_mtime_ms, content_indexed_size
+        FROM sessions
+        WHERE session_key = 'codex:codex-freshness'
+      `).get()).toEqual({
+        file_mtime_ms: 0,
+        content_indexed_mtime_ms: 0,
+        content_indexed_size: 0,
+      });
+
+      const rebuilt = await syncDefaultSessionsInBatches(store, {
+        batchSize: 1,
+        loadOptions: { homeDir },
+      });
+      expect(rebuilt).toMatchObject({ indexed: 1, skipped: 0, total: 1 });
+      expect(store.getTraceEvents(sessionKey)).toEqual([]);
+
+      const warm = await syncDefaultSessionsInBatches(store, {
+        batchSize: 1,
+        loadOptions: { homeDir },
+      });
+      expect(warm).toMatchObject({ indexed: 0, skipped: 1, total: 1 });
+    } finally {
+      store.close();
       fs.rmSync(homeDir, { recursive: true, force: true });
     }
   });

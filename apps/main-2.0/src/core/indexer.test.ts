@@ -5,8 +5,12 @@ import { createRequire } from "node:module";
 import type { DatabaseSync as DatabaseSyncType } from "node:sqlite";
 import { describe, expect, it, vi } from "vitest";
 import { indexMigratedSessionFile, syncDefaultSessionsInBatches, syncLoadedSessionsInBatches, type IndexStatus } from "./indexer";
+import { PostgresDatabase } from "./postgres/database";
+import { POSTGRES_MIGRATIONS } from "./postgres/schema";
 import { createInMemoryStore } from "./postgres/test-session-store";
+import { PGliteTestPool } from "./postgres/test-pglite";
 import { writeMigratedSession } from "./session-migration-writers";
+import { SessionStore } from "./session-store";
 import type { IndexedSession, LoadedSession, MigrationTarget, PortableSession, SessionSource } from "./types";
 
 const require = createRequire(import.meta.url);
@@ -275,6 +279,58 @@ describe("indexer", () => {
       expect(getAllMessages).not.toHaveBeenCalled();
       expect(await store.searchSessions({ query: "original question", limit: 10 })).toHaveLength(1);
     } finally {
+      fs.rmSync(homeDir, { recursive: true, force: true });
+    }
+  });
+
+  it("rebuilds invalidated Codex sessions from the file head before resuming normal skips", async () => {
+    const database = new PostgresDatabase(new PGliteTestPool(), {
+      migrationLock: false,
+      migrations: POSTGRES_MIGRATIONS,
+    });
+    const store = new SessionStore(database, database.initialize());
+    const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "agent-recall-codex-freshness-"));
+    try {
+      writeCodexSession(homeDir, "codex-freshness", "fresh question", "Freshness");
+      await syncDefaultSessionsInBatches(store, { batchSize: 1, loadOptions: { homeDir } });
+      const sessionKey = "codex:codex-freshness";
+      const existing = (await store.getSession(sessionKey))!;
+      await store.upsertIndexedSession(
+        existing,
+        await store.getAllMessages(sessionKey),
+        await store.getTokenEvents(sessionKey),
+        [{
+          index: 0,
+          kind: "event",
+          source: "codex",
+          title: "stale trace that is not in the source",
+          detail: "",
+          timestamp: "2026-06-01T10:01:00Z",
+        }],
+      );
+      await database.query(`
+        update agent_recall.sessions
+        set file_mtime_ms = 0,
+            content_indexed_mtime_ms = 0,
+            content_indexed_size = 0
+        where session_key = 'codex:codex-freshness'
+      `);
+      expect((await store.listIndexedSessionFiles())[0].fileMtimeMs).toBe(0);
+
+      const rebuilt = await syncDefaultSessionsInBatches(store, {
+        batchSize: 1,
+        loadOptions: { homeDir },
+      });
+      expect(rebuilt).toMatchObject({ indexed: 1, skipped: 0, total: 1 });
+      await expect(store.getTraceEvents(sessionKey)).resolves.toEqual([]);
+
+      const warm = await syncDefaultSessionsInBatches(store, {
+        batchSize: 1,
+        loadOptions: { homeDir },
+      });
+      expect(warm).toMatchObject({ indexed: 0, skipped: 1, total: 1 });
+    } finally {
+      await store.close();
       fs.rmSync(homeDir, { recursive: true, force: true });
     }
   });

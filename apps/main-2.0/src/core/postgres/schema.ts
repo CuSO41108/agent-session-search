@@ -1152,7 +1152,19 @@ export const POSTGRES_MIGRATIONS: readonly PostgresMigration[] = [{
 
       CREATE INDEX IF NOT EXISTS session_turns_source_turn_idx
         ON agent_recall.session_turns (session_key, source_turn_id)
-        WHERE source_turn_id IS NOT NULL;
+      WHERE source_turn_id IS NOT NULL;
+    `,
+  ],
+}, {
+  version: 17,
+  name: "refresh Codex session semantics",
+  statements: [
+    `
+      UPDATE agent_recall.sessions
+      SET file_mtime_ms = 0,
+          content_indexed_mtime_ms = 0,
+          content_indexed_size = 0
+      WHERE source IN ('codex-cli', 'codex-app', 'tcodex-cli');
     `,
   ],
 }];
