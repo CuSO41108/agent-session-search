@@ -2382,7 +2382,7 @@ function registerIpc(): void {
       await refreshOpenVikingHookManifest();
       if (!openVikingExtractionChanged) await startConfiguredOpenVikingRuntime(next);
     }
-    if (openVikingControlService) {
+    if (openVikingControlService && openVikingExtractionChanged) {
       const snapshot = await openVikingControlService.snapshot();
       await restartOpenVikingForExtractionSettings({
         update: settings,
