@@ -562,6 +562,70 @@ describe("Codex session loading", () => {
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
+  it("extracts Codex custom tool calls and outputs without rewriting freeform input", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "session-search-"));
+    const filePath = path.join(dir, "rollout.jsonl");
+    const input = "{\"query\":\"select * from sessions\"}";
+    fs.writeFileSync(
+      filePath,
+      [
+        JSON.stringify({
+          type: "session_meta",
+          timestamp: "2026-06-01T10:00:00Z",
+          payload: { id: "codex-custom-trace-1", cwd: "/repo" },
+        }),
+        JSON.stringify({
+          type: "response_item",
+          timestamp: "2026-06-01T10:01:00Z",
+          payload: {
+            type: "custom_tool_call",
+            name: "exec",
+            call_id: "custom-1",
+            input,
+          },
+        }),
+        JSON.stringify({
+          type: "response_item",
+          timestamp: "2026-06-01T10:02:00Z",
+          payload: {
+            type: "custom_tool_call_output",
+            call_id: "custom-1",
+            output: "query completed",
+          },
+        }),
+      ].join("\n"),
+    );
+
+    const loaded = loadCodexSessionFile(filePath);
+
+    expect(loaded?.traceEvents).toEqual([
+      {
+        index: 0,
+        kind: "tool_call",
+        source: "codex",
+        title: "exec",
+        detail: input,
+        timestamp: "2026-06-01T10:01:00Z",
+        callId: "custom-1",
+        eventType: null,
+        status: "unknown",
+      },
+      {
+        index: 1,
+        kind: "tool_result",
+        source: "codex",
+        title: "tool output",
+        detail: "query completed",
+        timestamp: "2026-06-01T10:02:00Z",
+        callId: "custom-1",
+        eventType: null,
+        status: "unknown",
+      },
+    ]);
+
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
   it("caps large Codex trace details during loading", () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "session-search-"));
     const filePath = path.join(dir, "rollout.jsonl");

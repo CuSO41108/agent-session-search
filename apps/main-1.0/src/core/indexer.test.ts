@@ -307,6 +307,61 @@ describe("indexer", () => {
     }
   });
 
+  it("indexes custom tool traces appended to a Codex session", async () => {
+    const store = createInMemoryStore();
+    const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "agent-recall-codex-custom-tail-"));
+    try {
+      const filePath = writeCodexSession(homeDir, "codex-custom-tail", "original question", "Custom Tail");
+      await syncDefaultSessionsInBatches(store, { batchSize: 1, loadOptions: { homeDir } });
+      fs.appendFileSync(
+        filePath,
+        [
+          "",
+          JSON.stringify({
+            type: "response_item",
+            timestamp: "2026-06-01T10:02:00Z",
+            payload: {
+              type: "custom_tool_call",
+              name: "exec",
+              call_id: "custom-tail-1",
+              input: "console.log('tail')",
+            },
+          }),
+          JSON.stringify({
+            type: "response_item",
+            timestamp: "2026-06-01T10:03:00Z",
+            payload: {
+              type: "custom_tool_call_output",
+              call_id: "custom-tail-1",
+              output: "tail",
+            },
+          }),
+          "",
+        ].join("\n"),
+      );
+
+      const warm = await syncDefaultSessionsInBatches(store, { batchSize: 1, loadOptions: { homeDir } });
+
+      expect(warm.indexed).toBe(1);
+      expect(store.getTraceEvents("codex:codex-custom-tail")).toEqual([
+        expect.objectContaining({
+          kind: "tool_call",
+          title: "exec",
+          detail: "console.log('tail')",
+          callId: "custom-tail-1",
+        }),
+        expect.objectContaining({
+          kind: "tool_result",
+          title: "tool output",
+          detail: "tail",
+          callId: "custom-tail-1",
+        }),
+      ]);
+    } finally {
+      fs.rmSync(homeDir, { recursive: true, force: true });
+    }
+  });
+
   it("keeps a Cursor conversation as cache when its row disappears from the shared database", async () => {
     const store = createInMemoryStore();
     const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "agent-recall-cursor-cache-"));

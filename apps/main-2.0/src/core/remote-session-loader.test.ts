@@ -198,6 +198,25 @@ describe("remote session loader", () => {
             timestamp: "2026-06-04T10:02:00Z",
             payload: { type: "message", role: "assistant", content: [{ type: "output_text", text: "detail answer" }] },
           }),
+          JSON.stringify({
+            type: "response_item",
+            timestamp: "2026-06-04T10:03:00Z",
+            payload: {
+              type: "custom_tool_call",
+              name: "exec",
+              call_id: "remote-custom-1",
+              input: "console.log('remote')",
+            },
+          }),
+          JSON.stringify({
+            type: "response_item",
+            timestamp: "2026-06-04T10:04:00Z",
+            payload: {
+              type: "custom_tool_call_output",
+              call_id: "remote-custom-1",
+              output: "remote",
+            },
+          }),
         ].join("\n"),
       ),
       summary,
@@ -205,6 +224,20 @@ describe("remote session loader", () => {
 
     expect(loaded?.session.sessionKey).toBe("ssh:ssh-devbox:codex-cli:codex-1");
     expect(loaded?.messages.map((message) => message.content)).toEqual(["detail question", "detail answer"]);
+    expect(loaded?.traceEvents).toEqual([
+      expect.objectContaining({
+        kind: "tool_call",
+        title: "exec",
+        detail: "console.log('remote')",
+        callId: "remote-custom-1",
+      }),
+      expect.objectContaining({
+        kind: "tool_result",
+        title: "tool output",
+        detail: "remote",
+        callId: "remote-custom-1",
+      }),
+    ]);
   });
 
   it.each([

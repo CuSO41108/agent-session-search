@@ -373,8 +373,10 @@ function extractCodexResponseTrace(row: Record<string, unknown>): TraceEventDraf
   if (!payload) return [];
   const payloadType = stringField(payload, "type");
 
-  if (payloadType === "function_call") {
-    const args = parseMaybeJson(unknownField(payload, "arguments"));
+  if (payloadType === "function_call" || payloadType === "custom_tool_call") {
+    const args = payloadType === "custom_tool_call"
+      ? unknownField(payload, "input")
+      : parseMaybeJson(unknownField(payload, "arguments"));
     const name = stringField(payload, "name") || "tool";
     const summary = firstStringField(args, ["command", "cmd", "query", "path", "file_path", "url"]);
     return [
@@ -391,7 +393,7 @@ function extractCodexResponseTrace(row: Record<string, unknown>): TraceEventDraf
     ];
   }
 
-  if (payloadType === "function_call_output") {
+  if (payloadType === "function_call_output" || payloadType === "custom_tool_call_output") {
     return [
       {
         kind: "tool_result",

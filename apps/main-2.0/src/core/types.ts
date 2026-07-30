@@ -574,6 +574,7 @@ export interface CodexConversationLine {
           };
         };
     name?: string;
+    input?: unknown;
     arguments?: unknown;
     call_id?: string;
     output?: unknown;
