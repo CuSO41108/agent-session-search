@@ -11,6 +11,7 @@ export interface SessionSourceArtifact {
   kind: "session-file" | "cursor-state" | "codewiz-state";
   fileName: string;
   bytes: Uint8Array;
+  revisionBytes?: Uint8Array;
   mimeType: string;
 }
 
@@ -60,10 +61,12 @@ function readCursorSourceArtifacts(session: SessionSearchResult): SessionSourceA
   if (databasePath && fs.existsSync(databasePath)) {
     const slice = readCursorDatabaseSlice(databasePath, session.rawId);
     if (slice) {
+      const revisionSlice = cursorRevisionSlice(slice);
       artifacts.push({
         kind: "cursor-state",
         fileName: `${safeFileSegment(session.rawId)}.cursor-state.json`,
         bytes: Buffer.from(JSON.stringify(slice)),
+        revisionBytes: Buffer.from(JSON.stringify(revisionSlice)),
         mimeType: "application/json",
       });
     }
@@ -168,6 +171,18 @@ function readCursorDatabaseSlice(databasePath: string, composerId: string): Sess
   } finally {
     db.close();
   }
+}
+
+function cursorRevisionSlice(slice: SessionDatabaseSlice): SessionDatabaseSlice {
+  const virtualRowsKey = `composerVirtualRowHeights:${slice.sourceSessionId}`;
+  return {
+    ...slice,
+    tables: {
+      ...slice.tables,
+      cursorDiskKV: slice.tables.cursorDiskKV?.filter((row) =>
+        row.key?.type !== "text" || row.key.value !== virtualRowsKey) ?? [],
+    },
+  };
 }
 
 function cursorStateDatabasePath(filePath: string): string | null {

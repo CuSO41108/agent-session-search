@@ -75,6 +75,7 @@ function writeCursorDatabase(filePath: string, composerId: string): void {
   insert.run(`bubbleId:${composerId}:visible`, Buffer.from('{"text":"visible"}'));
   insert.run(`bubbleId:${composerId}:discarded`, Buffer.from('{"text":"discarded hidden branch"}'));
   insert.run(`checkpointId:${composerId}:checkpoint-1`, Buffer.from('{"state":"discarded checkpoint"}'));
+  insert.run(`composerVirtualRowHeights:${composerId}`, Buffer.from("[10,20]"));
   insert.run(`ofsContent:${composerId}:file-1`, Buffer.from("exact file snapshot"));
   insert.run("bubbleId:another-session:private", Buffer.from('{"text":"unrelated"}'));
   db.close();
@@ -136,7 +137,8 @@ describe("session source archive", () => {
       );
       fs.mkdirSync(path.dirname(transcriptPath), { recursive: true });
       fs.writeFileSync(transcriptPath, '{"role":"user","message":"visible"}');
-      writeCursorDatabase(cursorStatePath(homeDir), composerId);
+      const databasePath = cursorStatePath(homeDir);
+      writeCursorDatabase(databasePath, composerId);
 
       const artifacts = readSessionSourceArtifacts(session({
         sessionKey: `cursor:repo:${composerId}`,
@@ -145,11 +147,31 @@ describe("session source archive", () => {
         filePath: transcriptPath,
       }));
       const serialized = Buffer.from(artifacts[1].bytes).toString("utf8");
+      const revision = Buffer.from(artifacts[1].revisionBytes!).toString("utf8");
 
       expect(artifacts.map((artifact) => artifact.kind)).toEqual(["session-file", "cursor-state"]);
       expect(serialized).toContain(Buffer.from('{"text":"discarded hidden branch"}').toString("base64"));
+      expect(revision).toContain(Buffer.from('{"text":"discarded hidden branch"}').toString("base64"));
       expect(serialized).toContain(Buffer.from("exact file snapshot").toString("base64"));
+      expect(serialized).toContain(Buffer.from("[10,20]").toString("base64"));
+      expect(revision).not.toContain(Buffer.from("[10,20]").toString("base64"));
       expect(serialized).not.toContain("another-session");
+
+      const db = new DatabaseSync(databasePath);
+      db.prepare("UPDATE cursorDiskKV SET value = ? WHERE key = ?").run(
+        Buffer.from("[30,40,50]"),
+        `composerVirtualRowHeights:${composerId}`,
+      );
+      db.close();
+      const changedArtifacts = readSessionSourceArtifacts(session({
+        sessionKey: `cursor:repo:${composerId}`,
+        rawId: composerId,
+        source: "cursor-agent",
+        filePath: transcriptPath,
+      }));
+
+      expect(Buffer.from(changedArtifacts[1].bytes)).not.toEqual(Buffer.from(artifacts[1].bytes));
+      expect(Buffer.from(changedArtifacts[1].revisionBytes!)).toEqual(Buffer.from(artifacts[1].revisionBytes!));
     } finally {
       fs.rmSync(homeDir, { recursive: true, force: true });
     }

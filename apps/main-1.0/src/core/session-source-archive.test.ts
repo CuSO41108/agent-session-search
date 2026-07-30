@@ -160,7 +160,8 @@ describe("session source archive", () => {
       ].join("\n"));
       fs.mkdirSync(path.dirname(transcriptPath), { recursive: true });
       fs.writeFileSync(transcriptPath, transcript);
-      writeCursorDatabase(cursorStatePath(homeDir), composerId);
+      const databasePath = cursorStatePath(homeDir);
+      writeCursorDatabase(databasePath, composerId);
 
       const artifacts = readSessionSourceArtifacts(session({
         sessionKey: `cursor:repo:${composerId}`,
@@ -172,6 +173,7 @@ describe("session source archive", () => {
       expect(artifacts.map((artifact) => artifact.kind)).toEqual(["session-file", "cursor-state"]);
       expect(Buffer.from(artifacts[0].bytes)).toEqual(transcript);
       const slice = decodeSlice(artifacts[1].bytes);
+      const revisionSlice = decodeSlice(artifacts[1].revisionBytes!);
       expect(slice.sourceSessionId).toBe(composerId);
       const keys = slice.tables.cursorDiskKV.map((row) => row.key.value);
       expect(keys).toEqual([
@@ -182,8 +184,27 @@ describe("session source archive", () => {
         `composerVirtualRowHeights:${composerId}`,
         `ofsContent:${composerId}:file-1`,
       ]);
+      expect(revisionSlice.tables.cursorDiskKV.map((row) => row.key.value))
+        .not.toContain(`composerVirtualRowHeights:${composerId}`);
       expect(JSON.stringify(slice)).toContain(Buffer.from('{"text":"discarded hidden branch"}').toString("base64"));
+      expect(JSON.stringify(revisionSlice)).toContain(Buffer.from('{"text":"discarded hidden branch"}').toString("base64"));
       expect(JSON.stringify(slice)).not.toContain("another-session");
+
+      const db = new DatabaseSync(databasePath);
+      db.prepare("UPDATE cursorDiskKV SET value = ? WHERE key = ?").run(
+        Buffer.from("[30,40,50]"),
+        `composerVirtualRowHeights:${composerId}`,
+      );
+      db.close();
+      const changedArtifacts = readSessionSourceArtifacts(session({
+        sessionKey: `cursor:repo:${composerId}`,
+        rawId: composerId,
+        source: "cursor-agent",
+        filePath: transcriptPath,
+      }));
+
+      expect(Buffer.from(changedArtifacts[1].bytes)).not.toEqual(Buffer.from(artifacts[1].bytes));
+      expect(Buffer.from(changedArtifacts[1].revisionBytes!)).toEqual(Buffer.from(artifacts[1].revisionBytes!));
     } finally {
       fs.rmSync(homeDir, { recursive: true, force: true });
     }
