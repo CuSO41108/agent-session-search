@@ -7,6 +7,7 @@ import { createCachedLiveSessionSnapshotLoader, detectLiveSessionsFromProcessLin
 
 const require = createRequire(import.meta.url);
 const { DatabaseSync } = require("node:sqlite") as { DatabaseSync: new (path: string) => import("node:sqlite").DatabaseSync };
+const MINUTE_MS = 60 * 1000;
 
 describe("live session detection", () => {
   it("detects Codex, Claude, and CodeBuddy resume commands without matching unrelated commands", () => {
@@ -140,21 +141,27 @@ describe("live session detection", () => {
     const projectDir = path.join(home, ".claude", "projects", cwd.replace(/[^a-zA-Z0-9-]/g, "-"));
     fs.mkdirSync(projectDir, { recursive: true });
 
-    const sessionTimes = [
-      ["claude-plain-one", "2026-07-09T23:01:00Z"],
-      ["claude-plain-two", "2026-07-09T23:06:00Z"],
-      ["claude-resumed", "2026-07-09T23:10:00Z"],
+    // Stamping each session ahead of its own creation keeps the recorded creation time
+    // identical on every filesystem: macOS pulls creation back to an earlier mtime,
+    // while Linux and Windows leave it untouched. The pairing below therefore depends
+    // only on the modification times this fixture controls.
+    const baseMs = Date.now();
+    const sessionOffsetMinutes = [
+      ["claude-plain-one", 20],
+      ["claude-plain-two", 31],
+      ["claude-resumed", 40],
     ] as const;
-    for (const [rawId, timestamp] of sessionTimes) {
+    for (const [rawId, offsetMinutes] of sessionOffsetMinutes) {
       const filePath = path.join(projectDir, `${rawId}.jsonl`);
       fs.writeFileSync(filePath, `{"type":"mode","sessionId":"${rawId}"}\n`);
-      fs.utimesSync(filePath, new Date(timestamp), new Date(timestamp));
+      const stamp = new Date(baseMs + offsetMinutes * MINUTE_MS);
+      fs.utimesSync(filePath, stamp, stamp);
     }
 
     const snapshot = await loadLiveSessionSnapshot({
       platform: "darwin",
       homeDir: home,
-      now: new Date("2026-07-09T23:30:00Z"),
+      now: new Date(baseMs + 60 * MINUTE_MS),
       runner: async (command, args) => {
         if (command === "/bin/ps" && args[0] === "-axo") {
           return [
@@ -163,8 +170,9 @@ describe("live session detection", () => {
             "503 /opt/homebrew/bin/claude",
           ].join("\n");
         }
-        if (command === "/bin/ps" && args.join(" ") === "-o etime= -p 502") return "30:00";
-        if (command === "/bin/ps" && args.join(" ") === "-o etime= -p 503") return "25:00";
+        // 502 started when claude-plain-one was last written, 503 when claude-plain-two was.
+        if (command === "/bin/ps" && args.join(" ") === "-o etime= -p 502") return "40:00";
+        if (command === "/bin/ps" && args.join(" ") === "-o etime= -p 503") return "30:00";
         if (command === "lsof") {
           return `COMMAND PID USER FD TYPE DEVICE SIZE/OFF NODE NAME\nclaude 500 user cwd DIR 1,4 0 1 ${cwd}\n`;
         }
@@ -172,7 +180,7 @@ describe("live session detection", () => {
       },
     });
 
-    // Each plain process must own the session created closest to its own start time.
+    // Each plain process must own the session written closest to its own start time.
     // Asserting the pairing rather than the set keeps a permuted mapping from passing.
     expect(snapshot.sessions).toEqual([
       { family: "claude", rawId: "claude-resumed", pid: 501 },
@@ -191,19 +199,22 @@ describe("live session detection", () => {
     const sessionFile = path.join(projectDir, "claude-existing-session.jsonl");
     fs.mkdirSync(projectDir, { recursive: true });
     fs.writeFileSync(sessionFile, '{"type":"mode","sessionId":"claude-existing-session"}\n');
-    fs.utimesSync(sessionFile, new Date("2026-07-09T23:00:00Z"), new Date("2026-07-09T23:00:00Z"));
+    const baseMs = Date.now();
+    const stamp = new Date(baseMs + 20 * MINUTE_MS);
+    fs.utimesSync(sessionFile, stamp, stamp);
 
     const snapshot = await loadLiveSessionSnapshot({
       platform: "darwin",
       homeDir: home,
-      now: new Date("2026-07-10T00:00:00Z"),
+      now: new Date(baseMs + 60 * MINUTE_MS),
       runner: async (command, args) => {
         if (command === "/bin/ps" && args[0] === "-axo") {
           return ["601 /opt/homebrew/bin/claude", "602 /opt/homebrew/bin/claude"].join("\n");
         }
-        // 601 started after the session already existed, 602 started before it.
+        // 601 started after the session was last written, 602 a day before it existed.
+        // The day-prefixed form also covers the `dd-hh:mm:ss` variant of the format.
         if (command === "/bin/ps" && args.join(" ") === "-o etime= -p 601") return "05:00";
-        if (command === "/bin/ps" && args.join(" ") === "-o etime= -p 602") return "1-00:05:00";
+        if (command === "/bin/ps" && args.join(" ") === "-o etime= -p 602") return "1-00:35:00";
         if (command === "lsof") {
           return `COMMAND PID USER FD TYPE DEVICE SIZE/OFF NODE NAME\nclaude 600 user cwd DIR 1,4 0 1 ${cwd}\n`;
         }
