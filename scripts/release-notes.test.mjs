@@ -63,7 +63,7 @@ test("finds only newly added non-template release notes", () => {
   assert.deepEqual(files, [".release-notes/auto-update.md"]);
 });
 
-test("workflows require branch notes and publish accumulated changes every day or on demand", async () => {
+test("workflows require branch notes and publish accumulated changes on demand", async () => {
   const noteWorkflow = await readFile(".github/workflows/release-note-check.yml", "utf8");
   const qualityWorkflow = await readFile(".github/workflows/quality-check.yml", "utf8");
   const releaseWorkflow = await readFile(".github/workflows/release.yml", "utf8");
@@ -74,8 +74,8 @@ test("workflows require branch notes and publish accumulated changes every day o
   assert.match(qualityWorkflow, /- name: Test update and install scripts \(Windows\)\s+if: runner\.os == 'Windows'\s+run: npm run test:scripts/);
   assert.match(qualityWorkflow, /- name: Typecheck\s+run: npm run typecheck/);
   assert.match(qualityWorkflow, /- name: Build\s+run: npm run build/);
-  assert.match(releaseWorkflow, /schedule:[\s\S]*cron:\s*["']0 2 \* \* \*["']/);
   assert.match(releaseWorkflow, /workflow_dispatch:/);
+  assert.doesNotMatch(releaseWorkflow, /^\s{2}schedule:/m);
   assert.doesNotMatch(releaseWorkflow, /^\s{2}push:/m);
   assert.match(releaseWorkflow, /git describe --tags --abbrev=0 --match 'v\[0-9\]\*'/);
   assert.match(releaseWorkflow, /git diff --name-only --diff-filter=A "\$latest_tag" "\$RELEASE_SHA"/);
