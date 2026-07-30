@@ -51,6 +51,32 @@ export interface BatchIndexOptions {
   onEnvironmentsChanged?: () => void;
   yieldToEventLoop?: () => Promise<void>;
   now?: () => number;
+  logIndexFailure?: (diagnostic: SessionIndexFailureDiagnostic) => void | Promise<void>;
+  indexFailureLogPath?: string;
+}
+
+export interface SessionIndexFailureDiagnostic {
+  source: LoadedSession["session"]["source"];
+  sessionKey: string;
+  filePath: string;
+  error: {
+    name: string;
+    message: string;
+    stack: string | null;
+  };
+}
+
+function indexFailureMessage(
+  failures: readonly SessionIndexFailureDiagnostic[],
+  logPath: string | undefined,
+  diagnosticLogFailed: boolean,
+): string | null {
+  if (failures.length === 0) return null;
+  const sources = [...new Set(failures.map((failure) => failure.source))];
+  const base = `${failures.length} session${failures.length === 1 ? "" : "s"} could not be indexed; the remaining sessions were processed. ${sources.length === 1 ? "Source" : "Sources"}: ${sources.join(", ")}.`;
+  return logPath && !diagnosticLogFailed
+    ? `${base} Diagnostic log: ${logPath}`
+    : `${base} Diagnostic details could not be written to the local log.`;
 }
 
 export async function syncLoadedSessionsInBatches(
@@ -64,6 +90,8 @@ export async function syncLoadedSessionsInBatches(
   const now = options.now ?? (() => performance.now());
   let indexed = 0;
   let skipped = 0;
+  const failures: SessionIndexFailureDiagnostic[] = [];
+  let diagnosticLogFailed = false;
   let total = 0;
   let pendingInBatch = 0;
   let sliceStartedAt = now();
@@ -76,44 +104,68 @@ export async function syncLoadedSessionsInBatches(
   );
 
   for (const loadedItem of loaded) {
-    const item = resolveExecutionEnvironment(
-      store,
-      loadedItem,
-      sshEnvironmentByHostAlias,
-      options.onEnvironmentsChanged,
-    );
-    let sessionKeyMigrated = false;
-    if (item.session.source === "cursor-agent") {
-      if (!cursorSessionKeysByIdentity) {
-        cursorSessionKeysByIdentity = new Map();
-        for (const identity of store.listSessionIdentitiesBySource("cursor-agent")) {
-          const key = `${identity.storageEnvironmentId}\u0000${identity.rawId}`;
-          const sessionKeys = cursorSessionKeysByIdentity.get(key) ?? new Set<string>();
-          sessionKeys.add(identity.sessionKey);
-          cursorSessionKeysByIdentity.set(key, sessionKeys);
+    try {
+      const item = resolveExecutionEnvironment(
+        store,
+        loadedItem,
+        sshEnvironmentByHostAlias,
+        options.onEnvironmentsChanged,
+      );
+      let sessionKeyMigrated = false;
+      if (item.session.source === "cursor-agent") {
+        if (!cursorSessionKeysByIdentity) {
+          cursorSessionKeysByIdentity = new Map();
+          for (const identity of store.listSessionIdentitiesBySource("cursor-agent")) {
+            const key = `${identity.storageEnvironmentId}\u0000${identity.rawId}`;
+            const sessionKeys = cursorSessionKeysByIdentity.get(key) ?? new Set<string>();
+            sessionKeys.add(identity.sessionKey);
+            cursorSessionKeysByIdentity.set(key, sessionKeys);
+          }
         }
+        const storageEnvironmentId =
+          item.session.storageEnvironmentId ?? item.session.environmentId ?? "local";
+        const identityKey = `${storageEnvironmentId}\u0000${item.session.rawId}`;
+        for (const previousKey of cursorSessionKeysByIdentity.get(identityKey) ?? []) {
+          if (previousKey === item.session.sessionKey) continue;
+          sessionKeyMigrated =
+            store.migrateSessionKeyPreservingUserState(previousKey, item.session.sessionKey)
+            || sessionKeyMigrated;
+        }
+        cursorSessionKeysByIdentity.set(identityKey, new Set([item.session.sessionKey]));
       }
-      const storageEnvironmentId =
-        item.session.storageEnvironmentId ?? item.session.environmentId ?? "local";
-      const identityKey = `${storageEnvironmentId}\u0000${item.session.rawId}`;
-      for (const previousKey of cursorSessionKeysByIdentity.get(identityKey) ?? []) {
-        if (previousKey === item.session.sessionKey) continue;
-        sessionKeyMigrated =
-          store.migrateSessionKeyPreservingUserState(previousKey, item.session.sessionKey)
-          || sessionKeyMigrated;
+      if (
+        !sessionKeyMigrated
+        && !options.forceReindex?.(item)
+        && store.isIndexedSessionFresh(item.session)
+      ) {
+        store.touchIndexedAtIfMissing(item.session.sessionKey);
+        skipped++;
+      } else {
+        store.upsertIndexedSession(item.session, item.messages, item.tokenEvents, item.traceEvents);
+        indexed++;
       }
-      cursorSessionKeysByIdentity.set(identityKey, new Set([item.session.sessionKey]));
-    }
-    if (
-      !sessionKeyMigrated
-      && !options.forceReindex?.(item)
-      && store.isIndexedSessionFresh(item.session)
-    ) {
-      store.touchIndexedAtIfMissing(item.session.sessionKey);
+    } catch (error) {
+      const diagnostic: SessionIndexFailureDiagnostic = {
+        source: loadedItem.session.source,
+        sessionKey: loadedItem.session.sessionKey,
+        filePath: loadedItem.session.filePath,
+        error: error instanceof Error
+          ? { name: error.name, message: error.message, stack: error.stack ?? null }
+          : { name: "UnknownError", message: String(error), stack: null },
+      };
+      failures.push(diagnostic);
       skipped++;
-    } else {
-      store.upsertIndexedSession(item.session, item.messages, item.tokenEvents, item.traceEvents);
-      indexed++;
+      if (options.logIndexFailure) {
+        try {
+          await options.logIndexFailure(diagnostic);
+        } catch (logError) {
+          diagnosticLogFailed = true;
+          console.error("[indexer] Could not write session indexing diagnostic", logError);
+        }
+      } else {
+        diagnosticLogFailed = true;
+        console.error("[indexer] Session indexing failed", diagnostic);
+      }
     }
     total++;
     pendingInBatch++;
@@ -137,7 +189,7 @@ export async function syncLoadedSessionsInBatches(
     skipped,
     total,
     lastIndexedAt: Date.now(),
-    error: null,
+    error: indexFailureMessage(failures, options.indexFailureLogPath, diagnosticLogFailed),
   };
 }
 

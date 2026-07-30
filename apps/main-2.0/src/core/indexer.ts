@@ -54,7 +54,8 @@ export interface BatchIndexOptions {
   onEnvironmentsChanged?: () => void;
   yieldToEventLoop?: () => Promise<void>;
   now?: () => number;
-  logIndexFailure?: (diagnostic: SessionIndexFailureDiagnostic) => void;
+  logIndexFailure?: (diagnostic: SessionIndexFailureDiagnostic) => void | Promise<void>;
+  indexFailureLogPath?: string;
 }
 
 export interface SessionIndexFailureDiagnostic {
@@ -68,10 +69,17 @@ export interface SessionIndexFailureDiagnostic {
   };
 }
 
-function indexFailureMessage(failures: readonly SessionIndexFailureDiagnostic[]): string | null {
+function indexFailureMessage(
+  failures: readonly SessionIndexFailureDiagnostic[],
+  logPath: string | undefined,
+  diagnosticLogFailed: boolean,
+): string | null {
   if (failures.length === 0) return null;
-  const sources = [...new Set(failures.map((failure) => failure.source))].join(", ");
-  return `${failures.length} session${failures.length === 1 ? "" : "s"} could not be indexed; the remaining sessions were processed. Source${sources.includes(",") ? "s" : ""}: ${sources}. See the application logs for details.`;
+  const sources = [...new Set(failures.map((failure) => failure.source))];
+  const base = `${failures.length} session${failures.length === 1 ? "" : "s"} could not be indexed; the remaining sessions were processed. ${sources.length === 1 ? "Source" : "Sources"}: ${sources.join(", ")}.`;
+  return logPath && !diagnosticLogFailed
+    ? `${base} Diagnostic log: ${logPath}`
+    : `${base} Diagnostic details could not be written to the local log.`;
 }
 
 export async function syncLoadedSessionsInBatches(
@@ -86,6 +94,7 @@ export async function syncLoadedSessionsInBatches(
   let indexed = 0;
   let skipped = 0;
   const failures: SessionIndexFailureDiagnostic[] = [];
+  let diagnosticLogFailed = false;
   let total = 0;
   let pendingInBatch = 0;
   let sliceStartedAt = now();
@@ -98,13 +107,13 @@ export async function syncLoadedSessionsInBatches(
   );
 
   for await (const loadedItem of loaded) {
-    const item = await resolveExecutionEnvironment(
-      store,
-      loadedItem,
-      sshEnvironmentByHostAlias,
-      options.onEnvironmentsChanged,
-    );
     try {
+      const item = await resolveExecutionEnvironment(
+        store,
+        loadedItem,
+        sshEnvironmentByHostAlias,
+        options.onEnvironmentsChanged,
+      );
       let sessionKeyMigrated = false;
       if (item.session.source === "cursor-agent") {
         if (!cursorSessionKeysByIdentity) {
@@ -140,16 +149,26 @@ export async function syncLoadedSessionsInBatches(
       }
     } catch (error) {
       const diagnostic: SessionIndexFailureDiagnostic = {
-        source: item.session.source,
-        sessionKey: item.session.sessionKey,
-        filePath: item.session.filePath,
+        source: loadedItem.session.source,
+        sessionKey: loadedItem.session.sessionKey,
+        filePath: loadedItem.session.filePath,
         error: error instanceof Error
           ? { name: error.name, message: error.message, stack: error.stack ?? null }
           : { name: "UnknownError", message: String(error), stack: null },
       };
       failures.push(diagnostic);
-      (options.logIndexFailure ?? ((failure) => console.error("[indexer] Session indexing failed", failure)))(diagnostic);
       skipped++;
+      if (options.logIndexFailure) {
+        try {
+          await options.logIndexFailure(diagnostic);
+        } catch (logError) {
+          diagnosticLogFailed = true;
+          console.error("[indexer] Could not write session indexing diagnostic", logError);
+        }
+      } else {
+        diagnosticLogFailed = true;
+        console.error("[indexer] Session indexing failed", diagnostic);
+      }
     }
     total++;
     pendingInBatch++;
@@ -187,7 +206,7 @@ export async function syncLoadedSessionsInBatches(
     skipped,
     total,
     lastIndexedAt: Date.now(),
-    error: indexFailureMessage(failures),
+    error: indexFailureMessage(failures, options.indexFailureLogPath, diagnosticLogFailed),
   };
 }
 

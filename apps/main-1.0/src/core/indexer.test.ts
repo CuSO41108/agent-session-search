@@ -2,7 +2,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { createRequire } from "node:module";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { indexMigratedSessionFile, syncDefaultSessionsInBatches, syncLoadedSessionsInBatches } from "./indexer";
 import { createInMemoryStore } from "./session-store";
 import { writeMigratedSession } from "./session-migration-writers";
@@ -98,6 +98,93 @@ describe("indexer", () => {
     expect(status).toMatchObject({ indexed: 0, skipped: 1, total: 1 });
     expect(store.searchSessions({ query: "original indexed question", limit: 10 })).toHaveLength(1);
     expect(store.searchSessions({ query: "should not replace unchanged content", limit: 10 })).toHaveLength(0);
+  });
+
+  it("continues indexing after one session write fails", async () => {
+    const store = createInMemoryStore();
+    const originalUpsert = store.upsertIndexedSession.bind(store);
+    vi.spyOn(store, "upsertIndexedSession")
+      .mockImplementationOnce(() => {
+        throw new Error("session write failed");
+      })
+      .mockImplementation((...args) => originalUpsert(...args));
+    const progress: Array<{ error: string | null }> = [];
+    const diagnostics: unknown[] = [];
+
+    const status = await syncLoadedSessionsInBatches(store, [session(1), session(2)], {
+      batchSize: 1,
+      onProgress: (next) => progress.push(next),
+      indexFailureLogPath: "/tmp/session-index-failures.jsonl",
+      logIndexFailure: async (diagnostic) => {
+        await Promise.resolve();
+        diagnostics.push(diagnostic);
+      },
+    });
+
+    expect(status).toMatchObject({ running: false, indexed: 1, skipped: 1, total: 2 });
+    expect(status.error).toContain("1 session could not be indexed");
+    expect(status.error).toContain("Diagnostic log: /tmp/session-index-failures.jsonl");
+    expect(progress.every((next) => next.error === null)).toBe(true);
+    expect(diagnostics).toEqual([expect.objectContaining({
+      source: "codex-cli",
+      sessionKey: "codex:session-1",
+      filePath: "/tmp/session-1.jsonl",
+      error: expect.objectContaining({ name: "Error", message: "session write failed" }),
+    })]);
+    expect(store.searchSessions({ query: "Question 2", limit: 10 })).toHaveLength(1);
+  });
+
+  it("continues indexing when the diagnostic log cannot be written", async () => {
+    const store = createInMemoryStore();
+    const originalUpsert = store.upsertIndexedSession.bind(store);
+    vi.spyOn(store, "upsertIndexedSession")
+      .mockImplementationOnce(() => {
+        throw new Error("session write failed");
+      })
+      .mockImplementation((...args) => originalUpsert(...args));
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    try {
+      const status = await syncLoadedSessionsInBatches(store, [session(1), session(2)], {
+        batchSize: 1,
+        indexFailureLogPath: "/tmp/session-index-failures.jsonl",
+        logIndexFailure: async () => {
+          throw new Error("disk full");
+        },
+      });
+
+      expect(status).toMatchObject({ indexed: 1, skipped: 1, total: 2 });
+      expect(status.error).toContain("Diagnostic details could not be written to the local log.");
+      expect(status.error).not.toContain("/tmp/session-index-failures.jsonl");
+      expect(store.searchSessions({ query: "Question 2", limit: 10 })).toHaveLength(1);
+      expect(consoleError).toHaveBeenCalled();
+    } finally {
+      consoleError.mockRestore();
+    }
+  });
+
+  it("isolates an execution-environment resolution failure to its session", async () => {
+    const store = createInMemoryStore();
+    vi.spyOn(store, "upsertEnvironment").mockImplementationOnce(() => {
+      throw new Error("environment write failed");
+    });
+    const remote = session(1);
+    remote.executionEnvironmentHint = { kind: "ssh", label: "dev", hostAlias: "dev" };
+    const diagnostics: unknown[] = [];
+
+    const status = await syncLoadedSessionsInBatches(store, [remote, session(2)], {
+      batchSize: 1,
+      logIndexFailure: (diagnostic) => {
+        diagnostics.push(diagnostic);
+      },
+    });
+
+    expect(status).toMatchObject({ indexed: 1, skipped: 1, total: 2 });
+    expect(diagnostics).toEqual([expect.objectContaining({
+      sessionKey: "codex:session-1",
+      error: expect.objectContaining({ message: "environment write failed" }),
+    })]);
+    expect(store.searchSessions({ query: "Question 2", limit: 10 })).toHaveLength(1);
   });
 
   it("creates a disabled SSH environment for locally stored Cursor Remote sessions", async () => {
