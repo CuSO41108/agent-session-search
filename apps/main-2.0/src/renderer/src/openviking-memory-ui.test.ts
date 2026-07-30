@@ -63,6 +63,24 @@ describe("OpenViking directory memory UI", () => {
     expect(html).not.toContain("跟随");
   });
 
+  it("recognizes Codex model ids without requiring exact casing", () => {
+    const html = renderToStaticMarkup(createElement(OpenVikingMemorySettings, {
+      language: "zh",
+      settings: {
+        ...defaultSettings,
+        summarySource: "codex",
+        openVikingExtractionModel: "GPT-5.6-Sol",
+        openVikingExtractionReasoningEffort: "medium",
+      },
+      saving: false,
+      onSettingsChange: () => undefined,
+    }));
+
+    expect(html).toContain('value="xhigh"');
+    expect(html).toContain('value="max"');
+    expect(html).toContain('value="ultra"');
+  });
+
   it("explains when the summary Provider cannot extract memories", () => {
     const html = renderToStaticMarkup(createElement(OpenVikingMemorySettings, {
       language: "zh",

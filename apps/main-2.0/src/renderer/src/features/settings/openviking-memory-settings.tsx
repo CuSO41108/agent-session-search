@@ -148,7 +148,7 @@ export function OpenVikingMemorySettings({
     ...(codexFamilyProvider ? CURRENT_CODEX_MODELS.map((model) => model.id) : []),
   ].filter(Boolean)));
   const selectedCodexModel = CURRENT_CODEX_MODELS.find(
-    (model) => model.id === selectedExtractionModel,
+    (model) => model.id.toLowerCase() === selectedExtractionModel.toLowerCase(),
   );
   const reasoningEffortOptions = selectedCodexModel?.reasoningEfforts
     ?.filter((effort): effort is OpenVikingExtractionReasoningEffort =>
