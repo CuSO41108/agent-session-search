@@ -86,6 +86,7 @@ export function useWorkflowDraft({
   const requestTokenRef = useRef(0);
   const activeWorkflowIdRef = useRef<string | undefined>(undefined);
   const workflowObjectiveDraftsRef = useRef(new Map<string, string>());
+  const workflowReplyDraftsRef = useRef(new Map<string, string>());
 
   const invalidatePendingWorkflowRequest = useCallback((): void => {
     requestTokenRef.current += 1;
@@ -95,7 +96,10 @@ export function useWorkflowDraft({
   const resetWorkflowLocalDraft = useCallback((): void => {
     invalidatePendingWorkflowRequest();
     const workflowId = activeWorkflowIdRef.current;
-    if (workflowId) workflowObjectiveDraftsRef.current.delete(workflowId);
+    if (workflowId) {
+      workflowObjectiveDraftsRef.current.delete(workflowId);
+      workflowReplyDraftsRef.current.delete(workflowId);
+    }
     setWorkflowObjectiveInput("");
     setWorkflowReplyInput("");
   }, [invalidatePendingWorkflowRequest]);
@@ -110,7 +114,11 @@ export function useWorkflowDraft({
         ? workflowObjectiveDraftsRef.current.get(activeWorkflow.workflowId) ?? activeWorkflow.objective
         : "",
     );
-    setWorkflowReplyInput("");
+    setWorkflowReplyInput(
+      activeWorkflow && activeWorkflow.messages.length > 0
+        ? workflowReplyDraftsRef.current.get(activeWorkflow.workflowId) ?? ""
+        : "",
+    );
   }, [activeWorkflow, invalidatePendingWorkflowRequest]);
 
   const setWorkflowObjective = useCallback<Dispatch<SetStateAction<string>>>((value) => {
@@ -123,6 +131,20 @@ export function useWorkflowDraft({
     setWorkflowObjectiveInput((current) => {
       const next = value(current);
       if (workflowId) workflowObjectiveDraftsRef.current.set(workflowId, next);
+      return next;
+    });
+  }, []);
+
+  const setWorkflowReply = useCallback<Dispatch<SetStateAction<string>>>((value) => {
+    const workflowId = activeWorkflowIdRef.current;
+    if (typeof value !== "function") {
+      if (workflowId) workflowReplyDraftsRef.current.set(workflowId, value);
+      setWorkflowReplyInput(value);
+      return;
+    }
+    setWorkflowReplyInput((current) => {
+      const next = value(current);
+      if (workflowId) workflowReplyDraftsRef.current.set(workflowId, next);
       return next;
     });
   }, []);
@@ -196,6 +218,7 @@ export function useWorkflowDraft({
       workflowObjectiveDraftsRef.current.delete(workflow.workflowId);
       setWorkflowObjectiveInput("");
     } else {
+      workflowReplyDraftsRef.current.delete(workflow.workflowId);
       setWorkflowReplyInput("");
     }
 
@@ -230,7 +253,6 @@ export function useWorkflowDraft({
 
   const selectWorkflow = useCallback(async (workflowId: string): Promise<void> => {
     invalidatePendingWorkflowRequest();
-    setWorkflowReplyInput("");
     const next = await workflows.selectWorkflow(workflowId);
     setSnapshot(next);
   }, [invalidatePendingWorkflowRequest, setSnapshot, workflows]);
@@ -337,7 +359,7 @@ export function useWorkflowDraft({
       selectReviewerConfiguredAgent,
       selectReviewerModel,
       setWorkflowObjective,
-      setWorkflowReply: setWorkflowReplyInput,
+      setWorkflowReply,
     }),
     [
       activeWorkflow,
@@ -363,6 +385,7 @@ export function useWorkflowDraft({
       workflowObjectiveInput,
       workflowReplyInput,
       setWorkflowObjective,
+      setWorkflowReply,
     ],
   );
 }
