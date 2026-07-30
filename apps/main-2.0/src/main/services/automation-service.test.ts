@@ -182,6 +182,7 @@ describe("NativeAutomationService", () => {
       {},
     );
     expect(hub.setWorkflowMcpManagedToken).toHaveBeenCalledWith("test-token");
+    expect(hub.refreshDiscoverableModelCatalogs).not.toHaveBeenCalled();
     expect(service.health()).toEqual({ state: "ready" });
   });
 

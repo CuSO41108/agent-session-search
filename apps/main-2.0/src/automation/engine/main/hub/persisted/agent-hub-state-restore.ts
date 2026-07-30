@@ -6,7 +6,7 @@ import type {
   ConfiguredAgent,
   RuntimeConversation,
 } from "../../../shared/types";
-import { defaultChannelForAgent, defaultModelForAgent, isModelForChannel } from "../../../shared/models";
+import { defaultModelForAgent, isModelForChannel } from "../../../shared/models";
 import {
   asArray,
   asBoolean,
@@ -76,9 +76,12 @@ export function restoreConfiguredAgentState(
   const name = asOptionalString(record.name)?.trim();
   const runtimeAgentId = isAgentId(record.runtimeAgentId) ? record.runtimeAgentId : deps.defaultAgentId;
   if (!id || !name) return undefined;
-  const fallbackChannelId = defaultChannelForAgent(runtimeAgentId, deps.channels);
   const channelId = asOptionalString(record.channelId);
-  const normalizedChannelId = channelId && deps.channelById(channelId)?.agentId === runtimeAgentId ? channelId : fallbackChannelId;
+  const normalizedChannel = channelId && deps.channelById(channelId)?.agentId === runtimeAgentId
+    ? deps.channelById(channelId)
+    : deps.channels.find((channel) => channel.agentId === runtimeAgentId);
+  if (!normalizedChannel) return undefined;
+  const normalizedChannelId = normalizedChannel.id;
   const modelId = asOptionalString(record.modelId);
   const normalizedModelId = modelId && isModelForChannel(runtimeAgentId, normalizedChannelId, modelId, deps.channels)
     ? modelId

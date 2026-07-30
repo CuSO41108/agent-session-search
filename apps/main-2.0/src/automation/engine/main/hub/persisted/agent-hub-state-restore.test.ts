@@ -9,6 +9,23 @@ const channels = [{
 }];
 
 describe("restoreConfiguredAgentState", () => {
+  test("drops an agent when its runtime no longer has a config channel", () => {
+    const restored = restoreConfiguredAgentState({
+      id: "runtime-agent:hermes-default",
+      name: "Hermes Default",
+      runtimeAgentId: "hermes",
+      channelId: "hermes-default",
+      modelId: "default",
+      managed: true,
+    }, {
+      channels,
+      channelById: (id) => channels.find((channel) => channel.id === id),
+      defaultAgentId: "codex",
+    }, 1);
+
+    expect(restored).toBeUndefined();
+  });
+
   test("preserves valid MCP bindings and drops malformed entries", () => {
     const restored = restoreConfiguredAgentState({
       id: "agent",

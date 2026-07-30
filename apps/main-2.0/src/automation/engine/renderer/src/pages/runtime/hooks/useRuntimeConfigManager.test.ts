@@ -1,5 +1,9 @@
 import { describe, expect, test } from "vitest";
-import { codexRuntimeAvailability, confirmConfigSwitch } from "./useRuntimeConfigManager";
+import {
+  codexRuntimeAvailability,
+  configChannelUserReference,
+  confirmConfigSwitch,
+} from "./useRuntimeConfigManager";
 
 describe("codexRuntimeAvailability", () => {
   test("returns undetected before runtime probing completes", () => {
@@ -36,5 +40,22 @@ describe("confirmConfigSwitch", () => {
     await expect(confirmConfigSwitch(false, () => false, save)).resolves.toBe(true);
     await expect(confirmConfigSwitch(true, () => false, save)).resolves.toBe(false);
     await expect(confirmConfigSwitch(true, () => true, save)).resolves.toBe(true);
+  });
+});
+
+describe("configChannelUserReference", () => {
+  test("ignores managed runtime agents but keeps user-created references", () => {
+    const managed = {
+      id: "runtime-agent:hermes-default",
+      channelId: "hermes-default",
+      managed: true,
+    };
+    const userCreated = {
+      id: "worker",
+      channelId: "hermes-default",
+    };
+
+    expect(configChannelUserReference([managed] as never, "hermes-default")).toBeUndefined();
+    expect(configChannelUserReference([managed, userCreated] as never, "hermes-default")).toBe(userCreated);
   });
 });

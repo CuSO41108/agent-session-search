@@ -3336,6 +3336,15 @@ fs.writeFileSync(${JSON.stringify(argsPath)}, process.argv.slice(2).join("\\n") 
       claude: "missing-claude-for-test",
       api: "api",
     });
+    (hub as any).channels = [
+      ...(hub as any).channels,
+      {
+        id: "api-openai",
+        agentId: "api",
+        label: "OpenAI API",
+        models: [{ id: "default", label: "Default" }],
+      },
+    ];
     addConfiguredAgents(hub, [configuredAgent("api-agent", { runtimeAgentId: "api" })]);
     (hub as any).runtimes.set("api", {
       id: "api",
