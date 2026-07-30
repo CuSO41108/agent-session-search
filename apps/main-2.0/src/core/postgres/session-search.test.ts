@@ -95,7 +95,7 @@ describe("PostgreSQL Turn search", () => {
         detail: "中文关键词也出现在工具结果中",
         timestamp: "2026-07-23T08:00:02.000Z",
         callId: "call-chinese-search",
-        status: "success",
+        status: "completed",
       }],
     );
   });

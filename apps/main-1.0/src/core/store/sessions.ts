@@ -7,6 +7,7 @@ import {
 import { codexTaskWorkspaceDate } from "../project-identity";
 import { LIVE_SESSION_INACTIVITY_TIMEOUT_MS } from "../refresh-policy";
 import { truncateTraceDetail } from "../trace-detail";
+import { normalizeSessionTraceStatus } from "../trace-presentation";
 import type {
   IndexedSession,
   ProjectQueryOptions,
@@ -140,7 +141,7 @@ interface TraceEventRow {
   timestamp: string;
   call_id: string | null;
   event_type: string | null;
-  status: SessionTraceEvent["status"] | null;
+  status: string | null;
 }
 
 export interface TraceEventQueryOptions {
@@ -1187,17 +1188,20 @@ export class SessionsStore {
         `,
         )
         .all(...params) as unknown as TraceEventRow[]
-    ).map((row) => ({
-      index: row.trace_index,
-      kind: row.kind,
-      source: row.source,
-      title: row.title,
-      detail: row.detail,
-      timestamp: row.timestamp,
-      ...(row.call_id ? { callId: row.call_id } : {}),
-      ...(row.event_type ? { eventType: row.event_type } : {}),
-      ...(row.status ? { status: row.status } : {}),
-    }));
+    ).map((row) => {
+      const status = normalizeSessionTraceStatus(row.status);
+      return {
+        index: row.trace_index,
+        kind: row.kind,
+        source: row.source,
+        title: row.title,
+        detail: row.detail,
+        timestamp: row.timestamp,
+        ...(row.call_id ? { callId: row.call_id } : {}),
+        ...(row.event_type ? { eventType: row.event_type } : {}),
+        ...(status ? { status } : {}),
+      };
+    });
   }
 
   getStats(options: SessionStatsOptions = {}, now = Date.now()): SessionStats {

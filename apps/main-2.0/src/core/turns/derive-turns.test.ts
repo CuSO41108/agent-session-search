@@ -49,7 +49,7 @@ const traceEvents: SessionTraceEvent[] = [
     detail: "1 test failed",
     timestamp: "2026-07-23T10:00:05.000Z",
     callId: "call-1",
-    status: "failure",
+    status: "failed",
   },
   {
     index: 2,
@@ -59,7 +59,7 @@ const traceEvents: SessionTraceEvent[] = [
     detail: "updated the assertion",
     timestamp: "2026-07-23T10:01:02.000Z",
     eventType: "patch_apply_end",
-    status: "success",
+    status: "completed",
   },
 ];
 
@@ -245,7 +245,7 @@ describe("deriveSessionTimeline", () => {
       title: "progress",
       detail: "",
       timestamp: new Date(startedAt + (index % manyMessages.length) * 1_000 + 1).toISOString(),
-      status: "success",
+      status: "completed",
     }));
 
     const before = performance.now();

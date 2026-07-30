@@ -219,8 +219,10 @@ function spanName(title: string): string {
 }
 
 function completedSpanStatus(status: SessionTraceEvent["status"]): DerivedTraceSpan["status"] {
-  if (status === "failure") return "failed";
-  if (status === "success") return "completed";
+  if (status === "failed") return "failed";
+  if (status === "completed") return "completed";
+  if (status === "aborted") return "aborted";
+  if (status === "running") return "running";
   return "unknown";
 }
 
@@ -235,7 +237,7 @@ function buildSpans(turnId: string, traceEvents: readonly SessionTraceEvent[]): 
       paired.endedAt = timestampString(event.timestamp) ?? paired.startedAt;
       paired.output = { text: event.detail };
       paired.status = completedSpanStatus(event.status);
-      paired.error = event.status === "failure" ? event.detail || event.title : null;
+      paired.error = event.status === "failed" ? event.detail || event.title : null;
       paired.attributes = {
         ...paired.attributes,
         resultSource: event.source,
@@ -257,7 +259,7 @@ function buildSpans(turnId: string, traceEvents: readonly SessionTraceEvent[]): 
       callId,
       input: event.kind === "tool_call" ? { text: event.detail } : null,
       output: event.kind === "tool_call" ? null : { text: event.detail },
-      error: event.status === "failure" ? event.detail || event.title : null,
+      error: event.status === "failed" ? event.detail || event.title : null,
       attributes: {
         source: event.source,
         traceKind: event.kind,

@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { constants as zlibConstants, gzip, gzipSync, gunzip } from "node:zlib";
 import { migrationAgentForSource } from "./session-migration";
 import type { SessionStore, SessionSyncBinding } from "./session-store";
+import { normalizeSessionTraceStatus } from "./trace-presentation";
 import type { MigrationAgent, PortableSession, SessionMessage, SessionSearchResult, SessionTraceEvent } from "./types";
 
 export const REMOTE_SESSION_TABLE = "agent_session_remote_sessions";
@@ -1217,7 +1218,10 @@ export function parseDetailSnapshot(value: unknown): RemoteSessionDetailSnapshot
     exportedAt: typeof snapshot.exportedAt === "number" ? snapshot.exportedAt : 0,
     session: snapshot.session as SessionSearchResult,
     messages: snapshot.messages.filter(isSessionMessage),
-    traceEvents: snapshot.traceEvents.filter(isTraceEvent),
+    traceEvents: snapshot.traceEvents.flatMap((value) => {
+      const event = parseTraceEvent(value);
+      return event ? [event] : [];
+    }),
     ...(snapshot.schemaVersion === 3
       ? { sourceArchive: parseRemoteSessionSourceArchive(snapshot.sourceArchive) }
       : {}),
@@ -1338,17 +1342,35 @@ function isSessionMessage(value: unknown): value is SessionMessage {
   );
 }
 
-function isTraceEvent(value: unknown): value is SessionTraceEvent {
-  if (!value || typeof value !== "object") return false;
+function parseTraceEvent(value: unknown): SessionTraceEvent | null {
+  if (!value || typeof value !== "object") return null;
   const event = value as Partial<SessionTraceEvent>;
-  return (
-    typeof event.index === "number" &&
-    (event.kind === "tool_call" || event.kind === "tool_result" || event.kind === "event") &&
-    typeof event.source === "string" &&
-    typeof event.title === "string" &&
-    typeof event.detail === "string" &&
-    typeof event.timestamp === "string"
-  );
+  if (
+    typeof event.index !== "number"
+    || (event.kind !== "tool_call" && event.kind !== "tool_result" && event.kind !== "event")
+    || typeof event.source !== "string"
+    || typeof event.title !== "string"
+    || typeof event.detail !== "string"
+    || typeof event.timestamp !== "string"
+  ) return null;
+  const status = normalizeSessionTraceStatus(event.status);
+  return {
+    index: event.index,
+    kind: event.kind,
+    source: event.source,
+    title: event.title,
+    detail: event.detail,
+    timestamp: event.timestamp,
+    ...(typeof event.callId === "string" || event.callId === null ? { callId: event.callId } : {}),
+    ...(typeof event.eventType === "string" || event.eventType === null ? { eventType: event.eventType } : {}),
+    ...(status ? { status } : {}),
+    ...(typeof event.sourceTurnId === "string" || event.sourceTurnId === null
+      ? { sourceTurnId: event.sourceTurnId }
+      : {}),
+    ...(event.attributes && typeof event.attributes === "object" && !Array.isArray(event.attributes)
+      ? { attributes: event.attributes }
+      : {}),
+  };
 }
 
 function parseMigrationAgent(value: string): MigrationAgent {

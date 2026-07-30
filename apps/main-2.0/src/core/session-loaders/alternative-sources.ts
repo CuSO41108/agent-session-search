@@ -662,9 +662,9 @@ function zcodeDatabaseStat(dbPath: string): VirtualSessionFileStat {
   };
 }
 
-function zcodeToolStatus(value: string): "success" | "failure" | "unknown" {
-  if (value === "completed") return "success";
-  if (value === "error") return "failure";
+function zcodeToolStatus(value: string): "completed" | "failed" | "unknown" {
+  if (value === "completed") return "completed";
+  if (value === "error") return "failed";
   return "unknown";
 }
 

@@ -59,6 +59,8 @@ export interface SessionMessage {
   content: string;
   timestamp: string;
   index: number;
+  sourceTurnId?: string | null;
+  phase?: "commentary" | "final_answer" | null;
   attachments?: SessionAttachment[];
 }
 
@@ -153,6 +155,36 @@ export interface SessionMigrationRecord {
 }
 
 export type SessionTraceKind = "tool_call" | "tool_result" | "event";
+export type SessionTraceStatus = "running" | "completed" | "failed" | "aborted" | "unknown";
+export type SessionTraceCategory = "tool" | "lifecycle" | "reasoning" | "collaboration" | "annotation" | "context";
+export type SessionTraceVisibility = "timeline" | "turn_summary" | "hidden";
+export type CodexTraceEventType =
+  | "codex.turn.started"
+  | "codex.turn.completed"
+  | "codex.turn.aborted"
+  | "codex.function_call"
+  | "codex.custom_tool"
+  | "codex.local_shell"
+  | "codex.command_execution"
+  | "codex.dynamic_tool"
+  | "codex.mcp_tool"
+  | "codex.tool_search"
+  | "codex.web_search"
+  | "codex.image_generation"
+  | "codex.image_view"
+  | "codex.extension.sleep"
+  | "codex.file_change"
+  | "codex.reasoning_summary"
+  | "codex.plan"
+  | "codex.review.entered"
+  | "codex.review.exited"
+  | "codex.goal.updated"
+  | "codex.context.compaction"
+  | "codex.collaboration.tool"
+  | "codex.collaboration.activity"
+  | "codex.collaboration.message"
+  | "codex.thread.settings"
+  | "codex.thread.rolled_back";
 
 export interface SessionTraceEvent {
   index: number;
@@ -163,7 +195,9 @@ export interface SessionTraceEvent {
   timestamp: string;
   callId?: string | null;
   eventType?: string | null;
-  status?: "success" | "failure" | "unknown" | null;
+  status?: SessionTraceStatus | null;
+  sourceTurnId?: string | null;
+  attributes?: Record<string, unknown>;
 }
 
 export interface TokenUsage {

@@ -72,7 +72,7 @@ const traces: SessionTraceEvent[] = [
     detail: "login test failed",
     timestamp: "2026-07-20T08:00:03.000Z",
     callId: "call-1",
-    status: "failure",
+    status: "failed",
   },
 ];
 
@@ -183,6 +183,20 @@ describe("PostgresSessionRepository", () => {
     await expect(turnsRepository.getTraceEvents("codex:session-a", {
       startTimestamp: "2026-07-20T08:00:02.500Z",
     })).resolves.toEqual([traces[1]]);
+  });
+
+  it("normalizes legacy trace statuses when reading raw events", async () => {
+    await repository.upsertIndexedSession(session(), messages, tokens, traces);
+    await database.query(`
+      update agent_recall.session_raw_events
+      set payload = payload || '{"status":"failure"}'::jsonb
+      where session_key = 'codex:session-a'
+        and kind = 'trace'
+        and (payload->>'traceIndex')::integer = 1
+    `);
+
+    const stored = await turnsRepository.getTraceEvents("codex:session-a");
+    expect(stored[1]?.status).toBe("failed");
   });
 
   it("replaces unsupported NUL characters while indexing a session", async () => {

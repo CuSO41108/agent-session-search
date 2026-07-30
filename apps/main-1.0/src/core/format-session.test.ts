@@ -41,7 +41,7 @@ const traceEvents: SessionTraceEvent[] = [
     detail: "stdout:\npass",
     timestamp: "2026-06-01T10:03:00Z",
     callId: "call-1",
-    status: "success",
+    status: "completed",
   },
 ];
 
@@ -57,6 +57,33 @@ describe("formatSessionMarkdown", () => {
     expect(markdown).toContain("shell_command · npm test");
     expect(markdown).toContain("shell · npm test");
     expect(markdown).toContain("stdout:");
+  });
+
+  it("omits hidden lifecycle traces while retaining Turn summaries", () => {
+    const markdown = formatSessionMarkdown(session, messages, [
+      {
+        index: 0,
+        kind: "event",
+        source: "codex",
+        eventType: "codex.turn.started",
+        title: "Turn started",
+        detail: "",
+        timestamp: "2026-06-01T10:00:00Z",
+      },
+      {
+        index: 1,
+        kind: "event",
+        source: "codex",
+        eventType: "codex.turn.completed",
+        title: "Turn completed",
+        detail: "duration: 1s",
+        timestamp: "2026-06-01T10:01:00Z",
+        status: "completed",
+      },
+    ]);
+
+    expect(markdown).not.toContain("Turn started");
+    expect(markdown).toContain("Turn completed");
   });
 
   it("uses the shared source label for Qoder exports", () => {

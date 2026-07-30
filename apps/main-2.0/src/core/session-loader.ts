@@ -378,7 +378,7 @@ function extractCodexEventTrace(row: Record<string, unknown>): TraceEventDraft[]
         kind: "event",
         title: "error",
         detail: joinNonEmpty([stringField(payload, "message"), stringifyDetail(unknownField(payload, "codex_error_info"))]),
-        status: "failure",
+        status: "failed",
       },
     ];
   }

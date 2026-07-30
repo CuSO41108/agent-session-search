@@ -152,7 +152,7 @@ describe("EvaluationStore", () => {
         detail: "{}",
         timestamp: new Date(1_100).toISOString(),
         callId: "call-1",
-        status: "success",
+        status: "completed",
       }],
     );
     const identifiers = (await database.query<{ turn_id: string; span_id: string }>(`

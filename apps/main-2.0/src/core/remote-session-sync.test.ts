@@ -510,6 +510,23 @@ describe("remote session sync model", () => {
     expect(() => parsePortableSession({ ...PORTABLE, sourceAgent: "hermes" })).toThrow("unsupported");
   });
 
+  it("normalizes legacy trace statuses in old detail snapshots", () => {
+    const detail = {
+      ...buildRemoteSessionSnapshot(SESSION, MESSAGES, [], 10_000),
+      traceEvents: [{
+        index: 0,
+        kind: "event",
+        source: "codex",
+        title: "legacy result",
+        detail: "done",
+        timestamp: "2026-07-20T08:00:00.000Z",
+        status: "success",
+      }],
+    };
+
+    expect(parseDetailSnapshot(detail).traceEvents[0]?.status).toBe("completed");
+  });
+
   it("preserves subagent relationships in portable sessions and defaults older payloads", () => {
     const portable = remotePortableSessionFrom(
       { ...SESSION, isSubagent: true, parentSessionId: "parent-1" },

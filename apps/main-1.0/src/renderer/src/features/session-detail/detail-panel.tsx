@@ -757,8 +757,9 @@ function MessageBlock({
 
 function traceStatusSymbol(event: SessionTraceEvent): string {
   if (event.kind === "tool_call") return "→";
-  if (event.status === "success") return "✓";
-  if (event.status === "failure") return "✗";
+  if (event.status === "completed") return "✓";
+  if (event.status === "failed") return "✗";
+  if (event.status === "aborted") return "■";
   return "•";
 }
 

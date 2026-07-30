@@ -526,7 +526,7 @@
   background: var(--panel-subtle);
 }
 
-.trace-event.failure {
+.trace-event.failed {
   border-color: var(--danger);
 }
 
@@ -569,7 +569,7 @@
   color: var(--accent-bright);
 }
 
-.trace-event.failure .trace-symbol {
+.trace-event.failed .trace-symbol {
   color: var(--danger);
 }
 

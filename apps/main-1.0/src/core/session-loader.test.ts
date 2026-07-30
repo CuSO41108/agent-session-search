@@ -555,7 +555,7 @@ describe("Codex session loading", () => {
       eventType: "exec_command_end",
       title: "shell · ls -la",
       callId: "call-1",
-      status: "success",
+      status: "completed",
     });
     expect(loaded?.traceEvents?.[1].detail).toContain("total 8");
 

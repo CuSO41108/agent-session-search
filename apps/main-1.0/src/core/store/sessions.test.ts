@@ -29,6 +29,29 @@ function indexedSession(overrides: Partial<IndexedSession> = {}): IndexedSession
 }
 
 describe("SessionsStore", () => {
+  it("normalizes legacy trace statuses when reading SQLite rows", () => {
+    const db = new DatabaseSync(":memory:");
+    try {
+      migrateSessionStore(db);
+      const store = new SessionsStore(db, new EnvironmentStore(db));
+      const session = indexedSession();
+      store.upsertIndexedSession(session, [], [], [{
+        index: 0,
+        kind: "event",
+        source: "codex",
+        title: "result",
+        detail: "done",
+        timestamp: "2026-07-16T00:00:00.000Z",
+        status: "completed",
+      }]);
+      db.prepare("UPDATE trace_events SET status = 'success' WHERE session_key = ?").run(session.sessionKey);
+
+      expect(store.getTraceEvents(session.sessionKey)[0]?.status).toBe("completed");
+    } finally {
+      db.close();
+    }
+  });
+
   it("indexes and searches session messages while preserving user metadata", () => {
     const db = new DatabaseSync(":memory:");
     try {

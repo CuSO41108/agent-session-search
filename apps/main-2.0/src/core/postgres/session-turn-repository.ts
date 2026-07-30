@@ -7,6 +7,7 @@ import type {
   SessionTurnMessage,
   SessionTurnSummary,
 } from "../types";
+import { normalizeSessionTraceStatus } from "../trace-presentation";
 import type { PostgresDatabase } from "./database";
 import {
   SESSION_TURN_SUMMARY_SQL,
@@ -213,6 +214,7 @@ export class PostgresSessionTurnRepository {
     );
     return result.rows.map((row) => {
       const payload = jsonValue(row.payload);
+      const status = normalizeSessionTraceStatus(payload.status);
       return {
         index: numberValue(payload.traceIndex),
         kind: payload.kind as SessionTraceEvent["kind"],
@@ -222,7 +224,7 @@ export class PostgresSessionTurnRepository {
         timestamp: isoValue(row.occurred_at),
         ...(payload.callId ? { callId: String(payload.callId) } : {}),
         ...(payload.eventType ? { eventType: String(payload.eventType) } : {}),
-        ...(payload.status ? { status: payload.status as SessionTraceEvent["status"] } : {}),
+        ...(status ? { status } : {}),
       };
     });
   }

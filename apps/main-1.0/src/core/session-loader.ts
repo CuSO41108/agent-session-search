@@ -312,9 +312,9 @@ function titleWithSummary(name: string, summary: string): string {
   return summary ? `${name} · ${summary}` : name;
 }
 
-function statusFromExit(exitCode: number | undefined, fallback?: boolean): "success" | "failure" | "unknown" {
-  if (typeof exitCode === "number") return exitCode === 0 ? "success" : "failure";
-  if (typeof fallback === "boolean") return fallback ? "success" : "failure";
+function statusFromExit(exitCode: number | undefined, fallback?: boolean): "completed" | "failed" | "unknown" {
+  if (typeof exitCode === "number") return exitCode === 0 ? "completed" : "failed";
+  if (typeof fallback === "boolean") return fallback ? "completed" : "failed";
   return "unknown";
 }
 
@@ -495,7 +495,7 @@ function extractCodexEventTrace(row: Record<string, unknown>): TraceEventDraft[]
         kind: "event",
         title: "error",
         detail: joinNonEmpty([stringField(payload, "message"), stringifyDetail(unknownField(payload, "codex_error_info"))]),
-        status: "failure",
+        status: "failed",
       },
     ];
   }
@@ -2072,9 +2072,9 @@ function zcodeDatabaseStat(dbPath: string): VirtualSessionFileStat {
   };
 }
 
-function zcodeToolStatus(value: string): "success" | "failure" | "unknown" {
-  if (value === "completed") return "success";
-  if (value === "error") return "failure";
+function zcodeToolStatus(value: string): "completed" | "failed" | "unknown" {
+  if (value === "completed") return "completed";
+  if (value === "error") return "failed";
   return "unknown";
 }
 

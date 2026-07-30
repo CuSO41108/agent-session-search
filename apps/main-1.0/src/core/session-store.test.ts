@@ -135,7 +135,7 @@ const traceEvents: SessionTraceEvent[] = [
     detail: "stdout:\npass",
     timestamp: "2026-06-01T10:03:00Z",
     callId: "call-1",
-    status: "success",
+    status: "completed",
   },
 ];
 
