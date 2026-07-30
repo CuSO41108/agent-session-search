@@ -87,6 +87,7 @@ export interface SessionMessageEvent {
 
 export type MigrationAgent = "claude" | "codex" | "codebuddy" | "codewiz" | "cursor";
 export type MigrationTarget = MigrationAgent | "tclaude" | "tcodex";
+export type RemoteSessionAgent = MigrationAgent | "hermes";
 export type SessionMigrationStrategy = "complete" | "ai-compressed" | "locally-truncated";
 export type SessionMigrationStage = "reading" | "compressing" | "writing" | "indexing" | "launching";
 
@@ -108,7 +109,7 @@ export interface MigrationCompressionEvent {
 export interface PortableSession {
   sourceSessionKey: string;
   sourceSessionId?: string;
-  sourceAgent: MigrationAgent;
+  sourceAgent: RemoteSessionAgent;
   title: string;
   projectPath: string;
   startedAt: string;
@@ -144,7 +145,7 @@ export interface SessionMigrationResult {
 export interface SessionMigrationRecord {
   id: string;
   sourceSessionKey: string;
-  sourceAgent: MigrationAgent;
+  sourceAgent: RemoteSessionAgent;
   targetAgent: MigrationTarget;
   targetSessionId: string;
   targetFilePath: string;
