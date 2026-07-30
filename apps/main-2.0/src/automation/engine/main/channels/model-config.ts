@@ -1,6 +1,7 @@
 import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { normalizeConfigChannelsForStorage } from "../../shared/config-channels";
 import { CURRENT_CODEX_MODELS, DEFAULT_MODEL_ID, FALLBACK_MODEL_OPTIONS, runtimeModelId } from "../../shared/models";
 import { isRuntimeId, RUNTIME_DEFINITIONS } from "../../shared/runtime-catalog";
 import type {
@@ -402,13 +403,15 @@ export async function detectCodexModels(command = "codex"): Promise<AgentModelOp
 }
 
 export function createDefaultChannels(codexModels = FALLBACK_MODEL_OPTIONS.codex.filter((model) => model.id !== DEFAULT_MODEL_ID)): AgentChannel[] {
-  return RUNTIME_DEFINITIONS.map((definition) => ({
-    ...definition.defaultChannel,
-    agentId: definition.id,
-    models: definition.id === "codex"
-      ? normalizeModels(codexModels, FALLBACK_MODEL_OPTIONS.codex)
-      : FALLBACK_MODEL_OPTIONS[definition.id],
-  }));
+  return RUNTIME_DEFINITIONS
+    .filter((definition) => definition.autoCreateConfig)
+    .map((definition) => ({
+      ...definition.defaultChannel,
+      agentId: definition.id,
+      models: definition.id === "codex"
+        ? normalizeModels(codexModels, FALLBACK_MODEL_OPTIONS.codex)
+        : FALLBACK_MODEL_OPTIONS[definition.id],
+    }));
 }
 
 export function appendMissingRuntimeDefaultChannels(channels: AgentChannel[]): AgentChannel[] {
@@ -421,7 +424,7 @@ export async function loadModelChannels(configPath: string, codexCommand = "code
   try {
     const raw = await readFile(configPath, "utf8");
     const parsed = JSON.parse(raw) as Partial<ModelChannelsFile>;
-    return normalizeChannels(parsed.channels);
+    return normalizeConfigChannelsForStorage(normalizeChannels(parsed.channels));
   } catch (error) {
     const code = error && typeof error === "object" ? (error as { code?: unknown }).code : undefined;
     if (code !== "ENOENT") console.warn(`Failed to load model channel config from ${configPath}:`, error);
@@ -436,7 +439,7 @@ export async function loadModelChannels(configPath: string, codexCommand = "code
 }
 
 export async function saveModelChannels(configPath: string, channels: AgentChannel[]): Promise<AgentChannel[]> {
-  const normalized = normalizeChannels(channels);
+  const normalized = normalizeConfigChannelsForStorage(normalizeChannels(channels));
   const payload: ModelChannelsFile = {
     version: CONFIG_VERSION,
     channels: normalized,

@@ -49,6 +49,13 @@ export function codexRuntimeAvailability(runtimes: AppSnapshot["runtimes"]): {
   };
 }
 
+export function configChannelUserReference(
+  agents: AppSnapshot["configuredAgents"],
+  channelId: string,
+): AppSnapshot["configuredAgents"][number] | undefined {
+  return agents.find((agent) => agent.channelId === channelId && agent.managed !== true);
+}
+
 interface UseRuntimeConfigManagerOptions {
   chatApi: AutomationApi;
   snapshot: AppSnapshot;
@@ -214,7 +221,7 @@ export function useRuntimeConfigManager({
 
   const deleteConfigChannel = useCallback((channelId: string) => {
     setConfigContextMenu(undefined);
-    const referencedAgent = snapshot.configuredAgents.find((agent) => agent.channelId === channelId);
+    const referencedAgent = configChannelUserReference(snapshot.configuredAgents, channelId);
     if (referencedAgent) {
       setConfigStatus(`Config is used by ${referencedAgent.name || referencedAgent.id}`);
       return;

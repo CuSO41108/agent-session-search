@@ -22,28 +22,11 @@ import {
 } from "./model-config";
 
 describe("model channel config", () => {
-  test("creates a Hermes Default channel for a fresh installation", () => {
-    expect(createDefaultChannels().find((channel) => channel.agentId === "hermes")).toEqual({
-      id: "hermes-default",
-      agentId: "hermes",
-      label: "Hermes Default",
-      presetId: "hermes-default",
-      models: [{ id: "default", label: "Default" }],
-    });
-    expect(createDefaultChannels().find((channel) => channel.agentId === "opencode")).toEqual({
-      id: "opencode-default",
-      agentId: "opencode",
-      label: "OpenCode Default",
-      presetId: "opencode-default",
-      models: [{ id: "default", label: "Default" }],
-    });
-    expect(createDefaultChannels().find((channel) => channel.agentId === "openclaw")).toEqual({
-      id: "openclaw-default",
-      agentId: "openclaw",
-      label: "OpenClaw Default",
-      presetId: "openclaw-default",
-      models: [{ id: "default", label: "Default" }],
-    });
+  test("creates only Codex and Claude Code channels for a fresh installation", () => {
+    expect(createDefaultChannels().map((channel) => channel.agentId)).toEqual([
+      "codex",
+      "claude",
+    ]);
   });
 
   test("round-trips custom channels for every registered runtime", async () => {
