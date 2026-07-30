@@ -52,6 +52,33 @@ test("runtime builds require explicit isolated HOME and output directories", asy
   }
 });
 
+test("Windows runtime builds use the pinned prebuilt llama.cpp wheel", () => {
+  const root = path.join(tmpdir(), "agent-recall-runtime-windows-plan");
+  const plan = buildRuntimePlan({
+    version: "0.4.11",
+    platform: "win32",
+    arch: "x64",
+    buildHome: path.join(root, "home"),
+    outputDir: path.join(root, "output"),
+    pythonArchive: path.join(root, "cpython.tar.gz"),
+    pythonSha256: "a".repeat(64),
+  });
+
+  assert.deepEqual(plan.pipArgs, [
+    "-m",
+    "pip",
+    "install",
+    "--disable-pip-version-check",
+    [
+      "llama-cpp-python @ ",
+      "https://github.com/abetlen/llama-cpp-python/releases/download/v0.3.34/",
+      "llama_cpp_python-0.3.34-py3-none-win_amd64.whl",
+      "#sha256=6526fff614e5ef7e439e6369e076a78073e45e1d791dbe1d5e5d42661f46ca1a",
+    ].join(""),
+    "openviking[local-embed]==0.4.11",
+  ]);
+});
+
 test("runtime build rejects an invalid standalone Python checksum", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "agent-recall-runtime-checksum-"));
   try {
