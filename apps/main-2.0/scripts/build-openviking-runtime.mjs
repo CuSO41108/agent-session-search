@@ -49,6 +49,7 @@ export function buildRuntimePlan(input) {
   const buildHome = assertSafeBuildDirectory(input.buildHome, "build HOME");
   const outputDir = assertSafeBuildDirectory(input.outputDir, "output");
   const artifactName = runtimeArtifactName(input);
+  const openVikingPackageVersion = input.version.replace(/-r[1-9][0-9]*$/u, "");
   if (!path.isAbsolute(input.pythonArchive)) {
     throw new Error("OpenViking runtime build requires an absolute CPython archive path.");
   }
@@ -77,7 +78,8 @@ export function buildRuntimePlan(input) {
       ...(input.platform === "win32" && input.arch === "x64"
         ? [WINDOWS_X64_LLAMA_CPP_WHEEL]
         : []),
-      `openviking[local-embed]==${input.version}`,
+      `openviking[local-embed]==${openVikingPackageVersion}`,
+      "mcp>=1.27.0,<2",
     ],
   };
 }

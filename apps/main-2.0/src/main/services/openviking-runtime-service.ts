@@ -61,6 +61,7 @@ export interface OpenVikingServerConfig {
 interface RuntimeChild {
   pid?: number;
   exitCode: number | null;
+  stderr?: Readable | null;
   kill(signal?: NodeJS.Signals): boolean;
   once(event: "exit", listener: (code: number | null, signal: NodeJS.Signals | null) => void): this;
 }
@@ -74,6 +75,7 @@ interface ExtractArchiveInput {
 interface RuntimeServiceOptions {
   rootDir: string;
   codexAuthBootstrapPath: string;
+  version?: string;
   platform?: NodeJS.Platform;
   arch?: string;
   allowLocalRuntime?: boolean;
@@ -91,7 +93,11 @@ interface RuntimeServiceOptions {
   spawnProcess?: (
     command: string,
     args: readonly string[],
-    options: { cwd: string; env: NodeJS.ProcessEnv; stdio: "ignore" },
+    options: {
+      cwd: string;
+      env: NodeJS.ProcessEnv;
+      stdio: ["ignore", "ignore", "pipe"];
+    },
   ) => RuntimeChild;
   healthCheck?: (baseUrl: string, rootApiKey: string) => Promise<void>;
   isProcessAlive?: (pid: number) => boolean;
@@ -106,6 +112,7 @@ interface PersistedRuntimeState {
 export class OpenVikingRuntimeService {
   private readonly rootDir: string;
   private readonly codexAuthBootstrapPath: string;
+  private readonly version: string | undefined;
   private readonly platform: NodeJS.Platform;
   private readonly arch: string;
   private readonly allowLocalRuntime: boolean;
@@ -122,6 +129,7 @@ export class OpenVikingRuntimeService {
   constructor(options: RuntimeServiceOptions) {
     this.rootDir = path.resolve(options.rootDir);
     this.codexAuthBootstrapPath = path.resolve(options.codexAuthBootstrapPath);
+    this.version = options.version;
     this.platform = options.platform ?? process.platform;
     this.arch = options.arch ?? process.arch;
     this.allowLocalRuntime = options.allowLocalRuntime === true;
@@ -139,7 +147,11 @@ export class OpenVikingRuntimeService {
     if (this.transientStatus) return this.transientStatus;
     const manifest = await this.readActiveManifest();
     if (!manifest) return { state: "not-installed" };
-    if (manifest.platform !== this.platform || manifest.arch !== this.arch) {
+    if (
+      (this.version !== undefined && manifest.version !== this.version)
+      || manifest.platform !== this.platform
+      || manifest.arch !== this.arch
+    ) {
       return { state: "not-installed" };
     }
     let installedBytes: number | undefined;
@@ -296,29 +308,52 @@ export class OpenVikingRuntimeService {
         OPENVIKING_CODEX_BOOTSTRAP_PATH: this.codexAuthBootstrapPath,
         OPENVIKING_SERVER_HOST: "127.0.0.1",
       },
-      stdio: "ignore",
+      stdio: ["ignore", "ignore", "pipe"],
     });
     if (!child.pid) {
       child.kill();
       this.transientStatus = null;
       throw new Error("OpenViking runtime did not report a process ID.");
     }
+    let stderrTail = "";
+    child.stderr?.setEncoding("utf8");
+    child.stderr?.on("data", (chunk: string | Buffer) => {
+      stderrTail = `${stderrTail}${String(chunk)}`.slice(-16_384);
+    });
     this.child = child;
-    await this.writePrivateJson(this.runtimeStatePath(), { pid: child.pid, port });
+    const exited = new Promise<Error>((resolve) => {
+      child.once("exit", (code, signal) => {
+        const detail = stderrTail.trim();
+        const reason = signal
+          ? `signal ${signal}`
+          : `exit code ${code ?? "unknown"}`;
+        resolve(new Error(
+          detail
+            ? `OpenViking process exited with ${reason}:\n${detail}`
+            : `OpenViking process exited with ${reason}.`,
+        ));
+      });
+    });
     child.once("exit", () => {
       if (this.child === child) this.child = null;
       void rm(this.runtimeStatePath(), { force: true });
     });
     try {
-      await this.healthCheck(`http://127.0.0.1:${port}`, rootApiKey);
+      await this.writePrivateJson(this.runtimeStatePath(), { pid: child.pid, port });
+      const startupError = await Promise.race([
+        this.healthCheck(`http://127.0.0.1:${port}`, rootApiKey).then(() => null),
+        exited,
+      ]);
+      if (startupError) throw startupError;
       this.transientStatus = null;
       return this.getStatus();
     } catch (error) {
-      child.kill();
+      if (child.exitCode === null) child.kill();
       await rm(this.runtimeStatePath(), { force: true });
       this.child = null;
       this.transientStatus = null;
-      throw new Error("OpenViking runtime failed its health check.", { cause: error });
+      const detail = error instanceof Error ? error.message : String(error);
+      throw new Error(`OpenViking runtime failed to start: ${detail}`, { cause: error });
     }
   }
 

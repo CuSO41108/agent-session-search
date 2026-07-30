@@ -21,6 +21,30 @@ test("runtime artifact names pin OpenViking and target platform", () => {
   );
 });
 
+test("runtime build revisions keep the upstream OpenViking package version", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "agent-recall-runtime-revision-"));
+  try {
+    const plan = buildRuntimePlan({
+      version: "0.4.11-r2",
+      platform: "darwin",
+      arch: "arm64",
+      buildHome: path.join(root, "home"),
+      outputDir: path.join(root, "output"),
+      pythonArchive: path.join(root, "cpython.tar.gz"),
+      pythonSha256: "a".repeat(64),
+    });
+
+    assert.equal(
+      plan.outputPath,
+      path.join(root, "output", "openviking-runtime-0.4.11-r2-darwin-arm64.tar.gz"),
+    );
+    assert.ok(plan.pipArgs.includes("openviking[local-embed]==0.4.11"));
+    assert.ok(!plan.pipArgs.includes("openviking[local-embed]==0.4.11-r2"));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("runtime builds require explicit isolated HOME and output directories", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "agent-recall-runtime-build-"));
   try {
@@ -46,6 +70,7 @@ test("runtime builds require explicit isolated HOME and output directories", asy
       "install",
       "--disable-pip-version-check",
       "openviking[local-embed]==0.4.11",
+      "mcp>=1.27.0,<2",
     ]);
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -76,6 +101,7 @@ test("Windows runtime builds use the pinned prebuilt llama.cpp wheel", () => {
       "#sha256=6526fff614e5ef7e439e6369e076a78073e45e1d791dbe1d5e5d42661f46ca1a",
     ].join(""),
     "openviking[local-embed]==0.4.11",
+    "mcp>=1.27.0,<2",
   ]);
 });
 

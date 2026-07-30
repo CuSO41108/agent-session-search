@@ -121,7 +121,7 @@ export function OpenVikingMemorySettings({
         <div className="openviking-component-card">
           <span className="openviking-component-icon"><Box size={18} /></span>
           <div>
-            <strong>OpenViking {snapshot?.runtime.version ?? "0.4.11"}</strong>
+            <strong>OpenViking {snapshot?.runtime.version ?? "0.4.11-r2"}</strong>
             <span>{runtimeInstalledSize
               ? `${runtimeInstalledSize} / ${runtimeInstalledSize} MB`
               : l(

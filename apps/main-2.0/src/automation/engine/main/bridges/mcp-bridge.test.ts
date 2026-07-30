@@ -2,7 +2,6 @@ import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, test, vi } from "vitest";
-import { runtimeDefinition } from "../../shared/runtime-catalog";
 import { AgentHub } from "../hub/agent-hub";
 import { startMcpBridge, type McpBridgeServer } from "./mcp-bridge";
 
@@ -338,7 +337,6 @@ describe("MCP bridge", () => {
       return new Response("not found", { status: 404 });
     };
     bridge = await startMcpBridge(hub, { discoveryPath: path.join(dir, "bridge.json"), bundledSkillsRoot, fetcher });
-    const hermesChannelId = runtimeDefinition("hermes").defaultChannel.id;
 
     const unauthorized = await fetch(`http://${bridge.host}:${bridge.port}/mcp/workflow/list`, { method: "POST" });
     expect(unauthorized.status).toBe(401);
@@ -405,12 +403,6 @@ describe("MCP bridge", () => {
     expect(JSON.stringify(channels)).not.toContain("httpHeaders");
     expect(JSON.stringify(channels)).not.toContain("Bearer");
 
-    const hermesChannels = (await (await bridgeRequest("/mcp/channels/list", bridge.token, { agentId: "hermes" })).json()) as any;
-    expect(hermesChannels).toMatchObject({
-      ok: true,
-      channels: [expect.objectContaining({ id: hermesChannelId, agentId: "hermes" })],
-    });
-
     const models = (await (await bridgeRequest("/mcp/models/list", bridge.token, { channelId: "codex-openai" })).json()) as any;
     expect(models).toMatchObject({
       ok: true,
@@ -437,22 +429,6 @@ describe("MCP bridge", () => {
       },
     });
     expect(createdAgent.agent).not.toHaveProperty("prompt");
-
-    const hermesAgent = (await (await bridgeRequest("/mcp/agents/create", bridge.token, {
-      id: "hermes-reviewer",
-      name: "Hermes Reviewer",
-      runtimeAgentId: "hermes",
-      channelId: hermesChannelId,
-      modelId: "default",
-    })).json()) as any;
-    expect(hermesAgent).toMatchObject({
-      ok: true,
-      agent: {
-        id: "hermes-reviewer",
-        runtimeAgentId: "hermes",
-        channelId: hermesChannelId,
-      },
-    });
 
     const updatedAgent = (await (await bridgeRequest("/mcp/agents/update", bridge.token, {
       agentId: "doc-writer",

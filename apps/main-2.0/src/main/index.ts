@@ -911,6 +911,7 @@ function initializeOpenVikingMemory(): void {
   const runtime = new OpenVikingRuntimeService({
     rootDir,
     codexAuthBootstrapPath: codexAuthPath(process.env, app.getPath("home")),
+    version: OPENVIKING_RUNTIME_VERSION,
     arch: openVikingRuntimeArch,
     allowLocalRuntime: !releaseUpdateRuntime,
   });
