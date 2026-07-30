@@ -10,6 +10,7 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { PassThrough } from "node:stream";
 import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -279,6 +280,56 @@ describe("OpenVikingRuntimeService", () => {
     }
   });
 
+  it("reports a child startup error immediately instead of waiting for the health timeout", async () => {
+    const root = await temporaryRoot();
+    const child = new FakeChild() as FakeChild & { stderr: PassThrough };
+    child.stderr = new PassThrough();
+    const service = new OpenVikingRuntimeService({
+      rootDir: root,
+      codexAuthBootstrapPath: path.join(root, "synthetic-codex-home", "auth.json"),
+      platform: "darwin",
+      arch: "arm64",
+      download: async (_url, destination) => {
+        await writeFile(destination, "runtime archive");
+      },
+      extractArchive: async ({ destination }) => {
+        const launcher = path.join(destination, "bin", "openviking-server");
+        const python = path.join(destination, "bin", "python3");
+        await mkdir(path.dirname(launcher), { recursive: true });
+        await writeFile(launcher, "");
+        await writeFile(python, "");
+        await chmod(launcher, 0o755);
+        await chmod(python, 0o755);
+      },
+      allocatePort: async () => 21933,
+      spawnProcess: (_command, _args, options) => {
+        expect(options.stdio).toEqual(["ignore", "ignore", "pipe"]);
+        queueMicrotask(() => {
+          child.stderr.end("ModuleNotFoundError: No module named 'mcp.server.fastmcp'");
+          child.exitCode = 1;
+          child.emit("exit", 1, null);
+        });
+        return child;
+      },
+      healthCheck: () => new Promise(() => undefined),
+      isProcessAlive: () => false,
+    });
+    await service.install(manifest());
+
+    const outcome = await Promise.race([
+      service.start({
+        embedding: { dense: { provider: "local", model: "model", dimension: 512 } },
+        vlm: { provider: "openai-codex", model: "gpt-5.4" },
+      }).catch((error: unknown) => error),
+      new Promise((resolve) => setTimeout(() => resolve("timed-out"), 100)),
+    ]);
+
+    expect(outcome).toBeInstanceOf(Error);
+    expect((outcome as Error).message).toContain(
+      "ModuleNotFoundError: No module named 'mcp.server.fastmcp'",
+    );
+  });
+
   it("rejects checksum mismatches before extracting anything", async () => {
     const root = await temporaryRoot();
     const extractArchive = vi.fn(async () => undefined);
@@ -351,6 +402,23 @@ describe("OpenVikingRuntimeService", () => {
       path.join(root, "active-runtime.json"),
       JSON.stringify(manifest({ arch: "x64" })),
     );
+
+    await expect(service.getStatus()).resolves.toEqual({ state: "not-installed" });
+  });
+
+  it("requires reinstalling an older runtime build revision", async () => {
+    const root = await temporaryRoot();
+    await writeFile(
+      path.join(root, "active-runtime.json"),
+      JSON.stringify(manifest({ version: "0.4.11" })),
+    );
+    const service = new OpenVikingRuntimeService({
+      rootDir: root,
+      codexAuthBootstrapPath: path.join(root, "synthetic-codex-home", "auth.json"),
+      platform: "darwin",
+      arch: "arm64",
+      version: "0.4.11-r2",
+    });
 
     await expect(service.getStatus()).resolves.toEqual({ state: "not-installed" });
   });

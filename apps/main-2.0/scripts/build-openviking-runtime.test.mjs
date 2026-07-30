@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
+import { createHash, randomBytes } from "node:crypto";
+import { mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -10,15 +10,69 @@ import {
   assertTrustedPythonArchiveUrl,
   buildRuntimeArtifactFromUrl,
   buildRuntimePlan,
+  createRuntimeArchive,
   runtimeArchiveRoot,
   runtimeArtifactName,
 } from "./build-openviking-runtime.mjs";
+
+test("runtime packaging reports real archive bytes and generation speed", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "agent-recall-runtime-packaging-progress-"));
+  const sourceDir = path.join(root, "source");
+  const outputPath = path.join(root, "runtime.tar.gz");
+  const progress = [];
+  try {
+    await mkdir(sourceDir);
+    await writeFile(path.join(sourceDir, "fixture.bin"), randomBytes(8 * 1024 * 1024));
+
+    await createRuntimeArchive({
+      sourceDir,
+      outputPath,
+      progressIntervalMs: 1,
+      onProgress: (event) => progress.push(event),
+    });
+
+    assert.deepEqual(progress[0], {
+      phase: "packaging-runtime",
+      downloadedBytes: 0,
+    });
+    assert.equal(progress.at(-1).downloadedBytes, (await stat(outputPath)).size);
+    assert.ok(progress.every((event, index) =>
+      index === 0 || event.downloadedBytes >= progress[index - 1].downloadedBytes));
+    assert.ok(progress.some((event) => event.bytesPerSecond > 0));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
 
 test("runtime artifact names pin OpenViking and target platform", () => {
   assert.equal(
     runtimeArtifactName({ version: "0.4.11", platform: "darwin", arch: "arm64" }),
     "openviking-runtime-0.4.11-darwin-arm64.tar.gz",
   );
+});
+
+test("runtime build revisions keep the upstream OpenViking package version", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "agent-recall-runtime-revision-"));
+  try {
+    const plan = buildRuntimePlan({
+      version: "0.4.11-r2",
+      platform: "darwin",
+      arch: "arm64",
+      buildHome: path.join(root, "home"),
+      outputDir: path.join(root, "output"),
+      pythonArchive: path.join(root, "cpython.tar.gz"),
+      pythonSha256: "a".repeat(64),
+    });
+
+    assert.equal(
+      plan.outputPath,
+      path.join(root, "output", "openviking-runtime-0.4.11-r2-darwin-arm64.tar.gz"),
+    );
+    assert.ok(plan.pipArgs.includes("openviking[local-embed]==0.4.11"));
+    assert.ok(!plan.pipArgs.includes("openviking[local-embed]==0.4.11-r2"));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test("runtime builds require explicit isolated HOME and output directories", async () => {
@@ -46,6 +100,7 @@ test("runtime builds require explicit isolated HOME and output directories", asy
       "install",
       "--disable-pip-version-check",
       "openviking[local-embed]==0.4.11",
+      "mcp>=1.27.0,<2",
     ]);
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -76,6 +131,7 @@ test("Windows runtime builds use the pinned prebuilt llama.cpp wheel", () => {
       "#sha256=6526fff614e5ef7e439e6369e076a78073e45e1d791dbe1d5e5d42661f46ca1a",
     ].join(""),
     "openviking[local-embed]==0.4.11",
+    "mcp>=1.27.0,<2",
   ]);
 });
 

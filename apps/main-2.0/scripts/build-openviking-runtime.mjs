@@ -8,6 +8,7 @@ import {
   mkdir,
   mkdtemp,
   rm,
+  stat,
   writeFile,
 } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
@@ -49,6 +50,7 @@ export function buildRuntimePlan(input) {
   const buildHome = assertSafeBuildDirectory(input.buildHome, "build HOME");
   const outputDir = assertSafeBuildDirectory(input.outputDir, "output");
   const artifactName = runtimeArtifactName(input);
+  const openVikingPackageVersion = input.version.replace(/-r[1-9][0-9]*$/u, "");
   if (!path.isAbsolute(input.pythonArchive)) {
     throw new Error("OpenViking runtime build requires an absolute CPython archive path.");
   }
@@ -77,7 +79,8 @@ export function buildRuntimePlan(input) {
       ...(input.platform === "win32" && input.arch === "x64"
         ? [WINDOWS_X64_LLAMA_CPP_WHEEL]
         : []),
-      `openviking[local-embed]==${input.version}`,
+      `openviking[local-embed]==${openVikingPackageVersion}`,
+      "mcp>=1.27.0,<2",
     ],
   };
 }
@@ -109,7 +112,6 @@ export async function buildRuntimeArtifact(input) {
       cwd: stagingRoot,
       env: plan.env,
     });
-    reportProgress(input, { phase: "packaging-runtime" });
     const archiveRoot = runtimeArchiveRoot(python, plan.platform);
     await writeFile(path.join(archiveRoot, "OPENVIKING-SOURCE.txt"), [
       "OpenViking server 0.4.11",
@@ -118,13 +120,11 @@ export async function buildRuntimeArtifact(input) {
       "License text: https://github.com/volcengine/OpenViking/blob/v0.4.11/LICENSE",
       "",
     ].join("\n"), "utf8");
-    await tar.c({
-      cwd: archiveRoot,
-      file: plan.outputPath,
-      gzip: true,
-      portable: true,
-      noMtime: true,
-    }, ["."]);
+    await createRuntimeArchive({
+      sourceDir: archiveRoot,
+      outputPath: plan.outputPath,
+      onProgress: (progress) => reportProgress(input, progress),
+    });
     const sha256 = await sha256File(plan.outputPath);
     const executablePath = plan.platform === "win32"
       ? "Scripts/openviking-server.exe"
@@ -142,6 +142,52 @@ export async function buildRuntimeArtifact(input) {
     return { ...manifest, outputPath: plan.outputPath, manifestPath: plan.manifestPath };
   } finally {
     await rm(stagingRoot, { recursive: true, force: true });
+  }
+}
+
+export async function createRuntimeArchive({
+  sourceDir,
+  outputPath,
+  onProgress,
+  progressIntervalMs = 500,
+}) {
+  const startedAt = Date.now();
+  const report = async () => {
+    let downloadedBytes;
+    try {
+      downloadedBytes = (await stat(outputPath)).size;
+    } catch (error) {
+      if (error?.code === "ENOENT") downloadedBytes = 0;
+      else return;
+    }
+    const elapsedMs = Date.now() - startedAt;
+    onProgress?.({
+      phase: "packaging-runtime",
+      downloadedBytes,
+      ...(elapsedMs > 0 && downloadedBytes > 0
+        ? { bytesPerSecond: Math.round(downloadedBytes / (elapsedMs / 1_000)) }
+        : {}),
+    });
+  };
+  let progressUpdate = Promise.resolve();
+  const schedule = () => {
+    progressUpdate = progressUpdate.then(report, report);
+  };
+
+  await report();
+  const timer = setInterval(schedule, progressIntervalMs);
+  try {
+    await tar.c({
+      cwd: sourceDir,
+      file: outputPath,
+      gzip: true,
+      portable: true,
+      noMtime: true,
+    }, ["."]);
+  } finally {
+    clearInterval(timer);
+    await progressUpdate;
+    await report();
   }
 }
 
