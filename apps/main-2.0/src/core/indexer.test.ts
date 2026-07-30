@@ -4,7 +4,7 @@ import * as path from "node:path";
 import { createRequire } from "node:module";
 import type { DatabaseSync as DatabaseSyncType } from "node:sqlite";
 import { describe, expect, it, vi } from "vitest";
-import { indexMigratedSessionFile, syncDefaultSessionsInBatches, syncLoadedSessionsInBatches } from "./indexer";
+import { indexMigratedSessionFile, syncDefaultSessionsInBatches, syncLoadedSessionsInBatches, type IndexStatus } from "./indexer";
 import { createInMemoryStore } from "./postgres/test-session-store";
 import { writeMigratedSession } from "./session-migration-writers";
 import type { IndexedSession, LoadedSession, MigrationTarget, PortableSession, SessionSource } from "./types";
@@ -103,16 +103,33 @@ describe("indexer", () => {
     const store = createInMemoryStore();
     const malformed = session(1);
     malformed.session.sessionKey = "codex:invalid\u0000session";
+    const progress: IndexStatus[] = [];
+    const diagnostics: unknown[] = [];
 
-    const status = await syncLoadedSessionsInBatches(store, [malformed, session(2)], { batchSize: 1 });
+    const status = await syncLoadedSessionsInBatches(store, [malformed, session(2)], {
+      batchSize: 1,
+      onProgress: (next) => progress.push(next),
+      logIndexFailure: (diagnostic) => diagnostics.push(diagnostic),
+    });
 
     expect(status).toMatchObject({
       running: false,
       indexed: 1,
       skipped: 1,
       total: 2,
-      error: "1 session could not be indexed; the remaining sessions were processed.",
+      error: "1 session could not be indexed; the remaining sessions were processed. Source: codex-cli. See the application logs for details.",
     });
+    expect(progress.every((next) => next.error === null)).toBe(true);
+    expect(diagnostics).toEqual([{
+      source: "codex-cli",
+      sessionKey: "codex:invalid\u0000session",
+      filePath: "/tmp/session-1.jsonl",
+      error: expect.objectContaining({
+        name: expect.any(String),
+        message: expect.stringContaining("0x00"),
+        stack: expect.any(String),
+      }),
+    }]);
     expect(await store.searchSessions({ query: "Question 2", limit: 10 })).toHaveLength(1);
   });
 

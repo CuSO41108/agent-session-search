@@ -46,6 +46,7 @@ import {
 } from "./sidebar-sections";
 import { LANGUAGE_STORAGE_KEY, localize, readInitialLanguage, type LanguageMode } from "./language";
 import { readInitialTheme, THEME_STORAGE_KEY, type ThemeMode } from "./theme";
+import { completedIndexFeedback } from "./index-status-feedback";
 import type {
   ActionStatus,
   ContextMenuState,
@@ -454,7 +455,8 @@ export function App(): ReactElement {
   useEffect(() => {
     const offIndex = window.sessionSearch.onIndexStatus((nextStatus) => {
       setIndexStatus(nextStatus);
-      if (nextStatus.error) setRefreshFeedback({ kind: "error", message: nextStatus.error });
+      const completedFeedback = completedIndexFeedback(nextStatus);
+      if (completedFeedback !== undefined) setRefreshFeedback(completedFeedback);
       if (!nextStatus.running) {
         if (activePage === "sessions") void load();
         void loadSidebarMetadata();

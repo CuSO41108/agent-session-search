@@ -54,11 +54,24 @@ export interface BatchIndexOptions {
   onEnvironmentsChanged?: () => void;
   yieldToEventLoop?: () => Promise<void>;
   now?: () => number;
+  logIndexFailure?: (diagnostic: SessionIndexFailureDiagnostic) => void;
 }
 
-function indexFailureMessage(failed: number): string | null {
-  if (failed === 0) return null;
-  return `${failed} session${failed === 1 ? "" : "s"} could not be indexed; the remaining sessions were processed.`;
+export interface SessionIndexFailureDiagnostic {
+  source: LoadedSession["session"]["source"];
+  sessionKey: string;
+  filePath: string;
+  error: {
+    name: string;
+    message: string;
+    stack: string | null;
+  };
+}
+
+function indexFailureMessage(failures: readonly SessionIndexFailureDiagnostic[]): string | null {
+  if (failures.length === 0) return null;
+  const sources = [...new Set(failures.map((failure) => failure.source))].join(", ");
+  return `${failures.length} session${failures.length === 1 ? "" : "s"} could not be indexed; the remaining sessions were processed. Source${sources.includes(",") ? "s" : ""}: ${sources}. See the application logs for details.`;
 }
 
 export async function syncLoadedSessionsInBatches(
@@ -72,7 +85,7 @@ export async function syncLoadedSessionsInBatches(
   const now = options.now ?? (() => performance.now());
   let indexed = 0;
   let skipped = 0;
-  let failed = 0;
+  const failures: SessionIndexFailureDiagnostic[] = [];
   let total = 0;
   let pendingInBatch = 0;
   let sliceStartedAt = now();
@@ -125,9 +138,18 @@ export async function syncLoadedSessionsInBatches(
         await store.upsertIndexedSession(item.session, item.messages, item.tokenEvents, item.traceEvents);
         indexed++;
       }
-    } catch {
+    } catch (error) {
+      const diagnostic: SessionIndexFailureDiagnostic = {
+        source: item.session.source,
+        sessionKey: item.session.sessionKey,
+        filePath: item.session.filePath,
+        error: error instanceof Error
+          ? { name: error.name, message: error.message, stack: error.stack ?? null }
+          : { name: "UnknownError", message: String(error), stack: null },
+      };
+      failures.push(diagnostic);
+      (options.logIndexFailure ?? ((failure) => console.error("[indexer] Session indexing failed", failure)))(diagnostic);
       skipped++;
-      failed++;
     }
     total++;
     pendingInBatch++;
@@ -140,7 +162,7 @@ export async function syncLoadedSessionsInBatches(
         skipped,
         total,
         lastIndexedAt: null,
-        error: indexFailureMessage(failed),
+        error: null,
       });
       await yieldToEventLoop();
       sliceStartedAt = now();
@@ -154,7 +176,7 @@ export async function syncLoadedSessionsInBatches(
       skipped,
       total,
       lastIndexedAt: null,
-      error: indexFailureMessage(failed),
+      error: null,
     });
     await yieldToEventLoop();
   }
@@ -165,7 +187,7 @@ export async function syncLoadedSessionsInBatches(
     skipped,
     total,
     lastIndexedAt: Date.now(),
-    error: indexFailureMessage(failed),
+    error: indexFailureMessage(failures),
   };
 }
 
