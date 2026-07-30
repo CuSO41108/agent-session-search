@@ -223,12 +223,16 @@ function createHarness(options: {
     attachmentObjects: [],
     sourceObjects: [],
   } as unknown as Awaited<ReturnType<RemoteSessionServiceOperations["buildUpload"]>>));
+  const buildRevision = vi.fn(async () => ({
+    payload: { content_hash: localRevision },
+  } as unknown as Awaited<ReturnType<RemoteSessionServiceOperations["buildRevision"]>>));
   const removeQueueFiles = vi.fn();
   const clearQueue = vi.fn();
   const restorePortable = vi.fn(async () => migrationResult());
   const buildSyncItems = vi.fn(() => []);
   const operations: RemoteSessionServiceOperations = {
     buildSetupSql: vi.fn(() => "setup sql"),
+    buildRevision,
     buildUpload,
     buildSyncItems,
     readQueue: vi.fn(() => ({ events: queueEvents, invalidFiles: [] })),
@@ -284,6 +288,7 @@ function createHarness(options: {
     store,
     client,
     createClient,
+    buildRevision,
     buildUpload,
     buildSyncItems,
     operations,
@@ -414,6 +419,48 @@ describe("RemoteSessionService cloud orchestration", () => {
     );
   });
 
+  it("reuses an existing source archive when updating an available local session", async () => {
+    const binding: SessionSyncBinding = {
+      localSessionKey: "local:session-1",
+      remoteSessionId: "remote-1",
+      lastLocalRevision: "old-local",
+      lastRemoteRevision: "remote-revision",
+      lastSyncedAt: 1,
+      direction: "upload",
+    };
+    const archive: RemoteSessionSourceArchive = {
+      schemaVersion: 1,
+      entries: [{
+        sessionKey: "local:session-1",
+        sourceSessionId: "session-1",
+        parentSessionId: null,
+        artifactKind: "session-file",
+        fileName: "session-1.jsonl",
+        objectKey: "sessions/remote-1/previous/source/session-1.jsonl",
+        sha256: "a".repeat(64),
+        sizeBytes: 100,
+      }],
+    };
+    const harness = createHarness({
+      settings: configuredSettings(),
+      bindings: [binding],
+    });
+    vi.mocked(harness.client.getDetailSnapshot).mockResolvedValue({
+      sourceArchive: archive,
+    } as RemoteSessionDetailSnapshot);
+
+    await harness.service.upload("local:session-1");
+
+    expect(harness.buildUpload).toHaveBeenCalledWith(
+      harness.store,
+      "local:session-1",
+      123,
+      "remote-1",
+      true,
+      archive,
+    );
+  });
+
   it("rejects ZCode uploads before building a portable remote session", async () => {
     const harness = createHarness({
       settings: configuredSettings(),
@@ -490,7 +537,7 @@ describe("RemoteSessionService cloud orchestration", () => {
     expect(harness.ensureSessionDetails).toHaveBeenCalledWith(regular.sessionKey);
     expect(harness.ensureSessionDetails).toHaveBeenCalledWith(subagent.sessionKey);
     expect(Math.max(...harness.ensureSessionDetails.mock.invocationCallOrder)).toBeLessThan(
-      harness.buildUpload.mock.invocationCallOrder[0],
+      harness.buildRevision.mock.invocationCallOrder[0],
     );
     expect(harness.buildSyncItems).toHaveBeenCalledWith(
       [{ session: regular, revision: "local-revision" }],
@@ -506,10 +553,9 @@ describe("RemoteSessionService cloud orchestration", () => {
 
     await harness.service.listSyncItems();
 
-    expect(harness.buildUpload).toHaveBeenCalledWith(
+    expect(harness.buildRevision).toHaveBeenCalledWith(
       harness.store,
       "local:session-1",
-      0,
       undefined,
       false,
       undefined,
@@ -535,10 +581,9 @@ describe("RemoteSessionService cloud orchestration", () => {
 
     await expect(harness.service.listSyncItems()).resolves.toEqual([]);
 
-    expect(harness.buildUpload).toHaveBeenCalledWith(
+    expect(harness.buildRevision).toHaveBeenCalledWith(
       harness.store,
       cached.sessionKey,
-      0,
       undefined,
       true,
       archive,
@@ -695,10 +740,9 @@ describe("RemoteSessionService automatic queue lifecycle", () => {
     expect(harness.removeQueueFiles).toHaveBeenCalledWith([event.filePath]);
     expect(harness.ensureSessionDetails).toHaveBeenCalledWith(parent.sessionKey);
     expect(harness.ensureSessionDetails).toHaveBeenCalledWith(child.sessionKey);
-    expect(harness.buildUpload).toHaveBeenCalledWith(
+    expect(harness.buildRevision).toHaveBeenCalledWith(
       harness.store,
       parent.sessionKey,
-      0,
       undefined,
     );
     expect(harness.client.uploadSession).toHaveBeenCalledOnce();

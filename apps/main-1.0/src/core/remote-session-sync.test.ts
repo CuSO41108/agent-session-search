@@ -3,8 +3,10 @@ import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { gunzipSync, gzipSync } from "node:zlib";
 import {
   buildRemoteSessionPayload,
+  buildRemoteSessionRevisionFromStore,
   buildRemoteSessionSetupSql,
   buildRemoteSessionSnapshot,
   buildRemoteSessionUploadFromStore,
@@ -147,8 +149,8 @@ describe("remote session sync model", () => {
     const second = buildRemoteSessionPayload({ session: SESSION, detail, portable: PORTABLE, now: 11_000 });
 
     expect(first.payload.id).toBe(remoteSessionId("codex:abc"));
-    expect(first.payload.detail_object_key).toMatch(new RegExp(`^sessions/${first.payload.id}/[0-9a-f-]+\\.detail\\.json$`));
-    expect(first.payload.portable_object_key).toMatch(new RegExp(`^sessions/${first.payload.id}/[0-9a-f-]+\\.portable\\.json$`));
+    expect(first.payload.detail_object_key).toMatch(new RegExp(`^sessions/${first.payload.id}/[0-9a-f-]+\\.detail\\.json\\.gz$`));
+    expect(first.payload.portable_object_key).toMatch(new RegExp(`^sessions/${first.payload.id}/[0-9a-f-]+\\.portable\\.json\\.gz$`));
     expect(first.payload.detail_object_key).not.toBe(second.payload.detail_object_key);
     expect(first.payload.content_hash).toBe(second.payload.content_hash);
     expect(first.payload.search_text).toContain("Login is broken");
@@ -276,11 +278,11 @@ describe("remote session sync model", () => {
         objectKey: expect.stringMatching(/^sessions\/[a-f0-9]{32}\/[0-9a-f-]+\/source\/0000-[a-f0-9]{64}-abc\.jsonl$/),
       }),
     ]);
-    expect(built.payload.revision_version).toBe(3);
+    expect(built.payload.revision_version).toBe(4);
     expect(parseDetailSnapshot(JSON.parse(built.detailJson)).sourceArchive?.entries).toHaveLength(1);
   });
 
-  it("splits large source artifacts into independently verified objects without changing their content revision", () => {
+  it("compresses large source artifacts before upload without changing their content revision", () => {
     const rawTranscript = Buffer.alloc(5 * 1024 * 1024 + 137, "complete-source-archive");
     const built = buildRemoteSessionUploadFromStore({
       getSession: () => SESSION,
@@ -294,6 +296,72 @@ describe("remote session sync model", () => {
       }],
     }, SESSION.sessionKey, 12_000);
 
+    expect(built.sourceObjects).toHaveLength(1);
+    expect(built.sourceObjects[0].mimeType).toBe("application/gzip");
+    const storedBytes = Buffer.concat(built.sourceObjects.map((object) => Buffer.from(object.bytes)));
+    expect(storedBytes.byteLength).toBeLessThan(rawTranscript.byteLength / 10);
+    expect(Buffer.compare(
+      gunzipSync(storedBytes),
+      rawTranscript,
+    )).toBe(0);
+    const [entry] = built.detail.sourceArchive?.entries ?? [];
+    expect(entry).toMatchObject({
+      objectKey: built.sourceObjects[0].objectKey,
+      storageEncoding: "gzip",
+      storedSha256: createHash("sha256").update(storedBytes).digest("hex"),
+      storedSizeBytes: storedBytes.byteLength,
+      sizeBytes: rawTranscript.byteLength,
+    });
+    expect(entry.chunks).toBeUndefined();
+    expect(parseDetailSnapshot(JSON.parse(built.detailJson)).sourceArchive?.entries[0]).toEqual(entry);
+
+    const relocatedDetail = {
+      ...built.detail,
+      sourceArchive: {
+        schemaVersion: 1 as const,
+        entries: [{
+          ...entry,
+          objectKey: `sessions/${built.payload.id}/relocated/source/large.jsonl.gz`,
+        }],
+      },
+    };
+    expect(remoteSessionContentHash(relocatedDetail, built.portable)).toBe(built.payload.content_hash);
+  });
+
+  it("builds refresh revisions without preparing storage upload objects", () => {
+    const store = {
+      getSession: () => SESSION,
+      getAllMessages: () => MESSAGES,
+      getTraceEvents: () => [],
+      getSessionSourceArtifacts: () => [{
+        kind: "session-file" as const,
+        fileName: "large.jsonl",
+        bytes: Buffer.alloc(128 * 1024, "session-content"),
+        mimeType: "application/x-ndjson",
+      }],
+    };
+    const upload = buildRemoteSessionUploadFromStore(store, SESSION.sessionKey, 12_000);
+    const revision = buildRemoteSessionRevisionFromStore(store, SESSION.sessionKey);
+
+    expect(revision.payload.content_hash).toBe(upload.payload.content_hash);
+    expect(revision.sourceObjects).toEqual([]);
+    expect(revision.attachmentObjects).toEqual([]);
+  });
+
+  it("still splits binary source artifacts into independently verified objects", () => {
+    const rawTranscript = Buffer.alloc(5 * 1024 * 1024 + 137, 0xab);
+    const built = buildRemoteSessionUploadFromStore({
+      getSession: () => SESSION,
+      getAllMessages: () => MESSAGES,
+      getTraceEvents: () => [],
+      getSessionSourceArtifacts: () => [{
+        kind: "session-file" as const,
+        fileName: "large.bin",
+        bytes: rawTranscript,
+        mimeType: "application/octet-stream",
+      }],
+    }, SESSION.sessionKey, 12_000);
+
     expect(built.sourceObjects).toHaveLength(2);
     expect(built.sourceObjects.every((object) => object.bytes.byteLength <= 5 * 1024 * 1024)).toBe(true);
     expect(Buffer.compare(
@@ -301,26 +369,12 @@ describe("remote session sync model", () => {
       rawTranscript,
     )).toBe(0);
     const [entry] = built.detail.sourceArchive?.entries ?? [];
-    expect(entry.objectKey).toBeUndefined();
+    expect(entry.storageEncoding).toBeUndefined();
     expect(entry.chunks).toEqual(built.sourceObjects.map((object) => ({
       objectKey: object.objectKey,
       sha256: createHash("sha256").update(object.bytes).digest("hex"),
       sizeBytes: object.bytes.byteLength,
     })));
-    expect(parseDetailSnapshot(JSON.parse(built.detailJson)).sourceArchive?.entries[0]).toEqual(entry);
-
-    const legacyLocationDetail = {
-      ...built.detail,
-      sourceArchive: {
-        schemaVersion: 1 as const,
-        entries: [{
-          ...entry,
-          objectKey: `sessions/${built.payload.id}/legacy/source/large.jsonl`,
-          chunks: undefined,
-        }],
-      },
-    };
-    expect(remoteSessionContentHash(legacyLocationDetail, built.portable)).toBe(built.payload.content_hash);
   });
 
   it("changes the remote revision when only hidden raw source data changes", () => {
@@ -338,6 +392,41 @@ describe("remote session sync model", () => {
 
     expect(build("visible\nhidden-a").payload.content_hash)
       .not.toBe(build("visible\nhidden-b").payload.content_hash);
+  });
+
+  it("ignores volatile Cursor layout data and reuses the previously uploaded archive", () => {
+    const store = (layout: string) => ({
+      getSession: () => ({ ...SESSION, source: "cursor-agent" as const }),
+      getAllMessages: () => MESSAGES,
+      getTraceEvents: () => [],
+      getSessionSourceArtifacts: () => [{
+        kind: "cursor-state" as const,
+        fileName: "abc.cursor-state.json",
+        bytes: Buffer.from(`semantic-session-data|layout:${layout}`),
+        revisionBytes: Buffer.from("semantic-session-data"),
+        mimeType: "application/json",
+      }],
+    });
+    const first = buildRemoteSessionUploadFromStore(store("100,200"), SESSION.sessionKey, 12_000);
+    const second = buildRemoteSessionUploadFromStore(store("110,210,310"), SESSION.sessionKey, 13_000);
+
+    expect(first.detail.sourceArchive?.entries[0].sha256)
+      .not.toBe(second.detail.sourceArchive?.entries[0].sha256);
+    expect(first.detail.sourceArchive?.entries[0].revisionSha256)
+      .toBe(second.detail.sourceArchive?.entries[0].revisionSha256);
+    expect(first.payload.content_hash).toBe(second.payload.content_hash);
+
+    const reused = buildRemoteSessionUploadFromStore(
+      store("110,210,310"),
+      SESSION.sessionKey,
+      13_000,
+      undefined,
+      true,
+      first.detail.sourceArchive,
+    );
+    expect(reused.sourceObjects).toEqual([]);
+    expect(reused.detail.sourceArchive).toEqual(first.detail.sourceArchive);
+    expect(reused.payload.content_hash).toBe(first.payload.content_hash);
   });
 
   it("uploads cached messages without new source objects and keeps a previous source archive", () => {
@@ -618,7 +707,7 @@ describe("remote session sync model", () => {
         const method = init?.method ?? "GET";
         if (String(url).includes("/storage/v1/object/")) {
           calls.push(`storage-${method}`);
-          return new Response(method === "GET" ? detailJson : "{}", { status: 200 });
+          return new Response(method === "GET" ? gzipSync(detailJson) : "{}", { status: 200 });
         }
         if (method === "DELETE") {
           calls.push("row-DELETE");
@@ -717,6 +806,47 @@ describe("remote session sync model", () => {
     });
     expect(storageWrites).toBe(10);
     expect(maxInFlight).toBe(4);
+  });
+
+  it("stores detail and portable snapshots as gzip objects and reads them back", async () => {
+    const detail = buildRemoteSessionSnapshot(SESSION, MESSAGES, [], 10_000);
+    const { payload, detailJson, portableJson } = buildRemoteSessionPayload({
+      session: SESSION,
+      detail,
+      portable: PORTABLE,
+      now: 11_000,
+    });
+    const objects = new Map<string, Buffer>();
+    let uploaded = false;
+    const client = new SupabaseRemoteSessionClient({
+      url: "https://example.supabase.co",
+      anonKey: "anon",
+      fetchImpl: async (url, init) => {
+        const requestUrl = String(url);
+        const method = init?.method ?? "GET";
+        if (requestUrl.includes("/rest/v1/")) {
+          if (method === "POST") uploaded = true;
+          return new Response(JSON.stringify(uploaded ? [payload] : []), { status: 200 });
+        }
+        const objectKey = decodeURIComponent(requestUrl.split("/agent-session-remote/")[1] ?? "");
+        if (method === "POST") {
+          objects.set(objectKey, Buffer.from(init?.body as Uint8Array));
+          return new Response("{}", { status: 200 });
+        }
+        const object = objects.get(objectKey);
+        const body = object
+          ? object.buffer.slice(object.byteOffset, object.byteOffset + object.byteLength) as ArrayBuffer
+          : null;
+        return new Response(body, { status: object ? 200 : 404 });
+      },
+    });
+
+    await client.uploadSession(payload, detailJson, portableJson);
+
+    expect(gunzipSync(objects.get(payload.detail_object_key)!)).toEqual(Buffer.from(detailJson));
+    expect(gunzipSync(objects.get(payload.portable_object_key)!)).toEqual(Buffer.from(portableJson));
+    await expect(client.getDetailSnapshot(payload.id)).resolves.toEqual(detail);
+    await expect(client.getPortableSession(payload.id)).resolves.toMatchObject(PORTABLE);
   });
 
   it("does not delete an existing attachment when a remote update fails", async () => {
@@ -840,7 +970,7 @@ describe("remote session sync model", () => {
           );
         }
         const objectKey = decodeURIComponent(requestUrl.split("/agent-session-remote/")[1] ?? "");
-        if (method === "GET") return new Response(previous.detailJson, { status: 200 });
+        if (method === "GET") return new Response(gzipSync(previous.detailJson), { status: 200 });
         if (method === "DELETE") deletedKeys.push(objectKey);
         return new Response("{}", { status: 200 });
       },
@@ -889,19 +1019,22 @@ describe("remote session sync model", () => {
       url: "https://example.supabase.co",
       anonKey: "anon",
       fetchImpl: async (url, init) => {
+        const requestUrl = String(url);
         calls.push({
-          url: String(url),
+          url: requestUrl,
           method: init?.method ?? "GET",
-          body: init?.body ? JSON.parse(String(init.body)) : undefined,
+          body: requestUrl.includes("/rest/v1/") && init?.body
+            ? JSON.parse(String(init.body))
+            : undefined,
         });
-        if (String(url).includes("/storage/v1/object/")) return new Response("{}", { status: 200 });
+        if (requestUrl.includes("/storage/v1/object/")) return new Response("{}", { status: 200 });
         if (init?.method === "POST") {
           const body = JSON.parse(String(init.body));
           if ("source_environment_id" in body) return new Response(JSON.stringify(missingColumn), { status: 400 });
           return new Response(JSON.stringify([legacyRow]), { status: 201 });
         }
-        if (String(url).includes("source_environment_id")) return new Response(JSON.stringify(missingColumn), { status: 400 });
-        if (String(url).includes("select=id")) return new Response(JSON.stringify([]), { status: 200 });
+        if (requestUrl.includes("source_environment_id")) return new Response(JSON.stringify(missingColumn), { status: 400 });
+        if (requestUrl.includes("select=id")) return new Response(JSON.stringify([]), { status: 200 });
         return new Response(JSON.stringify(missingColumn), { status: 400 });
       },
     });

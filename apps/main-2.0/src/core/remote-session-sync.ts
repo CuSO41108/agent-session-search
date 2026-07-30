@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { constants as zlibConstants, gzip, gzipSync, gunzip } from "node:zlib";
 import { migrationAgentForSource } from "./session-migration";
 import type { SessionStore, SessionSyncBinding } from "./session-store";
 import type { MigrationAgent, PortableSession, SessionMessage, SessionSearchResult, SessionTraceEvent } from "./types";
@@ -7,6 +8,7 @@ import type { MigrationAgent, PortableSession, SessionMessage, SessionSearchResu
 export const REMOTE_SESSION_TABLE = "agent_session_remote_sessions";
 export const REMOTE_SESSION_BUCKET = "agent-session-remote";
 const REMOTE_SESSION_SOURCE_OBJECT_MAX_BYTES = 5 * 1024 * 1024;
+const REMOTE_SESSION_SOURCE_COMPRESSION_MIN_BYTES = 64 * 1024;
 const REMOTE_SESSION_STORAGE_UPLOAD_CONCURRENCY = 4;
 const REMOTE_SESSION_COLUMNS =
   "id,source_session_key,source_agent,source_source,source_environment_id,source_environment_kind,source_environment_label,title,project_path,started_at,updated_at,content_hash,revision_version,message_count,trace_event_count,ai_summary,tags,search_text,detail_object_key,portable_object_key,detail_sha256,portable_sha256,created_at,synced_at";
@@ -37,6 +39,10 @@ export interface RemoteSessionSourceArchiveEntry {
   chunks?: RemoteSessionSourceArchiveChunk[];
   sha256: string;
   sizeBytes: number;
+  revisionSha256?: string;
+  storageEncoding?: "gzip";
+  storedSha256?: string;
+  storedSizeBytes?: number;
 }
 
 export interface RemoteSessionSourceArchiveChunk {
@@ -324,8 +330,17 @@ export function remoteSessionContentHash(detail: RemoteSessionDetailSnapshot, po
             objectKey: _objectKey,
             chunks: _chunks,
             sessionKey: _sessionKey,
+            revisionSha256,
+            sizeBytes,
+            storageEncoding: _storageEncoding,
+            storedSha256: _storedSha256,
+            storedSizeBytes: _storedSizeBytes,
             ...entry
-          }) => entry),
+          }) => ({
+            ...entry,
+            sha256: revisionSha256 ?? entry.sha256,
+            ...(revisionSha256 ? {} : { sizeBytes }),
+          })),
         }
       : null,
     portable: {
@@ -358,8 +373,8 @@ export function buildRemoteSessionPayload(options: {
   const portableJson = stableJson(options.portable);
   const id = options.remoteId || remoteSessionId(options.session.sessionKey);
   const uploadId = options.uploadId ?? randomUUID();
-  const detailObjectKey = `sessions/${id}/${uploadId}.detail.json`;
-  const portableObjectKey = `sessions/${id}/${uploadId}.portable.json`;
+  const detailObjectKey = `sessions/${id}/${uploadId}.detail.json.gz`;
+  const portableObjectKey = `sessions/${id}/${uploadId}.portable.json.gz`;
   const contentHash = remoteSessionContentHash(options.detail, options.portable);
   return {
     detailJson,
@@ -377,7 +392,7 @@ export function buildRemoteSessionPayload(options: {
       started_at: options.portable.startedAt,
       updated_at: integerTimestamp(options.session.lastActivityAt || options.session.fileMtimeMs || options.session.timestamp),
       content_hash: contentHash,
-      revision_version: options.detail.schemaVersion >= 3 ? 3 : 2,
+      revision_version: options.detail.schemaVersion >= 3 ? 4 : 2,
       message_count: options.detail.messages.length,
       trace_event_count: options.detail.traceEvents.length,
       ai_summary: options.session.aiSummary,
@@ -402,6 +417,7 @@ export async function buildRemoteSessionUploadFromStore(
   remoteId?: string,
   includeAttachments = true,
   preservedSourceArchive?: RemoteSessionSourceArchive,
+  prepareStorageObjects = true,
 ): Promise<{
   session: SessionSearchResult;
   detail: RemoteSessionDetailSnapshot;
@@ -458,26 +474,64 @@ export async function buildRemoteSessionUploadFromStore(
     const artifacts = await store.getSessionSourceArtifacts?.(sourceSession.sessionKey) ?? [];
     for (const artifact of artifacts) {
       const digest = createHash("sha256").update(artifact.bytes).digest("hex");
+      const revisionDigest = artifact.revisionBytes
+        ? createHash("sha256").update(artifact.revisionBytes).digest("hex")
+        : digest;
       const safeName = artifact.fileName.replace(/[^A-Za-z0-9._-]+/g, "_").slice(-160) || "session";
       const sequence = String(sourceArchiveEntries.length).padStart(4, "0");
       const objectKeyPrefix = `sessions/${resolvedRemoteId}/${uploadId}/source/${sequence}-${digest}-${safeName}`;
+      const reusableEntry = preservedSourceArchive?.entries.find((entry) =>
+        entry.sourceSessionId === sourceSession.rawId
+        && entry.artifactKind === artifact.kind
+        && entry.fileName === artifact.fileName
+        && (entry.revisionSha256 ?? entry.sha256) === revisionDigest);
+      if (reusableEntry) {
+        sourceArchiveEntries.push({
+          ...reusableEntry,
+          sessionKey: sourceSession.sessionKey,
+          sourceSessionId: sourceSession.rawId,
+          parentSessionId: sourceSession.parentSessionId ?? null,
+        });
+        continue;
+      }
+      if (!prepareStorageObjects) {
+        sourceArchiveEntries.push({
+          sessionKey: sourceSession.sessionKey,
+          sourceSessionId: sourceSession.rawId,
+          parentSessionId: sourceSession.parentSessionId ?? null,
+          artifactKind: artifact.kind,
+          fileName: artifact.fileName,
+          objectKey: objectKeyPrefix,
+          sha256: digest,
+          sizeBytes: artifact.bytes.byteLength,
+          ...(revisionDigest === digest ? {} : { revisionSha256: revisionDigest }),
+        });
+        continue;
+      }
+      const compressed = compressSourceArtifact(artifact.bytes, artifact.mimeType);
+      const storedBytes = compressed ?? artifact.bytes;
+      const storedDigest = compressed
+        ? createHash("sha256").update(storedBytes).digest("hex")
+        : digest;
+      const storedObjectKeyPrefix = compressed ? `${objectKeyPrefix}.gz` : objectKeyPrefix;
+      const storedMimeType = compressed ? "application/gzip" : artifact.mimeType;
       let storageLocation: Pick<RemoteSessionSourceArchiveEntry, "objectKey" | "chunks">;
-      if (artifact.bytes.byteLength <= REMOTE_SESSION_SOURCE_OBJECT_MAX_BYTES) {
-        sourceObjects.push({ objectKey: objectKeyPrefix, bytes: artifact.bytes, mimeType: artifact.mimeType });
-        storageLocation = { objectKey: objectKeyPrefix };
+      if (storedBytes.byteLength <= REMOTE_SESSION_SOURCE_OBJECT_MAX_BYTES) {
+        sourceObjects.push({ objectKey: storedObjectKeyPrefix, bytes: storedBytes, mimeType: storedMimeType });
+        storageLocation = { objectKey: storedObjectKeyPrefix };
       } else {
-        const chunkCount = Math.ceil(artifact.bytes.byteLength / REMOTE_SESSION_SOURCE_OBJECT_MAX_BYTES);
+        const chunkCount = Math.ceil(storedBytes.byteLength / REMOTE_SESSION_SOURCE_OBJECT_MAX_BYTES);
         const chunkDigits = String(chunkCount - 1).length;
         const chunks: RemoteSessionSourceArchiveChunk[] = [];
         for (let chunkIndex = 0; chunkIndex < chunkCount; chunkIndex += 1) {
           const start = chunkIndex * REMOTE_SESSION_SOURCE_OBJECT_MAX_BYTES;
-          const bytes = artifact.bytes.subarray(
+          const bytes = storedBytes.subarray(
             start,
-            Math.min(start + REMOTE_SESSION_SOURCE_OBJECT_MAX_BYTES, artifact.bytes.byteLength),
+            Math.min(start + REMOTE_SESSION_SOURCE_OBJECT_MAX_BYTES, storedBytes.byteLength),
           );
-          const chunkKey = `${objectKeyPrefix}.part-${String(chunkIndex).padStart(chunkDigits, "0")}`;
+          const chunkKey = `${storedObjectKeyPrefix}.part-${String(chunkIndex).padStart(chunkDigits, "0")}`;
           const chunkDigest = createHash("sha256").update(bytes).digest("hex");
-          sourceObjects.push({ objectKey: chunkKey, bytes, mimeType: artifact.mimeType });
+          sourceObjects.push({ objectKey: chunkKey, bytes, mimeType: storedMimeType });
           chunks.push({ objectKey: chunkKey, sha256: chunkDigest, sizeBytes: bytes.byteLength });
         }
         storageLocation = { chunks };
@@ -491,6 +545,14 @@ export async function buildRemoteSessionUploadFromStore(
         ...storageLocation,
         sha256: digest,
         sizeBytes: artifact.bytes.byteLength,
+        ...(revisionDigest === digest ? {} : { revisionSha256: revisionDigest }),
+        ...(compressed
+          ? {
+              storageEncoding: "gzip" as const,
+              storedSha256: storedDigest,
+              storedSizeBytes: storedBytes.byteLength,
+            }
+          : {}),
       });
     }
   }
@@ -509,7 +571,9 @@ export async function buildRemoteSessionUploadFromStore(
       const digest = createHash("sha256").update(bytes).digest("hex");
       const safeName = attachment.fileName.replace(/[^A-Za-z0-9._-]+/g, "_").slice(-120) || "attachment";
       const objectKey = `sessions/${resolvedRemoteId}/attachments/${digest}-${safeName}`;
-      attachmentObjects.push({ objectKey, bytes, mimeType: attachment.mimeType });
+      if (prepareStorageObjects) {
+        attachmentObjects.push({ objectKey, bytes, mimeType: attachment.mimeType });
+      }
       const { source: _source, ...metadata } = attachment;
       return { ...metadata, remoteObjectKey: objectKey, sha256: digest };
       }))
@@ -532,6 +596,26 @@ export async function buildRemoteSessionUploadFromStore(
     uploadId,
   });
   return { session, detail, portable, payload, detailJson, portableJson, attachmentObjects, sourceObjects };
+}
+
+export function buildRemoteSessionRevisionFromStore(
+  store: Pick<SessionStore, "getSession" | "getAllMessages" | "getTraceEvents">
+    & Partial<Pick<SessionStore, "searchSessions">>
+    & Partial<Pick<SessionStore, "getAttachmentFile" | "getSessionSourceArtifacts">>,
+  sessionKey: string,
+  remoteId?: string,
+  includeAttachments = true,
+  preservedSourceArchive?: RemoteSessionSourceArchive,
+): ReturnType<typeof buildRemoteSessionUploadFromStore> {
+  return buildRemoteSessionUploadFromStore(
+    store,
+    sessionKey,
+    0,
+    remoteId,
+    includeAttachments,
+    preservedSourceArchive,
+    false,
+  );
 }
 
 export function buildSessionSyncItems(
@@ -768,10 +852,22 @@ export class SupabaseRemoteSessionClient {
     );
 
     try {
-      await this.uploadStorageObjects(storageObjects);
-      await Promise.all([
-        this.uploadStorageObject(payload.detail_object_key, detailJson),
-        this.uploadStorageObject(payload.portable_object_key, portableJson),
+      const [detailBytes, portableBytes] = await Promise.all([
+        gzipBytes(Buffer.from(detailJson)),
+        gzipBytes(Buffer.from(portableJson)),
+      ]);
+      await this.uploadStorageObjects([
+        ...storageObjects,
+        {
+          objectKey: payload.detail_object_key,
+          bytes: detailBytes,
+          mimeType: "application/gzip",
+        },
+        {
+          objectKey: payload.portable_object_key,
+          bytes: portableBytes,
+          mimeType: "application/gzip",
+        },
       ]);
 
       const response = await this.restRequest(`/${REMOTE_SESSION_TABLE}?on_conflict=id`, {
@@ -1006,9 +1102,12 @@ export class SupabaseRemoteSessionClient {
 
   private async downloadStorageObject(key: string): Promise<string> {
     const response = await this.storageRequest(key, { method: "GET" });
-    const text = await response.text();
-    if (!response.ok) throw new Error(supabaseErrorMessage(response.status, text));
-    return text;
+    const bytes = Buffer.from(await response.arrayBuffer());
+    if (!response.ok) {
+      throw new Error(supabaseErrorMessage(response.status, bytes.toString("utf8")));
+    }
+    const decoded = key.endsWith(".gz") ? await gunzipBytes(bytes) : bytes;
+    return decoded.toString("utf8");
   }
 
   private async deleteStorageObject(key: string): Promise<void> {
@@ -1150,6 +1249,15 @@ function parseRemoteSessionSourceArchive(value: unknown): RemoteSessionSourceArc
       : null;
     const hasObjectKey = typeof entry.objectKey === "string";
     const hasChunks = chunks !== null && chunks.length > 0;
+    const storageEncoding = entry.storageEncoding === undefined
+      ? undefined
+      : entry.storageEncoding === "gzip"
+        ? "gzip"
+        : null;
+    const hasStoredMetadata =
+      typeof entry.storedSha256 === "string"
+      && typeof entry.storedSizeBytes === "number";
+    const storedSizeBytes = hasStoredMetadata ? entry.storedSizeBytes! : entry.sizeBytes;
     if (
       typeof entry.sessionKey !== "string"
       || typeof entry.sourceSessionId !== "string"
@@ -1159,7 +1267,10 @@ function parseRemoteSessionSourceArchive(value: unknown): RemoteSessionSourceArc
       || hasObjectKey === hasChunks
       || typeof entry.sha256 !== "string"
       || typeof entry.sizeBytes !== "number"
-      || (chunks !== null && chunks.reduce((total, chunk) => total + chunk.sizeBytes, 0) !== entry.sizeBytes)
+      || (entry.revisionSha256 !== undefined && typeof entry.revisionSha256 !== "string")
+      || storageEncoding === null
+      || Boolean(storageEncoding) !== hasStoredMetadata
+      || (chunks !== null && chunks.reduce((total, chunk) => total + chunk.sizeBytes, 0) !== storedSizeBytes)
     ) {
       throw new Error("Remote source archive entry was invalid.");
     }
@@ -1172,6 +1283,14 @@ function parseRemoteSessionSourceArchive(value: unknown): RemoteSessionSourceArc
       ...(hasObjectKey ? { objectKey: entry.objectKey } : { chunks: chunks! }),
       sha256: entry.sha256,
       sizeBytes: entry.sizeBytes,
+      ...(entry.revisionSha256 ? { revisionSha256: entry.revisionSha256 } : {}),
+      ...(storageEncoding
+        ? {
+            storageEncoding,
+            storedSha256: entry.storedSha256!,
+            storedSizeBytes: entry.storedSizeBytes!,
+          }
+        : {}),
     } as RemoteSessionSourceArchiveEntry;
   });
   return { schemaVersion: 1, entries };
@@ -1259,6 +1378,35 @@ function sortJson(value: unknown): unknown {
     output[key] = sortJson(input[key]);
   }
   return output;
+}
+
+function compressSourceArtifact(bytes: Uint8Array, mimeType: string): Uint8Array | null {
+  if (
+    bytes.byteLength < REMOTE_SESSION_SOURCE_COMPRESSION_MIN_BYTES
+    || (!mimeType.startsWith("text/") && !mimeType.includes("json"))
+  ) {
+    return null;
+  }
+  const compressed = gzipSync(bytes, { level: zlibConstants.Z_BEST_SPEED });
+  return compressed.byteLength < bytes.byteLength ? compressed : null;
+}
+
+function gzipBytes(bytes: Uint8Array): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    gzip(bytes, { level: zlibConstants.Z_BEST_SPEED }, (error, result) => {
+      if (error) reject(error);
+      else resolve(result);
+    });
+  });
+}
+
+function gunzipBytes(bytes: Uint8Array): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    gunzip(bytes, (error, result) => {
+      if (error) reject(error);
+      else resolve(result);
+    });
+  });
 }
 
 function sha256(value: string): string {

@@ -5,6 +5,7 @@ import { migrationAgentForSource } from "../../core/session-migration";
 import { restoreRemotePortableSession, type RemoteSessionRestoreDependencies } from "../../core/remote-session-restore";
 import {
   buildRemoteSessionSetupSql,
+  buildRemoteSessionRevisionFromStore,
   buildRemoteSessionUploadFromStore,
   buildSessionSyncItems,
   remoteSessionId,
@@ -83,6 +84,7 @@ export interface RemoteSessionClientPort {
 
 export interface RemoteSessionServiceOperations {
   buildSetupSql: typeof buildRemoteSessionSetupSql;
+  buildRevision: typeof buildRemoteSessionRevisionFromStore;
   buildUpload: typeof buildRemoteSessionUploadFromStore;
   buildSyncItems: typeof buildSessionSyncItems;
   readQueue: typeof readSessionSyncQueue;
@@ -119,6 +121,7 @@ export interface RemoteSessionServiceDependencies {
 
 const defaultOperations: RemoteSessionServiceOperations = {
   buildSetupSql: buildRemoteSessionSetupSql,
+  buildRevision: buildRemoteSessionRevisionFromStore,
   buildUpload: buildRemoteSessionUploadFromStore,
   buildSyncItems: buildSessionSyncItems,
   readQueue: readSessionSyncQueue,
@@ -219,15 +222,20 @@ export class RemoteSessionService {
     });
     const binding = await store.getSessionSyncBindingForLocalKey(sessionKey);
     const targetRemoteId = binding?.remoteSessionId ?? remoteSessionId(sessionKey);
-    const existingRemote = session.sourceAvailable === false
+    const existingRemote = binding || session.sourceAvailable === false
       ? await client.getRemoteSession(targetRemoteId).catch((error) => {
           if (error instanceof Error && error.message === "Remote session was not found.") return null;
           throw error;
         })
       : null;
-    const preservedSourceArchive = existingRemote
-      ? (await client.getDetailSnapshot(existingRemote.id)).sourceArchive
-      : undefined;
+    let preservedSourceArchive: RemoteSessionDetailSnapshot["sourceArchive"];
+    if (existingRemote) {
+      try {
+        preservedSourceArchive = (await client.getDetailSnapshot(existingRemote.id)).sourceArchive;
+      } catch (error) {
+        if (session.sourceAvailable === false) throw error;
+      }
+    }
     const { payload, detailJson, portableJson, attachmentObjects, sourceObjects } = await this.operations.buildUpload(
       store,
       sessionKey,
@@ -304,10 +312,9 @@ export class RemoteSessionService {
         const preservedSourceArchive = matchingRemote
           ? (await client.getDetailSnapshot(matchingRemote.id)).sourceArchive
           : undefined;
-        const built = await this.operations.buildUpload(
+        const built = await this.operations.buildRevision(
           store,
           session.sessionKey,
-          0,
           binding?.remoteSessionId,
           includeAttachments,
           preservedSourceArchive,
@@ -471,7 +478,7 @@ export class RemoteSessionService {
     try {
       await this.dependencies.ensureSessionDetails(syncSession.sessionKey);
       const binding = await store.getSessionSyncBindingForLocalKey(syncSession.sessionKey);
-      const built = await this.operations.buildUpload(store, syncSession.sessionKey, 0, binding?.remoteSessionId);
+      const built = await this.operations.buildRevision(store, syncSession.sessionKey, binding?.remoteSessionId);
       if (!binding || binding.lastLocalRevision !== built.payload.content_hash) {
         await this.upload(syncSession.sessionKey);
       }
@@ -500,7 +507,7 @@ export class RemoteSessionService {
       const local = (await store.searchSessions({ limit: 100_000 }))
         .find((session) => session.rawId === targetSessionId);
       if (!local) return;
-      const built = await this.operations.buildUpload(store, local.sessionKey, 0, remoteId);
+      const built = await this.operations.buildRevision(store, local.sessionKey, remoteId);
       const remote = await client.getRemoteSession(remoteId);
       await store.upsertSessionSyncBinding({
         localSessionKey: local.sessionKey,
