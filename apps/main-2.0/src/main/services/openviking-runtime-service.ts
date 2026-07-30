@@ -1,6 +1,6 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import type { ChildProcess } from "node:child_process";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { createReadStream, createWriteStream } from "node:fs";
 import {
   access,
@@ -64,6 +64,7 @@ interface RuntimeChild {
   stderr?: Readable | null;
   kill(signal?: NodeJS.Signals): boolean;
   once(event: "exit", listener: (code: number | null, signal: NodeJS.Signals | null) => void): this;
+  removeListener(event: "exit", listener: (...args: unknown[]) => void): this;
 }
 
 interface ExtractArchiveInput {
@@ -321,8 +322,9 @@ export class OpenVikingRuntimeService {
       stderrTail = `${stderrTail}${String(chunk)}`.slice(-16_384);
     });
     this.child = child;
+    let exitListener: ((code: number | null, signal: NodeJS.Signals | null) => void) | null = null;
     const exited = new Promise<Error>((resolve) => {
-      child.once("exit", (code, signal) => {
+      exitListener = (code, signal) => {
         const detail = stderrTail.trim();
         const reason = signal
           ? `signal ${signal}`
@@ -332,7 +334,8 @@ export class OpenVikingRuntimeService {
             ? `OpenViking process exited with ${reason}:\n${detail}`
             : `OpenViking process exited with ${reason}.`,
         ));
-      });
+      };
+      child.once("exit", exitListener);
     });
     child.once("exit", () => {
       if (this.child === child) this.child = null;
@@ -345,6 +348,7 @@ export class OpenVikingRuntimeService {
         exited,
       ]);
       if (startupError) throw startupError;
+      if (exitListener) child.removeListener("exit", exitListener);
       this.transientStatus = null;
       return this.getStatus();
     } catch (error) {
@@ -612,8 +616,15 @@ async function waitForHealthyServer(baseUrl: string, rootApiKey: string): Promis
 function processIsAlive(pid: number): boolean {
   try {
     process.kill(pid, 0);
-    return true;
   } catch {
     return false;
   }
+  if (process.platform === "win32") return true;
+  const result = spawnSync("ps", ["-p", String(pid), "-o", "state="], {
+    encoding: "utf8",
+    timeout: 2_000,
+  });
+  const state = result.stdout?.trim();
+  if (!state) return true;
+  return !state.startsWith("Z");
 }
