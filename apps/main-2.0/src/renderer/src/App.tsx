@@ -1672,6 +1672,13 @@ export function App(): ReactElement {
         actions={{
           loadTurn: (session, turnId) =>
             window.sessionSearch.getSessionTurn(session.sessionKey, turnId),
+          openFamilySession: (sessionKey) => {
+            void window.sessionSearch.getSession(sessionKey)
+              .then((session) => {
+                if (session) void openDetail(session);
+              })
+              .catch(reportSessionDetailError);
+          },
           closeLocal: closeDetail,
           closeRemote: closeRemoteDetail,
           rename: beginRename,

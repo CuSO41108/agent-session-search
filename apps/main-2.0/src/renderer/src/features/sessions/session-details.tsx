@@ -19,6 +19,7 @@ import { DetailPanel } from "../session-detail/detail-panel";
 
 export interface SessionDetailsActions {
   loadTurn(session: SessionSearchResult, turnId: string): Promise<SessionTurnDetail | null>;
+  openFamilySession(sessionKey: string): void;
   closeLocal(): void;
   closeRemote(): void;
   rename(session: SessionSearchResult): void;
@@ -109,6 +110,7 @@ export function SessionDetails({
         matchedTurnId={matchedTurnId}
         onLoadTurn={(turnId) => actions.loadTurn(detail, turnId)}
         onMigrateTurn={canMigrate ? (turn) => actions.migrate(detail, turn) : undefined}
+        onOpenFamilySession={actions.openFamilySession}
         messages={[]}
         matchedContextMessages={[]}
         matchedMessageIndex={null}
