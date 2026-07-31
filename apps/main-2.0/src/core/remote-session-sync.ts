@@ -287,15 +287,22 @@ export function buildRemoteSessionSnapshot(
   now = Date.now(),
 ): RemoteSessionDetailSnapshot {
   const { sourceAvailable: _sourceAvailable, ...snapshotSession } = session;
-  const visibleTraceEvents = traceEvents
-    .filter((event) => tracePresentation(event).visibility !== "hidden")
+  const terminalTurnIds = new Set(
+    traceEvents
+      .filter((event) => event.eventType === "codex.turn.completed" || event.eventType === "codex.turn.aborted")
+      .map((event) => event.sourceTurnId)
+      .filter((turnId): turnId is string => Boolean(turnId)),
+  );
+  const snapshotTraceEvents = traceEvents
+    .filter((event) => tracePresentation(event).visibility !== "hidden"
+      || (event.eventType === "codex.turn.started" && !terminalTurnIds.has(event.sourceTurnId ?? "")))
     .map((event, index) => ({ ...event, index }));
   return {
     schemaVersion: 1,
     exportedAt: now,
     session: snapshotSession,
     messages,
-    traceEvents: visibleTraceEvents,
+    traceEvents: snapshotTraceEvents,
   };
 }
 
@@ -315,28 +322,29 @@ function remoteTurnSummaryTraceEvents(
   return turns.flatMap((turn, offset) => {
     const sourceTurnId = turn.sourceTurnId || null;
     if (!sourceTurnId || existingTerminalTurns.has(sourceTurnId)) return [];
+    const running = turn.status === "running";
     const aborted = turn.status === "aborted";
-    const title = aborted ? "Turn aborted" : turn.status === "failed" ? "Turn failed" : "Turn completed";
+    const title = running ? "Turn started" : aborted ? "Turn aborted" : turn.status === "failed" ? "Turn failed" : "Turn completed";
     const attributes: Record<string, unknown> = {
       toolCount: turn.spanCount,
       errorCount: turn.errorCount,
     };
     if (turn.startedAt) attributes.startedAt = turn.startedAt;
-    if (turn.endedAt) attributes.endedAt = turn.endedAt;
-    if (turn.durationMs !== null && turn.durationMs !== undefined) attributes.durationMs = turn.durationMs;
-    if (turn.timeToFirstTokenMs !== null && turn.timeToFirstTokenMs !== undefined) {
+    if (!running && turn.endedAt) attributes.endedAt = turn.endedAt;
+    if (!running && turn.durationMs !== null && turn.durationMs !== undefined) attributes.durationMs = turn.durationMs;
+    if (!running && turn.timeToFirstTokenMs !== null && turn.timeToFirstTokenMs !== undefined) {
       attributes.timeToFirstTokenMs = turn.timeToFirstTokenMs;
     }
-    if (turn.abortReason) attributes.abortReason = turn.abortReason;
+    if (!running && turn.abortReason) attributes.abortReason = turn.abortReason;
     return [{
       index: traceEvents.length + offset,
       kind: "event",
       source: "codex",
       title,
-      detail: turn.abortReason || "",
-      timestamp: turn.endedAt || turn.startedAt || "",
+      detail: running ? "" : turn.abortReason || "",
+      timestamp: running ? turn.startedAt || "" : turn.endedAt || turn.startedAt || "",
       callId: null,
-      eventType: aborted ? "codex.turn.aborted" : "codex.turn.completed",
+      eventType: running ? "codex.turn.started" : aborted ? "codex.turn.aborted" : "codex.turn.completed",
       status: turn.status,
       sourceTurnId,
       attributes,
@@ -357,7 +365,9 @@ export function remoteSessionSearchText(
     session.aiSummary ?? "",
     ...session.tags,
     ...messages.map((message) => message.content),
-    ...traceEvents.map((event) => `${event.title}\n${event.detail}`),
+    ...traceEvents
+      .filter((event) => tracePresentation(event).visibility !== "hidden")
+      .map((event) => `${event.title}\n${event.detail}`),
   ];
   return parts.map((part) => part.trim()).filter(Boolean).join("\n\n").slice(0, 200_000);
 }

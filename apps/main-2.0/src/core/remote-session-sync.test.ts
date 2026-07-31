@@ -21,6 +21,7 @@ import {
   SupabaseRemoteSessionClient,
 } from "./remote-session-sync";
 import type { PortableSession, SessionSearchResult, SessionTurnSummary } from "./types";
+import { deriveSessionTimeline } from "./turns/derive-turns";
 
 const SESSION: SessionSearchResult = {
   sessionKey: "codex:abc",
@@ -221,6 +222,71 @@ describe("remote session sync model", () => {
       }),
     ]);
     expect(built.payload.trace_event_count).toBe(1);
+    expect(built.payload.search_text).not.toContain("Turn started");
+  });
+
+  it("preserves a running Codex Turn in remote snapshots", async () => {
+    const turn: SessionTurnSummary = {
+      id: "internal-turn-running",
+      turnIndex: 0,
+      sourceMessageIndex: 0,
+      sourceTurnId: "turn-running",
+      synthetic: false,
+      status: "running",
+      startedAt: "2026-07-31T08:00:00.000Z",
+      endedAt: "2026-07-31T08:00:00.000Z",
+      durationMs: null,
+      timeToFirstTokenMs: null,
+      abortReason: null,
+      userPreview: "Keep working",
+      assistantPreview: "",
+      inputTokens: 1,
+      outputTokens: 0,
+      cachedInputTokens: 0,
+      reasoningOutputTokens: 0,
+      totalTokens: 1,
+      errorCount: 0,
+      toolNames: [],
+      messageCount: 1,
+      spanCount: 0,
+    };
+    const session = {
+      ...SESSION,
+      sessionKey: "codex:running",
+      rawId: "running",
+      originalTitle: "Running",
+      firstQuestion: "Keep working",
+      displayTitle: "Running",
+      aiSummary: null,
+      tags: [],
+    };
+    const built = await buildRemoteSessionUploadFromStore({
+      getSession: async () => session,
+      getAllMessages: async () => [{
+        role: "user",
+        content: "Keep working",
+        timestamp: turn.startedAt!,
+        index: 0,
+        sourceTurnId: "turn-running",
+      }],
+      getTraceEvents: async () => [],
+      listSessionTurns: async () => [turn],
+    }, session.sessionKey, 12_000);
+
+    expect(built.detail.traceEvents).toContainEqual(expect.objectContaining({
+      eventType: "codex.turn.started",
+      status: "running",
+      sourceTurnId: "turn-running",
+    }));
+    expect(built.detail.traceEvents).not.toContainEqual(expect.objectContaining({
+      eventType: "codex.turn.completed",
+      sourceTurnId: "turn-running",
+    }));
+    expect(deriveSessionTimeline({
+      sessionKey: session.sessionKey,
+      messages: built.detail.messages,
+      traceEvents: built.detail.traceEvents,
+    }).turns[0].status).toBe("running");
     expect(built.payload.search_text).not.toContain("Turn started");
   });
 
