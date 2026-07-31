@@ -339,6 +339,95 @@ describe("AgentRecall PostgreSQL schema", () => {
     await repeatedDatabase.close();
   });
 
+  it("invalidates Codex sessions once so nested tool trace details are reparsed", async () => {
+    const pool = new PGliteTestPool();
+    const legacyDatabase = new PostgresDatabase(pool, {
+      migrationLock: false,
+      migrations: POSTGRES_MIGRATIONS.filter((migration) => migration.version <= 17),
+    });
+    await legacyDatabase.initialize();
+    const sessionSources = ["claude-cli", "codex-app", "codex-cli", "tcodex-cli"];
+    for (const source of sessionSources) {
+      await legacyDatabase.query(
+        `
+          insert into agent_recall.sessions (
+            session_key, raw_id, source, environment_id, project_path, file_path,
+            original_title, first_question, started_at, file_mtime_ms, file_size,
+            custom_title, favorited, hidden, indexed_at,
+            content_indexed_mtime_ms, content_indexed_size
+          )
+          values (
+            $1, $2, $3, 'local', '/repo', $4,
+            'Title', 'Question', now(), 123, 456,
+            $5, true, true, now(), 123, 456
+          )
+        `,
+        [`${source}:session`, source, source, `/tmp/${source}.jsonl`, `Custom ${source}`],
+      );
+    }
+
+    const upgradedDatabase = new PostgresDatabase(pool, {
+      migrationLock: false,
+      migrations: POSTGRES_MIGRATIONS,
+    });
+    await upgradedDatabase.initialize();
+
+    const rows = await upgradedDatabase.query<{
+      session_key: string;
+      file_mtime_ms: number | string;
+      content_indexed_mtime_ms: number | string;
+      content_indexed_size: number | string;
+      custom_title: string;
+      favorited: boolean;
+    }>(`
+      select session_key, file_mtime_ms, content_indexed_mtime_ms, content_indexed_size,
+        custom_title, favorited
+      from agent_recall.sessions
+      order by session_key
+    `);
+    expect(rows.rows.map((row) => ({
+      ...row,
+      file_mtime_ms: Number(row.file_mtime_ms),
+      content_indexed_mtime_ms: Number(row.content_indexed_mtime_ms),
+      content_indexed_size: Number(row.content_indexed_size),
+    }))).toEqual(
+      [...sessionSources].sort().map((source) => ({
+        session_key: `${source}:session`,
+        file_mtime_ms: source === "claude-cli" ? 123 : 0,
+        content_indexed_mtime_ms: source === "claude-cli" ? 123 : 0,
+        content_indexed_size: source === "claude-cli" ? 456 : 0,
+        custom_title: `Custom ${source}`,
+        favorited: true,
+      })),
+    );
+
+    await upgradedDatabase.query(`
+      update agent_recall.sessions
+      set file_mtime_ms = 789,
+          content_indexed_mtime_ms = 789,
+          content_indexed_size = 456
+      where session_key = 'codex-cli:session'
+    `);
+    const repeatedDatabase = new PostgresDatabase(pool, {
+      migrationLock: false,
+      migrations: POSTGRES_MIGRATIONS,
+    });
+    await repeatedDatabase.initialize();
+    const repeated = await repeatedDatabase.query<{
+      file_mtime_ms: number | string;
+      content_indexed_mtime_ms: number | string;
+    }>(`
+      select file_mtime_ms, content_indexed_mtime_ms
+      from agent_recall.sessions
+      where session_key = 'codex-cli:session'
+    `);
+    expect(repeated.rows.map((row) => ({
+      file_mtime_ms: Number(row.file_mtime_ms),
+      content_indexed_mtime_ms: Number(row.content_indexed_mtime_ms),
+    }))).toEqual([{ file_mtime_ms: 789, content_indexed_mtime_ms: 789 }]);
+    await repeatedDatabase.close();
+  });
+
   it("removes tool output from existing Turn search text during upgrade", async () => {
     const pool = new PGliteTestPool();
     const legacyDatabase = new PostgresDatabase(pool, {

@@ -311,6 +311,7 @@ export function migrateSessionStore(db: SessionStoreDatabase): void {
   runCursorEmptyComposerShellsMigration(db);
   runRemoveClaudeCodexInternalSourcesMigration(db);
   runCodexSessionSemanticsMigration(db);
+  runCodexTraceDetailMigration(db);
   addColumnIfMissing(db, "skill_sync_bindings", "remote_version", "INTEGER NOT NULL DEFAULT 1");
   addColumnIfMissing(db, "skill_sync_bindings", "portable_identity", "TEXT NOT NULL DEFAULT ''");
   addColumnIfMissing(db, "skill_sync_bindings", "last_content_hash", "TEXT NOT NULL DEFAULT ''");
@@ -559,6 +560,30 @@ function runRemoveClaudeCodexInternalSourcesMigration(db: SessionStoreDatabase):
       ).run();
       db.prepare("DELETE FROM sessions WHERE source IN ('claude-internal', 'codex-internal')").run();
       db.prepare("DELETE FROM tags WHERE NOT EXISTS (SELECT 1 FROM session_tags WHERE session_tags.tag_id = tags.id)").run();
+      db.prepare("INSERT INTO data_migrations (id, applied_at) VALUES (?, ?)").run(migrationId, Date.now());
+    }
+    db.exec("COMMIT");
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
+}
+
+function runCodexTraceDetailMigration(db: SessionStoreDatabase): void {
+  const migrationId = "codex-trace-detail-v1";
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    const applied = db.prepare("SELECT 1 FROM data_migrations WHERE id = ?").get(migrationId);
+    if (!applied) {
+      db.prepare(
+        `
+          UPDATE sessions
+          SET file_mtime_ms = 0,
+              content_indexed_mtime_ms = 0,
+              content_indexed_size = 0
+          WHERE source IN ('codex-cli', 'codex-app', 'tcodex-cli')
+        `,
+      ).run();
       db.prepare("INSERT INTO data_migrations (id, applied_at) VALUES (?, ?)").run(migrationId, Date.now());
     }
     db.exec("COMMIT");

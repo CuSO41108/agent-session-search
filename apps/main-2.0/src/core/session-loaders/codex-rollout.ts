@@ -141,6 +141,8 @@ function sanitizeCodexTraceValuePart(value: unknown, key = ""): unknown {
 }
 
 export function sanitizeCodexTraceValue(value: unknown): unknown {
+  const existing = record(value);
+  if (existing && existing.truncated === true && typeof existing.preview === "string") return value;
   const sanitized = sanitizeCodexTraceValuePart(value);
   if (!sanitized || typeof sanitized !== "object") return sanitized;
   const serialized = JSON.stringify(sanitized);

@@ -353,6 +353,25 @@ function titleWithSummary(name: string, summary: string): string {
   return summary ? `${name} · ${summary}` : name;
 }
 
+function mcpResultStatus(result: unknown): SessionTraceEvent["status"] {
+  if (!isRecord(result)) return "unknown";
+  if ("Err" in result) return "failed";
+  const ok = result.Ok;
+  if (!isRecord(ok)) return "unknown";
+  if (ok.isError === true) return "failed";
+  if (ok.isError === false) return "completed";
+  return "unknown";
+}
+
+function mcpDurationAttribute(duration: unknown): { durationMs?: number } {
+  if (!isRecord(duration)) return {};
+  const secs = typeof duration.secs === "number" && Number.isFinite(duration.secs) ? duration.secs : null;
+  const nanos = typeof duration.nanos === "number" && Number.isFinite(duration.nanos) ? duration.nanos : null;
+  if (secs === null && nanos === null) return {};
+  const durationMs = Math.round((secs ?? 0) * 1_000 + (nanos ?? 0) / 1_000_000);
+  return durationMs >= 0 ? { durationMs } : {};
+}
+
 function statusFromExit(exitCode: number | undefined, fallback?: boolean): "completed" | "failed" | "unknown" {
   if (typeof exitCode === "number") return exitCode === 0 ? "completed" : "failed";
   if (typeof fallback === "boolean") return fallback ? "completed" : "failed";
@@ -602,16 +621,18 @@ function extractCodexEventTrace(
   if (eventType === "mcp_tool_call_end") {
     const invocation = unknownField(payload, "invocation");
     const invocationName = firstStringField(invocation, ["name", "tool", "method"]);
+    const result = unknownField(payload, "result");
     return [
       {
         ...common,
         kind: "event",
         title: titleWithSummary("mcp", invocationName || stringField(payload, "plugin_id")),
-        detail: stringifyDetail(unknownField(payload, "result") || invocation),
-        status: "unknown",
+        detail: stringifyDetail(result || invocation),
+        status: mcpResultStatus(result),
         attributes: {
           input: sanitizeCodexTraceValue(invocation),
-          output: sanitizeCodexTraceValue(unknownField(payload, "result")),
+          output: sanitizeCodexTraceValue(result),
+          ...mcpDurationAttribute(unknownField(payload, "duration")),
         },
       },
     ];

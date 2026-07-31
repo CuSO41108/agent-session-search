@@ -2665,4 +2665,107 @@ describe("tclaude / tcodex optional sources", () => {
 
     fs.rmSync(home, { recursive: true, force: true });
   });
+  it("truncates an oversized Codex tool payload once instead of nesting previews", () => {
+    const oversized = [
+      { type: "input_text", text: "Script completed\nWall time 0.1 seconds\nOutput:\n" },
+      { type: "input_text", text: "SKILL detail ".repeat(TRACE_DETAIL_PREVIEW_MAX_CHARS) },
+    ];
+    const loaded = loadCodexSessionRows("/tmp/codex-oversized-tool-output.jsonl", [
+      {
+        type: "session_meta",
+        timestamp: "2026-07-31T03:22:00Z",
+        payload: { id: "codex-oversized-1", cwd: "/repo" },
+      },
+      {
+        type: "response_item",
+        timestamp: "2026-07-31T03:22:24Z",
+        payload: {
+          type: "custom_tool_call",
+          call_id: "oversized-1",
+          name: "exec",
+          status: "completed",
+          input: "const r = await tools.exec_command({\"cmd\":\"sed -n '1,400p' SKILL.md\"});",
+        },
+      },
+      {
+        type: "response_item",
+        timestamp: "2026-07-31T03:22:25Z",
+        payload: { type: "custom_tool_call_output", call_id: "oversized-1", output: oversized },
+      },
+    ]);
+
+    const trace = loaded?.traceEvents?.find((event) => event.callId === "oversized-1");
+    expect(trace).toBeDefined();
+    const output = trace?.attributes?.output as { preview?: string; truncated?: boolean };
+    expect(output?.truncated).toBe(true);
+    expect(output?.preview).not.toContain('{"preview"');
+    expect(output?.preview).not.toContain('\\\\"');
+    expect(output?.preview).toContain("Wall time 0.1 seconds");
+  });
+
+  it("derives MCP tool status and duration from the recorded result", () => {
+    const loaded = loadCodexSessionRows("/tmp/codex-mcp-status.jsonl", [
+      {
+        type: "session_meta",
+        timestamp: "2026-07-31T15:00:00Z",
+        payload: { id: "codex-mcp-1", cwd: "/repo" },
+      },
+      {
+        type: "event_msg",
+        timestamp: "2026-07-31T15:00:01Z",
+        payload: {
+          type: "mcp_tool_call_end",
+          call_id: "mcp-ok",
+          plugin_id: "mem0",
+          invocation: { name: "add_memory" },
+          duration: { secs: 1, nanos: 200_000_000 },
+          result: { Ok: { content: [{ type: "text", text: "stored" }], isError: false } },
+        },
+      },
+      {
+        type: "event_msg",
+        timestamp: "2026-07-31T15:00:02Z",
+        payload: {
+          type: "mcp_tool_call_end",
+          call_id: "mcp-bad",
+          plugin_id: "mem0",
+          invocation: { name: "search_memories" },
+          result: { Ok: { content: [{ type: "text", text: "quota exhausted" }], isError: true } },
+        },
+      },
+      {
+        type: "event_msg",
+        timestamp: "2026-07-31T15:00:03Z",
+        payload: {
+          type: "mcp_tool_call_end",
+          call_id: "mcp-err",
+          plugin_id: "mem0",
+          invocation: { name: "get_event_status" },
+          result: { Err: "transport closed" },
+        },
+      },
+      {
+        type: "event_msg",
+        timestamp: "2026-07-31T15:00:04Z",
+        payload: {
+          type: "mcp_tool_call_end",
+          call_id: "mcp-bare",
+          plugin_id: "mem0",
+          invocation: { name: "add_memory" },
+          result: { Ok: { content: [] } },
+        },
+      },
+    ]);
+
+    const ok = loaded?.traceEvents?.find((event) => event.callId === "mcp-ok");
+    const bad = loaded?.traceEvents?.find((event) => event.callId === "mcp-bad");
+    const err = loaded?.traceEvents?.find((event) => event.callId === "mcp-err");
+    const bare = loaded?.traceEvents?.find((event) => event.callId === "mcp-bare");
+    expect(ok?.status).toBe("completed");
+    expect(ok?.attributes?.durationMs).toBe(1_200);
+    expect(bad?.status).toBe("failed");
+    expect(err?.status).toBe("failed");
+    expect(bare?.status).toBe("unknown");
+    expect(bad?.attributes?.durationMs).toBeUndefined();
+  });
 });

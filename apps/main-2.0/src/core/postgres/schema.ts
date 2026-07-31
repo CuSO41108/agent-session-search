@@ -1174,4 +1174,16 @@ export const POSTGRES_MIGRATIONS: readonly PostgresMigration[] = [{
       );
     `,
   ],
+}, {
+  version: 18,
+  name: "refresh Codex tool trace details",
+  statements: [
+    `
+      UPDATE agent_recall.sessions
+      SET file_mtime_ms = 0,
+          content_indexed_mtime_ms = 0,
+          content_indexed_size = 0
+      WHERE source IN ('codex-cli', 'codex-app', 'tcodex-cli');
+    `,
+  ],
 }];
