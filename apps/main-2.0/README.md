@@ -4,7 +4,7 @@
 
 <h1 align="center">agent-recall-v2</h1>
 
-<p align="center">AgentRecall 的独立 V2 开发版</p>
+<p align="center">AgentRecall 的独立 V2 预览版</p>
 
 <p align="center">
   简体中文 ｜ <a href="./docs/README.en.md">English</a>
@@ -23,18 +23,18 @@
   <img src="./assets/show.png" alt="agent-recall-v2 界面预览" width="860">
 </p>
 
-`agent-recall-v2` 是仓库中的独立开发版应用。它和 AgentRecall 1.0 拥有不同的包名、命令、应用数据目录、数据库、更新缓存与 MCP 标识，可以同时运行；当前不读取或导入 V1 的 SQLite 数据。
+`agent-recall-v2` 是仓库中的独立预览版应用。它和 AgentRecall 1.0 拥有不同的包名、命令、应用数据目录、数据库、更新缓存与 MCP 标识，可以同时运行；当前不读取或导入 V1 的 SQLite 数据。
 
 ## 快速开始
 
-准备 **Node.js 22.13+**，在仓库根目录运行：
+准备 **Node.js 22.13+**，安装最新的 V2 Release：
 
 ```bash
-npm run setup:v2
-npm run dev:v2
+npm install -g https://github.com/zszz3/AgentRecall/releases/download/v2-latest/agent-recall-v2.tgz
+agent-recall-v2
 ```
 
-`agent-recall-v2` 目前不复用 AgentRecall 1.0 的 Release 安装包或更新通道。完整的本地开发和数据边界说明见 [Install.md](./Install.md)。
+`agent-recall-v2` 使用与 AgentRecall 1.0 分开的 Release 安装包和更新通道；执行 `agent-recall-v2 --update` 可以升级到最新版本。完整的安装、更新、卸载和数据边界说明见 [Install.md](./Install.md)。
 
 ## 核心能力
 
