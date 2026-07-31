@@ -1429,7 +1429,7 @@ select:focus-visible {
   bottom: -1px;
   left: 10px;
   height: 2px;
-  border-radius: 2px 2px 0 0;
+  border-radius: 0;
   background: transparent;
 }
 
