@@ -5,7 +5,7 @@
   bottom: 9px;
   left: 4px;
   width: 3px;
-  border-radius: 999px;
+  border-radius: 0 2px 2px 0;
   background: var(--accent);
   content: "";
 }
