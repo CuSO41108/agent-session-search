@@ -513,6 +513,38 @@ describe("TeamChatService studio employees", () => {
     expect(fixture.events).toContainEqual({ type: "rooms-changed" });
   });
 
+  it("activates only the employees named in the message text", async () => {
+    const calls: ExecuteInput[] = [];
+    const fixture = await createFixture({
+      executeAgent: async (input) => {
+        calls.push(structuredClone(input));
+        return { output: "done", durationMs: 1 };
+      },
+    });
+    const [first, second] = fixture.room.agents;
+
+    // A recipient the caller still lists but no longer mentions must not be woken,
+    // which is what happens when a typed "@name" is deleted before sending.
+    await expect(fixture.service.sendMessage({
+      roomId: fixture.room.id,
+      content: "never mind",
+      targetMemberIds: [first!.agentId],
+    })).resolves.toMatchObject({ rejectedTargetMemberIds: [] });
+    expect(calls).toEqual([]);
+    expect(fixture.store.dispatches).toEqual([]);
+
+    // Only the mentioned employee runs, even when another id is supplied.
+    const sent = await fixture.service.sendMessage({
+      roomId: fixture.room.id,
+      content: "@Codex2 take this",
+      targetMemberIds: [first!.agentId],
+    });
+    await waitForRoot(fixture.events, sent.rootMessageId);
+
+    expect(fixture.store.dispatches.map((dispatch) => dispatch.targetAgentId))
+      .toEqual([second!.agentId]);
+  });
+
   it("saves ordinary room messages and invokes only explicitly mentioned employees", async () => {
     const calls: ExecuteInput[] = [];
     const fixture = await createFixture({
@@ -537,7 +569,7 @@ describe("TeamChatService studio employees", () => {
     const target = fixture.room.agents[0]!;
     const sent = await fixture.service.sendMessage({
       roomId: fixture.room.id,
-      content: "check auth",
+      content: "@Codex check auth",
       targetMemberIds: [target.agentId],
     });
     await waitForRoot(fixture.events, sent.rootMessageId);
@@ -564,7 +596,7 @@ describe("TeamChatService studio employees", () => {
 
     await expect(fixture.service.sendMessage({
       roomId: fixture.room.id,
-      content: "Run everywhere",
+      content: "@Codex1 @Codex2 @Codex3 @Codex4 @Codex5 @Codex6 @Codex7 @Codex8 @Codex9 Run everywhere",
       targetMemberIds: fixture.room.agents.map((member) => member.agentId),
     })).rejects.toThrow(/up to 8/i);
     expect(fixture.store.messages).toEqual([]);
@@ -592,7 +624,7 @@ describe("TeamChatService studio employees", () => {
 
     const sent = await fixture.service.sendMessage({
       roomId: fixture.room.id,
-      content: "Implement auth",
+      content: "@Codex Implement auth",
       targetMemberIds: [fixture.room.agents[0]!.agentId],
     });
     await waitForRoot(fixture.events, sent.rootMessageId);
@@ -625,7 +657,7 @@ describe("TeamChatService studio employees", () => {
 
     const sent = await fixture.service.sendMessage({
       roomId: fixture.room.id,
-      content: "Create a draft",
+      content: "@Codex Create a draft",
       targetMemberIds: [fixture.room.agents[0]!.agentId],
     });
     await waitForRoot(fixture.events, sent.rootMessageId);
@@ -670,7 +702,7 @@ describe("TeamChatService studio employees", () => {
 
     const sent = await fixture.service.sendMessage({
       roomId: fixture.room.id,
-      content: "Edit auth",
+      content: "@Codex Edit auth",
       targetMemberIds: [fixture.room.agents[0]!.agentId],
     });
     await waitForRoot(fixture.events, sent.rootMessageId);
@@ -706,13 +738,13 @@ describe("TeamChatService studio employees", () => {
 
     const first = await fixture.service.sendMessage({
       roomId: fixture.room.id,
-      content: "Reserve this edit",
+      content: "@Codex Reserve this edit",
       targetMemberIds: [fixture.room.agents[0]!.agentId],
     });
     await waitForRoot(fixture.events, first.rootMessageId);
     const second = await fixture.service.sendMessage({
       roomId: fixture.room.id,
-      content: "Review this edit",
+      content: "@Codex2 Review this edit",
       targetMemberIds: [fixture.room.agents[1]!.agentId],
     });
     await waitForRoot(fixture.events, second.rootMessageId);
@@ -823,14 +855,14 @@ describe("TeamChatService studio employees", () => {
 
     const first = await fixture.service.sendMessage({
       roomId: fixture.room.id,
-      content: "Implement auth",
+      content: "@Codex Implement auth",
       targetMemberIds: [fixture.room.agents[0]!.agentId],
     });
     await waitForRoot(fixture.events, first.rootMessageId);
     firstTurnId = fixture.store.dispatches[0]!.id;
     const second = await fixture.service.sendMessage({
       roomId: fixture.room.id,
-      content: "Inspect the first Turn",
+      content: "@Codex2 Inspect the first Turn",
       targetMemberIds: [fixture.room.agents[1]!.agentId],
     });
     await waitForRoot(fixture.events, second.rootMessageId);
@@ -898,7 +930,7 @@ describe("TeamChatService studio employees", () => {
     for (const target of [one!, two!, one!, two!]) {
       const sent = await fixture.service.sendMessage({
         roomId: fixture.room.id,
-        content: `message for ${target.displayName}`,
+        content: `@${target.displayName} message for ${target.displayName}`,
         targetMemberIds: [target.agentId],
       });
       await waitForRoot(fixture.events, sent.rootMessageId);
@@ -974,13 +1006,13 @@ describe("TeamChatService studio employees", () => {
     const target = fixture.room.agents[0]!;
     const first = await fixture.service.sendMessage({
       roomId: fixture.room.id,
-      content: "first",
+      content: "@Codex first",
       targetMemberIds: [target.agentId],
     });
     await waitForRoot(fixture.events, first.rootMessageId);
     const second = await fixture.service.sendMessage({
       roomId: fixture.room.id,
-      content: "second",
+      content: "@Codex second",
       targetMemberIds: [target.agentId],
     });
     await waitForRoot(fixture.events, second.rootMessageId);
@@ -1016,13 +1048,13 @@ describe("TeamChatService studio employees", () => {
     const target = fixture.room.agents[0]!;
     const first = await fixture.service.sendMessage({
       roomId: fixture.room.id,
-      content: "first",
+      content: "@Codex first",
       targetMemberIds: [target.agentId],
     });
     await waitForRoot(fixture.events, first.rootMessageId);
     const second = await fixture.service.sendMessage({
       roomId: fixture.room.id,
-      content: "second",
+      content: "@Codex second",
       targetMemberIds: [target.agentId],
     });
     await waitForRoot(fixture.events, second.rootMessageId);
@@ -1053,7 +1085,7 @@ describe("TeamChatService studio employees", () => {
 
     const sent = await fixture.service.sendMessage({
       roomId: fixture.room.id,
-      content: "do risky work",
+      content: "@Codex do risky work",
       targetMemberIds: [fixture.room.agents[0]!.agentId],
     });
     await waitForRoot(fixture.events, sent.rootMessageId);
@@ -1075,7 +1107,7 @@ describe("TeamChatService studio employees", () => {
 
     const sent = await fixture.service.sendMessage({
       roomId: fixture.room.id,
-      content: "record this",
+      content: "@Codex record this",
       targetMemberIds: [fixture.room.agents[0]!.agentId],
     });
     await waitForRoot(fixture.events, sent.rootMessageId);
@@ -1097,17 +1129,17 @@ describe("TeamChatService studio employees", () => {
 
     const first = await fixture.service.sendMessage({
       roomId: fixture.room.id,
-      content: "one-a",
+      content: "@Codex one-a",
       targetMemberIds: [one!.agentId],
     });
     const second = await fixture.service.sendMessage({
       roomId: fixture.room.id,
-      content: "one-b",
+      content: "@Codex one-b",
       targetMemberIds: [one!.agentId],
     });
     const third = await fixture.service.sendMessage({
       roomId: fixture.room.id,
-      content: "two-a",
+      content: "@Codex2 two-a",
       targetMemberIds: [two!.agentId],
     });
     await vi.waitFor(() => expect(starts).toEqual(["one", "two"]));
@@ -1219,7 +1251,7 @@ describe("TeamChatService studio employees", () => {
     for (const target of fixture.room.agents) {
       const sent = await fixture.service.sendMessage({
         roomId: fixture.room.id,
-        content: "remember",
+        content: `@${target.displayName} remember`,
         targetMemberIds: [target.agentId],
       });
       await waitForRoot(fixture.events, sent.rootMessageId);
@@ -1243,7 +1275,7 @@ describe("TeamChatService studio employees", () => {
     });
     const sent = await fixture.service.sendMessage({
       roomId: fixture.room.id,
-      content: "wait",
+      content: "@Codex @Codex2 wait",
       targetMemberIds: fixture.room.agents.map((member) => member.agentId),
     });
     await vi.waitFor(() => expect(fixture.store.dispatches.map((dispatch) => dispatch.status))

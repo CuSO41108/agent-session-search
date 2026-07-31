@@ -56,6 +56,17 @@ describe("Studio room composer", () => {
     expect(source).not.toContain("if (targetMemberIds.length === 0)");
     expect(source).not.toContain("sending || targetMemberIds.length === 0");
     expect(source).toContain("输入 @名称才会唤醒对应 Runtime");
-    expect(source).toMatch(/setComposer\(""\);\s+setTargetMemberIds\(\[\]\);/u);
+  });
+
+  it("derives recipients from the composed text instead of tracking them separately", async () => {
+    const source = await readFile(
+      new URL("./features/team-chat/team-chat-page.tsx", import.meta.url),
+      "utf8",
+    );
+
+    // Recipients must stay a function of the text so deleting an "@name" also
+    // withdraws that recipient.
+    expect(source).not.toContain("setTargetMemberIds");
+    expect(source).toContain("resolveMentionedMemberIds(composer, routable)");
   });
 });

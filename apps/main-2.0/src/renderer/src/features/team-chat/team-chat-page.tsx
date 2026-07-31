@@ -35,6 +35,7 @@ import type {
   TeamChatRoomAgent,
   TeamChatRoomSummary,
 } from "../../../../shared/team-chat";
+import { parseTeamChatMentions, removeMentionFromText, resolveMentionedMemberIds } from "../../../../shared/team-chat";
 import { localize, type LanguageMode } from "../../language";
 import { Markdown } from "../../markdown";
 import { useAutomation } from "../automation/automation-provider";
@@ -172,7 +173,6 @@ export function TeamChatPage({
   const [mentionIndex, setMentionIndex] = useState(0);
   const [sending, setSending] = useState(false);
   const [activeRootMessageId, setActiveRootMessageId] = useState<string>();
-  const [targetMemberIds, setTargetMemberIds] = useState<string[]>([]);
   const [streams, setStreams] = useState<Record<string, StreamDraft>>({});
   const [resettingAgentIds, setResettingAgentIds] = useState<Set<string>>(() => new Set());
   const [createOpen, setCreateOpen] = useState(false);
@@ -210,19 +210,15 @@ export function TeamChatPage({
     setMentionIndex(0);
   }, [activeRoom?.id, mentionContext?.query]);
 
-  useEffect(() => {
-    if (!activeRoom) {
-      setTargetMemberIds([]);
-      return;
-    }
+  // Recipients are derived from the text being composed rather than tracked
+  // separately, so deleting an "@name" also withdraws that recipient.
+  const targetMemberIds = useMemo(() => {
+    if (!activeRoom) return [];
     const availableConfiguredAgents = new Set(snapshot.configuredAgents.map((agent) => agent.id));
-    const availableMembers = activeRoom.agents.filter((member) =>
+    const routable = activeRoom.agents.filter((member) =>
       member.enabled && availableConfiguredAgents.has(member.configuredAgentId));
-    setTargetMemberIds((current) => {
-      return current.filter((memberId) =>
-        availableMembers.some((member) => member.agentId === memberId));
-    });
-  }, [activeRoom, snapshot.configuredAgents]);
+    return resolveMentionedMemberIds(composer, routable);
+  }, [activeRoom, composer, snapshot.configuredAgents]);
 
   const loadRooms = useCallback(async (preferredRoomId?: string): Promise<void> => {
     setLoadingRooms(true);
@@ -368,13 +364,16 @@ export function TeamChatPage({
       });
       setMessages((current) => mergeMessages(current, [result.message]));
       setComposer("");
-      setTargetMemberIds([]);
       setComposerCursor(0);
       setMentionMenuOpen(false);
       if (result.rejectedTargetMemberIds.length > 0) {
+        const rejectedNames = result.rejectedTargetMemberIds
+          .map((memberId) => activeRoom?.agents
+            .find((member) => member.agentId === memberId)?.displayName ?? memberId)
+          .join("、");
         setFeedback(l(
-          "The room message was saved, but an unavailable Runtime was not started.",
-          "房间消息已保存，但有一个不可用的 Runtime 未被唤醒。",
+          `The room message was saved, but these Runtimes were not started: ${rejectedNames}.`,
+          `房间消息已保存，但以下 Runtime 未被唤醒：${rejectedNames}。`,
         ));
       }
     } catch (error) {
@@ -383,18 +382,9 @@ export function TeamChatPage({
       setSending(false);
       composerRef.current?.focus();
     }
-  }, [api, composer, l, selectedRoomId, sending, targetMemberIds]);
-
-  const toggleTargetMember = (memberId: string): void => {
-    setTargetMemberIds((current) =>
-      current.includes(memberId)
-        ? current.filter((id) => id !== memberId)
-        : [...current, memberId]);
-  };
+  }, [activeRoom, api, composer, l, selectedRoomId, sending, targetMemberIds]);
 
   const insertMention = (member: TeamChatRoomAgent, replaceActiveQuery = false): void => {
-    setTargetMemberIds((current) =>
-      current.includes(member.agentId) ? current : [...current, member.agentId]);
     const cursor = Math.min(composerCursor, composer.length);
     const context = replaceActiveQuery ? activeMentionContext(composer, cursor) : undefined;
     const mention = `@${member.displayName}`;
@@ -417,6 +407,23 @@ export function TeamChatPage({
       composerRef.current?.focus();
       composerRef.current?.setSelectionRange(nextCursor, nextCursor);
     });
+  };
+
+  // The picker edits the composer text because the text decides who is activated.
+  // Selecting appends a mention; deselecting removes the mention it added.
+  const toggleTargetMember = (memberId: string): void => {
+    const member = activeRoom?.agents.find((entry) => entry.agentId === memberId);
+    if (!member) return;
+    const existing = parseTeamChatMentions(composer, [member])
+      .find((mention) => mention.memberId === memberId);
+    if (!existing) {
+      insertMention(member);
+      return;
+    }
+    // Close the gap the mention left behind without reflowing the rest of the draft.
+    const { text, cursor } = removeMentionFromText(composer, existing);
+    setComposer(text);
+    setComposerCursor(cursor);
   };
 
   const onMentionKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>): boolean => {

@@ -24,6 +24,7 @@ import type {
   TeamChatWorkspaceReservation,
   UpdateTeamChatRoomRequest,
 } from "../../shared/team-chat";
+import { resolveMentionedMemberIds } from "../../shared/team-chat";
 import {
   buildStudioDeveloperInstructions,
   buildTeamChatPrompt,
@@ -40,6 +41,7 @@ import type {
 
 const CONTEXT_MESSAGE_LIMIT = 40;
 const MAX_MESSAGE_TARGETS = 8;
+const MAX_ACTIVATION_HOP = 8;
 const STUDIO_SCOPE_LIFETIME_MS = 60 * 60 * 1_000;
 const WORKSPACE_RESERVATION_LIFETIME_MS = 10 * 60 * 1_000;
 const MAX_ATTEMPT_EVENTS = 200;
@@ -272,13 +274,24 @@ export class TeamChatService {
     if (!room || room.archived) throw new Error("Team Chat room is unavailable.");
     const content = request.content.trim();
     if (!content) throw new Error("Enter a message before sending.");
+    // The message text is the source of truth for who is activated: a member is
+    // only woken when this message actually mentions them. Ids supplied by the
+    // caller are treated as a hint and intersected with the mentions found here,
+    // so a mention that was typed and then deleted no longer starts a Turn.
+    const routableMembers = this.routableRoomMembers(room);
+    const mentionedIds = resolveMentionedMemberIds(content, room.agents);
     const requestedTargetIds = [...new Set(request.targetMemberIds)];
     if (requestedTargetIds.length > MAX_MESSAGE_TARGETS) {
       throw new Error(`Select up to ${MAX_MESSAGE_TARGETS} employees for one message.`);
     }
-    const targets = resolveTeamChatTargets(request.targetMemberIds, this.routableRoomMembers(room));
+    if (mentionedIds.length > MAX_MESSAGE_TARGETS) {
+      throw new Error(`Mention up to ${MAX_MESSAGE_TARGETS} employees in one message.`);
+    }
+    const targets = resolveTeamChatTargets(mentionedIds, routableMembers);
     const validTargetIds = new Set(targets);
-    const rejectedTargetMemberIds = requestedTargetIds
+    // Report the members this message named but could not wake, so the caller can
+    // say who stayed silent instead of guessing from the requested hint list.
+    const rejectedTargetMemberIds = mentionedIds
       .filter((memberId) => !validTargetIds.has(memberId));
 
     const messageId = this.id();
@@ -835,6 +848,19 @@ export class TeamChatService {
     hop: number;
     controller: AbortController;
   }): Promise<void> {
+    // Activation depth is bounded here because every dispatch funnels through this
+    // method. Mentions resolved from message text mean an employee reply could name
+    // another employee, so without a ceiling a studio could ping-pong indefinitely.
+    if (input.hop > MAX_ACTIVATION_HOP) {
+      return this.insertSystemMessage(
+        input.room.id,
+        input.rootMessage.id,
+        input.sourceMessage.id,
+        input.hop,
+        `Studio activation stopped after ${MAX_ACTIVATION_HOP} hops to prevent a loop.`,
+        "error",
+      ).then(() => undefined);
+    }
     this.retainRootActivity(input.rootMessage.id);
     const key = `${input.room.id}:${input.targetAgentId}`;
     const prior = this.memberQueueTails.get(key) ?? Promise.resolve();
