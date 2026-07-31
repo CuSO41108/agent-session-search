@@ -163,7 +163,7 @@ function durationLabel(value: number | null): string | null {
   return seconds > 0 ? `${minutes}m ${seconds}s` : `${minutes}m`;
 }
 
-function turnStatusLabel(status: SessionTurnSummary["status"] | "running", language: LanguageMode): string {
+function turnStatusLabel(status: SessionTurnSummary["status"], language: LanguageMode): string {
   if (status === "running") return localize(language, "Running", "进行中");
   if (status === "failed") return localize(language, "Failed", "失败");
   if (status === "aborted") return localize(language, "Interrupted", "已中断");
@@ -467,7 +467,12 @@ export function TurnAccordion({
         const error = state.errorsById[turn.id];
         const elapsed = durationLabel(turn.durationMs ?? durationMs(turn.startedAt, turn.endedAt));
         const firstToken = durationLabel(turn.timeToFirstTokenMs ?? null);
-        const displayStatus = live && turnIndex === turns.length - 1 ? "running" : turn.status;
+        const displayStatus: SessionTurnSummary["status"] =
+          turn.status === "running"
+            ? live ? "running" : "completed"
+            : live && turnIndex === turns.length - 1 && !turn.sourceTurnId
+              ? "running"
+              : turn.status;
         return (
           <article
             key={turn.id}

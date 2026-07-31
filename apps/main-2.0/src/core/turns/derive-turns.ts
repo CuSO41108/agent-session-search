@@ -4,6 +4,7 @@ import type {
   CodexIncrementalState,
   SessionMessage,
   SessionTraceEvent,
+  SessionTurnStatus,
   TokenUsageEvent,
 } from "../types";
 import { tracePresentation } from "../trace-presentation";
@@ -50,7 +51,7 @@ export interface DerivedSessionTurn {
   sourceMessageIndex: number | null;
   sourceTurnId: string | null;
   synthetic: boolean;
-  status: "completed" | "failed" | "aborted";
+  status: SessionTurnStatus;
   startedAt: string | null;
   endedAt: string | null;
   durationMs: number | null;
@@ -248,8 +249,7 @@ function buildTurnDrafts(
     target.tokenEvents.push(event);
   }
 
-  if (turns.length === 0) turns.push(createSyntheticTurn());
-  return turns;
+  return turns.filter((turn) => turn.messages.length > 0 || turn.traceEvents.length > 0);
 }
 
 function spanName(title: string): string {
@@ -397,7 +397,9 @@ function lifecycleProjection(turn: TurnDraft): {
         ? "failed"
         : terminal?.eventType === "codex.turn.completed"
           ? "completed"
-          : null,
+          : started
+            ? "running"
+            : null,
     startedAt: explicitStartedAt || derivedStartedAt,
     endedAt,
     durationMs,
@@ -414,6 +416,7 @@ function buildTurns(
   const sourceRecordIds = new Map(
     codexIncrementalState?.messageProvenance.map((entry) => [entry.messageIndex, entry.sourceRecordId]) ?? [],
   );
+  const activeSourceTurnIds = new Set(codexIncrementalState?.activeTurnIds ?? []);
   return drafts.map((draft, turnIndex) => {
     const turnId = stableId(
       sessionKey,
@@ -485,7 +488,8 @@ function buildTurns(
       sourceMessageIndex: draft.sourceMessageIndex,
       sourceTurnId: draft.sourceTurnId,
       synthetic: draft.synthetic,
-      status: lifecycle.status ?? inferredStatus,
+      status: lifecycle.status
+        ?? (draft.sourceTurnId && activeSourceTurnIds.has(draft.sourceTurnId) ? "running" : inferredStatus),
       startedAt: lifecycle.startedAt ?? fallbackTimeRange.startedAt,
       endedAt: lifecycle.endedAt ?? fallbackTimeRange.endedAt,
       durationMs: lifecycle.durationMs,

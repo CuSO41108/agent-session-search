@@ -220,7 +220,7 @@ export interface CodexIncrementalState {
   activeTurnIds: string[];
 }
 
-export type SessionTurnStatus = "completed" | "failed" | "aborted";
+export type SessionTurnStatus = "running" | "completed" | "failed" | "aborted";
 
 export interface SessionTurnSummary {
   id: string;

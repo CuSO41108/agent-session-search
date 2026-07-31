@@ -108,14 +108,23 @@ describe("PostgresSessionRepository", () => {
   });
 
   it("round-trips Codex lifecycle Turns and private incremental state", async () => {
-    const lifecycleMessages: SessionMessage[] = [{
-      role: "assistant",
-      content: "done",
-      timestamp: "2026-07-30T08:00:01.000Z",
-      index: 0,
-      sourceTurnId: "turn-1",
-      phase: "final_answer",
-    }];
+    const lifecycleMessages: SessionMessage[] = [
+      {
+        role: "assistant",
+        content: "done",
+        timestamp: "2026-07-30T08:00:01.000Z",
+        index: 0,
+        sourceTurnId: "turn-1",
+        phase: "final_answer",
+      },
+      {
+        role: "user",
+        content: "keep working",
+        timestamp: "2026-07-30T08:01:00.000Z",
+        index: 1,
+        sourceTurnId: "turn-2",
+      },
+    ];
     const lifecycleTraces: SessionTraceEvent[] = [
       {
         index: 0,
@@ -145,6 +154,17 @@ describe("PostgresSessionRepository", () => {
           timeToFirstTokenMs: 200,
         },
       },
+      {
+        index: 2,
+        kind: "event",
+        source: "codex",
+        title: "Turn started",
+        detail: "",
+        timestamp: "2026-07-30T08:01:00.000Z",
+        eventType: "codex.turn.started",
+        status: "running",
+        sourceTurnId: "turn-2",
+      },
     ];
     await repository.upsertIndexedSession(
       session({ sessionKey: "codex:lifecycle", rawId: "lifecycle" }),
@@ -153,23 +173,38 @@ describe("PostgresSessionRepository", () => {
       lifecycleTraces,
       {
         historyMode: "paginated",
-        messageProvenance: [{ messageIndex: 0, sourceRecordId: "response_item:answer-1" }],
-        activeTurnIds: [],
+        messageProvenance: [
+          { messageIndex: 0, sourceRecordId: "response_item:answer-1" },
+          { messageIndex: 1, sourceRecordId: "response_item:user-2" },
+        ],
+        activeTurnIds: ["turn-2"],
       },
     );
 
     const turns = await turnsRepository.listSessionTurns("codex:lifecycle");
-    expect(turns).toMatchObject([{
-      sourceTurnId: "turn-1",
-      status: "completed",
-      durationMs: 3_000,
-      timeToFirstTokenMs: 200,
-      spanCount: 0,
-    }]);
-    expect(await turnsRepository.getAllMessages("codex:lifecycle")).toMatchObject([{
-      sourceTurnId: "turn-1",
-      phase: "final_answer",
-    }]);
+    expect(turns).toMatchObject([
+      {
+        sourceTurnId: "turn-1",
+        status: "completed",
+        durationMs: 3_000,
+        timeToFirstTokenMs: 200,
+        spanCount: 0,
+      },
+      {
+        sourceTurnId: "turn-2",
+        status: "running",
+        spanCount: 0,
+      },
+    ]);
+    expect(await turnsRepository.getAllMessages("codex:lifecycle")).toMatchObject([
+      {
+        sourceTurnId: "turn-1",
+        phase: "final_answer",
+      },
+      {
+        sourceTurnId: "turn-2",
+      },
+    ]);
     expect(await turnsRepository.getTraceEvents("codex:lifecycle")).toMatchObject([
       { sourceTurnId: "turn-1", eventType: "codex.turn.started" },
       {
@@ -177,11 +212,15 @@ describe("PostgresSessionRepository", () => {
         eventType: "codex.turn.completed",
         attributes: { durationMs: 3_000 },
       },
+      { sourceTurnId: "turn-2", eventType: "codex.turn.started" },
     ]);
     expect(await turnsRepository.getCodexIncrementalState("codex:lifecycle")).toEqual({
       historyMode: "paginated",
-      messageProvenance: [{ messageIndex: 0, sourceRecordId: "response_item:answer-1" }],
-      activeTurnIds: [],
+      messageProvenance: [
+        { messageIndex: 0, sourceRecordId: "response_item:answer-1" },
+        { messageIndex: 1, sourceRecordId: "response_item:user-2" },
+      ],
+      activeTurnIds: ["turn-2"],
     });
   });
 

@@ -171,32 +171,54 @@ describe("TurnAccordion", () => {
     expect(html).not.toContain("file contents");
   });
 
-  it("shows lifecycle timing and presents the last live Turn as running", async () => {
+  it("uses Session live state only for the last Turn without a lifecycle terminal", async () => {
     const feature = await loadTurnAccordion();
     expect(feature).not.toBeNull();
     if (!feature) return;
 
-    const html = renderToStaticMarkup(createElement(feature.TurnAccordion, {
-      sessionKey: "session-a",
-      turns: [{
-        ...summary,
-        durationMs: 3_250,
-        timeToFirstTokenMs: 180,
-        errorCount: 2,
-        toolNames: ["Read", "Shell"],
-      }],
-      loading: false,
-      live: true,
-      matchedTurnId: null,
-      query: "",
-      language: "zh",
-      onLoadTurn: async () => detail,
-    }));
+    const renderStatus = (
+      status: "running" | "completed" | "aborted",
+      live: boolean,
+      sourceTurnId: string | null = "turn-1",
+    ) =>
+      renderToStaticMarkup(createElement(feature.TurnAccordion, {
+        sessionKey: "session-a",
+        turns: [{
+          ...summary,
+          status,
+          sourceTurnId,
+          durationMs: 3_250,
+          timeToFirstTokenMs: 180,
+          errorCount: 2,
+          toolNames: ["Read", "Shell"],
+        }],
+        loading: false,
+        live,
+        matchedTurnId: null,
+        query: "",
+        language: "zh",
+        onLoadTurn: async () => detail,
+      }));
 
-    expect(html).toContain("进行中");
-    expect(html).toContain("3.3s");
-    expect(html).toContain("TTFT 180ms");
-    expect(html).toContain('class="turn-status running"');
+    const completedLive = renderStatus("completed", true);
+    expect(completedLive).toContain('class="turn-status completed">已完成');
+    expect(completedLive).not.toContain('class="turn-status running"');
+
+    const abortedLive = renderStatus("aborted", true);
+    expect(abortedLive).toContain('class="turn-status aborted">已中断');
+    expect(abortedLive).not.toContain('class="turn-status running"');
+
+    const runningLive = renderStatus("running", true);
+    expect(runningLive).toContain('class="turn-status running">进行中');
+    expect(runningLive).toContain("3.3s");
+    expect(runningLive).toContain("TTFT 180ms");
+
+    const runningClosed = renderStatus("running", false);
+    expect(runningClosed).toContain('class="turn-status completed">已完成');
+    expect(runningClosed).not.toContain('class="turn-status running"');
+
+    const legacyLive = renderStatus("completed", true, null);
+    expect(legacyLive).toContain('class="turn-status running">进行中');
   });
 
   it("renders a turn context menu with only the migration command", async () => {

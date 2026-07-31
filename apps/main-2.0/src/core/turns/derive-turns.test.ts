@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { SessionMessage, SessionTraceEvent, TokenUsageEvent } from "../types";
+import { loadCodexSessionRows } from "../session-loader";
 import { deriveSessionTimeline, TURN_DERIVATION_VERSION } from "./derive-turns";
 
 const messages: SessionMessage[] = [
@@ -196,6 +197,95 @@ describe("deriveSessionTimeline", () => {
         messages: sourceMessages.map((message) => ({ ...message, sourceTurnId: null })),
       }).turns[0].id,
     );
+  });
+
+  it("keeps a started Codex Turn running until a lifecycle terminal arrives", () => {
+    const timeline = deriveSessionTimeline({
+      sessionKey: "codex:active-turn",
+      messages: [{
+        role: "user",
+        content: "keep working",
+        timestamp: "2026-07-30T08:00:00.000Z",
+        index: 0,
+        sourceTurnId: "turn-active",
+      }],
+      traceEvents: [{
+        index: 0,
+        kind: "event",
+        source: "codex",
+        title: "Turn started",
+        detail: "",
+        timestamp: "2026-07-30T08:00:00.000Z",
+        eventType: "codex.turn.started",
+        status: "running",
+        sourceTurnId: "turn-active",
+      }],
+      codexIncrementalState: {
+        historyMode: "paginated",
+        messageProvenance: [{ messageIndex: 0, sourceRecordId: "response_item:user-active" }],
+        activeTurnIds: ["turn-active"],
+      },
+    });
+
+    expect(timeline.turns).toHaveLength(1);
+    expect(timeline.turns[0].status).toBe("running");
+  });
+
+  it("retains rolled-back token usage without creating a token-only Turn", () => {
+    const loaded = loadCodexSessionRows("/tmp/codex-token-only-rollback.jsonl", [
+      {
+        type: "session_meta",
+        timestamp: "2026-07-30T09:00:00Z",
+        payload: { id: "codex-token-only-rollback", cwd: "/repo", history_mode: "paginated" },
+      },
+      {
+        type: "event_msg",
+        timestamp: "2026-07-30T09:00:01Z",
+        payload: { type: "task_started", turn_id: "turn-rolled" },
+      },
+      {
+        type: "response_item",
+        timestamp: "2026-07-30T09:00:02Z",
+        payload: {
+          type: "message",
+          id: "user-rolled",
+          role: "user",
+          content: [{ type: "input_text", text: "撤销这轮" }],
+          internal_chat_message_metadata_passthrough: { turn_id: "turn-rolled" },
+        },
+      },
+      {
+        type: "event_msg",
+        timestamp: "2026-07-30T09:00:03Z",
+        payload: {
+          type: "token_count",
+          info: { last_token_usage: { input_tokens: 10, output_tokens: 1 } },
+        },
+      },
+      {
+        type: "event_msg",
+        timestamp: "2026-07-30T09:00:04Z",
+        payload: { type: "turn_aborted", turn_id: "turn-rolled", reason: "interrupted" },
+      },
+      {
+        type: "event_msg",
+        timestamp: "2026-07-30T09:00:05Z",
+        payload: { type: "thread_rolled_back", num_turns: 1 },
+      },
+    ]);
+    if (!loaded) throw new Error("Expected the rolled-back Codex fixture to load.");
+
+    const timeline = deriveSessionTimeline({
+      sessionKey: loaded.session.sessionKey,
+      messages: loaded.messages,
+      traceEvents: loaded.traceEvents,
+      tokenEvents: loaded.tokenEvents,
+      codexIncrementalState: loaded.codexIncrementalState,
+    });
+
+    expect(loaded.tokenEvents).toHaveLength(1);
+    expect(loaded.session.tokenUsage?.totalTokens).toBe(11);
+    expect(timeline.turns).toEqual([]);
   });
 
   it("creates one searchable Turn per user request and pairs tool calls with their results", () => {
