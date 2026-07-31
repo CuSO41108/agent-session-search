@@ -1092,6 +1092,7 @@ async function runIndexSync(): Promise<IndexStatus> {
       includeHermes: settings.includeHermes,
       includeOpenCode: settings.includeOpenCode,
       includeZcode: settings.includeZcode,
+      includePi: settings.includePi,
       includeCursorAgent: settings.includeCursorAgent,
       includeTrae: settings.includeTrae,
       includeQoder: settings.includeQoder,
