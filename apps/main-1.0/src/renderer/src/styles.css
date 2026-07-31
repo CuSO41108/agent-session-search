@@ -2161,7 +2161,7 @@ select:focus-visible {
 .session-row {
   position: relative;
   display: grid;
-  grid-template-columns: 20px minmax(0, 1fr) max-content;
+  grid-template-columns: minmax(0, 1fr) max-content;
   align-items: start;
   gap: 10px;
   flex: 0 0 auto;
@@ -2173,6 +2173,10 @@ select:focus-visible {
   user-select: none;
   -webkit-user-select: none;
   transition: background 0.12s ease;
+}
+
+.session-row.bulk-selecting {
+  grid-template-columns: 20px minmax(0, 1fr) max-content;
 }
 
 .session-bulk-checkbox {

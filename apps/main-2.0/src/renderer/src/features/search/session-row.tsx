@@ -79,7 +79,7 @@ export const SessionRow = memo(function SessionRow({
           : null;
   return (
     <article
-      className={`session-row ${selected ? "selected" : ""}`}
+      className={`session-row ${selected ? "selected" : ""} ${bulkSelectionActive ? "bulk-selecting" : ""}`}
       onClick={() => {
         onSelect(session.sessionKey);
         if (matchHits[0]) onOpenMatch(session, matchHits[0]);

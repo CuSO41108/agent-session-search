@@ -572,7 +572,7 @@
 .session-row {
   position: relative;
   display: grid;
-  grid-template-columns: 20px minmax(0, 1fr) max-content;
+  grid-template-columns: minmax(0, 1fr) max-content;
   align-items: start;
   gap: 10px;
   flex: 0 0 auto;
@@ -584,6 +584,10 @@
   user-select: none;
   -webkit-user-select: none;
   transition: background var(--duration-fast) var(--ease-out);
+}
+
+.session-row.bulk-selecting {
+  grid-template-columns: 20px minmax(0, 1fr) max-content;
 }
 
 .session-bulk-checkbox {

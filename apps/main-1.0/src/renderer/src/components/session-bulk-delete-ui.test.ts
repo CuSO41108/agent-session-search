@@ -45,11 +45,14 @@ describe("session bulk delete UI", () => {
     })));
 
     expect(container.querySelector(".session-bulk-checkbox")).toBeNull();
+    expect(container.querySelector(".session-row")?.classList.contains("bulk-selecting")).toBe(false);
     await act(async () => root.render(createElement(SessionRow, {
       session, selected: false, liveState: "closed", language: "zh",
       bulkSelectionActive: true, bulkSelected: true, onToggleBulk, onOpen,
       onSelect: vi.fn(), onOpenMatch: vi.fn(), onRename: vi.fn(), onFavorite: vi.fn(), onContextMenu: vi.fn(),
     })));
+
+    expect(container.querySelector(".session-row")?.classList.contains("bulk-selecting")).toBe(true);
 
     await act(async () => (container.querySelector(".session-bulk-checkbox") as HTMLInputElement).click());
     expect(onToggleBulk).toHaveBeenCalledWith("codex:session-a");
