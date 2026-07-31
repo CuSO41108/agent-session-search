@@ -471,6 +471,20 @@ describe("RemoteSessionService cloud orchestration", () => {
     expect(harness.ensureSessionDetails).not.toHaveBeenCalled();
     expect(harness.buildUpload).not.toHaveBeenCalled();
     expect(harness.client.uploadSession).not.toHaveBeenCalled();
+    expect(harness.createClient).not.toHaveBeenCalled();
+  });
+
+  it("rejects Pi uploads before creating a client or hydrating content", async () => {
+    const harness = createHarness({
+      settings: configuredSettings(),
+      sessions: [localSession({ sessionKey: "pi:session-1", rawId: "session-1", source: "pi-cli" })],
+    });
+
+    await expect(harness.service.upload("pi:session-1")).rejects.toThrow("Pi sessions cannot be saved remotely yet.");
+    expect(harness.createClient).not.toHaveBeenCalled();
+    expect(harness.ensureSessionDetails).not.toHaveBeenCalled();
+    expect(harness.buildUpload).not.toHaveBeenCalled();
+    expect(harness.client.uploadSession).not.toHaveBeenCalled();
   });
 
   it("rejects an upload when both the bound local and cloud revisions changed", async () => {

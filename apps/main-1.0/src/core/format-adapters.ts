@@ -265,7 +265,31 @@ export const zcodeAdapter = genericAdapter("zcode");
 export const codeWizAdapter = genericAdapter("codewiz");
 export const traeAdapter = genericAdapter("trae");
 export const qoderAdapter = genericAdapter("qoder");
-export const piAdapter = genericAdapter("pi");
+export const piAdapter: FormatAdapter = {
+  format: "pi",
+  parseLine(raw) {
+    const role = roleFromRaw(raw);
+    if (!role) return null;
+    const parsed = extractContentBlocks(contentFromRaw(raw));
+    if (!parsed.text) return null;
+    const record = raw && typeof raw === "object" ? raw as Record<string, unknown> : null;
+    const message = record?.message && typeof record.message === "object"
+      ? record.message as Record<string, unknown>
+      : null;
+    const innerTimestamp = message?.timestamp;
+    const innerTimestampMs = typeof innerTimestamp === "number" && Number.isFinite(innerTimestamp)
+      ? new Date(innerTimestamp).getTime()
+      : Number.NaN;
+    return {
+      role,
+      content: parsed.text,
+      timestamp: Number.isFinite(innerTimestampMs)
+        ? new Date(innerTimestampMs).toISOString()
+        : timestampFromRaw(raw),
+      ...(parsed.attachments ? { attachments: parsed.attachments } : {}),
+    };
+  },
+};
 
 export function getFormatForSource(source: SessionSource): SessionFormat {
   return sessionSourceDescriptor(source).format;

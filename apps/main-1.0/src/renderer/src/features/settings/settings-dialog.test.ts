@@ -204,9 +204,14 @@ describe("SettingsDialog shortcut reference", () => {
 describe("SettingsDialog session sources", () => {
   it("shows the enabled Pi read-only indexing option", () => {
     const html = renderSessions();
+    const piTitleIndex = html.indexOf("Include Pi");
+    const piRow = html.slice(
+      html.lastIndexOf('<label class="settings-field settings-toggle">', piTitleIndex),
+      html.indexOf("</label>", piTitleIndex) + "</label>".length,
+    );
 
-    expect(html).toContain("Include Pi");
-    expect(html).toContain("以只读方式索引本地 Pi 会话。");
-    expect(html).toContain('checked=""');
+    expect(piRow).toContain("Include Pi");
+    expect(piRow).toContain("以只读方式索引本地 Pi 会话。");
+    expect(piRow).toContain('checked=""');
   });
 });

@@ -24,6 +24,7 @@ import {
 import { readInitialToolEventsVisibility, storeToolEventsVisibility } from "../../tool-events-visibility";
 import type { SessionFamily } from "../../../../core/session-family";
 import { canDeleteSessionLocally } from "../../../../core/session-environment";
+import { sessionSourceDescriptor } from "../../../../core/session-sources";
 import { SubagentSessionTree } from "./subagent-session-tree";
 
 export type ConversationTimelineItem =
@@ -216,6 +217,7 @@ export function DetailPanel({
     && !messages.some((message) => message.role === roleFilter);
   const localOnlyDisabled = isRemoteSession(session);
   const canDelete = canDeleteSessionLocally(session);
+  const canSyncSession = sessionSourceDescriptor(session.source).capabilities.sessionSync;
   const revealTitle = localOnlyDisabled ? remoteRevealTitle(language) : l(`Show in ${revealLabel}`, `在${revealLabel}中显示`);
 
   const toggleTools = () => {
@@ -464,7 +466,7 @@ export function DetailPanel({
             <button onClick={onMigrate} disabled={actionRunning || !canMigrate} title={migrationTitle}>
               <ArrowRightLeft size={15} /> {l("Migrate to…", "迁移到…")}
             </button>
-            {onUploadRemote ? (
+            {onUploadRemote && canSyncSession ? (
               <button
                 onClick={onUploadRemote}
                 disabled={actionRunning || remoteUploadDisabled}

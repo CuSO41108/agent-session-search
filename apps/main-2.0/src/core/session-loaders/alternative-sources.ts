@@ -26,7 +26,6 @@ import {
   numberField,
   objectField,
   parseMaybeJson,
-  parseTimestampMs,
   putTokenEvent,
   readJsonl,
   safeStat,
@@ -166,11 +165,23 @@ function traceEventsFromRows(rows: unknown[], format: SessionFormat): SessionTra
   return dedupeTraceEvents(events);
 }
 
+function parseValidPiTimestampMs(value: unknown): number | null {
+  const timestamp = typeof value === "number" && Number.isFinite(value)
+    ? value
+    : typeof value === "string"
+      ? new Date(value).getTime()
+      : Number.NaN;
+  return Number.isFinite(timestamp) && Number.isFinite(new Date(timestamp).getTime())
+    ? timestamp
+    : null;
+}
+
 function piActiveRows(rows: unknown[]): unknown[] | null {
   const header = rows[0];
-  if (!isRecord(header) || header.type !== "session" || !stringField(header, "id")) return null;
-  const version = numberField(header, "version");
-  if (!Number.isInteger(version) || version < 1) return null;
+  if (!isRecord(header) || header.type !== "session" || !stringField(header, "id").trim()) return null;
+  const rawVersion = unknownField(header, "version");
+  const version = rawVersion === undefined || rawVersion === null ? 1 : rawVersion;
+  if (typeof version !== "number" || !Number.isInteger(version) || version < 1 || version > 3) return null;
   if (version < 2) return rows.slice(1);
 
   const nodes = new Map<string, Record<string, unknown>>();
@@ -183,7 +194,7 @@ function piActiveRows(rows: unknown[]): unknown[] | null {
     nodes.set(id, row);
     current = row;
   }
-  if (!current) return [];
+  if (!current) return null;
 
   const activeRows: unknown[] = [];
   const visited = new Set<string>();
@@ -212,6 +223,7 @@ function piTokenEvents(rows: unknown[]): TokenUsageEvent[] {
     if (stringField(message, "role") !== "assistant") return;
     const usage = objectField(message, "usage");
     if (!usage) return;
+    const innerTimestamp = parseValidPiTimestampMs(unknownField(message, "timestamp"));
 
     const tokenUsage = createTokenUsage(
       numberField(usage, "input"),
@@ -221,7 +233,7 @@ function piTokenEvents(rows: unknown[]): TokenUsageEvent[] {
     );
     events.push({
       ...tokenUsage,
-      timestamp: parseTimestampMs(row.timestamp),
+      timestamp: innerTimestamp ?? parseValidPiTimestampMs(row.timestamp) ?? 0,
       dedupeKey: `pi:${stringField(row, "id") || index}`,
     });
   });
@@ -235,6 +247,10 @@ function piTraceEvents(rows: unknown[]): SessionTraceEvent[] {
     if (!isRecord(row) || row.type !== "message") continue;
     const message = objectField(row, "message");
     const role = stringField(message, "role");
+    const innerTimestamp = parseValidPiTimestampMs(unknownField(message, "timestamp"));
+    const timestamp = innerTimestamp !== null
+      ? new Date(innerTimestamp).toISOString()
+      : stringField(row, "timestamp");
     if (role === "assistant") {
       const content = unknownField(message, "content");
       if (!Array.isArray(content)) continue;
@@ -247,7 +263,7 @@ function piTraceEvents(rows: unknown[]): SessionTraceEvent[] {
           source: "pi",
           title: titleWithSummary(name, firstStringField(args, ["command", "cmd", "file_path", "path", "query", "url"])),
           detail: stringifyDetail(args),
-          timestamp: stringField(row, "timestamp"),
+          timestamp,
           callId: stringField(block, "id") || null,
           eventType: null,
           status: "unknown",
@@ -263,7 +279,7 @@ function piTraceEvents(rows: unknown[]): SessionTraceEvent[] {
       source: "pi",
       title: titleWithSummary(stringField(message, "toolName") || "tool", "result"),
       detail: stringifyDetail(unknownField(message, "content")),
-      timestamp: stringField(row, "timestamp"),
+      timestamp,
       callId: stringField(message, "toolCallId") || null,
       eventType: null,
       status: typeof isError === "boolean" ? (isError ? "failure" : "success") : "unknown",
@@ -275,28 +291,51 @@ function piTraceEvents(rows: unknown[]): SessionTraceEvent[] {
 
 function loadPiSessionFile(filePath: string, stat = safeStat(filePath)): LoadedSession | null {
   const rows = readJsonl(filePath);
-  const activeRows = piActiveRows(rows);
-  if (!activeRows) return null;
   const header = rows[0];
   if (!isRecord(header)) return null;
+  const rawId = stringField(header, "id").trim();
+  const projectPath = stringField(header, "cwd").trim();
+  const timestamp = parseValidPiTimestampMs(header.timestamp);
+  if (!rawId || !projectPath || timestamp === null) return null;
+  const activeRows = piActiveRows(rows);
+  if (!activeRows) return null;
 
   const messages = extractMessages(activeRows, "pi");
-  const question = cleanTitle(firstQuestion(messages));
-  let latestName = "";
+  if (messages.length === 0) return null;
+  let question = "";
   for (const row of activeRows) {
+    if (!isRecord(row) || row.type !== "message") continue;
+    const message = objectField(row, "message");
+    if (stringField(message, "role") !== "user") continue;
+    const content = unknownField(message, "content");
+    const text = typeof content === "string"
+      ? content
+      : Array.isArray(content)
+        ? content
+          .filter((block) => isRecord(block) && block.type === "text")
+          .map((block) => stringField(block, "text"))
+          .filter(Boolean)
+          .join("\n")
+        : "";
+    if (!isMeaningfulUserMessage(text)) continue;
+    question = cleanTitle(text);
+    break;
+  }
+  let latestName = "";
+  for (const row of rows) {
     if (isRecord(row) && row.type === "session_info") latestName = stringField(row, "name").trim();
   }
   const tokenEvents = piTokenEvents(rows);
   const traceEvents = piTraceEvents(activeRows);
   const session = createIndexedSession({
     keyPrefix: "pi",
-    rawId: stringField(header, "id"),
+    rawId,
     source: "pi-cli",
-    projectPath: stringField(header, "cwd"),
+    projectPath,
     filePath,
     originalTitle: latestName || question,
     firstQuestion: question,
-    timestamp: parseTimestampMs(header.timestamp),
+    timestamp,
     tokenUsage: tokenUsageFromEvents(tokenEvents),
     stat,
   });

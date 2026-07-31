@@ -50,6 +50,7 @@ describe("Pi session loading", () => {
         timestamp: "2026-07-31T02:39:01.181Z",
         message: {
           role: "user",
+          timestamp: Date.parse("2026-07-31T02:39:11.181Z"),
           content: [
             { type: "text", text: "Searchable Pi question" },
             { type: "image", data: "aGVsbG8=", mimeType: "image/png" },
@@ -63,6 +64,7 @@ describe("Pi session loading", () => {
         timestamp: "2026-07-31T02:39:01.208Z",
         message: {
           role: "assistant",
+          timestamp: Date.parse("2026-07-31T02:39:12.208Z"),
           content: [
             { type: "text", text: "Reading the file." },
             { type: "toolCall", id: "call-1", name: "read", arguments: { path: "src/app.ts" } },
@@ -77,10 +79,11 @@ describe("Pi session loading", () => {
         timestamp: "2026-07-31T02:39:01.220Z",
         message: {
           role: "toolResult",
+          timestamp: Date.parse("2026-07-31T02:39:13.220Z"),
           toolCallId: "call-1",
           toolName: "read",
           content: [{ type: "text", text: "export const value = 1;" }],
-          isError: false,
+          isError: true,
         },
       },
       { type: "session_info", id: "info-2", parentId: "tool-1", timestamp: "2026-07-31T02:39:01.230Z", name: "Real Pi title" },
@@ -101,6 +104,13 @@ describe("Pi session loading", () => {
           content: [{ type: "text", text: "Abandoned answer" }],
           usage: { input: 4, output: 2, cacheRead: 0, cacheWrite: 0, reasoning: 0, totalTokens: 6 },
         },
+      },
+      {
+        type: "session_info",
+        id: "branch-rename",
+        parentId: "abandoned-assistant",
+        timestamp: "2026-07-31T02:40:02.000Z",
+        name: "Renamed outside active branch",
       },
       {
         type: "message",
@@ -131,7 +141,7 @@ describe("Pi session loading", () => {
       sessionKey: "pi:pi-session",
       source: "pi-cli",
       projectPath: "/work/pi",
-      originalTitle: "Real Pi title",
+      originalTitle: "Renamed outside active branch",
       firstQuestion: "Searchable Pi question",
       timestamp: Date.parse("2026-07-31T02:39:01.167Z"),
       tokenUsage: {
@@ -148,13 +158,45 @@ describe("Pi session loading", () => {
       "Active branch",
       "Active answer",
     ]);
+    expect(loaded.messages.map(({ timestamp }) => timestamp)).toEqual([
+      "2026-07-31T02:39:11.181Z",
+      "2026-07-31T02:39:12.208Z",
+      "2026-07-31T02:41:00.000Z",
+      "2026-07-31T02:41:01.000Z",
+    ]);
     expect(loaded.messages[0]?.attachments?.[0]).toMatchObject({
       mimeType: "image/png",
       source: { kind: "inline", value: "aGVsbG8=" },
     });
+    expect(loaded.tokenEvents).toEqual([
+      expect.objectContaining({
+        timestamp: Date.parse("2026-07-31T02:39:12.208Z"),
+        dedupeKey: "pi:assistant-1",
+      }),
+      expect.objectContaining({
+        timestamp: Date.parse("2026-07-31T02:40:01.000Z"),
+        dedupeKey: "pi:abandoned-assistant",
+      }),
+      expect.objectContaining({
+        timestamp: Date.parse("2026-07-31T02:41:01.000Z"),
+        dedupeKey: "pi:active-assistant",
+      }),
+    ]);
     expect(loaded.traceEvents).toEqual([
-      expect.objectContaining({ kind: "tool_call", source: "pi", callId: "call-1", title: "read · src/app.ts" }),
-      expect.objectContaining({ kind: "tool_result", source: "pi", callId: "call-1", status: "success" }),
+      expect.objectContaining({
+        kind: "tool_call",
+        source: "pi",
+        callId: "call-1",
+        title: "read · src/app.ts",
+        timestamp: "2026-07-31T02:39:12.208Z",
+      }),
+      expect.objectContaining({
+        kind: "tool_result",
+        source: "pi",
+        callId: "call-1",
+        status: "failure",
+        timestamp: "2026-07-31T02:39:13.220Z",
+      }),
     ]);
 
     const asyncLoaded: LoadedSession[] = [];
@@ -162,6 +204,40 @@ describe("Pi session loading", () => {
       if (item.session.source === "pi-cli") asyncLoaded.push(item);
     }
     expect(asyncLoaded.map((item) => item.session.sessionKey)).toEqual(["pi:pi-session"]);
+  });
+
+  it("treats missing or null Pi versions as v1 and rejects explicit invalid versions", () => {
+    const homeDir = temporaryHome();
+    const fixtures = [
+      { fileName: "missing-version.jsonl", version: undefined, id: "pi-missing-version" },
+      { fileName: "null-version.jsonl", version: null, id: "pi-null-version" },
+      { fileName: "zero-version.jsonl", version: 0, id: "pi-zero-version" },
+      { fileName: "string-version.jsonl", version: "1", id: "pi-string-version" },
+      { fileName: "future-version.jsonl", version: 4, id: "pi-future-version" },
+    ];
+    for (const fixture of fixtures) {
+      writeJsonl(piSessionPath(homeDir, fixture.fileName), [
+        {
+          type: "session",
+          ...(fixture.version !== undefined ? { version: fixture.version } : {}),
+          id: fixture.id,
+          timestamp: "2026-07-31T03:00:00.000Z",
+          cwd: "/work/pi-v1",
+        },
+        {
+          type: "message",
+          timestamp: "2026-07-31T03:00:01.000Z",
+          message: { role: "user", content: [{ type: "text", text: fixture.id }] },
+        },
+      ]);
+    }
+
+    const loadedKeys = loadDefaultSessions({ homeDir, includePi: true })
+      .filter((item) => item.session.source === "pi-cli")
+      .map((item) => item.session.sessionKey)
+      .sort();
+
+    expect(loadedKeys).toEqual(["pi:pi-missing-version", "pi:pi-null-version"]);
   });
 
   it("loads v1 sessions as a linear transcript without message IDs", () => {
@@ -205,6 +281,13 @@ describe("Pi session loading", () => {
         message: { role: "user", content: [{ type: "text", text: "Question title fallback" }] },
       },
       { type: "session_info", id: "info-2", parentId: "user-1", timestamp: "2026-07-31T04:00:03.000Z", name: "   " },
+      {
+        type: "message",
+        id: "assistant-1",
+        parentId: "user-1",
+        timestamp: "2026-07-31T04:00:04.000Z",
+        message: { role: "assistant", content: [{ type: "text", text: "Active answer" }] },
+      },
     ]);
 
     const [loaded] = loadDefaultSessions({ homeDir, includePi: true })
@@ -214,6 +297,152 @@ describe("Pi session loading", () => {
       originalTitle: "Question title fallback",
       firstQuestion: "Question title fallback",
     });
+  });
+
+  it("skips invalid and empty Pi files without blocking a valid sibling", () => {
+    const homeDir = temporaryHome();
+    const invalidHeaders = [
+      { fileName: "missing-id.jsonl", header: { version: 1, cwd: "/work/pi", timestamp: "2026-07-31T06:00:00.000Z" } },
+      { fileName: "blank-id.jsonl", header: { version: 1, id: "   ", cwd: "/work/pi", timestamp: "2026-07-31T06:00:00.000Z" } },
+      { fileName: "missing-cwd.jsonl", header: { version: 1, id: "pi-missing-cwd", timestamp: "2026-07-31T06:00:00.000Z" } },
+      { fileName: "blank-cwd.jsonl", header: { version: 1, id: "pi-blank-cwd", cwd: "   ", timestamp: "2026-07-31T06:00:00.000Z" } },
+      { fileName: "invalid-timestamp.jsonl", header: { version: 1, id: "pi-invalid-time", cwd: "/work/pi", timestamp: "not-a-date" } },
+      { fileName: "out-of-range-timestamp.jsonl", header: { version: 1, id: "pi-out-of-range-time", cwd: "/work/pi", timestamp: 1e20 } },
+    ];
+    for (const { fileName, header } of invalidHeaders) {
+      writeJsonl(piSessionPath(homeDir, fileName), [
+        { type: "session", ...header },
+        {
+          type: "message",
+          timestamp: "2026-07-31T06:00:01.000Z",
+          message: { role: "user", content: [{ type: "text", text: fileName }] },
+        },
+      ]);
+    }
+    writeJsonl(piSessionPath(homeDir, "header-only.jsonl"), [
+      { type: "session", version: 1, id: "pi-header-only", cwd: "/work/pi", timestamp: "2026-07-31T06:01:00.000Z" },
+    ]);
+    writeJsonl(piSessionPath(homeDir, "no-visible-message.jsonl"), [
+      { type: "session", version: 1, id: "pi-no-visible", cwd: "/work/pi", timestamp: "2026-07-31T06:02:00.000Z" },
+      {
+        type: "message",
+        timestamp: "2026-07-31T06:02:01.000Z",
+        message: { role: "toolResult", toolCallId: "call-1", content: [{ type: "text", text: "result" }] },
+      },
+    ]);
+    writeJsonl(piSessionPath(homeDir, "v3-without-id-bearing-entry.jsonl"), [
+      { type: "session", version: 3, id: "pi-v3-empty", cwd: "/work/pi", timestamp: "2026-07-31T06:03:00.000Z" },
+      {
+        type: "message",
+        timestamp: "2026-07-31T06:03:01.000Z",
+        message: { role: "user", content: [{ type: "text", text: "Missing node ID" }] },
+      },
+    ]);
+    writeJsonl(piSessionPath(homeDir, "valid-sibling.jsonl"), [
+      { type: "session", version: 1, id: "pi-valid-sibling", cwd: "/work/pi", timestamp: "2026-07-31T06:04:00.000Z" },
+      {
+        type: "message",
+        timestamp: "2026-07-31T06:04:01.000Z",
+        message: { role: "user", content: [{ type: "text", text: "Valid sibling" }] },
+      },
+    ]);
+
+    const loaded = loadDefaultSessions({ homeDir, includePi: true })
+      .filter((item) => item.session.source === "pi-cli");
+
+    expect(loaded).toHaveLength(1);
+    expect(loaded[0].session.sessionKey).toBe("pi:pi-valid-sibling");
+  });
+
+  it("falls back to outer times when numeric inner timestamps exceed the Date range", () => {
+    const homeDir = temporaryHome();
+    writeJsonl(piSessionPath(homeDir, "invalid-inner-time.jsonl"), [
+      { type: "session", version: 1, id: "pi-invalid-inner-time", cwd: "/work/pi", timestamp: "2026-07-31T06:30:00.000Z" },
+      {
+        type: "message",
+        timestamp: "2026-07-31T06:30:01.000Z",
+        message: {
+          role: "user",
+          timestamp: 1e20,
+          content: [{ type: "text", text: "Fallback question" }],
+        },
+      },
+      {
+        type: "message",
+        timestamp: "2026-07-31T06:30:02.000Z",
+        message: {
+          role: "assistant",
+          timestamp: 1e20,
+          content: [
+            { type: "text", text: "Fallback answer" },
+            { type: "toolCall", id: "call-invalid-time", name: "read", arguments: { path: "src/app.ts" } },
+          ],
+          usage: { input: 3, output: 2, cacheRead: 0, cacheWrite: 0, reasoning: 0 },
+        },
+      },
+      {
+        type: "message",
+        timestamp: "2026-07-31T06:30:03.000Z",
+        message: {
+          role: "toolResult",
+          timestamp: 1e20,
+          toolCallId: "call-invalid-time",
+          toolName: "read",
+          content: [{ type: "text", text: "result" }],
+        },
+      },
+    ]);
+
+    const [loaded] = loadDefaultSessions({ homeDir, includePi: true })
+      .filter((item) => item.session.sessionKey === "pi:pi-invalid-inner-time");
+
+    expect(loaded.messages.map(({ timestamp }) => timestamp)).toEqual([
+      "2026-07-31T06:30:01.000Z",
+      "2026-07-31T06:30:02.000Z",
+    ]);
+    expect(loaded.tokenEvents).toEqual([
+      expect.objectContaining({ timestamp: Date.parse("2026-07-31T06:30:02.000Z") }),
+    ]);
+    expect(loaded.traceEvents).toEqual([
+      expect.objectContaining({ kind: "tool_call", timestamp: "2026-07-31T06:30:02.000Z" }),
+      expect.objectContaining({ kind: "tool_result", timestamp: "2026-07-31T06:30:03.000Z" }),
+    ]);
+  });
+
+  it("keeps image-only user turns visible but derives the title from later real text", () => {
+    const homeDir = temporaryHome();
+    writeJsonl(piSessionPath(homeDir, "image-first.jsonl"), [
+      { type: "session", version: 1, id: "pi-image-first", cwd: "/work/pi", timestamp: "2026-07-31T07:00:00.000Z" },
+      {
+        type: "message",
+        timestamp: "2026-07-31T07:00:01.000Z",
+        message: {
+          role: "user",
+          content: [{ type: "image", data: "aGVsbG8=", mimeType: "image/png" }],
+        },
+      },
+      {
+        type: "message",
+        timestamp: "2026-07-31T07:00:02.000Z",
+        message: { role: "user", content: [{ type: "text", text: "Describe this screenshot" }] },
+      },
+    ]);
+
+    const [loaded] = loadDefaultSessions({ homeDir, includePi: true })
+      .filter((item) => item.session.source === "pi-cli");
+
+    expect(loaded.session).toMatchObject({
+      originalTitle: "Describe this screenshot",
+      firstQuestion: "Describe this screenshot",
+    });
+    expect(loaded.messages).toEqual([
+      expect.objectContaining({
+        role: "user",
+        content: "[Attachment]",
+        attachments: [expect.objectContaining({ mimeType: "image/png" })],
+      }),
+      expect.objectContaining({ role: "user", content: "Describe this screenshot" }),
+    ]);
   });
 
   it("keeps parsing after unknown rows and malformed JSON lines", () => {

@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 
 import type { SessionSearchResult, SessionTurnSummary } from "../../../../core/types";
 import { SessionDetails, type SessionDetailsActions } from "../sessions/session-details";
+import { SessionContextMenu } from "../sessions/session-context-menu";
 
 const session: SessionSearchResult = {
   sessionKey: "codex:session-a",
@@ -85,9 +86,9 @@ const actions: SessionDetailsActions = {
   reveal: () => undefined,
 };
 
-function renderDetails(): string {
+function renderDetails(detail: SessionSearchResult = session): string {
   return renderToStaticMarkup(createElement(SessionDetails, {
-    detail: session,
+    detail,
     remoteDetail: null,
     turns: [turn],
     turnsLoading: false,
@@ -120,5 +121,55 @@ describe("Session detail trajectory controls", () => {
     expect(html).toContain("已隐藏");
     expect(html).toContain('aria-live="polite"');
     expect(html).toContain('aria-pressed="false"');
+  });
+
+  it("omits delete and remote-save actions for read-only Pi sessions", () => {
+    const piSession = {
+      ...session,
+      sessionKey: "pi:session-a",
+      rawId: "session-a",
+      source: "pi-cli" as const,
+    };
+
+    expect(renderDetails()).toContain("保存到远程");
+    expect(renderDetails()).toContain("删除");
+    expect(renderDetails(piSession)).not.toContain("保存到远程");
+    expect(renderDetails(piSession)).not.toContain("删除");
+  });
+
+  it("omits Pi deletion from the session context menu", () => {
+    const html = renderToStaticMarkup(createElement(SessionContextMenu, {
+      state: {
+        x: 0,
+        y: 0,
+        session: {
+          ...session,
+          sessionKey: "pi:session-a",
+          rawId: "session-a",
+          source: "pi-cli",
+        },
+      },
+      language: "zh",
+      revealLabel: "访达",
+      showMacActions: false,
+      canResume: false,
+      canMigrate: false,
+      onRename: () => undefined,
+      onAddTag: () => undefined,
+      onFavorite: () => undefined,
+      onHide: () => undefined,
+      onResume: () => undefined,
+      onResumeIterm: () => undefined,
+      onOpenApp: () => undefined,
+      onMigrate: () => undefined,
+      onCopyResume: () => undefined,
+      onCopyMarkdown: () => undefined,
+      onExportMarkdown: () => undefined,
+      onExportJson: () => undefined,
+      onDelete: () => undefined,
+      onReveal: () => undefined,
+    }));
+
+    expect(html).not.toContain("删除会话");
   });
 });

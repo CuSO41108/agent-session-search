@@ -109,6 +109,7 @@ describe("format adapters", () => {
       timestamp: "2026-07-31T02:39:01.181Z",
       message: {
         role: "user",
+        timestamp: Date.parse("2026-07-31T02:39:11.181Z"),
         content: [
           { type: "text", text: "Inspect this image" },
           { type: "image", data: "aGVsbG8=", mimeType: "image/png" },
@@ -120,7 +121,7 @@ describe("format adapters", () => {
     expect(parsed).toMatchObject({
       role: "user",
       content: "Inspect this image",
-      timestamp: "2026-07-31T02:39:01.181Z",
+      timestamp: "2026-07-31T02:39:11.181Z",
       attachments: [
         expect.objectContaining({
           mimeType: "image/png",
@@ -130,6 +131,15 @@ describe("format adapters", () => {
       ],
     });
     expect(JSON.stringify(parsed)).not.toContain("/private/secret");
+    expect(getAdapter("pi").parseLine({
+      type: "message",
+      timestamp: "2026-07-31T02:39:01.181Z",
+      message: {
+        role: "assistant",
+        timestamp: "invalid",
+        content: [{ type: "text", text: "Legacy fallback" }],
+      },
+    })).toMatchObject({ timestamp: "2026-07-31T02:39:01.181Z" });
   });
 
   it("skips the CodeBuddy CLI bootstrap 'code' root message", () => {

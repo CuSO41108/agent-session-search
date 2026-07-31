@@ -1,4 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 import { createInMemoryStore } from "./postgres/test-session-store";
 import type { IndexedSession, SessionMessage } from "./types";
 
@@ -192,6 +195,32 @@ describe("SessionStore PostgreSQL facade", () => {
     await expect(store.getSessionSourceArtifacts(sessionKey)).resolves.toEqual([]);
     await expect(store.deleteSession(sessionKey)).resolves.toBe(true);
     await expect(store.getSession(sessionKey)).resolves.toBeNull();
+  });
+
+  it("rejects Pi source deletion while record-only source pruning keeps the file", async () => {
+    const store = createStore();
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "session-search-delete-pi-"));
+    const filePath = path.join(dir, "pi-session.jsonl");
+    fs.writeFileSync(filePath, "{}\n", "utf8");
+    await store.upsertIndexedSession(
+      indexedSession({
+        sessionKey: "pi:session-a",
+        rawId: "session-a",
+        source: "pi-cli",
+        filePath,
+      }),
+      messages,
+    );
+
+    await expect(store.deleteSession("pi:session-a")).rejects.toThrow("Pi session source files are read-only.");
+    expect(fs.existsSync(filePath)).toBe(true);
+    await expect(store.getSession("pi:session-a")).resolves.not.toBeNull();
+
+    await store.deleteSessionsBySource(["pi-cli"]);
+
+    await expect(store.getSession("pi:session-a")).resolves.toBeNull();
+    expect(fs.existsSync(filePath)).toBe(true);
+    fs.rmSync(dir, { recursive: true, force: true });
   });
 
   it("keeps Session search results paged while filtering subagents in SQL", async () => {
