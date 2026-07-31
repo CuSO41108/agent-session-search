@@ -494,6 +494,7 @@ export class PostgresSessionRepository {
     const persistedTokenEvents = tokenEvents.map((event) => ({
       ...event,
       dedupeKey: postgresText(event.dedupeKey),
+      sourceTurnId: event.sourceTurnId ? postgresText(event.sourceTurnId).trim() || null : null,
     }));
     const persistedTraceEvents = traceEvents.map((event) => ({
       ...event,
@@ -679,11 +680,11 @@ export class PostgresSessionRepository {
           `
             insert into agent_recall.token_events (
               session_key, dedupe_key, occurred_at, input_tokens, output_tokens,
-              cached_input_tokens, reasoning_output_tokens, total_tokens
+              cached_input_tokens, reasoning_output_tokens, total_tokens, source_turn_id
             )
             select
               $1, dedupe_key, occurred_at, input_tokens, output_tokens,
-              cached_input_tokens, reasoning_output_tokens, total_tokens
+              cached_input_tokens, reasoning_output_tokens, total_tokens, source_turn_id
             from jsonb_to_recordset($2::jsonb) as records(
               dedupe_key text,
               occurred_at timestamptz,
@@ -691,7 +692,8 @@ export class PostgresSessionRepository {
               output_tokens bigint,
               cached_input_tokens bigint,
               reasoning_output_tokens bigint,
-              total_tokens bigint
+              total_tokens bigint,
+              source_turn_id text
             )
           `,
           [
@@ -704,6 +706,7 @@ export class PostgresSessionRepository {
               cached_input_tokens: event.cachedInputTokens,
               reasoning_output_tokens: event.reasoningOutputTokens,
               total_tokens: event.totalTokens,
+              source_turn_id: event.sourceTurnId ?? null,
             }))),
           ],
         );
@@ -845,9 +848,9 @@ export class PostgresSessionRepository {
             `
               insert into agent_recall.token_events (
                 session_key, dedupe_key, occurred_at, input_tokens, output_tokens,
-                cached_input_tokens, reasoning_output_tokens, total_tokens
+                cached_input_tokens, reasoning_output_tokens, total_tokens, source_turn_id
               )
-              values ($1, $2, $3, $4, $5, $6, $7, $8)
+              values ($1, $2, $3, $4, $5, $6, $7, $8, $9)
             `,
             [
               session.sessionKey,
@@ -858,6 +861,7 @@ export class PostgresSessionRepository {
               event.cachedInputTokens,
               event.reasoningOutputTokens,
               event.totalTokens,
+              event.sourceTurnId ? postgresText(event.sourceTurnId).trim() || null : null,
             ],
           );
         }
@@ -1017,9 +1021,10 @@ export class PostgresSessionRepository {
       cached_input_tokens: number | string;
       reasoning_output_tokens: number | string;
       total_tokens: number | string;
+      source_turn_id: string | null;
     }>(`
       select occurred_at, dedupe_key, input_tokens, output_tokens, cached_input_tokens,
-             reasoning_output_tokens, total_tokens
+             reasoning_output_tokens, total_tokens, source_turn_id
       from agent_recall.token_events
       where session_key = $1
       order by occurred_at, dedupe_key
@@ -1032,6 +1037,7 @@ export class PostgresSessionRepository {
       cachedInputTokens: numberValue(row.cached_input_tokens),
       reasoningOutputTokens: numberValue(row.reasoning_output_tokens),
       totalTokens: numberValue(row.total_tokens),
+      sourceTurnId: row.source_turn_id,
     }));
   }
 

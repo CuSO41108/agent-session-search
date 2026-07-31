@@ -843,7 +843,40 @@ function normalizeCodexUsage(usage: Record<string, unknown>): {
   };
 }
 
-function extractCodexTokenEvents(rows: unknown[]): TokenUsageEvent[] {
+interface CodexTokenRow {
+  row: unknown;
+  sourceTurnId: string | null;
+}
+
+function collectCodexTokenRows(rows: unknown[]): CodexTokenRow[] {
+  const rollout = new CodexRolloutAccumulator();
+  const startedTurnIds: string[] = [];
+  const tokenRows: CodexTokenRow[] = [];
+
+  for (const row of rows) {
+    if (!isRecord(row)) continue;
+    const payload = objectField(row, "payload");
+    if (row.type === "event_msg" && payload?.type === "thread_rolled_back") {
+      const numTurns = payload.num_turns;
+      if (Number.isSafeInteger(numTurns) && (numTurns as number) > 0 && (numTurns as number) <= startedTurnIds.length) {
+        rollout.discardActiveTurnIds(startedTurnIds.splice(startedTurnIds.length - (numTurns as number), numTurns as number));
+      }
+      continue;
+    }
+
+    const rolloutRecord = rollout.consume(row);
+    if (row.type === "event_msg" && payload?.type === "task_started" && rolloutRecord.sourceTurnId) {
+      startedTurnIds.push(rolloutRecord.sourceTurnId);
+    }
+    if (row.type === "turn_context" || (row.type === "event_msg" && stringField(payload, "type") === "token_count")) {
+      tokenRows.push({ row, sourceTurnId: rolloutRecord.sourceTurnId });
+    }
+  }
+
+  return tokenRows;
+}
+
+function extractCodexTokenEvents(rows: readonly CodexTokenRow[]): TokenUsageEvent[] {
   const entries = new Map<string, TokenUsageEvent>();
   const cumulativeEntries = new Map<string, TokenUsageEvent>();
   const previousTotals: TokenUsage[] = [];
@@ -856,7 +889,8 @@ function extractCodexTokenEvents(rows: unknown[]): TokenUsageEvent[] {
   // prior sequence rather than assuming one monotonic counter. Fall back to
   // summing last_token_usage only when no cumulative total is present.
 
-  for (const row of rows) {
+  for (const tokenRow of rows) {
+    const { row, sourceTurnId } = tokenRow;
     if (!isRecord(row)) continue;
     const payload = objectField(row, "payload");
     if (row.type === "turn_context") {
@@ -889,6 +923,7 @@ function extractCodexTokenEvents(rows: unknown[]): TokenUsageEvent[] {
             ...delta,
             timestamp,
             dedupeKey: key,
+            ...(sourceTurnId ? { sourceTurnId } : {}),
           },
         );
       }
@@ -900,7 +935,10 @@ function extractCodexTokenEvents(rows: unknown[]): TokenUsageEvent[] {
       const totalInput = numberField(totalUsage, "input_tokens");
       const totalOutput = numberField(totalUsage, "output_tokens");
       const key = ["codex", model, l.input, l.output, l.cached, l.reasoning, totalInput, totalOutput].join(":");
-      putTokenEvent(entries, tokenEvent(timestamp, key, l.input, l.output, l.cached, l.reasoning));
+      putTokenEvent(entries, {
+        ...tokenEvent(timestamp, key, l.input, l.output, l.cached, l.reasoning),
+        ...(sourceTurnId ? { sourceTurnId } : {}),
+      });
     }
   }
 
@@ -1159,7 +1197,7 @@ export function loadCodexSessionRows(
 
   const visibleRows = codexVisibleConversationRows(rows);
   const extracted = extractCodexMessages(visibleRows);
-  const tokenEvents = extractCodexTokenEvents(rows);
+  const tokenEvents = extractCodexTokenEvents(collectCodexTokenRows(rows));
   const traceEvents = options.includeTraceEvents === false ? [] : extractTraceEvents(visibleRows, "codex");
   return createLoadedCodexSession(filePath, meta, extracted.messages, tokenEvents, traceEvents, options, {
     historyMode: meta.historyMode ?? extracted.historyMode,
@@ -1277,7 +1315,7 @@ function scanCodexSessionFile(filePath: string, base?: { offset: number; loaded:
     sourceTurnIds: new Set(),
   };
   const turns: StreamedCodexTurn[] = [];
-  const tokenRows: unknown[] = [];
+  const tokenRows: CodexTokenRow[] = [];
   let currentTurn: StreamedCodexTurn | null = null;
   let meta: NonNullable<ReturnType<typeof parseCodexSessionMetaLine>> | null = base ? {
     id: base.loaded.session.rawId,
@@ -1314,9 +1352,6 @@ function scanCodexSessionFile(filePath: string, base?: { offset: number; loaded:
 
         if (isRecord(row)) {
           const payload = objectField(row, "payload");
-          if (row.type === "turn_context" || (row.type === "event_msg" && stringField(payload, "type") === "token_count")) {
-            tokenRows.push(row);
-          }
           if (row.type === "event_msg" && payload?.type === "thread_rolled_back") {
             const numTurns = payload.num_turns;
             if (!Number.isSafeInteger(numTurns) || (numTurns as number) <= 0 || (numTurns as number) > turns.length) {
@@ -1331,6 +1366,15 @@ function scanCodexSessionFile(filePath: string, base?: { offset: number; loaded:
         }
 
         const rolloutRecord = rollout.consume(row);
+        if (
+          isRecord(row)
+          && (
+            row.type === "turn_context"
+            || (row.type === "event_msg" && stringField(objectField(row, "payload"), "type") === "token_count")
+          )
+        ) {
+          tokenRows.push({ row, sourceTurnId: rolloutRecord.sourceTurnId });
+        }
         const parsedMessage = adapter.parseLine(row);
         let message = parsedMessage
           && !(rollout.historyMode === "paginated" && parsedMessage.role === "user")
@@ -1438,7 +1482,11 @@ function scanCodexSessionFile(filePath: string, base?: { offset: number; loaded:
     messages: visibleMessages.map((message, index) => ({ ...message, index })),
     tokenEvents: [
       ...(base?.loaded.tokenEvents ?? []),
-      ...extractCodexTokenEvents(base ? tokenRows.map(stripCodexCumulativeUsage) : tokenRows),
+      ...extractCodexTokenEvents(
+        base
+          ? tokenRows.map((tokenRow) => ({ ...tokenRow, row: stripCodexCumulativeUsage(tokenRow.row) }))
+          : tokenRows,
+      ),
     ],
     traceEvents: dedupeCodexTraceEvents(visibleTraces),
     codexIncrementalState: {

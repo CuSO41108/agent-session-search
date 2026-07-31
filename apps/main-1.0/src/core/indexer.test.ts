@@ -484,6 +484,14 @@ describe("indexer", () => {
         }),
         JSON.stringify({
           type: "event_msg",
+          timestamp: "2026-06-01T10:02:30Z",
+          payload: {
+            type: "token_count",
+            info: { last_token_usage: { input_tokens: 10, output_tokens: 1 } },
+          },
+        }),
+        JSON.stringify({
+          type: "event_msg",
           timestamp: "2026-06-01T10:03:00Z",
           payload: { type: "task_complete", turn_id: "turn-tail", duration_ms: 2_000 },
         }),
@@ -555,6 +563,14 @@ describe("indexer", () => {
         JSON.stringify({
           type: "event_msg",
           timestamp: "2026-06-01T10:07:00Z",
+          payload: {
+            type: "token_count",
+            info: { last_token_usage: { input_tokens: 20, output_tokens: 2 } },
+          },
+        }),
+        JSON.stringify({
+          type: "event_msg",
+          timestamp: "2026-06-01T10:07:30Z",
           payload: { type: "turn_aborted", turn_id: "turn-rolled", reason: "interrupted" },
         }),
         JSON.stringify({
@@ -572,6 +588,10 @@ describe("indexer", () => {
       expect(store.getTraceEvents("codex:codex-lifecycle-tail").some(
         (event) => event.sourceTurnId === "turn-rolled",
       )).toBe(false);
+      expect(store.getTokenEvents("codex:codex-lifecycle-tail").map(
+        (event) => event.sourceTurnId,
+      )).toEqual(["turn-tail", "turn-rolled"]);
+      expect(store.getSession("codex:codex-lifecycle-tail")?.tokenUsage?.totalTokens).toBe(33);
       expect(store.getCodexIncrementalState("codex:codex-lifecycle-tail").activeTurnIds).toEqual([]);
     } finally {
       fs.rmSync(homeDir, { recursive: true, force: true });

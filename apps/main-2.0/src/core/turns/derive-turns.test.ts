@@ -288,6 +288,96 @@ describe("deriveSessionTimeline", () => {
     expect(timeline.turns).toEqual([]);
   });
 
+  it("does not attribute a rolled-back Turn's token usage to the preceding retained Turn", () => {
+    const loaded = loadCodexSessionRows("/tmp/codex-rollback-token-attribution.jsonl", [
+      {
+        type: "session_meta",
+        timestamp: "2026-07-30T09:00:00Z",
+        payload: { id: "codex-rollback-token-attribution", cwd: "/repo", history_mode: "paginated" },
+      },
+      {
+        type: "event_msg",
+        timestamp: "2026-07-30T09:00:01Z",
+        payload: { type: "task_started", turn_id: "turn-kept" },
+      },
+      {
+        type: "response_item",
+        timestamp: "2026-07-30T09:00:02Z",
+        payload: {
+          type: "message",
+          id: "user-kept",
+          role: "user",
+          content: [{ type: "input_text", text: "保留这轮" }],
+          internal_chat_message_metadata_passthrough: { turn_id: "turn-kept" },
+        },
+      },
+      {
+        type: "event_msg",
+        timestamp: "2026-07-30T09:00:03Z",
+        payload: {
+          type: "token_count",
+          info: { last_token_usage: { input_tokens: 10, output_tokens: 1 } },
+        },
+      },
+      {
+        type: "event_msg",
+        timestamp: "2026-07-30T09:00:04Z",
+        payload: { type: "task_complete", turn_id: "turn-kept" },
+      },
+      {
+        type: "event_msg",
+        timestamp: "2026-07-30T09:01:00Z",
+        payload: { type: "task_started", turn_id: "turn-rolled" },
+      },
+      {
+        type: "response_item",
+        timestamp: "2026-07-30T09:01:01Z",
+        payload: {
+          type: "message",
+          id: "user-rolled",
+          role: "user",
+          content: [{ type: "input_text", text: "撤销这轮" }],
+          internal_chat_message_metadata_passthrough: { turn_id: "turn-rolled" },
+        },
+      },
+      {
+        type: "event_msg",
+        timestamp: "2026-07-30T09:01:02Z",
+        payload: {
+          type: "token_count",
+          info: { last_token_usage: { input_tokens: 20, output_tokens: 2 } },
+        },
+      },
+      {
+        type: "event_msg",
+        timestamp: "2026-07-30T09:01:03Z",
+        payload: { type: "turn_aborted", turn_id: "turn-rolled", reason: "interrupted" },
+      },
+      {
+        type: "event_msg",
+        timestamp: "2026-07-30T09:01:04Z",
+        payload: { type: "thread_rolled_back", num_turns: 1 },
+      },
+    ]);
+    if (!loaded) throw new Error("Expected the rollback token attribution fixture to load.");
+
+    const timeline = deriveSessionTimeline({
+      sessionKey: loaded.session.sessionKey,
+      messages: loaded.messages,
+      traceEvents: loaded.traceEvents,
+      tokenEvents: loaded.tokenEvents,
+      codexIncrementalState: loaded.codexIncrementalState,
+    });
+
+    expect(loaded.session.tokenUsage?.totalTokens).toBe(33);
+    expect(loaded.tokenEvents?.map((event) => event.sourceTurnId)).toEqual(["turn-kept", "turn-rolled"]);
+    expect(timeline.turns).toHaveLength(1);
+    expect(timeline.turns[0]).toMatchObject({
+      sourceTurnId: "turn-kept",
+      totalTokens: 11,
+    });
+  });
+
   it("creates one searchable Turn per user request and pairs tool calls with their results", () => {
     const timeline = deriveSessionTimeline({
       sessionKey: "codex:test",

@@ -341,9 +341,9 @@ export class SessionsStore {
         `
         INSERT INTO token_events (
           session_key, dedupe_key, timestamp, input_tokens, output_tokens,
-          cached_input_tokens, reasoning_output_tokens, total_tokens
+          cached_input_tokens, reasoning_output_tokens, total_tokens, source_turn_id
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
       `,
       );
       for (const event of normalizedTokenEvents) {
@@ -356,6 +356,7 @@ export class SessionsStore {
           event.cachedInputTokens,
           event.reasoningOutputTokens,
           event.totalTokens,
+          event.sourceTurnId ?? null,
         );
       }
 
@@ -478,7 +479,8 @@ export class SessionsStore {
 
   getTokenEvents(sessionKey: string): TokenUsageEvent[] {
     return this.db.prepare(`
-      SELECT timestamp, dedupe_key, input_tokens, output_tokens, cached_input_tokens, reasoning_output_tokens, total_tokens
+      SELECT timestamp, dedupe_key, input_tokens, output_tokens, cached_input_tokens,
+        reasoning_output_tokens, total_tokens, source_turn_id
       FROM token_events
       WHERE session_key = ?
       ORDER BY timestamp, dedupe_key
@@ -492,6 +494,7 @@ export class SessionsStore {
         cachedInputTokens: Number(value.cached_input_tokens),
         reasoningOutputTokens: Number(value.reasoning_output_tokens),
         totalTokens: Number(value.total_tokens),
+        sourceTurnId: typeof value.source_turn_id === "string" ? value.source_turn_id : null,
       };
     });
   }
@@ -577,9 +580,9 @@ export class SessionsStore {
           `
           INSERT INTO token_events (
             session_key, dedupe_key, timestamp, input_tokens, output_tokens,
-            cached_input_tokens, reasoning_output_tokens, total_tokens
+            cached_input_tokens, reasoning_output_tokens, total_tokens, source_turn_id
           )
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         `,
         );
         for (const event of normalizedTokenEvents) {
@@ -592,6 +595,7 @@ export class SessionsStore {
             event.cachedInputTokens,
             event.reasoningOutputTokens,
             event.totalTokens,
+            event.sourceTurnId ?? null,
           );
         }
       }
@@ -766,10 +770,10 @@ export class SessionsStore {
           .prepare(
             `INSERT OR IGNORE INTO token_events (
                session_key, dedupe_key, timestamp, input_tokens, output_tokens,
-               cached_input_tokens, reasoning_output_tokens, total_tokens
+               cached_input_tokens, reasoning_output_tokens, total_tokens, source_turn_id
              )
              SELECT ?, dedupe_key, timestamp, input_tokens, output_tokens,
-               cached_input_tokens, reasoning_output_tokens, total_tokens
+               cached_input_tokens, reasoning_output_tokens, total_tokens, source_turn_id
              FROM token_events WHERE session_key = ?`,
           )
           .run(targetKey, legacyKey);
@@ -2227,6 +2231,7 @@ function normalizeTokenEvent(event: TokenUsageEvent): TokenUsageEvent {
     ...normalizeTokenUsage(event),
     timestamp: nonNegativeNumber(event.timestamp),
     dedupeKey: event.dedupeKey.trim(),
+    sourceTurnId: typeof event.sourceTurnId === "string" ? event.sourceTurnId.trim() || null : null,
   };
 }
 

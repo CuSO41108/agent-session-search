@@ -281,6 +281,14 @@ describe("Codex session loading", () => {
           internal_chat_message_metadata_passthrough: { turn_id: "turn-kept" },
         },
       },
+      {
+        type: "event_msg",
+        timestamp: "2026-07-30T09:00:03.500Z",
+        payload: {
+          type: "token_count",
+          info: { last_token_usage: { input_tokens: 10, output_tokens: 1 } },
+        },
+      },
       { type: "event_msg", timestamp: "2026-07-30T09:00:04Z", payload: { type: "task_complete", turn_id: "turn-kept" } },
     ];
     const rolledBackRows = [
@@ -298,6 +306,14 @@ describe("Codex session loading", () => {
       {
         type: "event_msg",
         timestamp: "2026-07-30T09:00:07Z",
+        payload: {
+          type: "token_count",
+          info: { last_token_usage: { input_tokens: 20, output_tokens: 2 } },
+        },
+      },
+      {
+        type: "event_msg",
+        timestamp: "2026-07-30T09:00:07.500Z",
         payload: { type: "turn_aborted", turn_id: "turn-rolled", reason: "interrupted" },
       },
       { type: "event_msg", timestamp: "2026-07-30T09:00:08Z", payload: { type: "thread_rolled_back", num_turns: 1 } },
@@ -333,6 +349,8 @@ describe("Codex session loading", () => {
           { eventType: "codex.turn.started", status: "running" },
           { eventType: "codex.turn.completed", status: "completed" },
         ]);
+        expect(loaded?.tokenEvents?.map((event) => event.sourceTurnId)).toEqual(["turn-kept", "turn-rolled"]);
+        expect(loaded?.session.tokenUsage?.totalTokens).toBe(33);
         expect(loaded?.codexIncrementalState?.activeTurnIds).toEqual([]);
       }
     } finally {

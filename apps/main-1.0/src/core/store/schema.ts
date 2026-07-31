@@ -110,6 +110,7 @@ export function migrateSessionStore(db: SessionStoreDatabase): void {
       cached_input_tokens INTEGER NOT NULL DEFAULT 0,
       reasoning_output_tokens INTEGER NOT NULL DEFAULT 0,
       total_tokens INTEGER NOT NULL DEFAULT 0,
+      source_turn_id TEXT,
       PRIMARY KEY (session_key, dedupe_key),
       FOREIGN KEY (session_key) REFERENCES sessions(session_key) ON DELETE CASCADE
     );
@@ -290,6 +291,7 @@ export function migrateSessionStore(db: SessionStoreDatabase): void {
   addColumnIfMissing(db, "messages", "source_turn_id", "TEXT");
   addColumnIfMissing(db, "messages", "phase", "TEXT");
   addColumnIfMissing(db, "messages", "source_record_id", "TEXT");
+  addColumnIfMissing(db, "token_events", "source_turn_id", "TEXT");
   addColumnIfMissing(db, "trace_events", "source_turn_id", "TEXT");
   addColumnIfMissing(db, "trace_events", "attributes_json", "TEXT");
   addColumnIfMissing(db, "environments", "wsl_distribution", "TEXT");

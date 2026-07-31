@@ -241,10 +241,13 @@ function buildTurnDrafts(
 
   for (const event of [...tokenEvents].sort((left, right) => {
     if (left.timestamp !== right.timestamp) return left.timestamp - right.timestamp;
-      return left.dedupeKey.localeCompare(right.dedupeKey);
+    return left.dedupeKey.localeCompare(right.dedupeKey);
   })) {
     const occurredAt = timestampMs(event.timestamp);
-    let target = findTurnForTimestamp(occurredAt);
+    const sourceTurnId = event.sourceTurnId?.trim() || null;
+    let target = sourceTurnId ? turnsBySourceId.get(sourceTurnId) ?? null : null;
+    if (sourceTurnId && !target) continue;
+    target ??= findTurnForTimestamp(occurredAt);
     if (!target) target = ensureSyntheticTurn(turns);
     target.tokenEvents.push(event);
   }
@@ -568,6 +571,7 @@ function buildRawEvents(
         cachedInputTokens: event.cachedInputTokens,
         reasoningOutputTokens: event.reasoningOutputTokens,
         totalTokens: event.totalTokens,
+        ...(event.sourceTurnId !== undefined ? { sourceTurnId: event.sourceTurnId } : {}),
       },
     })),
   ];

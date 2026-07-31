@@ -169,7 +169,16 @@ describe("PostgresSessionRepository", () => {
     await repository.upsertIndexedSession(
       session({ sessionKey: "codex:lifecycle", rawId: "lifecycle" }),
       lifecycleMessages,
-      [],
+      [{
+        timestamp: Date.parse("2026-07-30T08:00:02.000Z"),
+        dedupeKey: "turn-1-usage",
+        inputTokens: 10,
+        outputTokens: 1,
+        cachedInputTokens: 0,
+        reasoningOutputTokens: 0,
+        totalTokens: 11,
+        sourceTurnId: "turn-1",
+      }],
       lifecycleTraces,
       {
         historyMode: "paginated",
@@ -214,6 +223,10 @@ describe("PostgresSessionRepository", () => {
       },
       { sourceTurnId: "turn-2", eventType: "codex.turn.started" },
     ]);
+    expect(await repository.getTokenEvents("codex:lifecycle")).toMatchObject([{
+      dedupeKey: "turn-1-usage",
+      sourceTurnId: "turn-1",
+    }]);
     expect(await turnsRepository.getCodexIncrementalState("codex:lifecycle")).toEqual({
       historyMode: "paginated",
       messageProvenance: [

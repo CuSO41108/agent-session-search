@@ -160,6 +160,7 @@ export const POSTGRES_MIGRATIONS: readonly PostgresMigration[] = [{
         cached_input_tokens bigint NOT NULL DEFAULT 0,
         reasoning_output_tokens bigint NOT NULL DEFAULT 0,
         total_tokens bigint NOT NULL DEFAULT 0,
+        source_turn_id text,
         PRIMARY KEY (session_key, dedupe_key)
       );
 
@@ -1160,6 +1161,9 @@ export const POSTGRES_MIGRATIONS: readonly PostgresMigration[] = [{
   name: "refresh Codex session semantics",
   statements: [
     `
+      ALTER TABLE agent_recall.token_events
+        ADD COLUMN IF NOT EXISTS source_turn_id text;
+
       UPDATE agent_recall.sessions
       SET file_mtime_ms = 0,
           content_indexed_mtime_ms = 0,

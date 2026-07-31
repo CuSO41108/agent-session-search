@@ -951,6 +951,6 @@ export class CodexRolloutAccumulator {
       });
     }
 
-    return emptyResult();
+    return emptyResult({ sourceTurnId });
   }
 }

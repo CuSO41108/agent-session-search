@@ -290,6 +290,7 @@ export interface TokenUsage {
 export interface TokenUsageEvent extends TokenUsage {
   timestamp: number;
   dedupeKey: string;
+  sourceTurnId?: string | null;
 }
 
 export interface IndexedSession {

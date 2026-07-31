@@ -45,7 +45,16 @@ describe("SessionsStore", () => {
           sourceTurnId: "turn-1",
           phase: "final_answer",
         }],
-        [],
+        [{
+          timestamp: Date.parse("2026-07-30T08:00:02.000Z"),
+          dedupeKey: "turn-1-usage",
+          inputTokens: 10,
+          outputTokens: 1,
+          cachedInputTokens: 0,
+          reasoningOutputTokens: 0,
+          totalTokens: 11,
+          sourceTurnId: "turn-1",
+        }],
         [{
           index: 0,
           kind: "event",
@@ -72,6 +81,10 @@ describe("SessionsStore", () => {
       expect(store.getTraceEvents(session.sessionKey)).toMatchObject([{
         sourceTurnId: "turn-1",
         attributes: { startedAt: "2026-07-30T08:00:00.000Z" },
+      }]);
+      expect(store.getTokenEvents(session.sessionKey)).toMatchObject([{
+        dedupeKey: "turn-1-usage",
+        sourceTurnId: "turn-1",
       }]);
       expect(store.getCodexIncrementalState(session.sessionKey)).toEqual({
         historyMode: "paginated",

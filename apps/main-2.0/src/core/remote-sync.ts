@@ -1029,6 +1029,10 @@ function parseTokenEvent(value: unknown, lineNumber: number, index: number): Tok
   const cachedInputTokens = nonNegativeFiniteField(value, "cachedInputTokens", prefix);
   const reasoningOutputTokens = nonNegativeFiniteField(value, "reasoningOutputTokens", prefix);
   const totalTokens = nonNegativeFiniteField(value, "totalTokens", prefix);
+  const sourceTurnId = value.sourceTurnId;
+  if (sourceTurnId !== undefined && sourceTurnId !== null && typeof sourceTurnId !== "string") {
+    throw new Error(`${prefix}.sourceTurnId`);
+  }
   if (totalTokens !== inputTokens + outputTokens + cachedInputTokens + reasoningOutputTokens) {
     throw new Error(`${prefix}.totalTokens`);
   }
@@ -1040,6 +1044,7 @@ function parseTokenEvent(value: unknown, lineNumber: number, index: number): Tok
     cachedInputTokens,
     reasoningOutputTokens,
     totalTokens,
+    ...(sourceTurnId !== undefined ? { sourceTurnId } : {}),
   };
 }
 

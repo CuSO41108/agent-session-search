@@ -906,11 +906,15 @@ describe("remote sync", () => {
       cachedInputTokens: 10,
       reasoningOutputTokens: 5,
       totalTokens: 115,
+      sourceTurnId: "turn-compatible",
     };
 
     await syncRemoteEnvironment(store, environment, {
       runSsh: async () => `${JSON.stringify({ ...summary, tokenEvents: [tokenEvent] })}\n`,
     });
+    expect(await store.getTokenEvents("ssh:ssh-devbox:codex-cli:remote-compatible-events")).toMatchObject([{
+      sourceTurnId: "turn-compatible",
+    }]);
     await syncRemoteEnvironment(store, environment, {
       runSsh: async () => `${JSON.stringify(summary)}\n`,
     });
