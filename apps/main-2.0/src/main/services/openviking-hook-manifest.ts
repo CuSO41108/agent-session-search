@@ -37,6 +37,10 @@ export class OpenVikingHookManifestService {
     return this.filePath;
   }
 
+  stateDir(): string {
+    return path.join(path.dirname(this.filePath), "hook-state");
+  }
+
   async write(input: WriteOpenVikingHookManifestInput): Promise<string> {
     const workspaces: HookWorkspace[] = [];
     for (const workspace of input.workspaces) {
@@ -57,7 +61,7 @@ export class OpenVikingHookManifestService {
     const manifest = {
       version: 1,
       baseUrl: input.baseUrl,
-      stateDir: path.join(path.dirname(this.filePath), "hook-state"),
+      stateDir: this.stateDir(),
       integrations: input.integrations,
       workspaces,
     };

@@ -174,6 +174,28 @@ describe("OpenViking directory memory UI", () => {
     expect(source).toContain('action === "import"');
     expect(source).toContain("正在导入并提取记忆");
     expect(source).toContain("已导入 ${workspace.importedTurns} / ${workspace.totalTurns}");
+    expect(source).toContain("正在扫描可导入的会话");
+    expect(source).toContain("正在传送会话内容");
+    expect(source).toContain("正在提取当前会话的记忆");
+    expect(source).toContain("workspace.importActivity.sessionTitle");
+  });
+
+  it("keeps refresh and directory management independent from unrelated memory actions", async () => {
+    const source = await readFile(
+      path.join(process.cwd(), "src/renderer/src/features/openviking-memory/openviking-memory-page.tsx"),
+      "utf8",
+    );
+    const css = await readFile(
+      path.join(process.cwd(), "src/renderer/src/styles/openviking-memory.css"),
+      "utf8",
+    );
+
+    expect(source).toContain('run("refresh"');
+    expect(source).toContain('disabled={action === "refresh"}');
+    expect(source).toContain('className={action === "refresh" ? "spin" : ""}');
+    expect(source).toContain('disabled={!ready || action === "choose" || action === "add"}');
+    expect(source).not.toContain('disabled={action !== null || !ready}');
+    expect(css).toMatch(/\.openviking-page-actions\s*\{[^}]*-webkit-app-region:\s*no-drag;/su);
   });
 
   it("allows identity and soul memories to be edited in place", async () => {
@@ -197,6 +219,61 @@ describe("OpenViking directory memory UI", () => {
     expect(source).toContain("browseLoading");
     expect(source).toContain("正在加载已有记忆");
     expect(source).toContain("还没有生成记忆");
+  });
+
+  it("does not request memories while OpenViking is stopping or stopped", async () => {
+    const source = await readFile(
+      path.join(process.cwd(), "src/renderer/src/features/openviking-memory/openviking-memory-page.tsx"),
+      "utf8",
+    );
+
+    expect(source).toContain('snapshot?.runtime.state !== "running"');
+    expect(source).toContain('action === "import"');
+    expect(source).toMatch(
+      /\[action,\s*enabled,\s*query,\s*snapshot\?\.runtime\.state,\s*workspace\?\.id,\s*workspace\?\.importState\]/su,
+    );
+  });
+
+  it("keeps the import transition active until the final runtime status is loaded", async () => {
+    const source = await readFile(
+      path.join(process.cwd(), "src/renderer/src/features/openviking-memory/openviking-memory-page.tsx"),
+      "utf8",
+    );
+
+    expect(source).toMatch(
+      /\.finally\(async \(\) => \{[\s\S]*?await refresh\(\);[\s\S]*?setAction\(null\);[\s\S]*?\}\)/u,
+    );
+  });
+
+  it("silently invalidates an automatic memory request before pausing", async () => {
+    const source = await readFile(
+      path.join(process.cwd(), "src/renderer/src/features/openviking-memory/openviking-memory-page.tsx"),
+      "utf8",
+    );
+
+    expect(source).toContain("const browseRequestVersion = useRef(0)");
+    expect(source).toMatch(
+      /const startImport[\s\S]*?browseRequestVersion\.current \+= 1;[\s\S]*?pauseOpenVikingImport/u,
+    );
+    expect(source).toContain(
+      "if (current && browseRequestVersion.current === requestVersion) setError(errorMessage(cause));",
+    );
+    expect(source).toContain(
+      'disabled={!query.trim() || action !== null || snapshot.runtime.state !== "running"}',
+    );
+  });
+
+  it("treats a paused runtime as a read-only cached memory view", async () => {
+    const source = await readFile(
+      path.join(process.cwd(), "src/renderer/src/features/openviking-memory/openviking-memory-page.tsx"),
+      "utf8",
+    );
+
+    expect(source).toContain('const runtimeRunning = snapshot?.runtime.state === "running"');
+    expect(source).toContain("if (!isOpenVikingPausedError(cause)) setError(errorMessage(cause));");
+    expect(source).toContain("function isOpenVikingPausedError(error: unknown): boolean");
+    expect(source).toContain("disabled={!runtimeRunning");
+    expect(source).toContain("readOnly={!runtimeRunning}");
   });
 
   it("bounds the memory browser to the page so long result lists can scroll", async () => {

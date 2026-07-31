@@ -54,9 +54,11 @@ describe("AgentRecall PostgreSQL schema", () => {
       "chat_workspace_reservations",
       "openviking_workspaces",
       "openviking_import_jobs",
+      "openviking_import_tasks",
+      "openviking_imported_sessions",
       "openviking_imported_turns",
     ]));
-    expect(names).toHaveLength(59);
+    expect(names).toHaveLength(61);
     const sessionColumns = await database.query<{
       column_name: string;
       is_nullable: string;

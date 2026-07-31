@@ -137,6 +137,7 @@ import { resolveOpenVikingRuntimeArchitecture } from "./services/openviking-runt
 import { OpenVikingGateway } from "./services/openviking-client";
 import { OpenVikingControlService } from "./services/openviking-control-service";
 import { OpenVikingHookManifestService } from "./services/openviking-hook-manifest";
+import { OpenVikingHookStateFlusher } from "./services/openviking-hook-state-flusher";
 import { SshCommandService } from "./services/ssh-command-service";
 import { SshCredentialService } from "./services/ssh-credential-service";
 import {
@@ -304,6 +305,7 @@ let disposeOpenVikingMemoryIpc: (() => void) | null = null;
 let openVikingRuntimeService: OpenVikingRuntimeService | null = null;
 let openVikingControlService: OpenVikingControlService | null = null;
 let openVikingHookManifestService: OpenVikingHookManifestService | null = null;
+let openVikingHookStateFlusher: OpenVikingHookStateFlusher | null = null;
 let automationQuitReady = false;
 let postgresRuntime: PostgresRuntime | null = null;
 let postgresDatabase: PostgresDatabase | null = null;
@@ -949,6 +951,12 @@ function initializeOpenVikingMemory(): void {
   });
   openVikingRuntimeService = runtime;
   openVikingHookManifestService = hookManifest;
+  openVikingHookStateFlusher = new OpenVikingHookStateFlusher({
+    stateDir: hookManifest.stateDir(),
+    client,
+    credentials,
+  });
+  openVikingHookStateFlusher.start();
   control = new OpenVikingControlService({
     runtime,
     model,
@@ -1023,8 +1031,20 @@ function reconcileOpenVikingMemoryHooks(settings: AppSettings): void {
 async function startConfiguredOpenVikingRuntime(settings: AppSettings): Promise<void> {
   if (!openVikingControlService || !Object.values(openVikingIntegrations(settings)).some(Boolean)) return;
   const snapshot = await openVikingControlService.snapshot();
+  const hasActiveWorkspace = snapshot.workspaces.some(
+    (workspace) => workspace.managed && workspace.importState !== "paused",
+  );
+  if (!hasActiveWorkspace) {
+    await openVikingControlService.syncManagedWorkspaces();
+    return;
+  }
+  let running = snapshot.runtime.state === "running";
   if (snapshot.runtime.state === "stopped" && snapshot.model.installed) {
     await openVikingControlService.startRuntime();
+    running = true;
+  }
+  if (running) {
+    void openVikingControlService.syncManagedWorkspaces();
   }
 }
 
@@ -2551,6 +2571,7 @@ app.on("before-quit", (event) => {
   if (automationQuitReady) return;
   event.preventDefault();
   installedRuntimeMonitor?.stop();
+  openVikingHookStateFlusher?.stop();
   stopAutoIndexRefresh();
   skillService.stopUsageRefresh();
   remoteSessionService.stopQueue();

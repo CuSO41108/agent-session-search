@@ -105,6 +105,30 @@ export function patchCodexResponsesAdapter(source) {
   ].join("");
 }
 
+export function patchVlmReasoningEffortConfig(source) {
+  const fieldMarker = '    reasoning_effort: str = Field(default="low"';
+  const forwardingMarker = '            "reasoning_effort": self.reasoning_effort,';
+  if (source.includes(fieldMarker) && source.split(forwardingMarker).length === 3) return source;
+
+  const thinkingField = /^    thinking: bool = Field\(.*\)$/mu;
+  if (!thinkingField.test(source)) {
+    throw new Error("Cannot patch unsupported OpenViking VLM config.");
+  }
+  const resultAnchor = '            "thinking": self.thinking,\n';
+  if (source.split(resultAnchor).length !== 3) {
+    throw new Error("Cannot patch unsupported OpenViking VLM config.");
+  }
+  return source
+    .replace(
+      thinkingField,
+      (line) => `${line}\n    reasoning_effort: str = Field(default="low", description="OpenAI reasoning effort")`,
+    )
+    .replaceAll(
+      resultAnchor,
+      `${resultAnchor}${forwardingMarker}\n`,
+    );
+}
+
 export async function buildRuntimeArtifact(input) {
   const plan = buildRuntimePlan(input);
   reportProgress(input, { phase: "building-runtime" });
@@ -138,6 +162,13 @@ export async function buildRuntimeArtifact(input) {
     await writeFile(
       codexAdapterPath,
       patchCodexResponsesAdapter(codexAdapterSource),
+      "utf8",
+    );
+    const vlmConfigPath = await locateVlmConfig(archiveRoot);
+    const vlmConfigSource = await readFile(vlmConfigPath, "utf8");
+    await writeFile(
+      vlmConfigPath,
+      patchVlmReasoningEffortConfig(vlmConfigSource),
       "utf8",
     );
     await writeFile(path.join(archiveRoot, "OPENVIKING-SOURCE.txt"), [
@@ -320,6 +351,27 @@ async function locateCodexResponsesAdapter(archiveRoot) {
     }
   }
   throw new Error("The OpenViking runtime does not contain the Codex Responses adapter.");
+}
+
+async function locateVlmConfig(archiveRoot) {
+  const pending = [archiveRoot];
+  while (pending.length > 0) {
+    const directory = pending.pop();
+    const entries = await readdir(directory, { withFileTypes: true });
+    for (const entry of entries) {
+      const candidate = path.join(directory, entry.name);
+      if (entry.isDirectory()) {
+        pending.push(candidate);
+      } else if (
+        entry.isFile()
+        && entry.name === "vlm_config.py"
+        && candidate.includes(`${path.sep}openviking_cli${path.sep}utils${path.sep}config${path.sep}`)
+      ) {
+        return candidate;
+      }
+    }
+  }
+  throw new Error("The OpenViking runtime does not contain the VLM config.");
 }
 
 async function sha256File(filePath) {

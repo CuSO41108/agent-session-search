@@ -15,7 +15,11 @@ import { PostgresEnvironmentRepository } from "./postgres/environment-repository
 import {
   PostgresOpenVikingMemoryRepository,
   type AddOpenVikingWorkspaceInput,
+  type CreateOpenVikingImportTaskInput,
+  type OpenVikingImportedTurnCheckpoint,
   type OpenVikingImportJob,
+  type OpenVikingImportTask,
+  type OpenVikingSessionCheckpoint,
   type UpdateOpenVikingImportJobInput,
 } from "./postgres/openviking-memory-repository";
 import {
@@ -397,6 +401,69 @@ export class SessionStore {
   ): Promise<void> {
     await this.ready;
     await this.openVikingMemory.recordImportedTurn(workspaceId, sourceTurnId, fingerprint);
+  }
+
+  async listOpenVikingImportedTurns(
+    workspaceId: string,
+  ): Promise<OpenVikingImportedTurnCheckpoint[]> {
+    await this.ready;
+    return this.openVikingMemory.listImportedTurns(workspaceId);
+  }
+
+  async listOpenVikingSessionCheckpoints(
+    workspaceId: string,
+  ): Promise<OpenVikingSessionCheckpoint[]> {
+    await this.ready;
+    return this.openVikingMemory.listSessionCheckpoints(workspaceId);
+  }
+
+  async recordOpenVikingSessionCheckpoint(
+    workspaceId: string,
+    sessionKey: string,
+    sourceRevision: string,
+    importedTurns: number,
+  ): Promise<void> {
+    await this.ready;
+    await this.openVikingMemory.recordSessionCheckpoint(
+      workspaceId,
+      sessionKey,
+      sourceRevision,
+      importedTurns,
+    );
+  }
+
+  async syncOpenVikingImportTasks(
+    workspaceId: string,
+    inputs: CreateOpenVikingImportTaskInput[],
+    activeRevisions: Array<{ sessionKey: string; sourceRevision: string }>,
+  ): Promise<OpenVikingImportTask[]> {
+    await this.ready;
+    return this.openVikingMemory.syncImportTasks(workspaceId, inputs, activeRevisions);
+  }
+
+  async listOpenVikingImportTasks(workspaceId: string): Promise<OpenVikingImportTask[]> {
+    await this.ready;
+    return this.openVikingMemory.listImportTasks(workspaceId);
+  }
+
+  async beginOpenVikingImportTaskAttempt(taskId: string): Promise<OpenVikingImportTask> {
+    await this.ready;
+    return this.openVikingMemory.beginImportTaskAttempt(taskId);
+  }
+
+  async waitForOpenVikingImportTask(taskId: string, remoteTaskId: string): Promise<void> {
+    await this.ready;
+    await this.openVikingMemory.waitForImportTask(taskId, remoteTaskId);
+  }
+
+  async completeOpenVikingImportTask(taskId: string): Promise<void> {
+    await this.ready;
+    await this.openVikingMemory.completeImportTask(taskId);
+  }
+
+  async failOpenVikingImportTask(taskId: string, error: string): Promise<void> {
+    await this.ready;
+    await this.openVikingMemory.failImportTask(taskId, error);
   }
 
   async getSession(sessionKey: string): Promise<SessionSearchResult | null> {

@@ -3,6 +3,7 @@ import type {
   AppSettings,
   OpenVikingExtractionReasoningEffort,
 } from "../../core/platform";
+import { DEFAULT_OPENVIKING_CODEX_EXTRACTION_MODEL } from "../../core/openviking-settings";
 
 export interface ResolvedOpenVikingVlmConfig {
   provider: "openai-codex" | "openai";
@@ -24,10 +25,7 @@ export function resolveOpenVikingExtractionConfig(input: {
   }
 
   if (input.settings.summarySource === "codex") {
-    const model = modelOverride || input.codex.activeModel.trim();
-    if (!model) {
-      throw new Error("Choose a memory extraction model or configure a Codex model.");
-    }
+    const model = modelOverride || DEFAULT_OPENVIKING_CODEX_EXTRACTION_MODEL;
     return {
       provider: "openai-codex",
       model,

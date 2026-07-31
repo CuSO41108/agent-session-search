@@ -28,13 +28,17 @@ export interface SaveOpenVikingMemoryInput {
 export interface OpenVikingClientPort {
   health(): Promise<void>;
   ensureWorkspaceUser(input: { accountId: string; userId: string }): Promise<OpenVikingWorkspaceAuth>;
-  deleteWorkspaceUser(accountId: string, userId: string): Promise<void>;
+  deleteWorkspaceUser(auth: OpenVikingWorkspaceAuth): Promise<void>;
   appendMessages(
     auth: OpenVikingWorkspaceAuth,
     sessionId: string,
     messages: Message[],
   ): Promise<void>;
-  commitSession(auth: OpenVikingWorkspaceAuth, sessionId: string): Promise<OpenVikingTaskRef>;
+  commitSession(
+    auth: OpenVikingWorkspaceAuth,
+    sessionId: string,
+    keepRecentCount?: number,
+  ): Promise<OpenVikingTaskRef>;
   getTask(auth: OpenVikingWorkspaceAuth, taskId: string): Promise<JsonObject | null>;
   searchMemories(
     auth: OpenVikingWorkspaceAuth,
@@ -121,9 +125,23 @@ export class OpenVikingGateway implements OpenVikingClientPort {
     });
   }
 
-  async deleteWorkspaceUser(accountId: string, userId: string): Promise<void> {
+  async deleteWorkspaceUser(auth: OpenVikingWorkspaceAuth): Promise<void> {
     await this.normalize(async () => {
-      await this.rootClient.adminRemoveUser(accountId, userId);
+      const client = this.workspaceClient(auth);
+      for (const uri of [
+        "viking://user/memories",
+        "viking://user/peers",
+        "viking://user/privacy",
+        "viking://user/resources",
+        "viking://user/sessions",
+        "viking://user/skills",
+      ]) {
+        await client.remove(uri, {
+          recursive: true,
+          wait: true,
+        });
+      }
+      await this.rootClient.adminRemoveUser(auth.accountId, auth.userId);
     });
   }
 
@@ -142,9 +160,13 @@ export class OpenVikingGateway implements OpenVikingClientPort {
   async commitSession(
     auth: OpenVikingWorkspaceAuth,
     sessionId: string,
+    keepRecentCount = 0,
   ): Promise<OpenVikingTaskRef> {
     return this.normalize(async () => {
-      const result = await this.workspaceClient(auth).commitSession(sessionId);
+      const result = await this.workspaceClient(auth).commitSession(
+        sessionId,
+        Math.max(0, Math.floor(keepRecentCount)),
+      );
       return { taskId: requiredString(result, ["task_id", "taskId", "id"], "commit task ID") };
     });
   }

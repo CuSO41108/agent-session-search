@@ -21,7 +21,7 @@ describe("resolveOpenVikingExtractionConfig", () => {
     });
   });
 
-  it("follows the active Codex model when no override is set", () => {
+  it("uses Terra by default with the Codex summary Provider", () => {
     expect(resolveOpenVikingExtractionConfig({
       settings: {
         ...defaultSettings,
@@ -29,7 +29,7 @@ describe("resolveOpenVikingExtractionConfig", () => {
         openVikingExtractionModel: "",
       },
       codex: { activeModel: " gpt-5.5 " },
-    }).model).toBe("gpt-5.5");
+    }).model).toBe("gpt-5.6-terra");
   });
 
   it("maps a custom OpenAI Chat Provider", () => {

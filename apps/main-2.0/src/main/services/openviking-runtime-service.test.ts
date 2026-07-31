@@ -90,11 +90,19 @@ class FakeChild extends EventEmitter {
   exitCode: number | null = null;
   killed = false;
 
+  constructor(private readonly exitsOnKill = true) {
+    super();
+  }
+
   kill(): boolean {
     this.killed = true;
+    if (this.exitsOnKill) this.finishExit();
+    return true;
+  }
+
+  finishExit(): void {
     this.exitCode = 0;
     this.emit("exit", 0, null);
-    return true;
   }
 }
 
@@ -103,8 +111,9 @@ function runtimeHarness(root: string, options: {
   executablePath?: string;
   alive?: boolean;
   codexAuthBootstrapPath?: string;
+  child?: FakeChild;
 } = {}) {
-  const child = new FakeChild();
+  const child = options.child ?? new FakeChild();
   const spawnCalls: Array<{
     command: string;
     args: readonly string[];
@@ -258,6 +267,28 @@ describe("OpenVikingRuntimeService", () => {
     await service.stop();
     expect(child.killed).toBe(true);
     await expect(service.getStatus()).resolves.toMatchObject({ state: "stopped" });
+  });
+
+  it("does not report a managed runtime as stopped until its process has exited", async () => {
+    const root = await temporaryRoot();
+    const child = new FakeChild(false);
+    const { service } = runtimeHarness(root, { child });
+    await service.install(manifest());
+    await service.start({
+      embedding: { dense: { provider: "local", model: "model", dimension: 512 } },
+      vlm: { provider: "openai-codex", model: "gpt-5.4" },
+    });
+
+    let stopped = false;
+    const stopping = service.stop().then(() => {
+      stopped = true;
+    });
+
+    await vi.waitFor(() => expect(child.killed).toBe(true));
+    expect(stopped).toBe(false);
+    child.finishExit();
+    await stopping;
+    expect(stopped).toBe(true);
   });
 
   it("allows a slow first boot to become healthy after the old ten-second deadline", async () => {
@@ -456,7 +487,7 @@ describe("OpenVikingRuntimeService", () => {
       codexAuthBootstrapPath: path.join(root, "synthetic-codex-home", "auth.json"),
       platform: "darwin",
       arch: "arm64",
-      version: "0.4.11-r3",
+      version: "0.4.11-r4",
     });
 
     await expect(service.getStatus()).resolves.toEqual({ state: "not-installed" });

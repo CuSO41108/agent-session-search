@@ -42,6 +42,7 @@
 
 .openviking-page-actions {
   gap: 8px;
+  -webkit-app-region: no-drag;
 }
 
 .openviking-page-actions button,
@@ -379,25 +380,78 @@
 }
 
 .openviking-import-status {
-  display: grid;
-  grid-template-columns: auto minmax(80px, 1fr) auto;
-  align-items: center;
-  gap: 9px;
-  min-height: 34px;
-  padding: 0 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 78px;
+  padding: 11px 14px 10px;
   border-bottom: 1px solid var(--border-subtle);
+  box-shadow: inset 3px 0 0 transparent;
   color: var(--text-muted);
-  font-size: 10.5px;
+  font-size: 11px;
 }
 
-.openviking-import-status > div {
-  height: 3px;
+.openviking-import-status.running {
+  background: color-mix(in srgb, var(--accent) 5%, transparent);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.openviking-import-status-head,
+.openviking-import-status-foot {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+}
+
+.openviking-import-status-head {
+  gap: 7px;
+}
+
+.openviking-import-status-head strong {
+  flex: 0 0 auto;
+  color: var(--text);
+  font-size: 11.5px;
+  font-weight: 600;
+}
+
+.openviking-import-status-head > span:not(.openviking-import-live) {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.openviking-import-status-head em {
+  flex: 0 0 auto;
+  margin-left: auto;
+  color: var(--text-faint);
+  font-style: normal;
+  font-variant-numeric: tabular-nums;
+}
+
+.openviking-import-live {
+  width: 7px;
+  height: 7px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: var(--text-faint);
+}
+
+.openviking-import-status.running .openviking-import-live {
+  background: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 16%, transparent);
+  animation: openviking-import-pulse 1.4s ease-in-out infinite;
+}
+
+.openviking-import-track {
+  height: 5px;
   overflow: hidden;
   border-radius: 99px;
   background: var(--border);
 }
 
-.openviking-import-status i {
+.openviking-import-track i {
   display: block;
   height: 100%;
   border-radius: inherit;
@@ -405,7 +459,7 @@
   transition: width 0.2s ease;
 }
 
-.openviking-import-status i.active {
+.openviking-import-track i.active {
   background: linear-gradient(90deg, var(--accent), var(--accent-bright), var(--accent));
   background-size: 200% 100%;
   animation: openviking-import-active 1.2s linear infinite;
@@ -417,10 +471,28 @@
   }
 }
 
-.openviking-import-status em {
+.openviking-import-status-foot {
+  justify-content: space-between;
+}
+
+.openviking-import-status-foot em {
   color: var(--text-faint);
   font-style: normal;
   font-variant-numeric: tabular-nums;
+}
+
+@keyframes openviking-import-pulse {
+  50% {
+    opacity: 0.55;
+    transform: scale(0.8);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .openviking-import-status.running .openviking-import-live,
+  .openviking-import-track i.active {
+    animation: none;
+  }
 }
 
 .openviking-search {

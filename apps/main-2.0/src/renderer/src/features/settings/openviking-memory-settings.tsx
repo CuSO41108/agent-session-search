@@ -14,6 +14,7 @@ import type {
   AppSettingsUpdate,
 } from "../../../../core/platform";
 import {
+  DEFAULT_OPENVIKING_CODEX_EXTRACTION_MODEL,
   OPENVIKING_EXTRACTION_REASONING_EFFORTS,
   type OpenVikingExtractionReasoningEffort,
 } from "../../../../core/openviking-settings";
@@ -138,7 +139,8 @@ export function OpenVikingMemorySettings({
     : summarySource === "custom"
       ? summaryConfig?.customModel.trim() ?? ""
       : "";
-  const selectedExtractionModel = extractionModel.trim() || providerModel;
+  const selectedExtractionModel = extractionModel.trim()
+    || (summarySource === "codex" ? DEFAULT_OPENVIKING_CODEX_EXTRACTION_MODEL : providerModel);
   const codexFamilyProvider = summarySource === "codex"
     || summaryConfig?.customProviderId === "codexzh"
     || providerName.toLowerCase().includes("codex");
@@ -210,7 +212,7 @@ export function OpenVikingMemorySettings({
         <div className="openviking-component-card">
           <span className="openviking-component-icon"><Box size={18} /></span>
           <div>
-            <strong>OpenViking {snapshot?.runtime.version ?? "0.4.11-r3"}</strong>
+            <strong>OpenViking {snapshot?.runtime.version ?? "0.4.11-r4"}</strong>
             <span>{runtimeInstalledSize
               ? `${runtimeInstalledSize} / ${runtimeInstalledSize} MB`
               : l(

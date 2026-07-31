@@ -124,7 +124,7 @@ describe("OpenVikingGateway", () => {
       { role: "user", content: "question", createdAt: "2026-07-24T00:00:00.000Z" },
       { role: "assistant", content: "answer" },
     ]);
-    await expect(gateway.commitSession(auth, "session-1")).resolves.toEqual({
+    await expect(gateway.commitSession(auth, "session-1", 10)).resolves.toEqual({
       taskId: "task-1",
     });
     await expect(gateway.getTask(auth, "task-1")).resolves.toMatchObject({
@@ -144,6 +144,7 @@ describe("OpenVikingGateway", () => {
       expect(request.headers["x-openviking-account"]).toBe("agent-recall-v2");
       expect(request.headers["x-openviking-user"]).toBe("workspace_abcd");
     }
+    expect(userRequests[2]?.body).toEqual({ keep_recent_count: 10 });
   });
 
   it("normalizes memory search, read, write and delete operations", async () => {
@@ -286,14 +287,30 @@ describe("OpenVikingGateway", () => {
   it("removes workspace user data through the root administration client", async () => {
     const gateway = new OpenVikingGateway({ baseUrl, rootApiKey: "root-key" });
 
-    await gateway.deleteWorkspaceUser("agent-recall-v2", "workspace_abcd");
+    await gateway.deleteWorkspaceUser({
+      accountId: "agent-recall-v2",
+      userId: "workspace_abcd",
+      apiKey: "workspace-key",
+    });
 
-    expect(requests).toHaveLength(1);
-    expect(requests[0]).toMatchObject({
+    expect(requests).toHaveLength(7);
+    expect(requests.slice(0, 6)).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        method: "DELETE",
+        path: expect.stringContaining("/api/v1/fs?"),
+      }),
+    ]));
+    expect(requests.slice(0, 6).every((request) => {
+      const url = new URL(request.path, "http://127.0.0.1");
+      return url.searchParams.get("recursive") === "true"
+        && url.searchParams.get("wait") === "true";
+    })).toBe(true);
+    expect(requests[6]).toMatchObject({
       method: "DELETE",
       path: "/api/v1/admin/accounts/agent-recall-v2/users/workspace_abcd",
     });
-    expect(requests[0].headers["x-api-key"]).toBe("root-key");
+    expect(requests.slice(0, 6).every((request) => request.headers["x-api-key"] === "workspace-key")).toBe(true);
+    expect(requests[6].headers["x-api-key"]).toBe("root-key");
   });
 
   function route(url: URL, request: IncomingMessage, response: ServerResponse): void {
@@ -339,6 +356,9 @@ describe("OpenVikingGateway", () => {
       });
     }
     if (url.pathname === "/api/v1/admin/accounts/agent-recall-v2/users/workspace_abcd" && request.method === "DELETE") {
+      return sendJson(response, 200, { status: "ok", result: {} });
+    }
+    if (url.pathname === "/api/v1/fs" && request.method === "DELETE") {
       return sendJson(response, 200, { status: "ok", result: {} });
     }
     if (url.pathname === "/api/v1/sessions/session-1" && request.method === "GET") {
