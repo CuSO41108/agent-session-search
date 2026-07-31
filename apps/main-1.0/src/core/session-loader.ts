@@ -383,7 +383,7 @@ function extractClaudeTraceEvents(rows: unknown[]): TraceEventDraft[] {
           timestamp: stringField(row, "timestamp"),
           callId: stringField(block, "id") || null,
           eventType: null,
-          status: "unknown",
+          status: "running",
         });
       } else if (block.type === "tool_result") {
         events.push({
@@ -394,7 +394,7 @@ function extractClaudeTraceEvents(rows: unknown[]): TraceEventDraft[] {
           timestamp: stringField(row, "timestamp"),
           callId: stringField(block, "tool_use_id") || null,
           eventType: null,
-          status: "unknown",
+          status: unknownField(block, "is_error") === true ? "failed" : "completed",
         });
       }
     }

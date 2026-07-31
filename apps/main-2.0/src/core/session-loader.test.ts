@@ -1870,7 +1870,21 @@ describe("Claude session loading", () => {
             content: [
               { type: "text", text: "我先读文件" },
               { type: "tool_use", id: "tool-1", name: "Read", input: { file_path: "/repo/src/App.tsx" } },
+              { type: "tool_use", id: "tool-2", name: "Write", input: { file_path: "/repo/src/App.tsx" } },
+              { type: "tool_use", id: "tool-3", name: "Bash", input: { command: "npm test" } },
+            ],
+          },
+        }),
+        JSON.stringify({
+          type: "user",
+          timestamp: "2026-06-01T10:01:01Z",
+          cwd: "/repo",
+          sessionId: "claude-trace-1",
+          message: {
+            role: "user",
+            content: [
               { type: "tool_result", tool_use_id: "tool-1", content: "export function App() {}" },
+              { type: "tool_result", tool_use_id: "tool-2", content: "permission denied", is_error: true },
             ],
           },
         }),
@@ -1880,19 +1894,20 @@ describe("Claude session loading", () => {
     const loaded = loadClaudeCliSessions(claudeDir);
 
     expect(loaded[0].messages.map((message) => message.content)).toEqual(["我先读文件"]);
-    expect(loaded[0].traceEvents).toHaveLength(2);
-    expect(loaded[0].traceEvents?.[0]).toMatchObject({
-      kind: "tool_call",
-      source: "claude",
-      title: "Read · /repo/src/App.tsx",
-      callId: "tool-1",
-    });
-    expect(loaded[0].traceEvents?.[1]).toMatchObject({
-      kind: "tool_result",
-      source: "claude",
-      callId: "tool-1",
-    });
-    expect(loaded[0].traceEvents?.[1].detail).toContain("export function App");
+    expect(loaded[0].traceEvents).toMatchObject([
+      {
+        kind: "tool_call",
+        source: "claude",
+        title: "Read · /repo/src/App.tsx",
+        callId: "tool-1",
+        status: "running",
+      },
+      { kind: "tool_call", callId: "tool-2", status: "running" },
+      { kind: "tool_call", callId: "tool-3", status: "running" },
+      { kind: "tool_result", callId: "tool-1", status: "completed" },
+      { kind: "tool_result", callId: "tool-2", status: "failed" },
+    ]);
+    expect(loaded[0].traceEvents?.[3].detail).toContain("export function App");
 
     fs.rmSync(claudeDir, { recursive: true, force: true });
   });
