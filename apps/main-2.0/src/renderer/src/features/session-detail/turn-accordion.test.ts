@@ -217,8 +217,9 @@ describe("TurnAccordion", () => {
     expect(runningClosed).toContain('class="turn-status completed">已完成');
     expect(runningClosed).not.toContain('class="turn-status running"');
 
-    const legacyLive = renderStatus("completed", true, null);
-    expect(legacyLive).toContain('class="turn-status running">进行中');
+    const legacyCompletedLive = renderStatus("completed", true, null);
+    expect(legacyCompletedLive).toContain('class="turn-status completed">已完成');
+    expect(legacyCompletedLive).not.toContain('class="turn-status running"');
   });
 
   it("renders a turn context menu with only the migration command", async () => {

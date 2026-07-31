@@ -460,7 +460,7 @@ export function TurnAccordion({
 
   return (
     <div className="turn-list" ref={rootRef}>
-      {turns.map((turn, turnIndex) => {
+      {turns.map((turn) => {
         const expanded = state.expandedTurnIds.has(turn.id);
         const detail = state.detailsById[turn.id];
         const loadingDetail = state.loadingTurnIds.has(turn.id);
@@ -470,9 +470,7 @@ export function TurnAccordion({
         const displayStatus: SessionTurnSummary["status"] =
           turn.status === "running"
             ? live ? "running" : "completed"
-            : live && turnIndex === turns.length - 1 && !turn.sourceTurnId
-              ? "running"
-              : turn.status;
+            : turn.status;
         return (
           <article
             key={turn.id}
