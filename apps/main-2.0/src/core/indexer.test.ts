@@ -4,7 +4,7 @@ import * as path from "node:path";
 import { createRequire } from "node:module";
 import type { DatabaseSync as DatabaseSyncType } from "node:sqlite";
 import { describe, expect, it, vi } from "vitest";
-import { indexMigratedSessionFile, syncDefaultSessionsInBatches, syncLoadedSessionsInBatches } from "./indexer";
+import { indexMigratedSessionFile, syncDefaultSessionsInBatches, syncLoadedSessionsInBatches, type IndexStatus } from "./indexer";
 import { createInMemoryStore } from "./postgres/test-session-store";
 import { writeMigratedSession } from "./session-migration-writers";
 import type { IndexedSession, LoadedSession, MigrationTarget, PortableSession, SessionSource } from "./types";
@@ -103,16 +103,84 @@ describe("indexer", () => {
     const store = createInMemoryStore();
     const malformed = session(1);
     malformed.session.sessionKey = "codex:invalid\u0000session";
+    const progress: IndexStatus[] = [];
+    const diagnostics: unknown[] = [];
 
-    const status = await syncLoadedSessionsInBatches(store, [malformed, session(2)], { batchSize: 1 });
+    const status = await syncLoadedSessionsInBatches(store, [malformed, session(2)], {
+      batchSize: 1,
+      onProgress: (next) => progress.push(next),
+      indexFailureLogPath: "/tmp/session-index-failures.jsonl",
+      logIndexFailure: async (diagnostic) => {
+        await Promise.resolve();
+        diagnostics.push(diagnostic);
+      },
+    });
 
     expect(status).toMatchObject({
       running: false,
       indexed: 1,
       skipped: 1,
       total: 2,
-      error: "1 session could not be indexed; the remaining sessions were processed.",
+      error: "1 session could not be indexed; the remaining sessions were processed. Source: codex-cli. Diagnostic log: /tmp/session-index-failures.jsonl",
     });
+    expect(progress.every((next) => next.error === null)).toBe(true);
+    expect(diagnostics).toEqual([{
+      source: "codex-cli",
+      sessionKey: "codex:invalid\u0000session",
+      filePath: "/tmp/session-1.jsonl",
+      error: expect.objectContaining({
+        name: expect.any(String),
+        message: expect.stringContaining("0x00"),
+        stack: expect.any(String),
+      }),
+    }]);
+    expect(await store.searchSessions({ query: "Question 2", limit: 10 })).toHaveLength(1);
+  });
+
+  it("continues indexing when the diagnostic log cannot be written", async () => {
+    const store = createInMemoryStore();
+    const malformed = session(1);
+    malformed.session.sessionKey = "codex:invalid\u0000session";
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    try {
+      const status = await syncLoadedSessionsInBatches(store, [malformed, session(2)], {
+        batchSize: 1,
+        indexFailureLogPath: "/tmp/session-index-failures.jsonl",
+        logIndexFailure: async () => {
+          throw new Error("disk full");
+        },
+      });
+
+      expect(status).toMatchObject({ indexed: 1, skipped: 1, total: 2 });
+      expect(status.error).toContain("Diagnostic details could not be written to the local log.");
+      expect(status.error).not.toContain("/tmp/session-index-failures.jsonl");
+      expect(await store.searchSessions({ query: "Question 2", limit: 10 })).toHaveLength(1);
+      expect(consoleError).toHaveBeenCalled();
+    } finally {
+      consoleError.mockRestore();
+    }
+  });
+
+  it("isolates an execution-environment resolution failure to its session", async () => {
+    const store = createInMemoryStore();
+    vi.spyOn(store, "upsertEnvironment").mockRejectedValueOnce(new Error("environment write failed"));
+    const remote = session(1);
+    remote.executionEnvironmentHint = { kind: "ssh", label: "dev", hostAlias: "dev" };
+    const diagnostics: unknown[] = [];
+
+    const status = await syncLoadedSessionsInBatches(store, [remote, session(2)], {
+      batchSize: 1,
+      logIndexFailure: (diagnostic) => {
+        diagnostics.push(diagnostic);
+      },
+    });
+
+    expect(status).toMatchObject({ indexed: 1, skipped: 1, total: 2 });
+    expect(diagnostics).toEqual([expect.objectContaining({
+      sessionKey: "codex:session-1",
+      error: expect.objectContaining({ message: "environment write failed" }),
+    })]);
     expect(await store.searchSessions({ query: "Question 2", limit: 10 })).toHaveLength(1);
   });
 

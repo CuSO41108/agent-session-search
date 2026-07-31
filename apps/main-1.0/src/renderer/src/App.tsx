@@ -70,6 +70,7 @@ import {
 } from "./sidebar-sections";
 import { LANGUAGE_STORAGE_KEY, localize, readInitialLanguage, type LanguageMode } from "./language";
 import { coalesceIndexStatusForRender } from "./index-status";
+import { reduceIndexFeedback } from "./index-status-feedback";
 import { readInitialTheme, THEME_STORAGE_KEY, type ThemeMode } from "./theme";
 import { loadSkillsPanelData } from "./skills-load";
 import {
@@ -970,6 +971,7 @@ export function App(): ReactElement {
   useEffect(() => {
     const offIndex = window.sessionSearch.onIndexStatus((nextStatus) => {
       setIndexStatus((current) => coalesceIndexStatusForRender(current, nextStatus));
+      setRefreshFeedback((current) => reduceIndexFeedback(current, { type: "index-status", status: nextStatus }));
       if (!nextStatus.running) {
         void load();
         void loadSidebarMetadata();
@@ -1536,7 +1538,10 @@ export function App(): ReactElement {
 
   async function refreshNow(): Promise<void> {
     setContextMenu(null);
-    setRefreshFeedback({ kind: "running", message: t("Refreshing index and usage...", "正在更新索引和用量...") });
+    setRefreshFeedback((current) => reduceIndexFeedback(current, {
+      type: "start",
+      message: t("Refreshing index and usage...", "正在更新索引和用量..."),
+    }));
     setStatsFeedback({ kind: "running", message: t("Refreshing usage...", "正在刷新用量...") });
     try {
       const status = await window.sessionSearch.refreshIndex();
@@ -1547,17 +1552,20 @@ export function App(): ReactElement {
         loadStats(),
         statsPeriod === "allTime" ? Promise.resolve() : fetchStatsTrend(),
       ]);
-      if (status.error) {
-        setRefreshFeedback({ kind: "error", message: status.error });
-        setStatsFeedback({ kind: "error", message: status.error });
-        return;
-      }
       const successMessage = t(
         `Index and usage refreshed: ${status.indexed} updated, ${status.skipped} skipped, ${status.total} total.`,
         `索引和用量已更新：更新 ${status.indexed} 个，跳过 ${status.skipped} 个，共 ${status.total} 个。`,
       );
+      setRefreshFeedback((current) => reduceIndexFeedback(current, {
+        type: "manual-result",
+        status,
+        successMessage,
+      }));
+      if (status.error) {
+        setStatsFeedback({ kind: "error", message: status.error });
+        return;
+      }
       const statsSuccessMessage = t("Usage refreshed.", "用量已刷新。");
-      setRefreshFeedback({ kind: "success", message: successMessage });
       setStatsFeedback({ kind: "success", message: statsSuccessMessage });
       window.setTimeout(() => {
         setRefreshFeedback((current) => (current?.kind === "success" && current.message === successMessage ? null : current));
@@ -1565,7 +1573,7 @@ export function App(): ReactElement {
       }, 2200);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      setRefreshFeedback({ kind: "error", message });
+      setRefreshFeedback((current) => reduceIndexFeedback(current, { type: "manual-error", message }));
       setStatsFeedback({ kind: "error", message });
     }
   }

@@ -46,6 +46,7 @@ import {
 } from "./sidebar-sections";
 import { LANGUAGE_STORAGE_KEY, localize, readInitialLanguage, type LanguageMode } from "./language";
 import { readInitialTheme, THEME_STORAGE_KEY, type ThemeMode } from "./theme";
+import { reduceIndexFeedback } from "./index-status-feedback";
 import type {
   ActionStatus,
   ContextMenuState,
@@ -454,7 +455,7 @@ export function App(): ReactElement {
   useEffect(() => {
     const offIndex = window.sessionSearch.onIndexStatus((nextStatus) => {
       setIndexStatus(nextStatus);
-      if (nextStatus.error) setRefreshFeedback({ kind: "error", message: nextStatus.error });
+      setRefreshFeedback((current) => reduceIndexFeedback(current, { type: "index-status", status: nextStatus }));
       if (!nextStatus.running) {
         if (activePage === "sessions") void load();
         void loadSidebarMetadata();
@@ -910,25 +911,32 @@ export function App(): ReactElement {
 
   async function refreshNow(): Promise<void> {
     setContextMenu(null);
-    setRefreshFeedback({ kind: "running", message: t("Refreshing index...", "正在更新索引...") });
+    setRefreshFeedback((current) => reduceIndexFeedback(current, {
+      type: "start",
+      message: t("Refreshing index...", "正在更新索引..."),
+    }));
     try {
       const status = await window.sessionSearch.refreshIndex();
       setIndexStatus(status);
       await Promise.all([load(), loadSidebarMetadata(), loadStats()]);
-      if (status.error) {
-        setRefreshFeedback({ kind: "error", message: status.error });
-        return;
-      }
       const successMessage = t(
         `Index refreshed: ${status.indexed} updated, ${status.skipped} skipped, ${status.total} total.`,
         `索引已更新：更新 ${status.indexed} 个，跳过 ${status.skipped} 个，共 ${status.total} 个。`,
       );
-      setRefreshFeedback({ kind: "success", message: successMessage });
+      setRefreshFeedback((current) => reduceIndexFeedback(current, {
+        type: "manual-result",
+        status,
+        successMessage,
+      }));
+      if (status.error) return;
       window.setTimeout(() => {
         setRefreshFeedback((current) => (current?.kind === "success" && current.message === successMessage ? null : current));
       }, 2200);
     } catch (error) {
-      setRefreshFeedback({ kind: "error", message: error instanceof Error ? error.message : String(error) });
+      setRefreshFeedback((current) => reduceIndexFeedback(current, {
+        type: "manual-error",
+        message: error instanceof Error ? error.message : String(error),
+      }));
     }
   }
 
@@ -1594,7 +1602,10 @@ export function App(): ReactElement {
       {actionStatus
         ? <ActionToast status={actionStatus} onClose={() => setActionStatus(null)} />
         : refreshFeedback
-          ? <ActionToast status={refreshFeedback} onClose={() => setRefreshFeedback(null)} />
+          ? <ActionToast
+              status={refreshFeedback}
+              onClose={() => setRefreshFeedback((current) => reduceIndexFeedback(current, { type: "dismiss" }))}
+            />
           : null}
 
       {dialog ? (

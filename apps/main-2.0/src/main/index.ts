@@ -27,6 +27,7 @@ import { loadActiveCodexSummaryEndpointDefaults } from "../core/codex-profile";
 import type { CodexRequestFidelity } from "../core/codex-request-export";
 import { indexMigratedSessionFile, syncDefaultSessionsInBatches, type IndexStatus } from "../core/indexer";
 import { createIndexProgressPublisher } from "./index-progress";
+import { createSessionIndexFailureLogger } from "./session-index-failure-log";
 import {
   type SessionJsonExportFormat,
 } from "../core/format-session";
@@ -1420,6 +1421,7 @@ async function runIndexSync(): Promise<IndexStatus> {
   await pruneDisabledOptionalSources(settings);
   indexStatus = { ...indexStatus, running: true, error: null };
   indexProgressPublisher.publish(indexStatus, true);
+  const indexFailureLogger = createSessionIndexFailureLogger(app.getPath("userData"));
 
   activeIndexRun = syncDefaultSessionsInBatches(store, {
     batchSize: 50,
@@ -1437,6 +1439,8 @@ async function runIndexSync(): Promise<IndexStatus> {
       includeTrae: settings.includeTrae,
       includeQoder: settings.includeQoder,
     },
+    indexFailureLogPath: indexFailureLogger.logPath,
+    logIndexFailure: indexFailureLogger.write,
     onEnvironmentsChanged: emitEnvironmentsUpdated,
     onProgress: (status) => {
       indexStatus = { ...status, lastIndexedAt: indexStatus.lastIndexedAt };
