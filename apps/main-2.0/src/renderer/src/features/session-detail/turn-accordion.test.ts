@@ -177,7 +177,7 @@ describe("TurnAccordion", () => {
     if (!feature) return;
 
     const renderStatus = (
-      status: "running" | "completed" | "aborted",
+      status: "running" | "completed" | "aborted" | "failed",
       live: boolean,
       sourceTurnId: string | null = "turn-1",
     ) =>
@@ -207,6 +207,10 @@ describe("TurnAccordion", () => {
     const abortedLive = renderStatus("aborted", true);
     expect(abortedLive).toContain('class="turn-status aborted">已中断');
     expect(abortedLive).not.toContain('class="turn-status running"');
+
+    const failedLive = renderStatus("failed", true);
+    expect(failedLive).toContain('class="turn-status failed">失败');
+    expect(failedLive).not.toContain('class="turn-status running"');
 
     const runningLive = renderStatus("running", true);
     expect(runningLive).toContain('class="turn-status running">进行中');
