@@ -20,7 +20,8 @@ import {
   REMOTE_SESSION_TABLE,
   SupabaseRemoteSessionClient,
 } from "./remote-session-sync";
-import type { PortableSession, SessionSearchResult } from "./types";
+import type { PortableSession, SessionSearchResult, SessionTurnSummary } from "./types";
+import { deriveSessionTimeline } from "./turns/derive-turns";
 
 const SESSION: SessionSearchResult = {
   sessionKey: "codex:abc",
@@ -156,6 +157,214 @@ describe("remote session sync model", () => {
     expect(first.payload.content_hash).toBe(second.payload.content_hash);
     expect(first.payload.search_text).toContain("Login is broken");
     expect(first.payload.search_text).toContain("Fixed the login bug");
+  });
+
+  it("projects V2 Turn lifecycle summaries into flat remote snapshots", async () => {
+    const turn: SessionTurnSummary = {
+      id: "internal-turn-1",
+      turnIndex: 0,
+      sourceMessageIndex: 0,
+      sourceTurnId: "turn-1",
+      synthetic: false,
+      status: "completed",
+      startedAt: "2026-07-03T10:00:00.000Z",
+      endedAt: "2026-07-03T10:01:00.000Z",
+      durationMs: 60_000,
+      timeToFirstTokenMs: 500,
+      abortReason: null,
+      userPreview: "Login is broken",
+      assistantPreview: "Update auth state handling",
+      inputTokens: 1,
+      outputTokens: 2,
+      cachedInputTokens: 0,
+      reasoningOutputTokens: 0,
+      totalTokens: 3,
+      errorCount: 0,
+      toolNames: ["exec"],
+      messageCount: 2,
+      spanCount: 1,
+    };
+    const hiddenStart = {
+      index: 0,
+      kind: "event" as const,
+      source: "codex" as const,
+      title: "Turn started",
+      detail: "",
+      timestamp: turn.startedAt!,
+      eventType: "codex.turn.started",
+      status: "running" as const,
+      sourceTurnId: "turn-1",
+    };
+    const built = await buildRemoteSessionUploadFromStore({
+      getSession: async () => SESSION,
+      getAllMessages: async () => [{
+        ...MESSAGES[1],
+        phase: "final_answer" as const,
+        sourceTurnId: "turn-1",
+      }],
+      getTraceEvents: async () => [hiddenStart],
+      listSessionTurns: async () => [turn],
+    }, SESSION.sessionKey, 12_000);
+
+    expect(built.detail.messages[0]).toMatchObject({ phase: "final_answer", sourceTurnId: "turn-1" });
+    expect(built.detail.traceEvents).toEqual([
+      expect.objectContaining({
+        index: 0,
+        eventType: "codex.turn.completed",
+        status: "completed",
+        sourceTurnId: "turn-1",
+        attributes: expect.objectContaining({
+          durationMs: 60_000,
+          timeToFirstTokenMs: 500,
+          toolCount: 1,
+          errorCount: 0,
+        }),
+      }),
+    ]);
+    expect(built.payload.trace_event_count).toBe(1);
+    expect(built.payload.search_text).not.toContain("Turn started");
+  });
+
+  it("preserves a running Codex Turn in remote snapshots", async () => {
+    const turn: SessionTurnSummary = {
+      id: "internal-turn-running",
+      turnIndex: 0,
+      sourceMessageIndex: 0,
+      sourceTurnId: "turn-running",
+      synthetic: false,
+      status: "running",
+      startedAt: "2026-07-31T08:00:00.000Z",
+      endedAt: "2026-07-31T08:00:00.000Z",
+      durationMs: 60_000,
+      timeToFirstTokenMs: null,
+      abortReason: null,
+      userPreview: "Keep working",
+      assistantPreview: "",
+      inputTokens: 1,
+      outputTokens: 0,
+      cachedInputTokens: 0,
+      reasoningOutputTokens: 0,
+      totalTokens: 1,
+      errorCount: 0,
+      toolNames: [],
+      messageCount: 1,
+      spanCount: 0,
+    };
+    const session = {
+      ...SESSION,
+      sessionKey: "codex:running",
+      rawId: "running",
+      originalTitle: "Running",
+      firstQuestion: "Keep working",
+      displayTitle: "Running",
+      aiSummary: null,
+      tags: [],
+    };
+    const built = await buildRemoteSessionUploadFromStore({
+      getSession: async () => session,
+      getAllMessages: async () => [{
+        role: "user",
+        content: "Keep working",
+        timestamp: turn.startedAt!,
+        index: 0,
+        sourceTurnId: "turn-running",
+      }],
+      getTraceEvents: async () => [],
+      listSessionTurns: async () => [turn],
+    }, session.sessionKey, 12_000);
+
+    expect(built.detail.traceEvents).toContainEqual(expect.objectContaining({
+      eventType: "codex.turn.started",
+      status: "running",
+      sourceTurnId: "turn-running",
+    }));
+    expect(built.detail.traceEvents).not.toContainEqual(expect.objectContaining({
+      eventType: "codex.turn.completed",
+      sourceTurnId: "turn-running",
+    }));
+    const started = built.detail.traceEvents.find((event) => event.sourceTurnId === "turn-running");
+    expect(started?.attributes).not.toHaveProperty("endedAt");
+    expect(started?.attributes).not.toHaveProperty("durationMs");
+    expect(deriveSessionTimeline({
+      sessionKey: session.sessionKey,
+      messages: built.detail.messages,
+      traceEvents: built.detail.traceEvents,
+    }).turns[0].status).toBe("running");
+    expect(built.payload.search_text).not.toContain("Turn started");
+  });
+
+  it("does not duplicate an existing hidden started event for a running Codex Turn", async () => {
+    const turn: SessionTurnSummary = {
+      id: "internal-turn-running",
+      turnIndex: 0,
+      sourceMessageIndex: 0,
+      sourceTurnId: "turn-running",
+      synthetic: false,
+      status: "running",
+      startedAt: "2026-07-31T08:00:00.000Z",
+      endedAt: "2026-07-31T08:01:00.000Z",
+      durationMs: 60_000,
+      timeToFirstTokenMs: null,
+      abortReason: null,
+      userPreview: "Keep working",
+      assistantPreview: "",
+      inputTokens: 1,
+      outputTokens: 0,
+      cachedInputTokens: 0,
+      reasoningOutputTokens: 0,
+      totalTokens: 1,
+      errorCount: 0,
+      toolNames: [],
+      messageCount: 1,
+      spanCount: 0,
+    };
+    const session = {
+      ...SESSION,
+      sessionKey: "codex:running-existing-start",
+      rawId: "running-existing-start",
+      originalTitle: "Running",
+      firstQuestion: "Keep working",
+      displayTitle: "Running",
+      aiSummary: null,
+      tags: [],
+    };
+    const built = await buildRemoteSessionUploadFromStore({
+      getSession: async () => session,
+      getAllMessages: async () => [{
+        role: "user",
+        content: "Keep working",
+        timestamp: turn.startedAt!,
+        index: 0,
+        sourceTurnId: "turn-running",
+      }],
+      getTraceEvents: async () => [{
+        index: 0,
+        kind: "event" as const,
+        source: "codex" as const,
+        title: "Turn started",
+        detail: "",
+        timestamp: turn.startedAt!,
+        eventType: "codex.turn.started",
+        status: "running" as const,
+        sourceTurnId: "turn-running",
+        attributes: { startedAt: turn.startedAt! },
+      }],
+      listSessionTurns: async () => [turn],
+    }, session.sessionKey, 12_000);
+
+    const startedEvents = built.detail.traceEvents.filter((event) => event.eventType === "codex.turn.started");
+    expect(startedEvents).toHaveLength(1);
+    expect(built.detail.traceEvents.filter((event) =>
+      event.eventType === "codex.turn.completed" || event.eventType === "codex.turn.aborted",
+    )).toHaveLength(0);
+    expect(startedEvents[0].attributes).not.toHaveProperty("endedAt");
+    expect(startedEvents[0].attributes).not.toHaveProperty("durationMs");
+    expect(deriveSessionTimeline({
+      sessionKey: session.sessionKey,
+      messages: built.detail.messages,
+      traceEvents: built.detail.traceEvents,
+    }).turns[0].status).toBe("running");
+    expect(built.payload.search_text).not.toContain("Turn started");
   });
 
   it("builds remote upload payloads for Hermes sessions without enabling migration", () => {
@@ -530,6 +739,81 @@ describe("remote session sync model", () => {
     expect(parseDetailSnapshot(detail).messages).toHaveLength(2);
     expect(parsePortableSession(PORTABLE).sourceAgent).toBe("codex");
     expect(parsePortableSession({ ...PORTABLE, sourceAgent: "hermes" }).sourceAgent).toBe("hermes");
+  });
+
+  it("normalizes legacy trace statuses in old detail snapshots", () => {
+    const detail = {
+      ...buildRemoteSessionSnapshot(SESSION, MESSAGES, [], 10_000),
+      traceEvents: [{
+        index: 0,
+        kind: "event",
+        source: "codex",
+        title: "legacy result",
+        detail: "done",
+        timestamp: "2026-07-20T08:00:00.000Z",
+        status: "success",
+      }],
+    };
+
+    expect(parseDetailSnapshot(detail).traceEvents[0]?.status).toBe("completed");
+  });
+
+  it("validates optional Turn metadata and bounded trace attributes in detail snapshots", () => {
+    const base = buildRemoteSessionSnapshot(SESSION, MESSAGES, [], 10_000);
+    const trace = {
+      index: 0,
+      kind: "event",
+      source: "codex",
+      title: "Plan",
+      detail: "Inspect the parser",
+      timestamp: "2026-07-20T08:00:00.000Z",
+      eventType: "codex.plan",
+      sourceTurnId: "turn-1",
+      attributes: { plan: { step: "Inspect the parser" } },
+    };
+    const parsed = parseDetailSnapshot({
+      ...base,
+      messages: [{
+        ...MESSAGES[0],
+        phase: "commentary",
+        sourceTurnId: "turn-1",
+      }],
+      traceEvents: [trace],
+    });
+
+    expect(parsed.messages[0]).toMatchObject({ phase: "commentary", sourceTurnId: "turn-1" });
+    expect(parsed.traceEvents[0]).toMatchObject({
+      sourceTurnId: "turn-1",
+      attributes: { plan: { step: "Inspect the parser" } },
+    });
+
+    const rejected = parseDetailSnapshot({
+      ...base,
+      messages: [
+        { ...MESSAGES[0], phase: "draft" },
+        { ...MESSAGES[0], sourceTurnId: 42 },
+      ],
+      traceEvents: [
+        { ...trace, sourceTurnId: 42 },
+        { ...trace, attributes: "not-an-object" },
+        { ...trace, attributes: { text: "x".repeat(50_000) } },
+      ],
+    });
+    expect(rejected.messages).toEqual([]);
+    expect(rejected.traceEvents).toEqual([]);
+  });
+
+  it.each([1, 2, 3] as const)("reads schema %s snapshots without newer optional fields", (schemaVersion) => {
+    const parsed = parseDetailSnapshot({
+      ...buildRemoteSessionSnapshot(SESSION, MESSAGES, [], 10_000),
+      schemaVersion,
+      ...(schemaVersion === 3
+        ? { sourceArchive: { schemaVersion: 1, entries: [] } }
+        : {}),
+    });
+
+    expect(parsed.messages).toEqual(MESSAGES);
+    expect(parsed.traceEvents).toEqual([]);
   });
 
   it("preserves subagent relationships in portable sessions and defaults older payloads", () => {

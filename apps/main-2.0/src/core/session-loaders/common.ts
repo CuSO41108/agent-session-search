@@ -182,9 +182,9 @@ export function titleWithSummary(name: string, summary: string): string {
 export function statusFromExit(
   exitCode: number | undefined,
   fallback?: boolean,
-): "success" | "failure" | "unknown" {
-  if (typeof exitCode === "number") return exitCode === 0 ? "success" : "failure";
-  if (typeof fallback === "boolean") return fallback ? "success" : "failure";
+): "completed" | "failed" | "unknown" {
+  if (typeof exitCode === "number") return exitCode === 0 ? "completed" : "failed";
+  if (typeof fallback === "boolean") return fallback ? "completed" : "failed";
   return "unknown";
 }
 

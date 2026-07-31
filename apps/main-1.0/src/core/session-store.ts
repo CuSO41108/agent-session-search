@@ -34,6 +34,7 @@ import {
   type SessionSourceArtifact,
 } from "./session-source-archive";
 import type {
+  CodexIncrementalState,
   EnvironmentSyncState,
   EnvironmentUpsertInput,
   IndexedSession,
@@ -106,8 +107,9 @@ export class SessionStore {
     messages: SessionMessage[],
     tokenEvents: TokenUsageEvent[] = [],
     traceEvents: SessionTraceEvent[] = [],
+    codexIncrementalState?: CodexIncrementalState,
   ): void {
-    this.sessions.upsertIndexedSession(session, messages, tokenEvents, traceEvents);
+    this.sessions.upsertIndexedSession(session, messages, tokenEvents, traceEvents, codexIncrementalState);
   }
 
   isIndexedSessionFresh(session: IndexedSession): boolean {
@@ -266,6 +268,10 @@ export class SessionStore {
 
   getAllMessages(sessionKey: string): SessionMessage[] {
     return this.sessions.getAllMessages(sessionKey);
+  }
+
+  getCodexIncrementalState(sessionKey: string): CodexIncrementalState {
+    return this.sessions.getCodexIncrementalState(sessionKey);
   }
 
   getAttachmentFile(sessionKey: string, attachmentId: string) {

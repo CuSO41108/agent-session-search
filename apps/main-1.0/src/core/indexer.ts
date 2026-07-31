@@ -29,7 +29,7 @@ export function syncDefaultSessions(store: SessionStore, loadOptions: SessionLoa
   const loaded = loadDefaultSessions(loadOptions);
   let indexed = 0;
   for (const item of loaded) {
-    store.upsertIndexedSession(item.session, item.messages, item.tokenEvents, item.traceEvents);
+    store.upsertIndexedSession(item.session, item.messages, item.tokenEvents, item.traceEvents, item.codexIncrementalState);
     indexed++;
   }
   return {
@@ -141,7 +141,13 @@ export async function syncLoadedSessionsInBatches(
         store.touchIndexedAtIfMissing(item.session.sessionKey);
         skipped++;
       } else {
-        store.upsertIndexedSession(item.session, item.messages, item.tokenEvents, item.traceEvents);
+        store.upsertIndexedSession(
+          item.session,
+          item.messages,
+          item.tokenEvents,
+          item.traceEvents,
+          item.codexIncrementalState,
+        );
         indexed++;
       }
     } catch (error) {
@@ -232,6 +238,7 @@ export function syncDefaultSessionsInBatches(store: SessionStore, options: Batch
   const incrementalCodexSessions = new Map<string, { offset: number; loaded: LoadedSession }>();
   for (const file of storedFiles) {
     if (file.source !== "codex-cli" && file.source !== "codex-app" && file.source !== "tcodex-cli") continue;
+    if (file.fileMtimeMs <= 0) continue;
     const session = store.getSession(file.sessionKey);
     if (!session) continue;
     incrementalCodexSessions.set(file.filePath, {
@@ -241,6 +248,7 @@ export function syncDefaultSessionsInBatches(store: SessionStore, options: Batch
         messages: store.getAllMessages(file.sessionKey),
         tokenEvents: store.getTokenEvents(file.sessionKey),
         traceEvents: store.getTraceEvents(file.sessionKey),
+        codexIncrementalState: store.getCodexIncrementalState(file.sessionKey),
       },
     });
   }
@@ -336,7 +344,7 @@ export function indexMigratedSessionFile(
   if (!loaded) {
     throw new Error(`Migrated ${target} session could not be loaded from ${filePath}.`);
   }
-  store.upsertIndexedSession(loaded.session, loaded.messages, loaded.tokenEvents, loaded.traceEvents);
+  store.upsertIndexedSession(loaded.session, loaded.messages, loaded.tokenEvents, loaded.traceEvents, loaded.codexIncrementalState);
   return {
     running: false,
     indexed: 1,

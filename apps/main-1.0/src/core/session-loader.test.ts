@@ -18,6 +18,119 @@ import {
 import { TRACE_DETAIL_PREVIEW_MAX_CHARS } from "./trace-detail";
 
 describe("Codex session loading", () => {
+  it("preserves Codex message phases and normalizes turn lifecycle metadata", () => {
+    const rows = [
+      {
+        type: "session_meta",
+        timestamp: "2026-07-30T08:00:00Z",
+        payload: { id: "codex-lifecycle", cwd: "/repo", history_mode: "paginated" },
+      },
+      {
+        type: "event_msg",
+        timestamp: "2026-07-30T08:00:01Z",
+        payload: {
+          type: "task_started",
+          turn_id: "turn-1",
+          started_at: 1_775_059_201,
+          trace_id: "trace-1",
+          model_context_window: 200_000,
+        },
+      },
+      {
+        type: "response_item",
+        timestamp: "2026-07-30T08:00:02Z",
+        payload: {
+          type: "message",
+          id: "message-1",
+          role: "assistant",
+          phase: "commentary",
+          internal_chat_message_metadata_passthrough: { turn_id: "turn-1" },
+          content: [{ type: "output_text", text: "正在检查" }],
+        },
+      },
+      {
+        type: "response_item",
+        timestamp: "2026-07-30T08:00:03Z",
+        payload: {
+          type: "message",
+          id: "message-2",
+          role: "assistant",
+          phase: "final_answer",
+          internal_chat_message_metadata_passthrough: { turn_id: "turn-1" },
+          content: [{ type: "output_text", text: "检查完成" }],
+        },
+      },
+      {
+        type: "event_msg",
+        timestamp: "2026-07-30T08:00:04Z",
+        payload: {
+          type: "task_complete",
+          turn_id: "turn-1",
+          started_at: 1_775_059_201,
+          completed_at: 1_775_059_204,
+          duration_ms: 3_000,
+          time_to_first_token_ms: 250,
+          last_agent_message: "检查完成",
+        },
+      },
+    ];
+
+    const loaded = loadCodexSessionRows("/tmp/codex-lifecycle.jsonl", rows);
+
+    expect(loaded?.messages).toMatchObject([
+      { content: "正在检查", sourceTurnId: "turn-1", phase: "commentary" },
+      { content: "检查完成", sourceTurnId: "turn-1", phase: "final_answer" },
+    ]);
+    expect(loaded?.traceEvents).toMatchObject([
+      {
+        eventType: "codex.turn.started",
+        status: "running",
+        sourceTurnId: "turn-1",
+        attributes: { traceId: "trace-1", modelContextWindow: 200_000 },
+      },
+      {
+        eventType: "codex.turn.completed",
+        status: "completed",
+        sourceTurnId: "turn-1",
+        attributes: { durationMs: 3_000, timeToFirstTokenMs: 250 },
+      },
+    ]);
+    expect(loaded?.codexIncrementalState).toEqual({
+      historyMode: "paginated",
+      messageProvenance: [
+        { messageIndex: 0, sourceRecordId: "response_item:message-1" },
+        { messageIndex: 1, sourceRecordId: "response_item:message-2" },
+      ],
+      activeTurnIds: [],
+    });
+  });
+
+  it("only assigns an id-less abort to a uniquely active Codex turn", () => {
+    const meta = { type: "session_meta", payload: { id: "codex-abort", cwd: "/repo" } };
+    const started = (turnId: string) => ({ type: "event_msg", payload: { type: "task_started", turn_id: turnId } });
+
+    const unique = loadCodexSessionRows("/tmp/codex-abort.jsonl", [
+      meta,
+      started("turn-1"),
+      { type: "event_msg", payload: { type: "turn_aborted", reason: "interrupted", duration_ms: 10 } },
+    ]);
+    const ambiguous = loadCodexSessionRows("/tmp/codex-abort-ambiguous.jsonl", [
+      meta,
+      started("turn-1"),
+      started("turn-2"),
+      { type: "event_msg", payload: { type: "turn_aborted", reason: "replaced" } },
+    ]);
+
+    expect(unique?.traceEvents?.at(-1)).toMatchObject({
+      eventType: "codex.turn.aborted",
+      status: "aborted",
+      sourceTurnId: "turn-1",
+      attributes: { abortReason: "interrupted", durationMs: 10 },
+    });
+    expect(ambiguous?.traceEvents?.at(-1)?.sourceTurnId).toBeNull();
+    expect(ambiguous?.codexIncrementalState?.activeTurnIds).toEqual(["turn-1", "turn-2"]);
+  });
+
   it("detects current and legacy subagent metadata without treating ordinary forks as subagents", () => {
     expect(
       parseCodexSessionMetaLine({
@@ -142,6 +255,209 @@ describe("Codex session loading", () => {
 
     expect(loaded?.messages.map((entry) => entry.content)).toEqual(["保留第一问", "第一答", "最终问题", "最终回答"]);
     expect(loaded?.session.tokenUsage?.inputTokens).toBe(60);
+  });
+
+  it("removes the complete Codex lifecycle for a rolled-back turn", () => {
+    const retainedRows = [
+      { type: "session_meta", timestamp: "2026-07-30T09:00:00Z", payload: { id: "codex-lifecycle-rollback", cwd: "/repo" } },
+      { type: "event_msg", timestamp: "2026-07-30T09:00:01Z", payload: { type: "task_started", turn_id: "turn-kept" } },
+      {
+        type: "response_item",
+        timestamp: "2026-07-30T09:00:02Z",
+        payload: {
+          type: "message",
+          role: "user",
+          content: [{ type: "input_text", text: "保留的问题" }],
+          internal_chat_message_metadata_passthrough: { turn_id: "turn-kept" },
+        },
+      },
+      {
+        type: "response_item",
+        timestamp: "2026-07-30T09:00:03Z",
+        payload: {
+          type: "message",
+          role: "assistant",
+          content: [{ type: "output_text", text: "保留的回答" }],
+          internal_chat_message_metadata_passthrough: { turn_id: "turn-kept" },
+        },
+      },
+      {
+        type: "event_msg",
+        timestamp: "2026-07-30T09:00:03.500Z",
+        payload: {
+          type: "token_count",
+          info: { last_token_usage: { input_tokens: 10, output_tokens: 1 } },
+        },
+      },
+      { type: "event_msg", timestamp: "2026-07-30T09:00:04Z", payload: { type: "task_complete", turn_id: "turn-kept" } },
+    ];
+    const rolledBackRows = [
+      { type: "event_msg", timestamp: "2026-07-30T09:00:05Z", payload: { type: "task_started", turn_id: "turn-rolled" } },
+      {
+        type: "response_item",
+        timestamp: "2026-07-30T09:00:06Z",
+        payload: {
+          type: "message",
+          role: "user",
+          content: [{ type: "input_text", text: "撤销的问题" }],
+          internal_chat_message_metadata_passthrough: { turn_id: "turn-rolled" },
+        },
+      },
+      {
+        type: "event_msg",
+        timestamp: "2026-07-30T09:00:07Z",
+        payload: {
+          type: "token_count",
+          info: { last_token_usage: { input_tokens: 20, output_tokens: 2 } },
+        },
+      },
+      {
+        type: "event_msg",
+        timestamp: "2026-07-30T09:00:07.500Z",
+        payload: { type: "turn_aborted", turn_id: "turn-rolled", reason: "interrupted" },
+      },
+      { type: "event_msg", timestamp: "2026-07-30T09:00:08Z", payload: { type: "thread_rolled_back", num_turns: 1 } },
+      { type: "event_msg", timestamp: "2026-07-30T09:00:09Z", payload: { type: "task_started", turn_id: "turn-active-rolled" } },
+      { type: "event_msg", timestamp: "2026-07-30T09:00:10Z", payload: { type: "thread_rolled_back", num_turns: 1 } },
+    ];
+    const rows = [...retainedRows, ...rolledBackRows];
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "session-search-codex-lifecycle-rollback-"));
+    const filePath = path.join(tempDir, "sessions", "2026", "07", "30", "rollout.jsonl");
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.writeFileSync(filePath, `${retainedRows.map((row) => JSON.stringify(row)).join("\n")}\n`);
+
+    try {
+      const initialLoaded = loadCodexSessionFile(filePath);
+      if (!initialLoaded) throw new Error("expected the initial Codex fixture to load");
+      const initialOffset = fs.statSync(filePath).size;
+      fs.appendFileSync(filePath, `${rolledBackRows.map((row) => JSON.stringify(row)).join("\n")}\n`);
+      const incrementalLoaded = [...loadCodexSessionsIterator(tempDir, undefined, {
+        incrementalCodexSessions: new Map([[filePath, { offset: initialOffset, loaded: initialLoaded }]]),
+      })][0];
+
+      for (const loaded of [
+        loadCodexSessionRows(filePath, rows),
+        loadCodexSessionFile(filePath),
+        incrementalLoaded,
+      ]) {
+        const traceEvents = loaded?.traceEvents ?? [];
+        expect(loaded?.messages.map((message) => message.content)).toEqual(["保留的问题", "保留的回答"]);
+        expect(traceEvents.some((event) =>
+          event.sourceTurnId === "turn-rolled" || event.sourceTurnId === "turn-active-rolled"
+        )).toBe(false);
+        expect(traceEvents.filter((event) => event.sourceTurnId === "turn-kept")).toMatchObject([
+          { eventType: "codex.turn.started", status: "running" },
+          { eventType: "codex.turn.completed", status: "completed" },
+        ]);
+        expect(loaded?.tokenEvents?.map((event) => event.sourceTurnId)).toEqual(["turn-kept", "turn-rolled"]);
+        expect(loaded?.session.tokenUsage?.totalTokens).toBe(33);
+        expect(loaded?.codexIncrementalState?.activeTurnIds).toEqual([]);
+      }
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("assigns internal Turn ownership to legacy Codex rollouts", () => {
+    const retainedRows = [
+      { type: "session_meta", timestamp: "2026-07-30T09:00:00Z", payload: { id: "codex-legacy-turns", cwd: "/repo" } },
+      { type: "event_msg", timestamp: "2026-07-30T09:00:01Z", payload: { type: "task_started" } },
+      {
+        type: "response_item",
+        timestamp: "2026-07-30T09:00:02Z",
+        payload: { type: "message", role: "user", content: [{ type: "input_text", text: "保留的问题" }] },
+      },
+      {
+        type: "response_item",
+        timestamp: "2026-07-30T09:00:03Z",
+        payload: { type: "message", role: "assistant", content: [{ type: "output_text", text: "保留的回答" }] },
+      },
+      {
+        type: "event_msg",
+        timestamp: "2026-07-30T09:00:03.500Z",
+        payload: { type: "token_count", info: { last_token_usage: { input_tokens: 10, output_tokens: 1 } } },
+      },
+      { type: "event_msg", timestamp: "2026-07-30T09:00:04Z", payload: { type: "task_complete" } },
+    ];
+    const rolledBackRows = [
+      { type: "event_msg", timestamp: "2026-07-30T09:00:05Z", payload: { type: "task_started" } },
+      {
+        type: "response_item",
+        timestamp: "2026-07-30T09:00:06Z",
+        payload: { type: "message", role: "user", content: [{ type: "input_text", text: "回滚的问题" }] },
+      },
+      {
+        type: "response_item",
+        timestamp: "2026-07-30T09:00:07Z",
+        payload: { type: "message", role: "assistant", content: [{ type: "output_text", text: "回滚的回答" }] },
+      },
+      {
+        type: "event_msg",
+        timestamp: "2026-07-30T09:00:07.500Z",
+        payload: { type: "token_count", info: { last_token_usage: { input_tokens: 20, output_tokens: 2 } } },
+      },
+      { type: "event_msg", timestamp: "2026-07-30T09:00:08Z", payload: { type: "task_complete" } },
+      { type: "event_msg", timestamp: "2026-07-30T09:00:09Z", payload: { type: "thread_rolled_back", num_turns: 1 } },
+    ];
+    const replacementRows = [
+      { type: "event_msg", timestamp: "2026-07-30T09:00:10Z", payload: { type: "task_started" } },
+      {
+        type: "response_item",
+        timestamp: "2026-07-30T09:00:11Z",
+        payload: { type: "message", role: "user", content: [{ type: "input_text", text: "新的问题" }] },
+      },
+      {
+        type: "response_item",
+        timestamp: "2026-07-30T09:00:12Z",
+        payload: { type: "message", role: "assistant", content: [{ type: "output_text", text: "新的回答" }] },
+      },
+      { type: "event_msg", timestamp: "2026-07-30T09:00:13Z", payload: { type: "task_complete" } },
+    ];
+    const rows = [...retainedRows, ...rolledBackRows, ...replacementRows];
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "session-search-codex-legacy-turns-"));
+    const filePath = path.join(tempDir, "sessions", "2026", "07", "30", "rollout.jsonl");
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.writeFileSync(filePath, `${retainedRows.map((row) => JSON.stringify(row)).join("\n")}\n`);
+
+    try {
+      const initialLoaded = loadCodexSessionFile(filePath);
+      if (!initialLoaded) throw new Error("expected the initial Codex fixture to load");
+      const initialOffset = fs.statSync(filePath).size;
+      fs.appendFileSync(filePath, `${rolledBackRows.map((row) => JSON.stringify(row)).join("\n")}\n`);
+      const rolledBackLoaded = [...loadCodexSessionsIterator(tempDir, undefined, {
+        incrementalCodexSessions: new Map([[filePath, { offset: initialOffset, loaded: initialLoaded }]]),
+      })][0];
+      if (!rolledBackLoaded) throw new Error("expected the rolled-back Codex fixture to load");
+      const rolledBackOffset = fs.statSync(filePath).size;
+      fs.appendFileSync(filePath, `${replacementRows.map((row) => JSON.stringify(row)).join("\n")}\n`);
+      const incrementalLoaded = [...loadCodexSessionsIterator(tempDir, undefined, {
+        incrementalCodexSessions: new Map([[filePath, { offset: rolledBackOffset, loaded: rolledBackLoaded }]]),
+      })][0];
+
+      for (const loaded of [
+        loadCodexSessionRows(filePath, rows),
+        loadCodexSessionFile(filePath),
+        incrementalLoaded,
+      ]) {
+        const keptTurnId = loaded?.messages.find((message) => message.content === "保留的问题")?.sourceTurnId;
+        const replacementTurnId = loaded?.messages.find((message) => message.content === "新的问题")?.sourceTurnId;
+        const traceEvents = loaded?.traceEvents ?? [];
+        expect(keptTurnId).toBe("agent-recall:legacy-turn:1");
+        expect(replacementTurnId).toBe("agent-recall:legacy-turn:3");
+        expect(traceEvents.filter((event) => event.sourceTurnId === keptTurnId)).toMatchObject([
+          { eventType: "codex.turn.started" },
+          { eventType: "codex.turn.completed" },
+        ]);
+        expect(traceEvents.filter((event) => event.sourceTurnId === "agent-recall:legacy-turn:2")).toEqual([]);
+        expect(loaded?.tokenEvents?.map((event) => event.sourceTurnId)).toEqual([
+          "agent-recall:legacy-turn:1",
+          "agent-recall:legacy-turn:2",
+        ]);
+        expect(loaded?.session.tokenUsage?.totalTokens).toBe(33);
+      }
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
   });
 
   it("falls back to the complete Codex message sequence for an invalid rollback marker", () => {
@@ -542,24 +858,746 @@ describe("Codex session loading", () => {
 
     const loaded = loadCodexSessionFile(filePath);
 
-    expect(loaded?.traceEvents).toHaveLength(2);
+    expect(loaded?.traceEvents).toHaveLength(1);
     expect(loaded?.traceEvents?.[0]).toMatchObject({
-      kind: "tool_call",
+      kind: "tool_result",
       source: "codex",
       title: "shell_command · ls -la",
       callId: "call-1",
+      eventType: "codex.function_call",
+      status: "completed",
     });
-    expect(loaded?.traceEvents?.[1]).toMatchObject({
-      kind: "event",
-      source: "codex",
-      eventType: "exec_command_end",
-      title: "shell · ls -la",
-      callId: "call-1",
-      status: "success",
+    expect(loaded?.traceEvents?.[0].detail).toContain("total 8");
+    expect(loaded?.traceEvents?.[0].attributes).toMatchObject({
+      startedAt: "2026-06-01T10:02:00Z",
+      endedAt: "2026-06-01T10:04:00Z",
+      input: {
+        command: "ls -la",
+        workdir: "/repo",
+        cwd: "/repo",
+      },
+      output: {
+        stdout: "total 8",
+        exitCode: 0,
+        responseValue: "total 8",
+      },
     });
-    expect(loaded?.traceEvents?.[1].detail).toContain("total 8");
 
     fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("uses the explicit Codex execution terminal without dropping response output", () => {
+    const loaded = loadCodexSessionRows("/tmp/codex-failed-execution.jsonl", [
+      {
+        type: "session_meta",
+        timestamp: "2026-07-30T08:00:00Z",
+        payload: { id: "codex-failed-execution", cwd: "/repo" },
+      },
+      {
+        type: "response_item",
+        timestamp: "2026-07-30T08:00:01Z",
+        payload: {
+          type: "function_call",
+          name: "shell_command",
+          call_id: "failed-call-1",
+          arguments: JSON.stringify({ command: "cat missing.txt" }),
+        },
+      },
+      {
+        type: "response_item",
+        timestamp: "2026-07-30T08:00:02Z",
+        payload: {
+          type: "function_call_output",
+          call_id: "failed-call-1",
+          output: "command returned an error",
+        },
+      },
+      {
+        type: "event_msg",
+        timestamp: "2026-07-30T08:00:03Z",
+        payload: {
+          type: "exec_command_end",
+          call_id: "failed-call-1",
+          command: "cat missing.txt",
+          cwd: "/repo",
+          exit_code: 1,
+          stdout: "",
+          stderr: "No such file",
+        },
+      },
+      {
+        type: "response_item",
+        timestamp: "2026-07-30T08:00:04Z",
+        payload: {
+          type: "function_call_output",
+          call_id: "failed-call-1",
+          output: "final wrapper output",
+        },
+      },
+    ]);
+
+    expect(loaded?.traceEvents).toHaveLength(1);
+    expect(loaded?.traceEvents?.[0]).toMatchObject({
+      kind: "tool_result",
+      title: "shell_command · cat missing.txt",
+      timestamp: "2026-07-30T08:00:03Z",
+      status: "failed",
+      attributes: {
+        startedAt: "2026-07-30T08:00:01Z",
+        endedAt: "2026-07-30T08:00:04Z",
+        output: {
+          stderr: "No such file",
+          exitCode: 1,
+          responseValue: "final wrapper output",
+        },
+      },
+    });
+  });
+
+  it("extracts Codex custom tool calls and outputs without rewriting freeform input", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "session-search-"));
+    const filePath = path.join(dir, "rollout.jsonl");
+    const input = "{\"query\":\"select * from sessions\"}";
+    fs.writeFileSync(
+      filePath,
+      [
+        JSON.stringify({
+          type: "session_meta",
+          timestamp: "2026-06-01T10:00:00Z",
+          payload: { id: "codex-custom-trace-1", cwd: "/repo" },
+        }),
+        JSON.stringify({
+          type: "response_item",
+          timestamp: "2026-06-01T10:01:00Z",
+          payload: {
+            type: "custom_tool_call",
+            name: "exec",
+            call_id: "custom-1",
+            input,
+          },
+        }),
+        JSON.stringify({
+          type: "response_item",
+          timestamp: "2026-06-01T10:02:00Z",
+          payload: {
+            type: "custom_tool_call_output",
+            call_id: "custom-1",
+            output: "query completed",
+          },
+        }),
+      ].join("\n"),
+    );
+
+    const loaded = loadCodexSessionFile(filePath);
+
+    expect(loaded?.traceEvents).toHaveLength(1);
+    expect(loaded?.traceEvents?.[0]).toMatchObject({
+      index: 0,
+      kind: "tool_result",
+      source: "codex",
+      title: "exec",
+      timestamp: "2026-06-01T10:02:00Z",
+      callId: "custom-1",
+      eventType: "codex.custom_tool",
+      status: "completed",
+    });
+    expect(loaded?.traceEvents?.[0].detail).toContain(input);
+    expect(loaded?.traceEvents?.[0].detail).toContain("query completed");
+
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("preserves Codex tool identity and timing across intermediate call events", () => {
+    const loaded = loadCodexSessionRows("/tmp/codex-intermediate-tool-event.jsonl", [
+      {
+        type: "session_meta",
+        timestamp: "2026-07-30T10:50:23Z",
+        payload: { id: "codex-intermediate-tool-event", cwd: "/repo" },
+      },
+      {
+        type: "response_item",
+        timestamp: "2026-07-30T10:50:24Z",
+        payload: {
+          type: "function_call",
+          name: "run",
+          namespace: "web",
+          call_id: "web-call-1",
+          arguments: JSON.stringify({
+            search_query: [{ q: "custom tool call input format" }],
+          }),
+        },
+      },
+      {
+        type: "event_msg",
+        timestamp: "2026-07-30T10:50:26Z",
+        payload: {
+          type: "web_search_end",
+          call_id: "web-call-1",
+          query: "custom tool call input format",
+          action: { type: "search" },
+        },
+      },
+      {
+        type: "response_item",
+        timestamp: "2026-07-30T10:50:31Z",
+        payload: {
+          type: "function_call_output",
+          call_id: "web-call-1",
+          output: { results: [{ title: "Custom tools" }] },
+        },
+      },
+    ]);
+
+    expect(loaded?.traceEvents).toHaveLength(1);
+    expect(loaded?.traceEvents?.[0]).toMatchObject({
+      kind: "tool_result",
+      title: "web.run",
+      timestamp: "2026-07-30T10:50:31Z",
+      callId: "web-call-1",
+      eventType: "codex.function_call",
+      status: "completed",
+      attributes: {
+        startedAt: "2026-07-30T10:50:24Z",
+        endedAt: "2026-07-30T10:50:31Z",
+        input: {
+          search_query: [{ q: "custom tool call input format" }],
+          query: "custom tool call input format",
+          action: { type: "search" },
+        },
+        output: { results: [{ title: "Custom tools" }] },
+      },
+    });
+  });
+
+  it("pairs response tools in either order and never guesses for id-less calls", () => {
+    const loaded = loadCodexSessionRows("/tmp/codex-response-tools.jsonl", [
+      {
+        type: "session_meta",
+        timestamp: "2026-07-30T08:00:00Z",
+        payload: { id: "codex-response-tools", cwd: "/repo" },
+      },
+      {
+        type: "response_item",
+        timestamp: "2026-07-30T08:00:01Z",
+        payload: { type: "custom_tool_call_output", call_id: "reverse-1", output: "done" },
+      },
+      {
+        type: "response_item",
+        timestamp: "2026-07-30T08:00:02Z",
+        payload: { type: "custom_tool_call", call_id: "reverse-1", name: "reverse", input: "payload" },
+      },
+      {
+        type: "response_item",
+        timestamp: "2026-07-30T08:00:03Z",
+        payload: { type: "custom_tool_call", name: "same", input: "first" },
+      },
+      {
+        type: "response_item",
+        timestamp: "2026-07-30T08:00:04Z",
+        payload: { type: "custom_tool_call", name: "same", input: "second" },
+      },
+      {
+        type: "response_item",
+        timestamp: "2026-07-30T08:00:05Z",
+        payload: {
+          type: "local_shell_call",
+          id: "shell-1",
+          status: "completed",
+          action: { type: "exec", command: ["pwd"] },
+        },
+      },
+      {
+        type: "response_item",
+        timestamp: "2026-07-30T08:00:06Z",
+        payload: {
+          type: "tool_search_call",
+          call_id: "search-1",
+          execution: "search_tools",
+          arguments: { query: "docs" },
+        },
+      },
+      {
+        type: "response_item",
+        timestamp: "2026-07-30T08:00:07Z",
+        payload: {
+          type: "tool_search_output",
+          call_id: "search-1",
+          status: "completed",
+          execution: "search_tools",
+          tools: [{ name: "docs.search" }],
+        },
+      },
+      {
+        type: "response_item",
+        timestamp: "2026-07-30T08:00:08Z",
+        payload: {
+          type: "web_search_call",
+          id: "web-response-1",
+          status: "completed",
+          action: { type: "search", query: "AgentRecall" },
+        },
+      },
+      {
+        type: "response_item",
+        timestamp: "2026-07-30T08:00:09Z",
+        payload: {
+          type: "image_generation_call",
+          id: "image-response-1",
+          status: "completed",
+          revised_prompt: "safe prompt",
+          result: "response-opaque-result",
+        },
+      },
+    ]);
+
+    expect(loaded?.traceEvents).toHaveLength(7);
+    expect(loaded?.traceEvents?.filter((event) => event.callId === null)).toHaveLength(2);
+    expect(loaded?.traceEvents?.find((event) => event.callId === "reverse-1")).toMatchObject({
+      title: "reverse",
+      eventType: "codex.custom_tool",
+      status: "completed",
+      attributes: {
+        startedAt: "2026-07-30T08:00:01Z",
+        endedAt: "2026-07-30T08:00:02Z",
+        input: "payload",
+        output: "done",
+      },
+    });
+    expect(loaded?.traceEvents?.map((event) => event.eventType)).toEqual(expect.arrayContaining([
+      "codex.local_shell",
+      "codex.tool_search",
+      "codex.web_search",
+      "codex.image_generation",
+    ]));
+    expect(JSON.stringify(loaded?.traceEvents)).not.toContain("response-opaque-result");
+  });
+
+  it("uses paginated item_completed messages as the authoritative message record", () => {
+    const rows = [
+      {
+        type: "session_meta",
+        timestamp: "2026-07-30T08:00:00Z",
+        payload: { id: "codex-items", cwd: "/repo", history_mode: "paginated" },
+      },
+      {
+        type: "event_msg",
+        timestamp: "2026-07-30T08:00:01Z",
+        payload: { type: "task_started", turn_id: "turn-1" },
+      },
+      {
+        type: "response_item",
+        timestamp: "2026-07-30T08:00:01.500Z",
+        payload: {
+          type: "message",
+          id: "injected-context",
+          role: "user",
+          content: [{ type: "input_text", text: "注入给模型的上下文，不是真实用户 Turn" }],
+        },
+      },
+      {
+        type: "event_msg",
+        timestamp: "2026-07-30T08:00:02Z",
+        payload: {
+          type: "item_completed",
+          turn_id: "turn-1",
+          completed_at_ms: Date.parse("2026-07-30T08:00:02Z"),
+          item: {
+            type: "UserMessage",
+            id: "user-1",
+            content: [{ type: "text", text: "只存在于完成项的问题" }],
+          },
+        },
+      },
+      {
+        type: "event_msg",
+        timestamp: "2026-07-30T08:00:02.500Z",
+        payload: {
+          type: "item_completed",
+          turn_id: "turn-1",
+          completed_at_ms: Date.parse("2026-07-30T08:00:02.500Z"),
+          item: {
+            type: "HookPrompt",
+            id: "hook-1",
+            fragments: [{ text: "不能进入对话", hookRunId: "run-1" }],
+          },
+        },
+      },
+      {
+        type: "response_item",
+        timestamp: "2026-07-30T08:00:03Z",
+        payload: {
+          type: "message",
+          id: "agent-1",
+          role: "assistant",
+          phase: "commentary",
+          content: [{ type: "output_text", text: "流式草稿" }],
+        },
+      },
+      {
+        type: "event_msg",
+        timestamp: "2026-07-30T08:00:04Z",
+        payload: {
+          type: "item_completed",
+          turn_id: "turn-1",
+          completed_at_ms: Date.parse("2026-07-30T08:00:04Z"),
+          item: {
+            type: "AgentMessage",
+            id: "agent-1",
+            phase: "final_answer",
+            content: [{ type: "output_text", text: "权威最终回答" }],
+          },
+        },
+      },
+    ];
+
+    const loaded = loadCodexSessionRows("/tmp/codex-items.jsonl", rows);
+
+    expect(loaded?.messages).toMatchObject([
+      { role: "user", content: "只存在于完成项的问题", sourceTurnId: "turn-1" },
+      { role: "assistant", content: "权威最终回答", sourceTurnId: "turn-1", phase: "final_answer" },
+    ]);
+    expect(loaded?.codexIncrementalState?.messageProvenance).toEqual([
+      { messageIndex: 0, sourceRecordId: "item_completed:user-1" },
+      { messageIndex: 1, sourceRecordId: "item_completed:agent-1" },
+    ]);
+    expect(JSON.stringify(loaded?.messages)).not.toContain("不能进入对话");
+  });
+
+  it("normalizes completed Codex tools by strong item id and omits opaque payloads", () => {
+    const rows: unknown[] = [
+      {
+        type: "session_meta",
+        timestamp: "2026-07-30T08:00:00Z",
+        payload: { id: "codex-tool-items", cwd: "/repo", history_mode: "paginated" },
+      },
+      {
+        type: "event_msg",
+        timestamp: "2026-07-30T08:00:01Z",
+        payload: { type: "task_started", turn_id: "turn-1" },
+      },
+      {
+        type: "response_item",
+        timestamp: "2026-07-30T08:00:02Z",
+        payload: {
+          type: "function_call",
+          name: "shell_command",
+          call_id: "command-1",
+          arguments: JSON.stringify({ command: "ls -la" }),
+        },
+      },
+      {
+        type: "event_msg",
+        timestamp: "2026-07-30T08:00:03Z",
+        payload: { type: "exec_command_end", call_id: "command-1", command: "ls -la", stdout: "legacy" },
+      },
+      {
+        type: "event_msg",
+        timestamp: "2026-07-30T08:00:04Z",
+        payload: {
+          type: "item_completed",
+          turn_id: "turn-1",
+          started_at_ms: Date.parse("2026-07-30T08:00:02Z"),
+          completed_at_ms: Date.parse("2026-07-30T08:00:04Z"),
+          item: {
+            type: "CommandExecution",
+            id: "command-1",
+            command: ["ls", "-la"],
+            cwd: "/repo",
+            status: "completed",
+            stdout: "authoritative",
+            exit_code: 0,
+          },
+        },
+      },
+      {
+        type: "event_msg",
+        timestamp: "2026-07-30T08:00:05Z",
+        payload: {
+          type: "item_completed",
+          turn_id: "turn-1",
+          completed_at_ms: Date.parse("2026-07-30T08:00:05Z"),
+          item: {
+            type: "DynamicToolCall",
+            id: "dynamic-1",
+            namespace: "workspace",
+            tool: "lookup",
+            arguments: { query: "session", encrypted_payload: "must-not-index" },
+            status: "completed",
+            content_items: [{ text: "found" }],
+            success: true,
+          },
+        },
+      },
+      {
+        type: "event_msg",
+        timestamp: "2026-07-30T08:00:06Z",
+        payload: {
+          type: "item_completed",
+          turn_id: "turn-1",
+          completed_at_ms: Date.parse("2026-07-30T08:00:06Z"),
+          item: {
+            type: "ImageGeneration",
+            id: "image-1",
+            status: "completed",
+            revised_prompt: "diagram",
+            result: "opaque-image-result",
+            saved_path: "/tmp/diagram.png",
+          },
+        },
+      },
+    ];
+    const additionalItems = [
+      {
+        type: "McpToolCall",
+        id: "mcp-1",
+        server: "docs",
+        tool: "search",
+        arguments: { query: "session" },
+        status: "completed",
+        result: { content: [{ type: "text", text: "found" }] },
+        duration: "150ms",
+      },
+      {
+        type: "WebSearch",
+        id: "web-1",
+        query: "Codex protocol",
+        action: { type: "search", query: "Codex protocol" },
+        results: [{ title: "Protocol" }],
+      },
+      { type: "ImageView", id: "view-1", path: "file:///repo/diagram.png" },
+      {
+        type: "FileChange",
+        id: "patch-1",
+        changes: { "src/app.ts": { type: "update" } },
+        status: "completed",
+        auto_approved: true,
+        stdout: "Done!",
+      },
+      {
+        type: "Extension",
+        kind: "image_gen.generation",
+        id: "extension-image-1",
+        status: "completed",
+        revisedPrompt: "safe diagram",
+        result: "extension-opaque-result",
+        savedPath: "/tmp/extension.png",
+      },
+      {
+        type: "Extension",
+        kind: "web.search",
+        id: "extension-web-1",
+        query: "AgentRecall",
+        action: { type: "search", query: "AgentRecall" },
+        results: [{ title: "AgentRecall" }],
+      },
+      { type: "Extension", kind: "clock.sleep", id: "sleep-1", durationMs: 250 },
+      { type: "Extension", kind: "future.unknown", id: "unknown-1", payload: "ignored" },
+    ];
+    rows.push(...additionalItems.map((item, index) => ({
+      type: "event_msg",
+      timestamp: new Date(Date.parse("2026-07-30T08:00:07Z") + index * 1_000).toISOString(),
+      payload: {
+        type: "item_completed",
+        turn_id: "turn-1",
+        completed_at_ms: Date.parse("2026-07-30T08:00:07Z") + index * 1_000,
+        item,
+      },
+    })));
+
+    const loaded = loadCodexSessionRows("/tmp/codex-tool-items.jsonl", rows);
+
+    expect(loaded?.traceEvents).toHaveLength(11);
+    expect(loaded?.traceEvents?.filter((event) => event.callId === "command-1")).toHaveLength(1);
+    expect(loaded?.traceEvents?.find((event) => event.callId === "command-1")).toMatchObject({
+      kind: "tool_result",
+      eventType: "codex.command_execution",
+      status: "completed",
+      sourceTurnId: "turn-1",
+      attributes: {
+        durationMs: 2_000,
+        codex: { sourceItemId: "item_completed:command-1", rawType: "commandexecution" },
+      },
+    });
+    expect(loaded?.traceEvents?.map((event) => event.eventType)).toEqual(expect.arrayContaining([
+      "codex.dynamic_tool",
+      "codex.mcp_tool",
+      "codex.web_search",
+      "codex.image_view",
+      "codex.file_change",
+      "codex.image_generation",
+      "codex.extension.sleep",
+    ]));
+    expect(loaded?.traceEvents?.find((event) => event.callId === "sleep-1")?.title).toBe("wait · 250 ms");
+    expect(JSON.stringify(loaded?.traceEvents)).not.toContain("must-not-index");
+    expect(JSON.stringify(loaded?.traceEvents)).not.toContain("opaque-image-result");
+    expect(JSON.stringify(loaded?.traceEvents)).not.toContain("extension-opaque-result");
+  });
+
+  it("normalizes safe reasoning, annotation, collaboration, and context traces", () => {
+    const completed = (item: Record<string, unknown>, second: number) => ({
+      type: "event_msg",
+      timestamp: `2026-07-30T08:00:${String(second).padStart(2, "0")}Z`,
+      payload: {
+        type: "item_completed",
+        turn_id: "turn-1",
+        completed_at_ms: Date.parse(`2026-07-30T08:00:${String(second).padStart(2, "0")}Z`),
+        item,
+      },
+    });
+    const settings = {
+      model: "gpt-5",
+      cwd: "/repo",
+      approval_policy: "on_request",
+      sandbox_policy: { type: "workspace-write" },
+      permission_profile: { type: "workspace-write" },
+      reasoning_effort: "high",
+      personality: "pragmatic",
+      collaboration_mode: { mode: "default" },
+      world_state: "must-not-index-world-state",
+    };
+    const rows: unknown[] = [
+      {
+        type: "session_meta",
+        timestamp: "2026-07-30T08:00:00Z",
+        payload: { id: "codex-rich", cwd: "/repo", history_mode: "paginated" },
+      },
+      {
+        type: "event_msg",
+        timestamp: "2026-07-30T08:00:01Z",
+        payload: { type: "task_started", turn_id: "turn-1" },
+      },
+      {
+        type: "response_item",
+        timestamp: "2026-07-30T08:00:02Z",
+        payload: {
+          type: "reasoning",
+          id: "reason-1",
+          summary: [{ type: "summary_text", text: "检查索引边界" }],
+          content: [{ type: "reasoning_text", text: "must-not-index-raw-reasoning" }],
+          encrypted_content: "must-not-index-encrypted-reasoning",
+        },
+      },
+      {
+        type: "event_msg",
+        timestamp: "2026-07-30T08:00:03Z",
+        payload: { type: "agent_reasoning", text: "检查索引边界" },
+      },
+      {
+        type: "event_msg",
+        timestamp: "2026-07-30T08:00:03.500Z",
+        payload: { type: "agent_reasoning_raw_content", text: "must-not-index-legacy-raw" },
+      },
+      completed({
+        type: "Reasoning",
+        id: "reason-1",
+        summary_text: ["检查索引边界"],
+        raw_content: ["must-not-index-item-raw"],
+      }, 4),
+      completed({ type: "Plan", id: "plan-1", text: "1. 检查\n2. 修复" }, 5),
+      completed({
+        type: "EnteredReviewMode",
+        id: "review-in",
+        target: { type: "uncommitted_changes" },
+        user_facing_hint: "Reviewing changes",
+      }, 6),
+      completed({
+        type: "ExitedReviewMode",
+        id: "review-out",
+        review_output: { findings: "No blockers" },
+      }, 7),
+      completed({
+        type: "CollabAgentToolCall",
+        id: "collab-1",
+        tool: "spawn_agent",
+        status: "completed",
+        sender_thread_id: "parent-thread",
+        receiver_thread_ids: ["child-thread"],
+        receiver_agents: [{ thread_id: "child-thread", agent_nickname: "reviewer" }],
+        prompt: "must-not-index-collab-prompt",
+        agents_states: { "child-thread": "completed" },
+      }, 8),
+      completed({
+        type: "SubAgentActivity",
+        id: "activity-1",
+        kind: "started",
+        agent_thread_id: "child-thread",
+        agent_path: "reviewer",
+      }, 9),
+      completed({ type: "ContextCompaction", id: "compact-1" }, 10),
+      {
+        type: "response_item",
+        timestamp: "2026-07-30T08:00:11Z",
+        payload: {
+          type: "agent_message",
+          id: "agent-message-1",
+          author: "reviewer",
+          recipient: "parent",
+          content: [{ type: "input_text", text: "Review complete" }],
+        },
+      },
+      {
+        type: "response_item",
+        timestamp: "2026-07-30T08:00:12Z",
+        payload: {
+          type: "agent_message",
+          id: "agent-message-encrypted",
+          author: "reviewer",
+          recipient: "parent",
+          content: [{ type: "encrypted_content", encrypted_content: "must-not-index-agent-message" }],
+        },
+      },
+      {
+        type: "event_msg",
+        timestamp: "2026-07-30T08:00:13Z",
+        payload: {
+          type: "thread_goal_updated",
+          turnId: "turn-1",
+          goal: {
+            objective: "Finish parser",
+            status: "active",
+            tokenBudget: 2_000,
+            tokensUsed: 500,
+            timeUsedSeconds: 10,
+            private_state: "must-not-index-goal-private-state",
+          },
+        },
+      },
+      {
+        type: "event_msg",
+        timestamp: "2026-07-30T08:00:14Z",
+        payload: { type: "thread_settings_applied", thread_settings: settings },
+      },
+      {
+        type: "event_msg",
+        timestamp: "2026-07-30T08:00:15Z",
+        payload: { type: "thread_settings_applied", thread_settings: settings },
+      },
+      {
+        type: "turn_context",
+        timestamp: "2026-07-30T08:00:16Z",
+        payload: { ...settings, turn_id: "turn-1", timezone: "Asia/Shanghai" },
+      },
+    ];
+
+    const loaded = loadCodexSessionRows("/tmp/codex-rich.jsonl", rows);
+    const eventTypes = loaded?.traceEvents?.map((event) => event.eventType) ?? [];
+    const serialized = JSON.stringify(loaded?.traceEvents);
+
+    expect(eventTypes.filter((type) => type === "codex.reasoning_summary")).toHaveLength(1);
+    expect(eventTypes.filter((type) => type === "codex.thread.settings")).toHaveLength(2);
+    expect(eventTypes).toEqual(expect.arrayContaining([
+      "codex.plan",
+      "codex.review.entered",
+      "codex.review.exited",
+      "codex.goal.updated",
+      "codex.context.compaction",
+      "codex.collaboration.tool",
+      "codex.collaboration.activity",
+      "codex.collaboration.message",
+    ]));
+    expect(serialized).toContain("Review complete");
+    expect(serialized).toContain("permissionProfile");
+    expect(serialized).not.toMatch(/must-not-index/);
   });
 
   it("caps large Codex trace details during loading", () => {
@@ -1102,7 +2140,21 @@ describe("Claude session loading", () => {
             content: [
               { type: "text", text: "我先读文件" },
               { type: "tool_use", id: "tool-1", name: "Read", input: { file_path: "/repo/src/App.tsx" } },
+              { type: "tool_use", id: "tool-2", name: "Write", input: { file_path: "/repo/src/App.tsx" } },
+              { type: "tool_use", id: "tool-3", name: "Bash", input: { command: "npm test" } },
+            ],
+          },
+        }),
+        JSON.stringify({
+          type: "user",
+          timestamp: "2026-06-01T10:01:01Z",
+          cwd: "/repo",
+          sessionId: "claude-trace-1",
+          message: {
+            role: "user",
+            content: [
               { type: "tool_result", tool_use_id: "tool-1", content: "export function App() {}" },
+              { type: "tool_result", tool_use_id: "tool-2", content: "permission denied", is_error: true },
             ],
           },
         }),
@@ -1112,19 +2164,20 @@ describe("Claude session loading", () => {
     const loaded = loadClaudeCliSessions(claudeDir);
 
     expect(loaded[0].messages.map((message) => message.content)).toEqual(["我先读文件"]);
-    expect(loaded[0].traceEvents).toHaveLength(2);
-    expect(loaded[0].traceEvents?.[0]).toMatchObject({
-      kind: "tool_call",
-      source: "claude",
-      title: "Read · /repo/src/App.tsx",
-      callId: "tool-1",
-    });
-    expect(loaded[0].traceEvents?.[1]).toMatchObject({
-      kind: "tool_result",
-      source: "claude",
-      callId: "tool-1",
-    });
-    expect(loaded[0].traceEvents?.[1].detail).toContain("export function App");
+    expect(loaded[0].traceEvents).toMatchObject([
+      {
+        kind: "tool_call",
+        source: "claude",
+        title: "Read · /repo/src/App.tsx",
+        callId: "tool-1",
+        status: "running",
+      },
+      { kind: "tool_call", callId: "tool-2", status: "running" },
+      { kind: "tool_call", callId: "tool-3", status: "running" },
+      { kind: "tool_result", callId: "tool-1", status: "completed" },
+      { kind: "tool_result", callId: "tool-2", status: "failed" },
+    ]);
+    expect(loaded[0].traceEvents?.[3].detail).toContain("export function App");
 
     fs.rmSync(claudeDir, { recursive: true, force: true });
   });

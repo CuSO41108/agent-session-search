@@ -4,8 +4,9 @@ import * as path from "node:path";
 import { createRequire } from "node:module";
 import { describe, expect, it, vi } from "vitest";
 import { indexMigratedSessionFile, syncDefaultSessionsInBatches, syncLoadedSessionsInBatches } from "./indexer";
-import { createInMemoryStore } from "./session-store";
+import { createInMemoryStore, SessionStore } from "./session-store";
 import { writeMigratedSession } from "./session-migration-writers";
+import { migrateSessionStore } from "./store/schema";
 import type { IndexedSession, LoadedSession, MigrationTarget, PortableSession, SessionSource } from "./types";
 
 const require = createRequire(import.meta.url);
@@ -319,6 +320,58 @@ describe("indexer", () => {
     }
   });
 
+  it("rebuilds invalidated Codex sessions from the file head before resuming normal skips", async () => {
+    const db = new DatabaseSync(":memory:");
+    const store = new SessionStore(db);
+    const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "agent-recall-codex-freshness-"));
+    try {
+      writeCodexSession(homeDir, "codex-freshness", "fresh question", "Freshness");
+      await syncDefaultSessionsInBatches(store, { batchSize: 1, loadOptions: { homeDir } });
+      const sessionKey = "codex:codex-freshness";
+      const existing = store.getSession(sessionKey)!;
+      store.upsertIndexedSession(
+        existing,
+        store.getAllMessages(sessionKey),
+        store.getTokenEvents(sessionKey),
+        [{
+          index: 0,
+          kind: "event",
+          source: "codex",
+          title: "stale trace that is not in the source",
+          detail: "",
+          timestamp: "2026-06-01T10:01:00Z",
+        }],
+      );
+      db.prepare("DELETE FROM data_migrations WHERE id = 'codex-session-semantics-v2'").run();
+      migrateSessionStore(db);
+      expect(db.prepare(`
+        SELECT file_mtime_ms, content_indexed_mtime_ms, content_indexed_size
+        FROM sessions
+        WHERE session_key = 'codex:codex-freshness'
+      `).get()).toEqual({
+        file_mtime_ms: 0,
+        content_indexed_mtime_ms: 0,
+        content_indexed_size: 0,
+      });
+
+      const rebuilt = await syncDefaultSessionsInBatches(store, {
+        batchSize: 1,
+        loadOptions: { homeDir },
+      });
+      expect(rebuilt).toMatchObject({ indexed: 1, skipped: 0, total: 1 });
+      expect(store.getTraceEvents(sessionKey)).toEqual([]);
+
+      const warm = await syncDefaultSessionsInBatches(store, {
+        batchSize: 1,
+        loadOptions: { homeDir },
+      });
+      expect(warm).toMatchObject({ indexed: 0, skipped: 1, total: 1 });
+    } finally {
+      store.close();
+      fs.rmSync(homeDir, { recursive: true, force: true });
+    }
+  });
+
   it("indexes only the appended Codex tail after the first scan", async () => {
     const store = createInMemoryStore();
     const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "agent-recall-codex-tail-"));
@@ -341,6 +394,244 @@ describe("indexer", () => {
         "appended answer",
       ]);
       expect(original).toContain("original question");
+    } finally {
+      fs.rmSync(homeDir, { recursive: true, force: true });
+    }
+  });
+
+  it("indexes custom tool traces appended to a Codex session", async () => {
+    const store = createInMemoryStore();
+    const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "agent-recall-codex-custom-tail-"));
+    try {
+      const filePath = writeCodexSession(homeDir, "codex-custom-tail", "original question", "Custom Tail");
+      await syncDefaultSessionsInBatches(store, { batchSize: 1, loadOptions: { homeDir } });
+      fs.appendFileSync(
+        filePath,
+        [
+          "",
+          JSON.stringify({
+            type: "session_meta",
+            timestamp: "2026-06-01T10:01:30Z",
+            payload: { id: "codex-custom-tail", cwd: "/repo", history_mode: "paginated" },
+          }),
+          JSON.stringify({
+            type: "response_item",
+            timestamp: "2026-06-01T10:02:00Z",
+            payload: {
+              type: "custom_tool_call",
+              name: "exec",
+              call_id: "custom-tail-1",
+              input: "console.log('tail')",
+            },
+          }),
+          JSON.stringify({
+            type: "response_item",
+            timestamp: "2026-06-01T10:03:00Z",
+            payload: {
+              type: "custom_tool_call_output",
+              call_id: "custom-tail-1",
+              output: "tail",
+            },
+          }),
+          "",
+        ].join("\n"),
+      );
+
+      const warm = await syncDefaultSessionsInBatches(store, { batchSize: 1, loadOptions: { homeDir } });
+
+      expect(warm.indexed).toBe(1);
+      expect(store.getTraceEvents("codex:codex-custom-tail")).toEqual([
+        expect.objectContaining({
+          kind: "tool_result",
+          title: "exec",
+          callId: "custom-tail-1",
+          eventType: "codex.custom_tool",
+        }),
+      ]);
+
+      fs.appendFileSync(filePath, `${JSON.stringify({
+        type: "event_msg",
+        timestamp: "2026-06-01T10:04:00Z",
+        payload: {
+          type: "item_completed",
+          turn_id: "turn-tail",
+          completed_at_ms: Date.parse("2026-06-01T10:04:00Z"),
+          item: {
+            type: "DynamicToolCall",
+            id: "custom-tail-1",
+            namespace: "workspace",
+            tool: "exec",
+            arguments: "console.log('tail')",
+            status: "completed",
+            content_items: [{ text: "tail complete" }],
+            success: true,
+          },
+        },
+      })}\n`);
+      await syncDefaultSessionsInBatches(store, { batchSize: 1, loadOptions: { homeDir } });
+
+      expect(store.getTraceEvents("codex:codex-custom-tail")).toEqual([
+        expect.objectContaining({
+          kind: "tool_result",
+          title: "workspace.exec",
+          callId: "custom-tail-1",
+          eventType: "codex.dynamic_tool",
+          attributes: expect.objectContaining({
+            codex: { sourceItemId: "item_completed:custom-tail-1", rawType: "dynamictoolcall" },
+          }),
+        }),
+      ]);
+    } finally {
+      fs.rmSync(homeDir, { recursive: true, force: true });
+    }
+  });
+
+  it("restores an active Codex turn when lifecycle records arrive in separate scans", async () => {
+    const store = createInMemoryStore();
+    const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "agent-recall-codex-lifecycle-tail-"));
+    try {
+      const filePath = writeCodexSession(homeDir, "codex-lifecycle-tail", "original question", "Lifecycle Tail");
+      fs.appendFileSync(filePath, [
+        "",
+        JSON.stringify({
+          type: "session_meta",
+          timestamp: "2026-06-01T10:00:30Z",
+          payload: { id: "codex-lifecycle-tail", cwd: "/repo", history_mode: "paginated" },
+        }),
+        JSON.stringify({
+          type: "event_msg",
+          timestamp: "2026-06-01T10:01:00Z",
+          payload: { type: "task_started", turn_id: "turn-tail" },
+        }),
+        "",
+      ].join("\n"));
+      await syncDefaultSessionsInBatches(store, { batchSize: 1, loadOptions: { homeDir } });
+
+      expect(store.getCodexIncrementalState("codex:codex-lifecycle-tail").activeTurnIds).toEqual(["turn-tail"]);
+
+      fs.appendFileSync(filePath, [
+        JSON.stringify({
+          type: "response_item",
+          timestamp: "2026-06-01T10:02:00Z",
+          payload: {
+            type: "message",
+            id: "answer-tail",
+            role: "assistant",
+            phase: "final_answer",
+            content: [{ type: "output_text", text: "tail complete" }],
+          },
+        }),
+        JSON.stringify({
+          type: "event_msg",
+          timestamp: "2026-06-01T10:02:30Z",
+          payload: {
+            type: "token_count",
+            info: { last_token_usage: { input_tokens: 10, output_tokens: 1 } },
+          },
+        }),
+        JSON.stringify({
+          type: "event_msg",
+          timestamp: "2026-06-01T10:03:00Z",
+          payload: { type: "task_complete", turn_id: "turn-tail", duration_ms: 2_000 },
+        }),
+        "",
+      ].join("\n"));
+      await syncDefaultSessionsInBatches(store, { batchSize: 1, loadOptions: { homeDir } });
+
+      expect(store.getAllMessages("codex:codex-lifecycle-tail").at(-1)).toMatchObject({
+        content: "tail complete",
+        sourceTurnId: "turn-tail",
+        phase: "final_answer",
+      });
+      expect(store.getTraceEvents("codex:codex-lifecycle-tail").at(-1)).toMatchObject({
+        eventType: "codex.turn.completed",
+        sourceTurnId: "turn-tail",
+        attributes: { durationMs: 2_000 },
+      });
+      expect(store.getCodexIncrementalState("codex:codex-lifecycle-tail")).toMatchObject({
+        activeTurnIds: [],
+        messageProvenance: expect.arrayContaining([
+          { messageIndex: 1, sourceRecordId: "response_item:answer-tail" },
+        ]),
+      });
+
+      fs.appendFileSync(filePath, `${JSON.stringify({
+        type: "event_msg",
+        timestamp: "2026-06-01T10:04:00Z",
+        payload: {
+          type: "item_completed",
+          turn_id: "turn-tail",
+          completed_at_ms: Date.parse("2026-06-01T10:04:00Z"),
+          item: {
+            type: "AgentMessage",
+            id: "answer-tail",
+            phase: "final_answer",
+            content: [{ type: "output_text", text: "authoritative tail complete" }],
+          },
+        },
+      })}\n`);
+      await syncDefaultSessionsInBatches(store, { batchSize: 1, loadOptions: { homeDir } });
+
+      expect(store.getAllMessages("codex:codex-lifecycle-tail").at(-1)).toMatchObject({
+        content: "authoritative tail complete",
+        sourceTurnId: "turn-tail",
+        phase: "final_answer",
+      });
+      expect(store.getCodexIncrementalState("codex:codex-lifecycle-tail").messageProvenance).toContainEqual({
+        messageIndex: 1,
+        sourceRecordId: "item_completed:answer-tail",
+      });
+
+      fs.appendFileSync(filePath, [
+        JSON.stringify({
+          type: "event_msg",
+          timestamp: "2026-06-01T10:05:00Z",
+          payload: { type: "task_started", turn_id: "turn-rolled" },
+        }),
+        JSON.stringify({
+          type: "response_item",
+          timestamp: "2026-06-01T10:06:00Z",
+          payload: {
+            type: "message",
+            id: "question-rolled",
+            role: "user",
+            content: [{ type: "input_text", text: "rolled-back tail question" }],
+            internal_chat_message_metadata_passthrough: { turn_id: "turn-rolled" },
+          },
+        }),
+        JSON.stringify({
+          type: "event_msg",
+          timestamp: "2026-06-01T10:07:00Z",
+          payload: {
+            type: "token_count",
+            info: { last_token_usage: { input_tokens: 20, output_tokens: 2 } },
+          },
+        }),
+        JSON.stringify({
+          type: "event_msg",
+          timestamp: "2026-06-01T10:07:30Z",
+          payload: { type: "turn_aborted", turn_id: "turn-rolled", reason: "interrupted" },
+        }),
+        JSON.stringify({
+          type: "event_msg",
+          timestamp: "2026-06-01T10:08:00Z",
+          payload: { type: "thread_rolled_back", num_turns: 1 },
+        }),
+        "",
+      ].join("\n"));
+      await syncDefaultSessionsInBatches(store, { batchSize: 1, loadOptions: { homeDir } });
+
+      expect(store.getAllMessages("codex:codex-lifecycle-tail").some(
+        (message) => message.sourceTurnId === "turn-rolled",
+      )).toBe(false);
+      expect(store.getTraceEvents("codex:codex-lifecycle-tail").some(
+        (event) => event.sourceTurnId === "turn-rolled",
+      )).toBe(false);
+      expect(store.getTokenEvents("codex:codex-lifecycle-tail").map(
+        (event) => event.sourceTurnId,
+      )).toEqual(["turn-tail", "turn-rolled"]);
+      expect(store.getSession("codex:codex-lifecycle-tail")?.tokenUsage?.totalTokens).toBe(33);
+      expect(store.getCodexIncrementalState("codex:codex-lifecycle-tail").activeTurnIds).toEqual([]);
     } finally {
       fs.rmSync(homeDir, { recursive: true, force: true });
     }

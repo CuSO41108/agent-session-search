@@ -115,13 +115,39 @@ describe("TurnAccordion", () => {
     ]);
   });
 
-  it("omits tool spans when tool calls are hidden", async () => {
+  it("omits tool spans but keeps rich traces when tool calls are hidden", async () => {
     const feature = await loadTurnAccordion();
     expect(feature).not.toBeNull();
     if (!feature) return;
 
-    expect(feature.buildTurnTimeline(detail, false).map((item: { key: string }) => item.key)).toEqual([
+    const detailWithReasoning: SessionTurnDetail = {
+      ...detail,
+      spans: [
+        ...detail.spans,
+        {
+          id: "span-2",
+          parentSpanId: null,
+          spanIndex: 1,
+          kind: "event",
+          name: "Reasoning",
+          status: "completed",
+          startedAt: "2026-07-24T08:00:02.500Z",
+          endedAt: "2026-07-24T08:00:02.500Z",
+          callId: null,
+          input: null,
+          output: { text: "Checked the parser." },
+          error: null,
+          attributes: {
+            traceKind: "event",
+            eventType: "codex.reasoning_summary",
+          },
+        },
+      ],
+    };
+
+    expect(feature.buildTurnTimeline(detailWithReasoning, false).map((item: { key: string }) => item.key)).toEqual([
       "message:0",
+      "span:span-2",
       "message:1",
     ]);
   });
@@ -143,6 +169,61 @@ describe("TurnAccordion", () => {
     expect(html).toContain('aria-expanded="false"');
     expect(html).toContain("Inspect the failing test");
     expect(html).not.toContain("file contents");
+  });
+
+  it("uses Session live state only for the last Turn without a lifecycle terminal", async () => {
+    const feature = await loadTurnAccordion();
+    expect(feature).not.toBeNull();
+    if (!feature) return;
+
+    const renderStatus = (
+      status: "running" | "completed" | "aborted" | "failed",
+      live: boolean,
+      sourceTurnId: string | null = "turn-1",
+    ) =>
+      renderToStaticMarkup(createElement(feature.TurnAccordion, {
+        sessionKey: "session-a",
+        turns: [{
+          ...summary,
+          status,
+          sourceTurnId,
+          durationMs: 3_250,
+          timeToFirstTokenMs: 180,
+          errorCount: 2,
+          toolNames: ["Read", "Shell"],
+        }],
+        loading: false,
+        live,
+        matchedTurnId: null,
+        query: "",
+        language: "zh",
+        onLoadTurn: async () => detail,
+      }));
+
+    const completedLive = renderStatus("completed", true);
+    expect(completedLive).toContain('class="turn-status completed">已完成');
+    expect(completedLive).not.toContain('class="turn-status running"');
+
+    const abortedLive = renderStatus("aborted", true);
+    expect(abortedLive).toContain('class="turn-status aborted">已中断');
+    expect(abortedLive).not.toContain('class="turn-status running"');
+
+    const failedLive = renderStatus("failed", true);
+    expect(failedLive).toContain('class="turn-status failed">失败');
+    expect(failedLive).not.toContain('class="turn-status running"');
+
+    const runningLive = renderStatus("running", true);
+    expect(runningLive).toContain('class="turn-status running">进行中');
+    expect(runningLive).toContain("3.3s");
+    expect(runningLive).toContain("TTFT 180ms");
+
+    const runningClosed = renderStatus("running", false);
+    expect(runningClosed).toContain('class="turn-status completed">已完成');
+    expect(runningClosed).not.toContain('class="turn-status running"');
+
+    const legacyCompletedLive = renderStatus("completed", true, null);
+    expect(legacyCompletedLive).toContain('class="turn-status completed">已完成');
+    expect(legacyCompletedLive).not.toContain('class="turn-status running"');
   });
 
   it("renders a turn context menu with only the migration command", async () => {

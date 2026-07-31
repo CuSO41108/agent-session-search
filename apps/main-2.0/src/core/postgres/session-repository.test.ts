@@ -72,7 +72,7 @@ const traces: SessionTraceEvent[] = [
     detail: "login test failed",
     timestamp: "2026-07-20T08:00:03.000Z",
     callId: "call-1",
-    status: "failure",
+    status: "failed",
   },
 ];
 
@@ -105,6 +105,206 @@ describe("PostgresSessionRepository", () => {
 
   afterEach(async () => {
     await database.close();
+  });
+
+  it("preserves paginated Codex history when migrating to a new Session key", async () => {
+    const legacyKey = "ssh:dev:codex:legacy-paginated";
+    const targetKey = "ssh:dev:codex-cli:legacy-paginated";
+    await repository.upsertIndexedSession(
+      session({ sessionKey: legacyKey, rawId: "legacy-paginated" }),
+      [{
+        role: "assistant",
+        content: "legacy answer",
+        timestamp: "2026-07-30T08:00:01.000Z",
+        index: 0,
+        sourceTurnId: "legacy-turn-1",
+        phase: "final_answer",
+      }],
+      [],
+      [{
+        index: 0,
+        kind: "event",
+        source: "codex",
+        title: "Turn started",
+        detail: "",
+        timestamp: "2026-07-30T08:00:00.000Z",
+        eventType: "codex.turn.started",
+        status: "running",
+        sourceTurnId: "legacy-turn-1",
+      }],
+      {
+        historyMode: "paginated",
+        messageProvenance: [{ messageIndex: 0, sourceRecordId: "response_item:legacy-answer" }],
+        activeTurnIds: ["legacy-turn-1"],
+      },
+    );
+
+    await expect(repository.migrateSessionKeyPreservingUserState(legacyKey, targetKey))
+      .resolves.toBe(true);
+
+    await expect(repository.getSession(legacyKey)).resolves.toBeNull();
+    await expect(turnsRepository.getCodexIncrementalState(targetKey)).resolves.toEqual({
+      historyMode: "paginated",
+      messageProvenance: [{ messageIndex: 0, sourceRecordId: "response_item:legacy-answer" }],
+      activeTurnIds: ["legacy-turn-1"],
+    });
+  });
+
+  it("fills a missing target Codex history mode while merging Session keys", async () => {
+    const legacyKey = "ssh:dev:codex:shared-paginated";
+    const targetKey = "ssh:dev:codex-cli:shared-paginated";
+    await repository.upsertIndexedSession(
+      session({ sessionKey: targetKey, rawId: "shared-paginated" }),
+      messages,
+    );
+    await repository.upsertIndexedSession(
+      session({ sessionKey: legacyKey, rawId: "shared-paginated" }),
+      [],
+      [],
+      [],
+      {
+        historyMode: "paginated",
+        messageProvenance: [],
+        activeTurnIds: [],
+      },
+    );
+
+    await expect(repository.migrateSessionKeyPreservingUserState(legacyKey, targetKey))
+      .resolves.toBe(true);
+
+    await expect(turnsRepository.getCodexIncrementalState(targetKey)).resolves.toMatchObject({
+      historyMode: "paginated",
+    });
+  });
+
+  it("round-trips Codex lifecycle Turns and private incremental state", async () => {
+    const lifecycleMessages: SessionMessage[] = [
+      {
+        role: "assistant",
+        content: "done",
+        timestamp: "2026-07-30T08:00:01.000Z",
+        index: 0,
+        sourceTurnId: "turn-1",
+        phase: "final_answer",
+      },
+      {
+        role: "user",
+        content: "keep working",
+        timestamp: "2026-07-30T08:01:00.000Z",
+        index: 1,
+        sourceTurnId: "turn-2",
+      },
+    ];
+    const lifecycleTraces: SessionTraceEvent[] = [
+      {
+        index: 0,
+        kind: "event",
+        source: "codex",
+        title: "Turn started",
+        detail: "",
+        timestamp: "2026-07-30T08:00:00.000Z",
+        eventType: "codex.turn.started",
+        status: "running",
+        sourceTurnId: "turn-1",
+        attributes: { startedAt: "2026-07-30T08:00:00.000Z" },
+      },
+      {
+        index: 1,
+        kind: "event",
+        source: "codex",
+        title: "Turn completed",
+        detail: "",
+        timestamp: "2026-07-30T08:00:03.000Z",
+        eventType: "codex.turn.completed",
+        status: "completed",
+        sourceTurnId: "turn-1",
+        attributes: {
+          endedAt: "2026-07-30T08:00:03.000Z",
+          durationMs: 3_000,
+          timeToFirstTokenMs: 200,
+        },
+      },
+      {
+        index: 2,
+        kind: "event",
+        source: "codex",
+        title: "Turn started",
+        detail: "",
+        timestamp: "2026-07-30T08:01:00.000Z",
+        eventType: "codex.turn.started",
+        status: "running",
+        sourceTurnId: "turn-2",
+      },
+    ];
+    await repository.upsertIndexedSession(
+      session({ sessionKey: "codex:lifecycle", rawId: "lifecycle" }),
+      lifecycleMessages,
+      [{
+        timestamp: Date.parse("2026-07-30T08:00:02.000Z"),
+        dedupeKey: "turn-1-usage",
+        inputTokens: 10,
+        outputTokens: 1,
+        cachedInputTokens: 0,
+        reasoningOutputTokens: 0,
+        totalTokens: 11,
+        sourceTurnId: "turn-1",
+      }],
+      lifecycleTraces,
+      {
+        historyMode: "paginated",
+        messageProvenance: [
+          { messageIndex: 0, sourceRecordId: "response_item:answer-1" },
+          { messageIndex: 1, sourceRecordId: "response_item:user-2" },
+        ],
+        activeTurnIds: ["turn-2"],
+      },
+    );
+
+    const turns = await turnsRepository.listSessionTurns("codex:lifecycle");
+    expect(turns).toMatchObject([
+      {
+        sourceTurnId: "turn-1",
+        status: "completed",
+        durationMs: 3_000,
+        timeToFirstTokenMs: 200,
+        spanCount: 0,
+      },
+      {
+        sourceTurnId: "turn-2",
+        status: "running",
+        spanCount: 0,
+      },
+    ]);
+    expect(await turnsRepository.getAllMessages("codex:lifecycle")).toMatchObject([
+      {
+        sourceTurnId: "turn-1",
+        phase: "final_answer",
+      },
+      {
+        sourceTurnId: "turn-2",
+      },
+    ]);
+    expect(await turnsRepository.getTraceEvents("codex:lifecycle")).toMatchObject([
+      { sourceTurnId: "turn-1", eventType: "codex.turn.started" },
+      {
+        sourceTurnId: "turn-1",
+        eventType: "codex.turn.completed",
+        attributes: { durationMs: 3_000 },
+      },
+      { sourceTurnId: "turn-2", eventType: "codex.turn.started" },
+    ]);
+    expect(await repository.getTokenEvents("codex:lifecycle")).toMatchObject([{
+      dedupeKey: "turn-1-usage",
+      sourceTurnId: "turn-1",
+    }]);
+    expect(await turnsRepository.getCodexIncrementalState("codex:lifecycle")).toEqual({
+      historyMode: "paginated",
+      messageProvenance: [
+        { messageIndex: 0, sourceRecordId: "response_item:answer-1" },
+        { messageIndex: 1, sourceRecordId: "response_item:user-2" },
+      ],
+      activeTurnIds: ["turn-2"],
+    });
   });
 
   it("atomically replaces derived content while preserving user-owned state", async () => {
@@ -185,6 +385,20 @@ describe("PostgresSessionRepository", () => {
     })).resolves.toEqual([traces[1]]);
   });
 
+  it("normalizes legacy trace statuses when reading raw events", async () => {
+    await repository.upsertIndexedSession(session(), messages, tokens, traces);
+    await database.query(`
+      update agent_recall.session_raw_events
+      set payload = payload || '{"status":"failure"}'::jsonb
+      where session_key = 'codex:session-a'
+        and kind = 'trace'
+        and (payload->>'traceIndex')::integer = 1
+    `);
+
+    const stored = await turnsRepository.getTraceEvents("codex:session-a");
+    expect(stored[1]?.status).toBe("failed");
+  });
+
   it("replaces unsupported NUL characters while indexing a session", async () => {
     const messagesWithNul = messages.map((message, index) => (
       index === 1 ? { ...message, content: "The cache\u0000key is stale." } : message
@@ -205,9 +419,23 @@ describe("PostgresSessionRepository", () => {
   });
 
   it("lists lightweight Turn summaries in conversation order", async () => {
-    await repository.upsertIndexedSession(session(), messages, tokens, traces);
+    const tracesWithRichEvent: SessionTraceEvent[] = [
+      ...traces,
+      {
+        index: 2,
+        kind: "event",
+        source: "codex",
+        title: "Plan",
+        detail: "Retry after fixing the cache",
+        timestamp: "2026-07-20T08:01:01.000Z",
+        eventType: "codex.plan",
+        status: "failed",
+      },
+    ];
+    await repository.upsertIndexedSession(session(), messages, tokens, tracesWithRichEvent);
 
-    await expect(turnsRepository.listSessionTurns("codex:session-a")).resolves.toMatchObject([
+    const turns = await turnsRepository.listSessionTurns("codex:session-a");
+    expect(turns).toMatchObject([
       {
         turnIndex: 0,
         sourceMessageIndex: 0,
@@ -235,6 +463,10 @@ describe("PostgresSessionRepository", () => {
         spanCount: 0,
       },
     ]);
+    await expect(turnsRepository.getSessionTurn("codex:session-a", turns[1].id)).resolves.toMatchObject({
+      spanCount: 0,
+      spans: [expect.objectContaining({ kind: "event", name: "Plan" })],
+    });
   });
 
   it("loads one Turn trajectory and rejects a mismatched Session", async () => {

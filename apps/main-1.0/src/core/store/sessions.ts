@@ -7,7 +7,9 @@ import {
 import { codexTaskWorkspaceDate } from "../project-identity";
 import { LIVE_SESSION_INACTIVITY_TIMEOUT_MS } from "../refresh-policy";
 import { truncateTraceDetail } from "../trace-detail";
+import { normalizeSessionTraceStatus } from "../trace-presentation";
 import type {
+  CodexIncrementalState,
   IndexedSession,
   ProjectQueryOptions,
   ProjectSummary,
@@ -108,6 +110,7 @@ interface SessionRow {
   parent_session_id: string | null;
   content_indexed_mtime_ms: number;
   content_indexed_size: number;
+  codex_history_mode: string | null;
 }
 
 type ProjectAggregateRow = {
@@ -140,7 +143,21 @@ interface TraceEventRow {
   timestamp: string;
   call_id: string | null;
   event_type: string | null;
-  status: SessionTraceEvent["status"] | null;
+  status: string | null;
+  source_turn_id: string | null;
+  attributes_json: string | null;
+}
+
+function parseTraceAttributes(value: string | null): Record<string, unknown> | undefined {
+  if (!value) return undefined;
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 export interface TraceEventQueryOptions {
@@ -172,6 +189,7 @@ export class SessionsStore {
     messages: SessionMessage[],
     tokenEvents: TokenUsageEvent[] = [],
     traceEvents: SessionTraceEvent[] = [],
+    codexIncrementalState?: CodexIncrementalState,
   ): void {
     const normalizedTokenEvents = tokenEvents.map(normalizeTokenEvent).filter((event) => event.totalTokens > 0 && event.dedupeKey);
     const tokenUsage = normalizedTokenEvents.length > 0 ? tokenUsageFromEvents(normalizedTokenEvents) : normalizeTokenUsage(session.tokenUsage);
@@ -186,9 +204,9 @@ export class SessionsStore {
             session_key, raw_id, source, environment_id, storage_environment_id, project_path, file_path, original_title, first_question,
             timestamp, file_mtime_ms, file_size, pr_url, pr_number, message_count,
             input_tokens, output_tokens, cached_input_tokens, reasoning_output_tokens, total_tokens, indexed_at,
-            content_indexed_mtime_ms, content_indexed_size, is_subagent, parent_session_id
+            content_indexed_mtime_ms, content_indexed_size, is_subagent, parent_session_id, codex_history_mode
           )
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           ON CONFLICT(session_key) DO UPDATE SET
             raw_id = excluded.raw_id,
             source = excluded.source,
@@ -214,6 +232,7 @@ export class SessionsStore {
             content_indexed_size = excluded.content_indexed_size,
             is_subagent = excluded.is_subagent,
             parent_session_id = excluded.parent_session_id,
+            codex_history_mode = excluded.codex_history_mode,
             source_available = 1
         `,
         )
@@ -243,6 +262,7 @@ export class SessionsStore {
           session.fileSize,
           session.isSubagent ? 1 : 0,
           session.parentSessionId ?? null,
+          codexIncrementalState?.historyMode ?? null,
         );
 
       this.db.prepare("DELETE FROM messages WHERE session_key = ?").run(session.sessionKey);
@@ -253,10 +273,23 @@ export class SessionsStore {
       this.db.prepare("DELETE FROM session_fts WHERE session_key = ?").run(session.sessionKey);
 
       const insertMessage = this.db.prepare(
-        "INSERT INTO messages (session_key, message_index, role, content, timestamp) VALUES (?, ?, ?, ?, ?)",
+        `INSERT INTO messages (
+          session_key, message_index, role, content, timestamp, source_turn_id, phase, source_record_id
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       );
       for (const message of messages) {
-        insertMessage.run(session.sessionKey, message.index, message.role, message.content, message.timestamp);
+        const sourceRecordId = codexIncrementalState?.messageProvenance
+          .find((entry) => entry.messageIndex === message.index)?.sourceRecordId ?? null;
+        insertMessage.run(
+          session.sessionKey,
+          message.index,
+          message.role,
+          message.content,
+          message.timestamp,
+          message.sourceTurnId ?? null,
+          message.phase ?? null,
+          sourceRecordId,
+        );
       }
 
       const insertAttachment = this.db.prepare(
@@ -309,9 +342,9 @@ export class SessionsStore {
         `
         INSERT INTO token_events (
           session_key, dedupe_key, timestamp, input_tokens, output_tokens,
-          cached_input_tokens, reasoning_output_tokens, total_tokens
+          cached_input_tokens, reasoning_output_tokens, total_tokens, source_turn_id
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
       `,
       );
       for (const event of normalizedTokenEvents) {
@@ -324,6 +357,7 @@ export class SessionsStore {
           event.cachedInputTokens,
           event.reasoningOutputTokens,
           event.totalTokens,
+          event.sourceTurnId ?? null,
         );
       }
 
@@ -331,9 +365,9 @@ export class SessionsStore {
         `
         INSERT INTO trace_events (
           session_key, trace_index, kind, source, title, detail,
-          timestamp, call_id, event_type, status
+          timestamp, call_id, event_type, status, source_turn_id, attributes_json
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `,
       );
       for (const event of traceEvents) {
@@ -348,6 +382,8 @@ export class SessionsStore {
           event.callId ?? null,
           event.eventType ?? null,
           event.status ?? null,
+          event.sourceTurnId ?? null,
+          event.attributes ? JSON.stringify(event.attributes) : null,
         );
       }
 
@@ -444,7 +480,8 @@ export class SessionsStore {
 
   getTokenEvents(sessionKey: string): TokenUsageEvent[] {
     return this.db.prepare(`
-      SELECT timestamp, dedupe_key, input_tokens, output_tokens, cached_input_tokens, reasoning_output_tokens, total_tokens
+      SELECT timestamp, dedupe_key, input_tokens, output_tokens, cached_input_tokens,
+        reasoning_output_tokens, total_tokens, source_turn_id
       FROM token_events
       WHERE session_key = ?
       ORDER BY timestamp, dedupe_key
@@ -458,6 +495,7 @@ export class SessionsStore {
         cachedInputTokens: Number(value.cached_input_tokens),
         reasoningOutputTokens: Number(value.reasoning_output_tokens),
         totalTokens: Number(value.total_tokens),
+        sourceTurnId: typeof value.source_turn_id === "string" ? value.source_turn_id : null,
       };
     });
   }
@@ -543,9 +581,9 @@ export class SessionsStore {
           `
           INSERT INTO token_events (
             session_key, dedupe_key, timestamp, input_tokens, output_tokens,
-            cached_input_tokens, reasoning_output_tokens, total_tokens
+            cached_input_tokens, reasoning_output_tokens, total_tokens, source_turn_id
           )
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         `,
         );
         for (const event of normalizedTokenEvents) {
@@ -558,6 +596,7 @@ export class SessionsStore {
             event.cachedInputTokens,
             event.reasoningOutputTokens,
             event.totalTokens,
+            event.sourceTurnId ?? null,
           );
         }
       }
@@ -643,7 +682,7 @@ export class SessionsStore {
       const legacy = this.db
         .prepare(
           `SELECT custom_title, favorited, hidden, last_opened_at, last_resumed_at,
-             ai_summary, ai_summary_model, ai_summary_at, ai_summary_basis
+             ai_summary, ai_summary_model, ai_summary_at, ai_summary_basis, codex_history_mode
            FROM sessions WHERE session_key = ?`,
         )
         .get(legacyKey) as
@@ -658,6 +697,7 @@ export class SessionsStore {
           | "ai_summary_model"
           | "ai_summary_at"
           | "ai_summary_basis"
+          | "codex_history_mode"
         >
         | undefined;
       if (!legacy) return;
@@ -694,7 +734,8 @@ export class SessionsStore {
                ai_summary_model = CASE WHEN ai_summary IS NULL THEN ? ELSE ai_summary_model END,
                ai_summary_at = CASE WHEN ai_summary IS NULL THEN ? ELSE ai_summary_at END,
                ai_summary_basis = CASE WHEN ai_summary IS NULL THEN ? ELSE ai_summary_basis END,
-               ai_summary = COALESCE(ai_summary, ?)
+               ai_summary = COALESCE(ai_summary, ?),
+               codex_history_mode = COALESCE(codex_history_mode, ?)
              WHERE session_key = ?`,
           )
           .run(
@@ -711,6 +752,7 @@ export class SessionsStore {
             legacy.ai_summary_at,
             legacy.ai_summary_basis,
             legacy.ai_summary,
+            legacy.codex_history_mode,
             targetKey,
           );
         this.db
@@ -721,8 +763,13 @@ export class SessionsStore {
           .run(targetKey, legacyKey);
         this.db
           .prepare(
-            `INSERT OR IGNORE INTO messages (session_key, message_index, role, content, timestamp)
-             SELECT ?, message_index, role, content, timestamp FROM messages WHERE session_key = ?`,
+            `INSERT OR IGNORE INTO messages (
+               session_key, message_index, role, content, timestamp,
+               source_turn_id, phase, source_record_id
+             )
+             SELECT ?, message_index, role, content, timestamp,
+               source_turn_id, phase, source_record_id
+             FROM messages WHERE session_key = ?`,
           )
           .run(targetKey, legacyKey);
         this.db
@@ -735,10 +782,10 @@ export class SessionsStore {
           .prepare(
             `INSERT OR IGNORE INTO token_events (
                session_key, dedupe_key, timestamp, input_tokens, output_tokens,
-               cached_input_tokens, reasoning_output_tokens, total_tokens
+               cached_input_tokens, reasoning_output_tokens, total_tokens, source_turn_id
              )
              SELECT ?, dedupe_key, timestamp, input_tokens, output_tokens,
-               cached_input_tokens, reasoning_output_tokens, total_tokens
+               cached_input_tokens, reasoning_output_tokens, total_tokens, source_turn_id
              FROM token_events WHERE session_key = ?`,
           )
           .run(targetKey, legacyKey);
@@ -746,10 +793,10 @@ export class SessionsStore {
           .prepare(
             `INSERT OR IGNORE INTO trace_events (
                session_key, trace_index, kind, source, title, detail,
-               timestamp, call_id, event_type, status
+               timestamp, call_id, event_type, status, source_turn_id, attributes_json
              )
              SELECT ?, trace_index, kind, source, title, detail,
-               timestamp, call_id, event_type, status
+               timestamp, call_id, event_type, status, source_turn_id, attributes_json
              FROM trace_events WHERE session_key = ?`,
           )
           .run(targetKey, legacyKey);
@@ -1092,7 +1139,7 @@ export class SessionsStore {
       this.db
         .prepare(
           `
-          SELECT message_index, role, content, timestamp
+          SELECT message_index, role, content, timestamp, source_turn_id, phase
           FROM messages
           WHERE session_key = ?
           ORDER BY message_index
@@ -1104,8 +1151,17 @@ export class SessionsStore {
         role: "user" | "assistant";
         content: string;
         timestamp: string;
+        source_turn_id: string | null;
+        phase: string | null;
       }>
-    ).map((row) => ({ index: row.message_index, role: row.role, content: row.content, timestamp: row.timestamp }));
+    ).map((row) => ({
+      index: row.message_index,
+      role: row.role,
+      content: row.content,
+      timestamp: row.timestamp,
+      ...(row.source_turn_id ? { sourceTurnId: row.source_turn_id } : {}),
+      ...(row.phase === "commentary" || row.phase === "final_answer" ? { phase: row.phase } : {}),
+    }));
     if (messages.length === 0) return messages;
     const messageIndexes = new Set(messages.map((message) => message.index));
     const attachments = this.db.prepare(
@@ -1165,6 +1221,39 @@ export class SessionsStore {
     return this.getMessages(sessionKey, 0, 100_000);
   }
 
+  getCodexIncrementalState(sessionKey: string): CodexIncrementalState {
+    const session = this.db.prepare(
+      "SELECT codex_history_mode FROM sessions WHERE session_key = ?",
+    ).get(sessionKey) as { codex_history_mode: string | null } | undefined;
+    const messageProvenance = this.db.prepare(
+      `SELECT message_index, source_record_id
+       FROM messages
+       WHERE session_key = ?
+       ORDER BY message_index`,
+    ).all(sessionKey) as Array<{ message_index: number; source_record_id: string | null }>;
+    const lifecycle = this.db.prepare(
+      `SELECT event_type, source_turn_id
+       FROM trace_events
+       WHERE session_key = ?
+         AND event_type IN ('codex.turn.started', 'codex.turn.completed', 'codex.turn.aborted')
+       ORDER BY trace_index`,
+    ).all(sessionKey) as Array<{ event_type: string; source_turn_id: string | null }>;
+    const activeTurnIds = new Set<string>();
+    for (const event of lifecycle) {
+      if (!event.source_turn_id) continue;
+      if (event.event_type === "codex.turn.started") activeTurnIds.add(event.source_turn_id);
+      else activeTurnIds.delete(event.source_turn_id);
+    }
+    return {
+      historyMode: session?.codex_history_mode === "paginated" ? "paginated" : "legacy",
+      messageProvenance: messageProvenance.map((row) => ({
+        messageIndex: row.message_index,
+        sourceRecordId: row.source_record_id,
+      })),
+      activeTurnIds: [...activeTurnIds],
+    };
+  }
+
   getTraceEvents(sessionKey: string, options: TraceEventQueryOptions = {}): SessionTraceEvent[] {
     const where = ["session_key = ?"];
     const params: Array<string | number> = [sessionKey];
@@ -1182,7 +1271,8 @@ export class SessionsStore {
       this.db
         .prepare(
           `
-          SELECT trace_index, kind, source, title, detail, timestamp, call_id, event_type, status
+          SELECT trace_index, kind, source, title, detail, timestamp, call_id, event_type, status,
+            source_turn_id, attributes_json
           FROM trace_events
           WHERE ${where.join(" AND ")}
           ORDER BY trace_index
@@ -1190,17 +1280,22 @@ export class SessionsStore {
         `,
         )
         .all(...params) as unknown as TraceEventRow[]
-    ).map((row) => ({
-      index: row.trace_index,
-      kind: row.kind,
-      source: row.source,
-      title: row.title,
-      detail: row.detail,
-      timestamp: row.timestamp,
-      ...(row.call_id ? { callId: row.call_id } : {}),
-      ...(row.event_type ? { eventType: row.event_type } : {}),
-      ...(row.status ? { status: row.status } : {}),
-    }));
+    ).map((row) => {
+      const status = normalizeSessionTraceStatus(row.status);
+      return {
+        index: row.trace_index,
+        kind: row.kind,
+        source: row.source,
+        title: row.title,
+        detail: row.detail,
+        timestamp: row.timestamp,
+        ...(row.call_id ? { callId: row.call_id } : {}),
+        ...(row.event_type ? { eventType: row.event_type } : {}),
+        ...(status ? { status } : {}),
+        ...(row.source_turn_id ? { sourceTurnId: row.source_turn_id } : {}),
+        ...(parseTraceAttributes(row.attributes_json) ? { attributes: parseTraceAttributes(row.attributes_json) } : {}),
+      };
+    });
   }
 
   getStats(options: SessionStatsOptions = {}, now = Date.now()): SessionStats {
@@ -2148,6 +2243,7 @@ function normalizeTokenEvent(event: TokenUsageEvent): TokenUsageEvent {
     ...normalizeTokenUsage(event),
     timestamp: nonNegativeNumber(event.timestamp),
     dedupeKey: event.dedupeKey.trim(),
+    sourceTurnId: typeof event.sourceTurnId === "string" ? event.sourceTurnId.trim() || null : null,
   };
 }
 

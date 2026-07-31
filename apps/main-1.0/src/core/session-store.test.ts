@@ -135,7 +135,7 @@ const traceEvents: SessionTraceEvent[] = [
     detail: "stdout:\npass",
     timestamp: "2026-06-01T10:03:00Z",
     callId: "call-1",
-    status: "success",
+    status: "completed",
   },
 ];
 
@@ -146,8 +146,21 @@ describe("SessionStore", () => {
     const targetKey = "ssh:ssh-devbox:codex-cli:legacy-all-data";
     const eventTime = new Date("2026-07-15T10:00:00Z").getTime();
     const legacyMessages: SessionMessage[] = [
-      { role: "user", content: "legacy question", timestamp: "2026-07-15T10:00:00Z", index: 0 },
-      { role: "assistant", content: "legacy answer", timestamp: "2026-07-15T10:01:00Z", index: 1 },
+      {
+        role: "user",
+        content: "legacy question",
+        timestamp: "2026-07-15T10:00:00Z",
+        index: 0,
+        sourceTurnId: "legacy-turn-1",
+      },
+      {
+        role: "assistant",
+        content: "legacy answer",
+        timestamp: "2026-07-15T10:01:00Z",
+        index: 1,
+        sourceTurnId: "legacy-turn-1",
+        phase: "final_answer",
+      },
     ];
     const legacyTrace: SessionTraceEvent[] = [{
       index: 0,
@@ -156,6 +169,10 @@ describe("SessionStore", () => {
       title: "legacy trace",
       detail: "trace detail",
       timestamp: "2026-07-15T10:02:00Z",
+      eventType: "codex.turn.started",
+      status: "running",
+      sourceTurnId: "legacy-turn-1",
+      attributes: { startedAt: "2026-07-15T10:02:00Z" },
     }];
     const tokenEvent = {
       timestamp: eventTime,
@@ -165,6 +182,7 @@ describe("SessionStore", () => {
       cachedInputTokens: 2,
       reasoningOutputTokens: 1,
       totalTokens: 18,
+      sourceTurnId: "legacy-turn-1",
     };
     store.upsertIndexedSession(
       sampleSession({
@@ -177,6 +195,14 @@ describe("SessionStore", () => {
       legacyMessages,
       [tokenEvent],
       legacyTrace,
+      {
+        historyMode: "paginated",
+        messageProvenance: [
+          { messageIndex: 0, sourceRecordId: "response_item:legacy-question" },
+          { messageIndex: 1, sourceRecordId: "response_item:legacy-answer" },
+        ],
+        activeTurnIds: ["legacy-turn-1"],
+      },
     );
     store.addTag(legacyKey, "legacy-tag");
     const migrations = [
@@ -194,6 +220,17 @@ describe("SessionStore", () => {
     expect(store.getSession(targetKey)).toMatchObject({ tags: ["legacy-tag"], messageCount: 2 });
     expect(store.getMessages(targetKey)).toEqual(legacyMessages);
     expect(store.getTraceEvents(targetKey)).toEqual(legacyTrace);
+    expect(store.getTokenEvents(targetKey)).toEqual([
+      expect.objectContaining({ dedupeKey: "legacy-token-event", sourceTurnId: "legacy-turn-1" }),
+    ]);
+    expect(store.getCodexIncrementalState(targetKey)).toEqual({
+      historyMode: "paginated",
+      messageProvenance: [
+        { messageIndex: 0, sourceRecordId: "response_item:legacy-question" },
+        { messageIndex: 1, sourceRecordId: "response_item:legacy-answer" },
+      ],
+      activeTurnIds: ["legacy-turn-1"],
+    });
     expect(store.listSessionMigrations(targetKey)).toEqual(
       [...migrations].reverse().map((migration) => ({ ...migration, sourceSessionKey: targetKey })),
     );
@@ -218,8 +255,21 @@ describe("SessionStore", () => {
       { role: "assistant", content: "target only", timestamp: "2026-07-15T10:02:00Z", index: 2 },
     ];
     const legacyMessages: SessionMessage[] = [
-      { role: "user", content: "legacy conflict", timestamp: "2026-07-15T10:00:30Z", index: 0 },
-      { role: "user", content: "legacy only", timestamp: "2026-07-15T10:01:00Z", index: 1 },
+      {
+        role: "user",
+        content: "legacy conflict",
+        timestamp: "2026-07-15T10:00:30Z",
+        index: 0,
+        sourceTurnId: "legacy-turn-conflict",
+      },
+      {
+        role: "assistant",
+        content: "legacy only",
+        timestamp: "2026-07-15T10:01:00Z",
+        index: 1,
+        sourceTurnId: "legacy-turn-1",
+        phase: "final_answer",
+      },
     ];
     const targetTrace: SessionTraceEvent[] = [
       { index: 0, kind: "event", source: "codex", title: "target conflict", detail: "target", timestamp: "2026-07-15T10:00:00Z" },
@@ -227,7 +277,18 @@ describe("SessionStore", () => {
     ];
     const legacyTrace: SessionTraceEvent[] = [
       { index: 0, kind: "event", source: "codex", title: "legacy conflict", detail: "legacy", timestamp: "2026-07-15T10:00:30Z" },
-      { index: 1, kind: "event", source: "codex", title: "legacy only", detail: "legacy", timestamp: "2026-07-15T10:01:00Z" },
+      {
+        index: 1,
+        kind: "event",
+        source: "codex",
+        title: "legacy only",
+        detail: "legacy",
+        timestamp: "2026-07-15T10:01:00Z",
+        eventType: "codex.turn.started",
+        status: "running",
+        sourceTurnId: "legacy-turn-1",
+        attributes: { startedAt: "2026-07-15T10:01:00Z" },
+      },
     ];
     store.upsertIndexedSession(
       sampleSession({ sessionKey: targetKey, rawId: "shared-session", environmentId: "ssh-devbox", timestamp: baseTime }),
@@ -243,9 +304,26 @@ describe("SessionStore", () => {
       legacyMessages,
       [
         { dedupeKey: "shared", timestamp: baseTime + 500, inputTokens: 999, outputTokens: 0, cachedInputTokens: 0, reasoningOutputTokens: 0, totalTokens: 999 },
-        { dedupeKey: "legacy-only", timestamp: baseTime + 1_000, inputTokens: 30, outputTokens: 0, cachedInputTokens: 0, reasoningOutputTokens: 0, totalTokens: 30 },
+        {
+          dedupeKey: "legacy-only",
+          timestamp: baseTime + 1_000,
+          inputTokens: 30,
+          outputTokens: 0,
+          cachedInputTokens: 0,
+          reasoningOutputTokens: 0,
+          totalTokens: 30,
+          sourceTurnId: "legacy-turn-1",
+        },
       ],
       legacyTrace,
+      {
+        historyMode: "paginated",
+        messageProvenance: [
+          { messageIndex: 0, sourceRecordId: "response_item:legacy-conflict" },
+          { messageIndex: 1, sourceRecordId: "response_item:legacy-only" },
+        ],
+        activeTurnIds: ["legacy-turn-1"],
+      },
     );
     const db = (store as unknown as { db: InstanceType<typeof DatabaseSync> }).db;
     db.prepare("UPDATE sessions SET custom_title = ?, favorited = 1 WHERE session_key = ?").run("legacy title", legacyKey);
@@ -284,6 +362,18 @@ describe("SessionStore", () => {
       { dedupe_key: "shared", input_tokens: 100 },
       { dedupe_key: "target-only", input_tokens: 20 },
     ]);
+    expect(store.getTokenEvents(targetKey)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ dedupeKey: "legacy-only", sourceTurnId: "legacy-turn-1" }),
+    ]));
+    expect(store.getCodexIncrementalState(targetKey)).toEqual({
+      historyMode: "paginated",
+      messageProvenance: [
+        { messageIndex: 0, sourceRecordId: null },
+        { messageIndex: 1, sourceRecordId: "response_item:legacy-only" },
+        { messageIndex: 2, sourceRecordId: null },
+      ],
+      activeTurnIds: ["legacy-turn-1"],
+    });
     expect(store.getSession(targetKey)).toMatchObject({
       customTitle: "legacy title",
       favorited: true,

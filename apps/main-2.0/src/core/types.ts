@@ -60,6 +60,8 @@ export interface SessionMessage {
   content: string;
   timestamp: string;
   index: number;
+  sourceTurnId?: string | null;
+  phase?: "commentary" | "final_answer" | null;
   attachments?: SessionAttachment[];
 }
 
@@ -162,6 +164,36 @@ export interface SessionMigrationRecord {
 }
 
 export type SessionTraceKind = "tool_call" | "tool_result" | "event";
+export type SessionTraceStatus = "running" | "completed" | "failed" | "aborted" | "unknown";
+export type SessionTraceCategory = "tool" | "lifecycle" | "reasoning" | "collaboration" | "annotation" | "context";
+export type SessionTraceVisibility = "timeline" | "turn_summary" | "hidden";
+export type CodexTraceEventType =
+  | "codex.turn.started"
+  | "codex.turn.completed"
+  | "codex.turn.aborted"
+  | "codex.function_call"
+  | "codex.custom_tool"
+  | "codex.local_shell"
+  | "codex.command_execution"
+  | "codex.dynamic_tool"
+  | "codex.mcp_tool"
+  | "codex.tool_search"
+  | "codex.web_search"
+  | "codex.image_generation"
+  | "codex.image_view"
+  | "codex.extension.sleep"
+  | "codex.file_change"
+  | "codex.reasoning_summary"
+  | "codex.plan"
+  | "codex.review.entered"
+  | "codex.review.exited"
+  | "codex.goal.updated"
+  | "codex.context.compaction"
+  | "codex.collaboration.tool"
+  | "codex.collaboration.activity"
+  | "codex.collaboration.message"
+  | "codex.thread.settings"
+  | "codex.thread.rolled_back";
 
 export interface SessionTraceEvent {
   index: number;
@@ -172,19 +204,38 @@ export interface SessionTraceEvent {
   timestamp: string;
   callId?: string | null;
   eventType?: string | null;
-  status?: "success" | "failure" | "unknown" | null;
+  status?: SessionTraceStatus | null;
+  sourceTurnId?: string | null;
+  attributes?: Record<string, unknown>;
 }
 
-export type SessionTurnStatus = "completed" | "failed" | "aborted";
+export type CodexHistoryMode = "legacy" | "paginated";
+
+export interface CodexMessageProvenance {
+  messageIndex: number;
+  sourceRecordId: string | null;
+}
+
+export interface CodexIncrementalState {
+  historyMode: CodexHistoryMode;
+  messageProvenance: CodexMessageProvenance[];
+  activeTurnIds: string[];
+}
+
+export type SessionTurnStatus = "running" | "completed" | "failed" | "aborted";
 
 export interface SessionTurnSummary {
   id: string;
   turnIndex: number;
   sourceMessageIndex: number | null;
+  sourceTurnId?: string | null;
   synthetic: boolean;
   status: SessionTurnStatus;
   startedAt: string | null;
   endedAt: string | null;
+  durationMs?: number | null;
+  timeToFirstTokenMs?: number | null;
+  abortReason?: string | null;
   userPreview: string;
   assistantPreview: string;
   inputTokens: number;
@@ -204,6 +255,8 @@ export interface SessionTurnMessage {
   role: SessionMessage["role"];
   content: string;
   timestamp: string;
+  sourceTurnId?: string | null;
+  phase?: SessionMessage["phase"];
   attachments?: SessionAttachment[];
 }
 
@@ -239,6 +292,7 @@ export interface TokenUsage {
 export interface TokenUsageEvent extends TokenUsage {
   timestamp: number;
   dedupeKey: string;
+  sourceTurnId?: string | null;
 }
 
 export interface IndexedSession {
@@ -269,6 +323,7 @@ export interface LoadedSession {
   messages: SessionMessage[];
   tokenEvents?: TokenUsageEvent[];
   traceEvents?: SessionTraceEvent[];
+  codexIncrementalState?: CodexIncrementalState;
   executionEnvironmentHint?: {
     kind: "ssh";
     label: string;
@@ -576,6 +631,7 @@ export interface CodexConversationLine {
           };
         };
     name?: string;
+    input?: unknown;
     arguments?: unknown;
     call_id?: string;
     output?: unknown;

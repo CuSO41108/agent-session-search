@@ -1,12 +1,15 @@
 import { createHash } from "node:crypto";
 
 import type {
+  CodexIncrementalState,
   SessionMessage,
   SessionTraceEvent,
+  SessionTurnStatus,
   TokenUsageEvent,
 } from "../types";
+import { tracePresentation } from "../trace-presentation";
 
-export const TURN_DERIVATION_VERSION = 2;
+export const TURN_DERIVATION_VERSION = 3;
 
 export interface DerivedRawEvent {
   eventIndex: number;
@@ -46,10 +49,14 @@ export interface DerivedSessionTurn {
   id: string;
   turnIndex: number;
   sourceMessageIndex: number | null;
+  sourceTurnId: string | null;
   synthetic: boolean;
-  status: "completed" | "failed" | "aborted";
+  status: SessionTurnStatus;
   startedAt: string | null;
   endedAt: string | null;
+  durationMs: number | null;
+  timeToFirstTokenMs: number | null;
+  abortReason: string | null;
   userText: string;
   assistantText: string;
   toolText: string;
@@ -76,10 +83,12 @@ export interface DeriveSessionTimelineInput {
   messages: readonly SessionMessage[];
   traceEvents?: readonly SessionTraceEvent[];
   tokenEvents?: readonly TokenUsageEvent[];
+  codexIncrementalState?: CodexIncrementalState;
 }
 
 interface TurnDraft {
   sourceMessageIndex: number | null;
+  sourceTurnId: string | null;
   synthetic: boolean;
   messages: SessionMessage[];
   traceEvents: SessionTraceEvent[];
@@ -121,6 +130,7 @@ function compareTimestamped(
 function createSyntheticTurn(): TurnDraft {
   return {
     sourceMessageIndex: null,
+    sourceTurnId: null,
     synthetic: true,
     messages: [],
     traceEvents: [],
@@ -142,12 +152,32 @@ function buildTurnDrafts(
   tokenEvents: readonly TokenUsageEvent[],
 ): TurnDraft[] {
   const turns: TurnDraft[] = [];
+  const turnsBySourceId = new Map<string, TurnDraft>();
   let current: TurnDraft | null = null;
 
   for (const message of [...messages].sort((left, right) => left.index - right.index)) {
-    if (message.role === "user") {
+    if (message.sourceTurnId) {
+      current = turnsBySourceId.get(message.sourceTurnId) ?? {
+        sourceMessageIndex: null,
+        sourceTurnId: message.sourceTurnId,
+        synthetic: true,
+        messages: [],
+        traceEvents: [],
+        tokenEvents: [],
+      };
+      if (!turnsBySourceId.has(message.sourceTurnId)) {
+        turnsBySourceId.set(message.sourceTurnId, current);
+        turns.push(current);
+      }
+      if (message.role === "user" && current.sourceMessageIndex === null) {
+        current.sourceMessageIndex = message.index;
+        current.synthetic = false;
+      }
+      current.messages.push(message);
+    } else if (message.role === "user") {
       current = {
         sourceMessageIndex: message.index,
+        sourceTurnId: null,
         synthetic: false,
         messages: [message],
         traceEvents: [],
@@ -195,23 +225,34 @@ function buildTurnDrafts(
 
   for (const event of [...traceEvents].sort(compareTimestamped)) {
     const occurredAt = timestampMs(event.timestamp);
-    let target = findTurnForTimestamp(occurredAt);
+    let target = event.sourceTurnId ? turnsBySourceId.get(event.sourceTurnId) ?? null : null;
+    if (!target && event.sourceTurnId) {
+      target = {
+        ...createSyntheticTurn(),
+        sourceTurnId: event.sourceTurnId,
+      };
+      turnsBySourceId.set(event.sourceTurnId, target);
+      turns.push(target);
+    }
+    target ??= findTurnForTimestamp(occurredAt);
     if (!target) target = ensureSyntheticTurn(turns);
     target.traceEvents.push(event);
   }
 
   for (const event of [...tokenEvents].sort((left, right) => {
     if (left.timestamp !== right.timestamp) return left.timestamp - right.timestamp;
-      return left.dedupeKey.localeCompare(right.dedupeKey);
+    return left.dedupeKey.localeCompare(right.dedupeKey);
   })) {
     const occurredAt = timestampMs(event.timestamp);
-    let target = findTurnForTimestamp(occurredAt);
+    const sourceTurnId = event.sourceTurnId?.trim() || null;
+    let target = sourceTurnId ? turnsBySourceId.get(sourceTurnId) ?? null : null;
+    if (sourceTurnId && !target) continue;
+    target ??= findTurnForTimestamp(occurredAt);
     if (!target) target = ensureSyntheticTurn(turns);
     target.tokenEvents.push(event);
   }
 
-  if (turns.length === 0) turns.push(createSyntheticTurn());
-  return turns;
+  return turns.filter((turn) => turn.messages.length > 0 || turn.traceEvents.length > 0);
 }
 
 function spanName(title: string): string {
@@ -219,9 +260,30 @@ function spanName(title: string): string {
 }
 
 function completedSpanStatus(status: SessionTraceEvent["status"]): DerivedTraceSpan["status"] {
-  if (status === "failure") return "failed";
-  if (status === "success") return "completed";
+  if (status === "failed") return "failed";
+  if (status === "completed") return "completed";
+  if (status === "aborted") return "aborted";
+  if (status === "running") return "running";
   return "unknown";
+}
+
+function spanPayload(value: unknown, fallback: string): Record<string, unknown> | null {
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    return value as Record<string, unknown>;
+  }
+  if (value !== null && value !== undefined) return { value };
+  return fallback ? { text: fallback } : null;
+}
+
+function attributeTimestamp(value: unknown): string | null {
+  return typeof value === "string" || typeof value === "number" ? timestampString(value) : null;
+}
+
+function isToolSpan(span: DerivedTraceSpan): boolean {
+  const traceKind = span.attributes.traceKind;
+  const kind = traceKind === "tool_call" || traceKind === "tool_result" ? traceKind : "event";
+  const eventType = typeof span.attributes.eventType === "string" ? span.attributes.eventType : null;
+  return tracePresentation({ kind, eventType }).category === "tool";
 }
 
 function buildSpans(turnId: string, traceEvents: readonly SessionTraceEvent[]): DerivedTraceSpan[] {
@@ -229,13 +291,14 @@ function buildSpans(turnId: string, traceEvents: readonly SessionTraceEvent[]): 
   const calls = new Map<string, DerivedTraceSpan>();
 
   for (const event of [...traceEvents].sort(compareTimestamped)) {
+    if (tracePresentation(event).category === "lifecycle") continue;
     const callId = event.callId || null;
     const paired = callId && event.kind !== "tool_call" ? calls.get(callId) : undefined;
     if (paired) {
-      paired.endedAt = timestampString(event.timestamp) ?? paired.startedAt;
-      paired.output = { text: event.detail };
+      paired.endedAt = attributeTimestamp(event.attributes?.endedAt) ?? timestampString(event.timestamp) ?? paired.startedAt;
+      paired.output = spanPayload(event.attributes?.output, event.detail);
       paired.status = completedSpanStatus(event.status);
-      paired.error = event.status === "failure" ? event.detail || event.title : null;
+      paired.error = event.status === "failed" ? event.detail || event.title : null;
       paired.attributes = {
         ...paired.attributes,
         resultSource: event.source,
@@ -245,6 +308,9 @@ function buildSpans(turnId: string, traceEvents: readonly SessionTraceEvent[]): 
     }
 
     const isTool = event.kind !== "event";
+    const startedAt = attributeTimestamp(event.attributes?.startedAt) ?? timestampString(event.timestamp);
+    const endedAt = attributeTimestamp(event.attributes?.endedAt)
+      ?? (event.kind === "tool_call" ? null : timestampString(event.timestamp));
     const span: DerivedTraceSpan = {
       id: stableId(turnId, "span", event.callId || `${event.kind}:${event.index}`),
       parentSpanId: null,
@@ -252,17 +318,18 @@ function buildSpans(turnId: string, traceEvents: readonly SessionTraceEvent[]): 
       kind: isTool ? "tool" : "event",
       name: spanName(event.title),
       status: event.kind === "tool_call" ? "running" : completedSpanStatus(event.status),
-      startedAt: timestampString(event.timestamp),
-      endedAt: event.kind === "tool_call" ? null : timestampString(event.timestamp),
+      startedAt,
+      endedAt,
       callId,
-      input: event.kind === "tool_call" ? { text: event.detail } : null,
-      output: event.kind === "tool_call" ? null : { text: event.detail },
-      error: event.status === "failure" ? event.detail || event.title : null,
+      input: spanPayload(event.attributes?.input, event.kind === "tool_call" ? event.detail : ""),
+      output: event.kind === "tool_call" ? null : spanPayload(event.attributes?.output, event.detail),
+      error: event.status === "failed" ? event.detail || event.title : null,
       attributes: {
         source: event.source,
         traceKind: event.kind,
         title: event.title,
         ...(event.eventType ? { eventType: event.eventType } : {}),
+        ...(event.attributes ?? {}),
       },
     };
     spans.push(span);
@@ -288,12 +355,80 @@ function turnTimeRange(turn: TurnDraft): { startedAt: string | null; endedAt: st
   };
 }
 
-function buildTurns(sessionKey: string, drafts: readonly TurnDraft[]): DerivedSessionTurn[] {
+function attributeString(attributes: Record<string, unknown> | undefined, key: string): string | null {
+  const value = attributes?.[key];
+  return typeof value === "string" && value ? value : null;
+}
+
+function attributeDuration(attributes: Record<string, unknown> | undefined, key: string): number | null {
+  const value = attributes?.[key];
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
+}
+
+function lifecycleProjection(turn: TurnDraft): {
+  status: DerivedSessionTurn["status"] | null;
+  startedAt: string | null;
+  endedAt: string | null;
+  durationMs: number | null;
+  timeToFirstTokenMs: number | null;
+  abortReason: string | null;
+} {
+  const lifecycle = [...turn.traceEvents]
+    .filter((event) => tracePresentation(event).category === "lifecycle")
+    .sort(compareTimestamped);
+  const started = lifecycle.find((event) => event.eventType === "codex.turn.started");
+  let terminal: SessionTraceEvent | undefined;
+  for (const event of lifecycle) {
+    if (event.eventType === "codex.turn.completed" || event.eventType === "codex.turn.aborted") {
+      terminal = event;
+    }
+  }
+  const endedAt = terminal
+    ? attributeString(terminal.attributes, "endedAt") || timestampString(terminal.timestamp)
+    : null;
+  const durationMs = attributeDuration(terminal?.attributes, "durationMs");
+  const explicitStartedAt =
+    attributeString(started?.attributes, "startedAt")
+    || timestampString(started?.timestamp ?? "");
+  const derivedStartedAt = !explicitStartedAt && endedAt && durationMs !== null
+    ? new Date(Date.parse(endedAt) - durationMs).toISOString()
+    : null;
+  return {
+    status: terminal?.eventType === "codex.turn.aborted" || terminal?.status === "aborted"
+      ? "aborted"
+      : terminal?.status === "failed"
+        ? "failed"
+        : terminal?.eventType === "codex.turn.completed"
+          ? "completed"
+          : started
+            ? "running"
+            : null,
+    startedAt: explicitStartedAt || derivedStartedAt,
+    endedAt,
+    durationMs,
+    timeToFirstTokenMs: attributeDuration(terminal?.attributes, "timeToFirstTokenMs"),
+    abortReason: attributeString(terminal?.attributes, "abortReason"),
+  };
+}
+
+function buildTurns(
+  sessionKey: string,
+  drafts: readonly TurnDraft[],
+  codexIncrementalState?: CodexIncrementalState,
+): DerivedSessionTurn[] {
+  const sourceRecordIds = new Map(
+    codexIncrementalState?.messageProvenance.map((entry) => [entry.messageIndex, entry.sourceRecordId]) ?? [],
+  );
+  const activeSourceTurnIds = new Set(codexIncrementalState?.activeTurnIds ?? []);
   return drafts.map((draft, turnIndex) => {
     const turnId = stableId(
       sessionKey,
       "turn",
-      draft.synthetic ? "synthetic" : `message:${draft.sourceMessageIndex}`,
+      draft.sourceMessageIndex !== null
+        ? `message:${draft.sourceMessageIndex}`
+        : draft.sourceTurnId
+          ? `source:${draft.sourceTurnId}`
+          : "synthetic",
     );
     const messages = [...draft.messages]
       .sort((left, right) => left.index - right.index)
@@ -303,7 +438,14 @@ function buildTurns(sessionKey: string, drafts: readonly TurnDraft[]): DerivedSe
         role: message.role,
         content: message.content,
         occurredAt: timestampString(message.timestamp),
-        metadata: message.attachments?.length ? { attachments: message.attachments } : {},
+        metadata: {
+          ...(message.attachments?.length ? { attachments: message.attachments } : {}),
+          ...(message.sourceTurnId ? { sourceTurnId: message.sourceTurnId } : {}),
+          ...(message.phase ? { phase: message.phase } : {}),
+          ...(sourceRecordIds.get(message.index)
+            ? { codex: { sourceItemId: sourceRecordIds.get(message.index) } }
+            : {}),
+        },
       }));
     const spans = buildSpans(turnId, draft.traceEvents);
     const userText = messages
@@ -314,7 +456,10 @@ function buildTurns(sessionKey: string, drafts: readonly TurnDraft[]): DerivedSe
       .filter((message) => message.role === "assistant")
       .map((message) => message.content)
       .join("\n\n");
-    const toolText = [...draft.traceEvents]
+    const toolTraceEvents = draft.traceEvents.filter(
+      (event) => tracePresentation(event).category !== "lifecycle",
+    );
+    const toolText = [...toolTraceEvents]
       .sort(compareTimestamped)
       .map((event) => [event.title, event.detail].filter(Boolean).join("\n"))
       .join("\n\n");
@@ -334,25 +479,32 @@ function buildTurns(sessionKey: string, drafts: readonly TurnDraft[]): DerivedSe
         totalTokens: 0,
       },
     );
-    const errorCount = spans.filter((span) => span.status === "failed").length;
-    const aborted = draft.traceEvents.some((event) => event.eventType === "turn_aborted");
-    const { startedAt, endedAt } = turnTimeRange(draft);
+    const toolSpans = spans.filter(isToolSpan);
+    const errorCount = toolSpans.filter((span) => span.status === "failed").length;
+    const inferredStatus = errorCount > 0 ? "failed" : "completed";
+    const fallbackTimeRange = turnTimeRange(draft);
+    const lifecycle = lifecycleProjection(draft);
 
     return {
       id: turnId,
       turnIndex,
       sourceMessageIndex: draft.sourceMessageIndex,
+      sourceTurnId: draft.sourceTurnId,
       synthetic: draft.synthetic,
-      status: aborted ? "aborted" : errorCount > 0 ? "failed" : "completed",
-      startedAt,
-      endedAt,
+      status: lifecycle.status
+        ?? (draft.sourceTurnId && activeSourceTurnIds.has(draft.sourceTurnId) ? "running" : inferredStatus),
+      startedAt: lifecycle.startedAt ?? fallbackTimeRange.startedAt,
+      endedAt: lifecycle.endedAt ?? fallbackTimeRange.endedAt,
+      durationMs: lifecycle.durationMs,
+      timeToFirstTokenMs: lifecycle.timeToFirstTokenMs,
+      abortReason: lifecycle.abortReason,
       userText,
       assistantText,
       toolText,
       searchText: [userText, assistantText].filter(Boolean).join("\n\n"),
       ...tokenUsage,
       errorCount,
-      toolNames: [...new Set(spans.map((span) => span.name))],
+      toolNames: [...new Set(toolSpans.map((span) => span.name))],
       derivationVersion: TURN_DERIVATION_VERSION,
       messages,
       spans,
@@ -379,6 +531,8 @@ function buildRawEvents(
         sourceMessageIndex: message.index,
         role: message.role,
         content: message.content,
+        sourceTurnId: message.sourceTurnId ?? null,
+        phase: message.phase ?? null,
       },
     })),
     ...traceEvents.map<OrderedRawEvent>((event) => ({
@@ -398,6 +552,8 @@ function buildRawEvents(
         callId: event.callId ?? null,
         eventType: event.eventType ?? null,
         status: event.status ?? null,
+        sourceTurnId: event.sourceTurnId ?? null,
+        attributes: event.attributes ?? {},
       },
     })),
     ...tokenEvents.map<OrderedRawEvent>((event) => ({
@@ -415,6 +571,7 @@ function buildRawEvents(
         cachedInputTokens: event.cachedInputTokens,
         reasoningOutputTokens: event.reasoningOutputTokens,
         totalTokens: event.totalTokens,
+        ...(event.sourceTurnId !== undefined ? { sourceTurnId: event.sourceTurnId } : {}),
       },
     })),
   ];
@@ -441,10 +598,11 @@ export function deriveSessionTimeline({
   messages,
   traceEvents = [],
   tokenEvents = [],
+  codexIncrementalState,
 }: DeriveSessionTimelineInput): DerivedSessionTimeline {
   const drafts = buildTurnDrafts(messages, traceEvents, tokenEvents);
   return {
     rawEvents: buildRawEvents(sessionKey, messages, traceEvents, tokenEvents),
-    turns: buildTurns(sessionKey, drafts),
+    turns: buildTurns(sessionKey, drafts, codexIncrementalState),
   };
 }

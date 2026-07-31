@@ -32,7 +32,13 @@ export async function syncDefaultSessions(
   const loaded = loadDefaultSessions(loadOptions);
   let indexed = 0;
   for (const item of loaded) {
-    await store.upsertIndexedSession(item.session, item.messages, item.tokenEvents, item.traceEvents);
+    await store.upsertIndexedSession(
+      item.session,
+      item.messages,
+      item.tokenEvents,
+      item.traceEvents,
+      item.codexIncrementalState,
+    );
     indexed++;
   }
   return {
@@ -144,7 +150,13 @@ export async function syncLoadedSessionsInBatches(
         await store.touchIndexedAtIfMissing(item.session.sessionKey);
         skipped++;
       } else {
-        await store.upsertIndexedSession(item.session, item.messages, item.tokenEvents, item.traceEvents);
+        await store.upsertIndexedSession(
+          item.session,
+          item.messages,
+          item.tokenEvents,
+          item.traceEvents,
+          item.codexIncrementalState,
+        );
         indexed++;
       }
     } catch (error) {
@@ -252,6 +264,7 @@ export async function syncDefaultSessionsInBatches(
   const incrementalCodexFiles = new Map<string, { offset: number; sessionKey: string }>();
   for (const file of storedFiles) {
     if (file.source !== "codex-cli" && file.source !== "codex-app" && file.source !== "tcodex-cli") continue;
+    if (file.fileMtimeMs <= 0) continue;
     incrementalCodexFiles.set(file.filePath, {
       offset: file.fileSize,
       sessionKey: file.sessionKey,
@@ -274,6 +287,7 @@ export async function syncDefaultSessionsInBatches(
       const messages = await store.getAllMessages(previous.sessionKey);
       const tokenEvents = await store.getTokenEvents(previous.sessionKey);
       const traceEvents = await store.getTraceEvents(previous.sessionKey);
+      const codexIncrementalState = await store.getCodexIncrementalState(previous.sessionKey);
       return {
         offset: previous.offset,
         loaded: {
@@ -281,6 +295,7 @@ export async function syncDefaultSessionsInBatches(
           messages,
           tokenEvents,
           traceEvents,
+          codexIncrementalState,
         },
       };
     },
@@ -365,7 +380,13 @@ export async function indexMigratedSessionFile(
   if (!loaded) {
     throw new Error(`Migrated ${target} session could not be loaded from ${filePath}.`);
   }
-  await store.upsertIndexedSession(loaded.session, loaded.messages, loaded.tokenEvents, loaded.traceEvents);
+  await store.upsertIndexedSession(
+    loaded.session,
+    loaded.messages,
+    loaded.tokenEvents,
+    loaded.traceEvents,
+    loaded.codexIncrementalState,
+  );
   return {
     running: false,
     indexed: 1,

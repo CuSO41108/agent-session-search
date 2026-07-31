@@ -1,5 +1,6 @@
 import type { IndexedSession, SessionMessage, SessionSearchResult, SessionTraceEvent } from "./types";
 import { sessionSourceLabel } from "./session-sources";
+import { tracePresentation } from "./trace-presentation";
 
 export type SessionJsonExportFormat = "openai_chat" | "openai_responses" | "anthropic";
 
@@ -26,8 +27,9 @@ export function formatMessageTime(ts: string): string {
 
 function traceMarker(event: SessionTraceEvent): string {
   if (event.kind === "tool_call") return "→";
-  if (event.status === "success") return "✓";
-  if (event.status === "failure") return "✗";
+  if (event.status === "completed") return "✓";
+  if (event.status === "failed") return "✗";
+  if (event.status === "aborted") return "■";
   return "•";
 }
 
@@ -40,11 +42,12 @@ function traceTitle(event: SessionTraceEvent): string {
 }
 
 function formatTraceMarkdown(traceEvents: SessionTraceEvent[]): string[] {
-  if (traceEvents.length === 0) return [];
+  const visibleTraceEvents = traceEvents.filter((event) => tracePresentation(event).visibility !== "hidden");
+  if (visibleTraceEvents.length === 0) return [];
   return [
     "## Tool Trace",
     "",
-    ...traceEvents.flatMap((event) => [
+    ...visibleTraceEvents.flatMap((event) => [
       `### ${traceTitle(event)}`,
       "",
       event.detail ? `\`\`\`text\n${event.detail}\n\`\`\`` : "_No detail captured._",

@@ -282,7 +282,7 @@ function piTraceEvents(rows: unknown[]): SessionTraceEvent[] {
       timestamp,
       callId: stringField(message, "toolCallId") || null,
       eventType: null,
-      status: typeof isError === "boolean" ? (isError ? "failure" : "success") : "unknown",
+      status: typeof isError === "boolean" ? (isError ? "failed" : "completed") : "unknown",
     });
   }
 
@@ -854,9 +854,9 @@ function zcodeDatabaseStat(dbPath: string): VirtualSessionFileStat {
   };
 }
 
-function zcodeToolStatus(value: string): "success" | "failure" | "unknown" {
-  if (value === "completed") return "success";
-  if (value === "error") return "failure";
+function zcodeToolStatus(value: string): "completed" | "failed" | "unknown" {
+  if (value === "completed") return "completed";
+  if (value === "error") return "failed";
   return "unknown";
 }
 

@@ -193,7 +193,7 @@ describe("Pi session loading", () => {
         kind: "tool_result",
         source: "pi",
         callId: "call-1",
-        status: "failure",
+        status: "failed",
         timestamp: "2026-07-31T02:39:13.220Z",
       }),
     ]);

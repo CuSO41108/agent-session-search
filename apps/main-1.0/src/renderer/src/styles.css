@@ -2921,6 +2921,20 @@ select:focus-visible {
   color: var(--codex-badge-text);
 }
 
+.message.commentary {
+  background: var(--panel-subtle);
+}
+
+.message-phase {
+  margin-right: auto;
+  border: 1px solid var(--border-subtle);
+  border-radius: 999px;
+  padding: 1px 6px;
+  color: var(--text-muted) !important;
+  font-size: 9.5px;
+  font-variant-numeric: normal !important;
+}
+
 .message-head span {
   color: var(--text-faint);
   font-variant-numeric: tabular-nums;
@@ -2956,7 +2970,7 @@ select:focus-visible {
   background: var(--panel-subtle);
 }
 
-.trace-event.failure {
+.trace-event.failed {
   border-color: var(--danger);
 }
 
@@ -2999,7 +3013,17 @@ select:focus-visible {
   color: var(--accent-bright);
 }
 
-.trace-event.failure .trace-symbol {
+.trace-head .trace-status-label {
+  flex: 0 0 auto;
+  border: 1px solid var(--border-subtle);
+  border-radius: 999px;
+  padding: 1px 6px;
+  color: var(--text-faint);
+  font-size: 9.5px;
+  font-weight: 500;
+}
+
+.trace-event.failed .trace-symbol {
   color: var(--danger);
 }
 

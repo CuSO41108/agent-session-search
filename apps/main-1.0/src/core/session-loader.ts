@@ -4,12 +4,19 @@ import * as path from "node:path";
 import { createRequire } from "node:module";
 import { cleanTitle, cursorTimestampFromRow, getAdapter, isMeaningfulUserMessage } from "./format-adapters";
 import { scanCompleteJsonl } from "./codex-jsonl-stream";
+import {
+  CodexRolloutAccumulator,
+  dedupeCodexTraceEvents,
+  formatCodexToolDetail,
+  sanitizeCodexTraceValue,
+} from "./session-loaders/codex-rollout";
 import { truncateTraceDetail } from "./trace-detail";
 import type {
   CodeBuddyConversationLine,
   ClaudeAppSessionFile,
   ClaudeConversationLine,
   ClaudeSessionIndexFile,
+  CodexHistoryMode,
   CodexConversationLine,
   IndexedSession,
   LoadedSession,
@@ -79,6 +86,7 @@ export function parseCodexSessionMetaLine(parsed: unknown): {
   originator?: string;
   isSubagent: boolean;
   parentSessionId: string | null;
+  historyMode?: CodexHistoryMode;
 } | null {
   if (!parsed || typeof parsed !== "object") return null;
 
@@ -98,6 +106,7 @@ export function parseCodexSessionMetaLine(parsed: unknown): {
       originator: line.payload.originator,
       isSubagent: parentSessionId !== null,
       parentSessionId,
+      historyMode: (line.payload as { history_mode?: unknown }).history_mode === "paginated" ? "paginated" : "legacy",
     };
   }
 
@@ -109,6 +118,7 @@ export function parseCodexSessionMetaLine(parsed: unknown): {
       gitBranch: line.git?.branch,
       isSubagent: false,
       parentSessionId: null,
+      historyMode: "legacy",
     };
   }
 
@@ -133,6 +143,7 @@ function findCodexSessionMeta(rows: unknown[]): NonNullable<ReturnType<typeof pa
       originator: result.originator || parsed.originator,
       isSubagent: result.isSubagent || parsed.isSubagent,
       parentSessionId: result.parentSessionId || parsed.parentSessionId,
+      historyMode: result.historyMode === "paginated" || parsed.historyMode === "paginated" ? "paginated" : "legacy",
     };
   }
   return result;
@@ -191,9 +202,11 @@ function extractMessages(rows: unknown[], format: SessionFormat): SessionMessage
 
 function codexVisibleConversationRows(rows: unknown[]): unknown[] {
   const adapter = getAdapter("codex");
+  const rollout = new CodexRolloutAccumulator();
   const preamble: unknown[] = [];
-  const turns: unknown[][] = [];
-  let currentTurn: unknown[] | null = null;
+  const turns: Array<{ rows: unknown[]; hasUserMessage: boolean }> = [];
+  const seenUserRecords = new Set<string>();
+  let currentTurn: (typeof turns)[number] | null = null;
 
   for (const row of rows) {
     const payload = objectField(row, "payload");
@@ -205,18 +218,44 @@ function codexVisibleConversationRows(rows: unknown[]): unknown[] {
       continue;
     }
 
-    const parsed = adapter.parseLine(row);
-    if (parsed?.role === "user" && isMeaningfulUserMessage(parsed.content)) {
-      currentTurn = [row];
+    const result = rollout.consume(row);
+    if (isRecord(row) && row.type === "event_msg" && payload?.type === "task_started") {
+      const rowWithTurnId = result.sourceTurnId
+        ? { ...row, payload: { ...payload, turn_id: result.sourceTurnId } }
+        : row;
+      currentTurn = { rows: [rowWithTurnId], hasUserMessage: false };
       turns.push(currentTurn);
+      continue;
+    }
+    const completedMessage = result.completedMessage;
+    const parsed = adapter.parseLine(row);
+    const responseUser = rollout.historyMode === "legacy" && parsed?.role === "user";
+    const completedUser = completedMessage?.role === "user"
+      && !seenUserRecords.has(completedMessage.replacesSourceRecordId);
+    const userContent = responseUser
+      ? parsed.content
+      : completedMessage?.role === "user"
+        ? completedMessage.content
+        : "";
+    if ((responseUser || completedUser) && userContent && isMeaningfulUserMessage(userContent)) {
+      if (currentTurn && !currentTurn.hasUserMessage) {
+        currentTurn.rows.push(row);
+        currentTurn.hasUserMessage = true;
+      } else {
+        currentTurn = { rows: [row], hasUserMessage: true };
+        turns.push(currentTurn);
+      }
+      if (responseUser && result.message?.sourceRecordId) {
+        seenUserRecords.add(result.message.sourceRecordId);
+      }
     } else if (currentTurn) {
-      currentTurn.push(row);
+      currentTurn.rows.push(row);
     } else {
       preamble.push(row);
     }
   }
 
-  return [...preamble, ...turns.flat()];
+  return [...preamble, ...turns.flatMap((turn) => turn.rows)];
 }
 
 function claudeVisibleConversationRows(rows: unknown[]): unknown[] {
@@ -314,9 +353,9 @@ function titleWithSummary(name: string, summary: string): string {
   return summary ? `${name} · ${summary}` : name;
 }
 
-function statusFromExit(exitCode: number | undefined, fallback?: boolean): "success" | "failure" | "unknown" {
-  if (typeof exitCode === "number") return exitCode === 0 ? "success" : "failure";
-  if (typeof fallback === "boolean") return fallback ? "success" : "failure";
+function statusFromExit(exitCode: number | undefined, fallback?: boolean): "completed" | "failed" | "unknown" {
+  if (typeof exitCode === "number") return exitCode === 0 ? "completed" : "failed";
+  if (typeof fallback === "boolean") return fallback ? "completed" : "failed";
   return "unknown";
 }
 
@@ -349,7 +388,7 @@ function extractClaudeTraceEvents(rows: unknown[]): TraceEventDraft[] {
           timestamp: stringField(row, "timestamp"),
           callId: stringField(block, "id") || null,
           eventType: null,
-          status: "unknown",
+          status: "running",
         });
       } else if (block.type === "tool_result") {
         events.push({
@@ -360,7 +399,7 @@ function extractClaudeTraceEvents(rows: unknown[]): TraceEventDraft[] {
           timestamp: stringField(row, "timestamp"),
           callId: stringField(block, "tool_use_id") || null,
           eventType: null,
-          status: "unknown",
+          status: unknownField(block, "is_error") === true ? "failed" : "completed",
         });
       }
     }
@@ -369,49 +408,124 @@ function extractClaudeTraceEvents(rows: unknown[]): TraceEventDraft[] {
   return events;
 }
 
-function extractCodexResponseTrace(row: Record<string, unknown>): TraceEventDraft[] {
+function extractCodexResponseTrace(
+  row: Record<string, unknown>,
+  sourceTurnId: string | null = null,
+): TraceEventDraft[] {
   if (row.type !== "response_item") return [];
   const payload = objectField(row, "payload");
   if (!payload) return [];
   const payloadType = stringField(payload, "type");
+  const callId = stringField(payload, "call_id") || stringField(payload, "id") || null;
+  const status = stringField(payload, "status");
+  const normalizedStatus: SessionTraceEvent["status"] =
+    status === "in_progress" ? "running"
+      : status === "completed" ? "completed"
+        : status === "failed" ? "failed"
+          : "unknown";
 
-  if (payloadType === "function_call") {
-    const args = parseMaybeJson(unknownField(payload, "arguments"));
-    const name = stringField(payload, "name") || "tool";
+  if (
+    payloadType === "function_call"
+    || payloadType === "custom_tool_call"
+    || payloadType === "local_shell_call"
+    || payloadType === "tool_search_call"
+  ) {
+    const args =
+      payloadType === "custom_tool_call" ? unknownField(payload, "input")
+        : payloadType === "local_shell_call" ? unknownField(payload, "action")
+          : payloadType === "tool_search_call" ? unknownField(payload, "arguments")
+            : parseMaybeJson(unknownField(payload, "arguments"));
+    const namespace = stringField(payload, "namespace");
+    const fallbackName =
+      payloadType === "local_shell_call" ? "shell"
+        : payloadType === "tool_search_call" ? stringField(payload, "execution") || "tool search"
+          : "tool";
+    const rawName = stringField(payload, "name") || fallbackName;
+    const name = namespace ? `${namespace}.${rawName}` : rawName;
     const summary = firstStringField(args, ["command", "cmd", "query", "path", "file_path", "url"]);
+    const eventType =
+      payloadType === "function_call" ? "codex.function_call"
+        : payloadType === "custom_tool_call" ? "codex.custom_tool"
+          : payloadType === "local_shell_call" ? "codex.local_shell"
+            : "codex.tool_search";
+    const safeInput = sanitizeCodexTraceValue(args);
     return [
       {
-        kind: "tool_call",
+        kind: payloadType === "local_shell_call"
+          && normalizedStatus !== "unknown"
+          && normalizedStatus !== "running"
+          ? "tool_result"
+          : "tool_call",
         source: "codex",
         title: titleWithSummary(name, summary),
-        detail: stringifyDetail(args),
+        detail: formatCodexToolDetail(safeInput, null),
         timestamp: stringField(row, "timestamp"),
-        callId: stringField(payload, "call_id") || null,
-        eventType: null,
-        status: "unknown",
+        callId,
+        eventType,
+        status: normalizedStatus,
+        sourceTurnId,
+        attributes: { input: safeInput },
       },
     ];
   }
 
-  if (payloadType === "function_call_output") {
+  if (
+    payloadType === "function_call_output"
+    || payloadType === "custom_tool_call_output"
+    || payloadType === "tool_search_output"
+  ) {
+    const output = payloadType === "tool_search_output"
+      ? { status: unknownField(payload, "status"), tools: unknownField(payload, "tools") }
+      : unknownField(payload, "output");
+    const safeOutput = sanitizeCodexTraceValue(output);
+    const eventType =
+      payloadType === "function_call_output" ? "codex.function_call"
+        : payloadType === "custom_tool_call_output" ? "codex.custom_tool"
+          : "codex.tool_search";
     return [
       {
         kind: "tool_result",
         source: "codex",
-        title: "tool output",
-        detail: stringifyDetail(unknownField(payload, "output")),
+        title: payloadType === "tool_search_output"
+          ? stringField(payload, "execution") || "tool search"
+          : "tool output",
+        detail: formatCodexToolDetail(null, safeOutput),
         timestamp: stringField(row, "timestamp"),
-        callId: stringField(payload, "call_id") || null,
-        eventType: null,
-        status: "unknown",
+        callId,
+        eventType,
+        status: normalizedStatus === "unknown" ? "completed" : normalizedStatus,
+        sourceTurnId,
+        attributes: { output: safeOutput },
       },
     ];
+  }
+
+  if (payloadType === "web_search_call" || payloadType === "image_generation_call") {
+    const input = payloadType === "web_search_call"
+      ? unknownField(payload, "action")
+      : { revisedPrompt: unknownField(payload, "revised_prompt") };
+    const safeInput = sanitizeCodexTraceValue(input);
+    return [{
+      kind: normalizedStatus === "running" ? "tool_call" : "tool_result",
+      source: "codex",
+      title: payloadType === "web_search_call" ? "web search" : "image generation",
+      detail: formatCodexToolDetail(safeInput, null),
+      timestamp: stringField(row, "timestamp"),
+      callId,
+      eventType: payloadType === "web_search_call" ? "codex.web_search" : "codex.image_generation",
+      status: normalizedStatus,
+      sourceTurnId,
+      attributes: { input: safeInput },
+    }];
   }
 
   return [];
 }
 
-function extractCodexEventTrace(row: Record<string, unknown>): TraceEventDraft[] {
+function extractCodexEventTrace(
+  row: Record<string, unknown>,
+  sourceTurnId: string | null = null,
+): TraceEventDraft[] {
   if (row.type !== "event_msg") return [];
   const payload = objectField(row, "payload");
   const eventType = stringField(payload, "type");
@@ -422,6 +536,7 @@ function extractCodexEventTrace(row: Record<string, unknown>): TraceEventDraft[]
     timestamp: stringField(row, "timestamp"),
     callId: stringField(payload, "call_id") || null,
     eventType,
+    sourceTurnId,
   };
 
   if (eventType === "exec_command_end") {
@@ -442,6 +557,20 @@ function extractCodexEventTrace(row: Record<string, unknown>): TraceEventDraft[]
           output,
         ]),
         status: statusFromExit(typeof unknownField(payload, "exit_code") === "number" ? numberField(payload, "exit_code") : undefined),
+        attributes: {
+          input: sanitizeCodexTraceValue({
+            command: unknownField(payload, "command"),
+            cwd: unknownField(payload, "cwd"),
+            parsedCommand: unknownField(payload, "parsed_cmd"),
+          }),
+          output: sanitizeCodexTraceValue({
+            stdout: unknownField(payload, "stdout"),
+            stderr: unknownField(payload, "stderr"),
+            aggregatedOutput: unknownField(payload, "aggregated_output"),
+            formattedOutput: unknownField(payload, "formatted_output"),
+            exitCode: unknownField(payload, "exit_code"),
+          }),
+        },
       },
     ];
   }
@@ -458,6 +587,14 @@ function extractCodexEventTrace(row: Record<string, unknown>): TraceEventDraft[]
           unknownField(payload, "changes") ? `changes:\n${stringifyDetail(unknownField(payload, "changes"))}` : "",
         ]),
         status: statusFromExit(undefined, typeof unknownField(payload, "success") === "boolean" ? Boolean(unknownField(payload, "success")) : undefined),
+        attributes: {
+          input: sanitizeCodexTraceValue({ changes: unknownField(payload, "changes") }),
+          output: sanitizeCodexTraceValue({
+            stdout: unknownField(payload, "stdout"),
+            stderr: unknownField(payload, "stderr"),
+            success: unknownField(payload, "success"),
+          }),
+        },
       },
     ];
   }
@@ -472,6 +609,10 @@ function extractCodexEventTrace(row: Record<string, unknown>): TraceEventDraft[]
         title: titleWithSummary("mcp", invocationName || stringField(payload, "plugin_id")),
         detail: stringifyDetail(unknownField(payload, "result") || invocation),
         status: "unknown",
+        attributes: {
+          input: sanitizeCodexTraceValue(invocation),
+          output: sanitizeCodexTraceValue(unknownField(payload, "result")),
+        },
       },
     ];
   }
@@ -484,6 +625,12 @@ function extractCodexEventTrace(row: Record<string, unknown>): TraceEventDraft[]
         title: titleWithSummary("web_search", stringField(payload, "query")),
         detail: stringifyDetail(unknownField(payload, "action")),
         status: "unknown",
+        attributes: {
+          input: sanitizeCodexTraceValue({
+            query: unknownField(payload, "query"),
+            action: unknownField(payload, "action"),
+          }),
+        },
       },
     ];
   }
@@ -495,19 +642,7 @@ function extractCodexEventTrace(row: Record<string, unknown>): TraceEventDraft[]
         kind: "event",
         title: "error",
         detail: joinNonEmpty([stringField(payload, "message"), stringifyDetail(unknownField(payload, "codex_error_info"))]),
-        status: "failure",
-      },
-    ];
-  }
-
-  if (eventType === "turn_aborted" || eventType === "context_compacted") {
-    return [
-      {
-        ...common,
-        kind: "event",
-        title: eventType,
-        detail: stringifyDetail(payload),
-        status: "unknown",
+        status: "failed",
       },
     ];
   }
@@ -516,12 +651,86 @@ function extractCodexEventTrace(row: Record<string, unknown>): TraceEventDraft[]
 }
 
 function extractCodexTraceEvents(rows: unknown[]): TraceEventDraft[] {
+  const rollout = new CodexRolloutAccumulator();
   const events: TraceEventDraft[] = [];
   for (const row of rows) {
     if (!isRecord(row)) continue;
-    events.push(...extractCodexResponseTrace(row), ...extractCodexEventTrace(row));
+    const result = rollout.consume(row);
+    events.push(
+      ...extractCodexResponseTrace(row, result.sourceTurnId),
+      ...extractCodexEventTrace(row, result.sourceTurnId),
+      ...result.traceEvents,
+    );
   }
   return events;
+}
+
+function extractCodexMessages(rows: unknown[]): {
+  messages: SessionMessage[];
+  messageProvenance: Array<{ messageIndex: number; sourceRecordId: string | null }>;
+  historyMode: CodexHistoryMode;
+  activeTurnIds: string[];
+} {
+  const adapter = getAdapter("codex");
+  const rollout = new CodexRolloutAccumulator();
+  const messages: SessionMessage[] = [];
+  const messageProvenance: Array<{ messageIndex: number; sourceRecordId: string | null }> = [];
+  const provenanceIndexes = new Map<string, number>();
+  for (const row of rows) {
+    const result = rollout.consume(row);
+    const context = result.message;
+    if (result.completedMessage) {
+      const completed = result.completedMessage;
+      const replacement = provenanceIndexes.get(completed.replacesSourceRecordId) ?? -1;
+      const nextMessage: SessionMessage = {
+        role: completed.role,
+        content: completed.content,
+        timestamp: completed.timestamp,
+        index: replacement >= 0 ? replacement : messages.length,
+        sourceTurnId: completed.sourceTurnId,
+        phase: completed.phase,
+        ...(replacement >= 0 && messages[replacement].attachments
+          ? { attachments: messages[replacement].attachments }
+          : {}),
+      };
+      if (replacement >= 0) {
+        messages[replacement] = nextMessage;
+        messageProvenance[replacement] = {
+          messageIndex: replacement,
+          sourceRecordId: completed.sourceRecordId,
+        };
+        provenanceIndexes.delete(completed.replacesSourceRecordId);
+        provenanceIndexes.set(completed.sourceRecordId, replacement);
+      } else if (completed.role !== "user" || isMeaningfulUserMessage(completed.content)) {
+        messages.push(nextMessage);
+        messageProvenance.push({
+          messageIndex: nextMessage.index,
+          sourceRecordId: completed.sourceRecordId,
+        });
+        provenanceIndexes.set(completed.sourceRecordId, nextMessage.index);
+      }
+      continue;
+    }
+    const parsed = adapter.parseLine(row);
+    if (!parsed || (parsed.role === "user" && !isMeaningfulUserMessage(parsed.content))) continue;
+    if (rollout.historyMode === "paginated" && parsed.role === "user") continue;
+    const index = messages.length;
+    messages.push({
+      ...parsed,
+      index,
+      sourceTurnId: context?.sourceTurnId ?? null,
+      phase: parsed.role === "assistant" ? context?.phase ?? null : null,
+    });
+    const sourceRecordId = context?.sourceRecordId ?? null;
+    messageProvenance.push({ messageIndex: index, sourceRecordId });
+    if (sourceRecordId) provenanceIndexes.set(sourceRecordId, index);
+  }
+  return {
+    messages,
+    messageProvenance,
+    historyMode: rollout.historyMode,
+    activeTurnIds: rollout.getActiveTurnIds(),
+  };
 }
 
 function dedupeTraceEvents(events: TraceEventDraft[]): SessionTraceEvent[] {
@@ -533,7 +742,7 @@ function dedupeTraceEvents(events: TraceEventDraft[]): SessionTraceEvent[] {
 
 function extractTraceEvents(rows: unknown[], format: SessionFormat): SessionTraceEvent[] {
   if (format === "claude") return dedupeTraceEvents(extractClaudeTraceEvents(rows));
-  if (format === "codex") return dedupeTraceEvents(extractCodexTraceEvents(rows));
+  if (format === "codex") return dedupeCodexTraceEvents(extractCodexTraceEvents(rows));
   return [];
 }
 
@@ -639,7 +848,40 @@ function normalizeCodexUsage(usage: Record<string, unknown>): {
   };
 }
 
-function extractCodexTokenEvents(rows: unknown[]): TokenUsageEvent[] {
+interface CodexTokenRow {
+  row: unknown;
+  sourceTurnId: string | null;
+}
+
+function collectCodexTokenRows(rows: unknown[]): CodexTokenRow[] {
+  const rollout = new CodexRolloutAccumulator();
+  const startedTurnIds: string[] = [];
+  const tokenRows: CodexTokenRow[] = [];
+
+  for (const row of rows) {
+    if (!isRecord(row)) continue;
+    const payload = objectField(row, "payload");
+    if (row.type === "event_msg" && payload?.type === "thread_rolled_back") {
+      const numTurns = payload.num_turns;
+      if (Number.isSafeInteger(numTurns) && (numTurns as number) > 0 && (numTurns as number) <= startedTurnIds.length) {
+        rollout.discardActiveTurnIds(startedTurnIds.splice(startedTurnIds.length - (numTurns as number), numTurns as number));
+      }
+      continue;
+    }
+
+    const rolloutRecord = rollout.consume(row);
+    if (row.type === "event_msg" && payload?.type === "task_started" && rolloutRecord.sourceTurnId) {
+      startedTurnIds.push(rolloutRecord.sourceTurnId);
+    }
+    if (row.type === "turn_context" || (row.type === "event_msg" && stringField(payload, "type") === "token_count")) {
+      tokenRows.push({ row, sourceTurnId: rolloutRecord.sourceTurnId });
+    }
+  }
+
+  return tokenRows;
+}
+
+function extractCodexTokenEvents(rows: readonly CodexTokenRow[]): TokenUsageEvent[] {
   const entries = new Map<string, TokenUsageEvent>();
   const cumulativeEntries = new Map<string, TokenUsageEvent>();
   const previousTotals: TokenUsage[] = [];
@@ -652,7 +894,8 @@ function extractCodexTokenEvents(rows: unknown[]): TokenUsageEvent[] {
   // prior sequence rather than assuming one monotonic counter. Fall back to
   // summing last_token_usage only when no cumulative total is present.
 
-  for (const row of rows) {
+  for (const tokenRow of rows) {
+    const { row, sourceTurnId } = tokenRow;
     if (!isRecord(row)) continue;
     const payload = objectField(row, "payload");
     if (row.type === "turn_context") {
@@ -685,6 +928,7 @@ function extractCodexTokenEvents(rows: unknown[]): TokenUsageEvent[] {
             ...delta,
             timestamp,
             dedupeKey: key,
+            ...(sourceTurnId ? { sourceTurnId } : {}),
           },
         );
       }
@@ -696,7 +940,10 @@ function extractCodexTokenEvents(rows: unknown[]): TokenUsageEvent[] {
       const totalInput = numberField(totalUsage, "input_tokens");
       const totalOutput = numberField(totalUsage, "output_tokens");
       const key = ["codex", model, l.input, l.output, l.cached, l.reasoning, totalInput, totalOutput].join(":");
-      putTokenEvent(entries, tokenEvent(timestamp, key, l.input, l.output, l.cached, l.reasoning));
+      putTokenEvent(entries, {
+        ...tokenEvent(timestamp, key, l.input, l.output, l.cached, l.reasoning),
+        ...(sourceTurnId ? { sourceTurnId } : {}),
+      });
     }
   }
 
@@ -954,10 +1201,14 @@ export function loadCodexSessionRows(
   if (!meta) return null;
 
   const visibleRows = codexVisibleConversationRows(rows);
-  const messages = extractMessages(visibleRows, "codex");
-  const tokenEvents = extractCodexTokenEvents(rows);
+  const extracted = extractCodexMessages(visibleRows);
+  const tokenEvents = extractCodexTokenEvents(collectCodexTokenRows(rows));
   const traceEvents = options.includeTraceEvents === false ? [] : extractTraceEvents(visibleRows, "codex");
-  return createLoadedCodexSession(filePath, meta, messages, tokenEvents, traceEvents, options);
+  return createLoadedCodexSession(filePath, meta, extracted.messages, tokenEvents, traceEvents, options, {
+    historyMode: meta.historyMode ?? extracted.historyMode,
+    messageProvenance: extracted.messageProvenance,
+    activeTurnIds: extracted.activeTurnIds,
+  });
 }
 
 export function loadCodexSessionFile(filePath: string, title?: string, updatedAt?: string): LoadedSession | null {
@@ -967,7 +1218,7 @@ export function loadCodexSessionFile(filePath: string, title?: string, updatedAt
     title,
     updatedAt,
     stat: { ...safeStat(filePath), size: scanned.committedOffset },
-  });
+  }, scanned.codexIncrementalState);
 }
 
 function walkJsonlFiles(dir: string): string[] {
@@ -1104,7 +1355,7 @@ function piTraceEvents(rows: unknown[]): SessionTraceEvent[] {
       timestamp,
       callId: stringField(message, "toolCallId") || null,
       eventType: null,
-      status: typeof isError === "boolean" ? (isError ? "failure" : "success") : "unknown",
+      status: typeof isError === "boolean" ? (isError ? "failed" : "completed") : "unknown",
     });
   }
 
@@ -1179,6 +1430,8 @@ function* loadPiSessionsIterator(
 interface StreamedCodexTurn {
   messages: SessionMessage[];
   traceEvents: TraceEventDraft[];
+  hasUserMessage: boolean;
+  sourceTurnIds: Set<string>;
 }
 
 function createLoadedCodexSession(
@@ -1193,6 +1446,7 @@ function createLoadedCodexSession(
     sourceOverride?: SessionSource;
     stat?: VirtualSessionFileStat;
   },
+  codexIncrementalState?: LoadedSession["codexIncrementalState"],
 ): LoadedSession {
   const tokenUsage = tokenUsageFromEvents(tokenEvents);
   const question = firstQuestion(messages);
@@ -1212,7 +1466,17 @@ function createLoadedCodexSession(
     parentSessionId: meta.parentSessionId,
     stat: options.stat,
   });
-  return { session, messages, tokenEvents, traceEvents };
+  return {
+    session,
+    messages,
+    tokenEvents,
+    traceEvents,
+    codexIncrementalState: codexIncrementalState ?? {
+      historyMode: meta.historyMode ?? "legacy",
+      messageProvenance: messages.map((message) => ({ messageIndex: message.index, sourceRecordId: null })),
+      activeTurnIds: [],
+    },
+  };
 }
 
 function scanCodexSessionFile(filePath: string, base?: { offset: number; loaded: LoadedSession }): {
@@ -1220,15 +1484,40 @@ function scanCodexSessionFile(filePath: string, base?: { offset: number; loaded:
   messages: SessionMessage[];
   tokenEvents: TokenUsageEvent[];
   traceEvents: SessionTraceEvent[];
+  codexIncrementalState: NonNullable<LoadedSession["codexIncrementalState"]>;
   committedOffset: number;
 } | null {
   if (base && safeStat(filePath).size < base.offset) return scanCodexSessionFile(filePath);
   const adapter = getAdapter("codex");
   const allMessages: SessionMessage[] = [...(base?.loaded.messages ?? [])];
   const allTraceEvents: TraceEventDraft[] = [...(base?.loaded.traceEvents ?? [])];
-  const preamble: StreamedCodexTurn = { messages: [...allMessages], traceEvents: [...allTraceEvents] };
+  const rollout = new CodexRolloutAccumulator(base ? {
+    historyMode: base.loaded.codexIncrementalState?.historyMode ?? "legacy",
+    activeTurnIds: base.loaded.codexIncrementalState?.activeTurnIds ?? [],
+    sourceTurnIds: [
+      ...allMessages.map((message) => message.sourceTurnId),
+      ...allTraceEvents.map((event) => event.sourceTurnId),
+      ...(base.loaded.tokenEvents ?? []).map((event) => event.sourceTurnId),
+    ],
+  } : undefined);
+  const messageProvenance = new Map<SessionMessage, string | null>();
+  const provenanceMessages = new Map<string, SessionMessage>();
+  for (const message of allMessages) {
+    const sourceRecordId =
+      base?.loaded.codexIncrementalState?.messageProvenance.find(
+        (entry) => entry.messageIndex === message.index,
+      )?.sourceRecordId ?? null;
+    messageProvenance.set(message, sourceRecordId);
+    if (sourceRecordId) provenanceMessages.set(sourceRecordId, message);
+  }
+  const preamble: StreamedCodexTurn = {
+    messages: [...allMessages],
+    traceEvents: [...allTraceEvents],
+    hasUserMessage: false,
+    sourceTurnIds: new Set(),
+  };
   const turns: StreamedCodexTurn[] = [];
-  const tokenRows: unknown[] = [];
+  const tokenRows: CodexTokenRow[] = [];
   let currentTurn: StreamedCodexTurn | null = null;
   let meta: NonNullable<ReturnType<typeof parseCodexSessionMetaLine>> | null = base ? {
     id: base.loaded.session.rawId,
@@ -1239,6 +1528,7 @@ function scanCodexSessionFile(filePath: string, base?: { offset: number; loaded:
     originator: base.loaded.session.source === "codex-app" ? "Codex Desktop" : undefined,
     isSubagent: base.loaded.session.isSubagent ?? false,
     parentSessionId: base.loaded.session.parentSessionId ?? null,
+    historyMode: base.loaded.codexIncrementalState?.historyMode ?? "legacy",
   } : null;
   let invalidRollback = false;
   let committedOffset = base?.offset ?? 0;
@@ -1258,42 +1548,122 @@ function scanCodexSessionFile(filePath: string, base?: { offset: number; loaded:
             originator: meta.originator || parsedMeta.originator,
             isSubagent: meta.isSubagent || parsedMeta.isSubagent,
             parentSessionId: meta.parentSessionId || parsedMeta.parentSessionId,
+            historyMode: meta.historyMode === "paginated" || parsedMeta.historyMode === "paginated" ? "paginated" : "legacy",
           } : parsedMeta;
         }
 
         if (isRecord(row)) {
           const payload = objectField(row, "payload");
-          if (row.type === "turn_context" || (row.type === "event_msg" && stringField(payload, "type") === "token_count")) {
-            tokenRows.push(row);
-          }
           if (row.type === "event_msg" && payload?.type === "thread_rolled_back") {
             const numTurns = payload.num_turns;
             if (!Number.isSafeInteger(numTurns) || (numTurns as number) <= 0 || (numTurns as number) > turns.length) {
               invalidRollback = true;
             } else {
-              turns.splice(turns.length - (numTurns as number), numTurns as number);
+              const removedTurns = turns.splice(turns.length - (numTurns as number), numTurns as number);
+              rollout.discardActiveTurnIds(removedTurns.flatMap((turn) => [...turn.sourceTurnIds]));
               currentTurn = turns.at(-1) ?? null;
             }
             return;
           }
         }
 
+        const rolloutRecord = rollout.consume(row);
+        if (
+          isRecord(row)
+          && (
+            row.type === "turn_context"
+            || (row.type === "event_msg" && stringField(objectField(row, "payload"), "type") === "token_count")
+          )
+        ) {
+          tokenRows.push({ row, sourceTurnId: rolloutRecord.sourceTurnId });
+        }
         const parsedMessage = adapter.parseLine(row);
-        const message = parsedMessage && (parsedMessage.role !== "user" || isMeaningfulUserMessage(parsedMessage.content))
-          ? { ...parsedMessage, index: 0 }
+        let message = parsedMessage
+          && !(rollout.historyMode === "paginated" && parsedMessage.role === "user")
+          && (parsedMessage.role !== "user" || isMeaningfulUserMessage(parsedMessage.content))
+          ? {
+              ...parsedMessage,
+              index: 0,
+              sourceTurnId: rolloutRecord.message?.sourceTurnId ?? null,
+              phase: parsedMessage.role === "assistant" ? rolloutRecord.message?.phase ?? null : null,
+            }
           : null;
-        const traces = isRecord(row) ? [...extractCodexResponseTrace(row), ...extractCodexEventTrace(row)] : [];
-        if (message) allMessages.push(message);
+        if (rolloutRecord.completedMessage) {
+          const completed = rolloutRecord.completedMessage;
+          const existing = provenanceMessages.get(completed.replacesSourceRecordId);
+          if (existing) {
+            Object.assign(existing, {
+              role: completed.role,
+              content: completed.content,
+              timestamp: completed.timestamp,
+              sourceTurnId: completed.sourceTurnId,
+              phase: completed.phase,
+            });
+            messageProvenance.set(existing, completed.sourceRecordId);
+            provenanceMessages.delete(completed.replacesSourceRecordId);
+            provenanceMessages.set(completed.sourceRecordId, existing);
+            message = null;
+          } else if (completed.role !== "user" || isMeaningfulUserMessage(completed.content)) {
+            message = {
+              role: completed.role,
+              content: completed.content,
+              timestamp: completed.timestamp,
+              index: 0,
+              sourceTurnId: completed.sourceTurnId,
+              phase: completed.phase,
+            };
+          }
+        }
+        const traces = isRecord(row)
+          ? [
+              ...extractCodexResponseTrace(row, rolloutRecord.sourceTurnId),
+              ...extractCodexEventTrace(row, rolloutRecord.sourceTurnId),
+              ...rolloutRecord.traceEvents,
+            ]
+          : [];
+        if (message) {
+          allMessages.push(message);
+          messageProvenance.set(
+            message,
+            rolloutRecord.completedMessage?.sourceRecordId
+              ?? rolloutRecord.message?.sourceRecordId
+              ?? null,
+          );
+          const sourceRecordId = messageProvenance.get(message);
+          if (sourceRecordId) provenanceMessages.set(sourceRecordId, message);
+        }
         allTraceEvents.push(...traces);
 
-        if (message?.role === "user") {
-          currentTurn = { messages: [message], traceEvents: [...traces] };
+        const payload = isRecord(row) ? objectField(row, "payload") : null;
+        const startsTurn = isRecord(row) && row.type === "event_msg" && payload?.type === "task_started";
+        let target: StreamedCodexTurn;
+        if (startsTurn) {
+          currentTurn = {
+            messages: [],
+            traceEvents: [],
+            hasUserMessage: false,
+            sourceTurnIds: new Set(),
+          };
           turns.push(currentTurn);
+          target = currentTurn;
+        } else if (message?.role === "user") {
+          if (!currentTurn || currentTurn.hasUserMessage) {
+            currentTurn = {
+              messages: [],
+              traceEvents: [],
+              hasUserMessage: false,
+              sourceTurnIds: new Set(),
+            };
+            turns.push(currentTurn);
+          }
+          currentTurn.hasUserMessage = true;
+          target = currentTurn;
         } else {
-          const target = currentTurn ?? preamble;
-          if (message) target.messages.push(message);
-          target.traceEvents.push(...traces);
+          target = currentTurn ?? preamble;
         }
+        if (message) target.messages.push(message);
+        target.traceEvents.push(...traces);
+        if (rolloutRecord.sourceTurnId) target.sourceTurnIds.add(rolloutRecord.sourceTurnId);
       },
     });
     committedOffset = result.committedOffset;
@@ -1314,9 +1684,21 @@ function scanCodexSessionFile(filePath: string, base?: { offset: number; loaded:
     messages: visibleMessages.map((message, index) => ({ ...message, index })),
     tokenEvents: [
       ...(base?.loaded.tokenEvents ?? []),
-      ...extractCodexTokenEvents(base ? tokenRows.map(stripCodexCumulativeUsage) : tokenRows),
+      ...extractCodexTokenEvents(
+        base
+          ? tokenRows.map((tokenRow) => ({ ...tokenRow, row: stripCodexCumulativeUsage(tokenRow.row) }))
+          : tokenRows,
+      ),
     ],
-    traceEvents: dedupeTraceEvents(visibleTraces),
+    traceEvents: dedupeCodexTraceEvents(visibleTraces),
+    codexIncrementalState: {
+      historyMode: rollout.historyMode,
+      messageProvenance: visibleMessages.map((message, messageIndex) => ({
+        messageIndex,
+        sourceRecordId: messageProvenance.get(message) ?? null,
+      })),
+      activeTurnIds: rollout.getActiveTurnIds(),
+    },
     committedOffset,
   };
 }
@@ -1366,7 +1748,7 @@ export function* loadCodexSessionsIterator(
       updatedAt: indexedTitle?.updatedAt,
       sourceOverride,
       stat: { ...stat, size: scanned.committedOffset },
-    });
+    }, scanned.codexIncrementalState);
     yield loaded;
   }
 }
@@ -2263,9 +2645,9 @@ function zcodeDatabaseStat(dbPath: string): VirtualSessionFileStat {
   };
 }
 
-function zcodeToolStatus(value: string): "success" | "failure" | "unknown" {
-  if (value === "completed") return "success";
-  if (value === "error") return "failure";
+function zcodeToolStatus(value: string): "completed" | "failed" | "unknown" {
+  if (value === "completed") return "completed";
+  if (value === "error") return "failed";
   return "unknown";
 }
 

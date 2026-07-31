@@ -42,7 +42,8 @@ export function migrateSessionStore(db: SessionStoreDatabase): void {
       content_indexed_mtime_ms REAL NOT NULL DEFAULT 0,
       content_indexed_size INTEGER NOT NULL DEFAULT 0,
       is_subagent INTEGER NOT NULL DEFAULT 0,
-      parent_session_id TEXT
+      parent_session_id TEXT,
+      codex_history_mode TEXT
     );
 
     CREATE TABLE IF NOT EXISTS environments (
@@ -70,6 +71,9 @@ export function migrateSessionStore(db: SessionStoreDatabase): void {
       role TEXT NOT NULL,
       content TEXT NOT NULL,
       timestamp TEXT NOT NULL,
+      source_turn_id TEXT,
+      phase TEXT,
+      source_record_id TEXT,
       PRIMARY KEY (session_key, message_index),
       FOREIGN KEY (session_key) REFERENCES sessions(session_key) ON DELETE CASCADE
     );
@@ -106,6 +110,7 @@ export function migrateSessionStore(db: SessionStoreDatabase): void {
       cached_input_tokens INTEGER NOT NULL DEFAULT 0,
       reasoning_output_tokens INTEGER NOT NULL DEFAULT 0,
       total_tokens INTEGER NOT NULL DEFAULT 0,
+      source_turn_id TEXT,
       PRIMARY KEY (session_key, dedupe_key),
       FOREIGN KEY (session_key) REFERENCES sessions(session_key) ON DELETE CASCADE
     );
@@ -121,6 +126,8 @@ export function migrateSessionStore(db: SessionStoreDatabase): void {
       call_id TEXT,
       event_type TEXT,
       status TEXT,
+      source_turn_id TEXT,
+      attributes_json TEXT,
       PRIMARY KEY (session_key, trace_index),
       FOREIGN KEY (session_key) REFERENCES sessions(session_key) ON DELETE CASCADE
     );
@@ -280,6 +287,13 @@ export function migrateSessionStore(db: SessionStoreDatabase): void {
   addColumnIfMissing(db, "sessions", "content_indexed_size", "INTEGER NOT NULL DEFAULT 0");
   const addedSubagentColumn = addColumnIfMissing(db, "sessions", "is_subagent", "INTEGER NOT NULL DEFAULT 0");
   addColumnIfMissing(db, "sessions", "parent_session_id", "TEXT");
+  addColumnIfMissing(db, "sessions", "codex_history_mode", "TEXT");
+  addColumnIfMissing(db, "messages", "source_turn_id", "TEXT");
+  addColumnIfMissing(db, "messages", "phase", "TEXT");
+  addColumnIfMissing(db, "messages", "source_record_id", "TEXT");
+  addColumnIfMissing(db, "token_events", "source_turn_id", "TEXT");
+  addColumnIfMissing(db, "trace_events", "source_turn_id", "TEXT");
+  addColumnIfMissing(db, "trace_events", "attributes_json", "TEXT");
   addColumnIfMissing(db, "environments", "wsl_distribution", "TEXT");
   if (addedSubagentColumn) {
     db
@@ -296,6 +310,7 @@ export function migrateSessionStore(db: SessionStoreDatabase): void {
   runCursorRuntimeEnvironmentMigration(db);
   runCursorEmptyComposerShellsMigration(db);
   runRemoveClaudeCodexInternalSourcesMigration(db);
+  runCodexSessionSemanticsMigration(db);
   addColumnIfMissing(db, "skill_sync_bindings", "remote_version", "INTEGER NOT NULL DEFAULT 1");
   addColumnIfMissing(db, "skill_sync_bindings", "portable_identity", "TEXT NOT NULL DEFAULT ''");
   addColumnIfMissing(db, "skill_sync_bindings", "last_content_hash", "TEXT NOT NULL DEFAULT ''");
@@ -544,6 +559,33 @@ function runRemoveClaudeCodexInternalSourcesMigration(db: SessionStoreDatabase):
       ).run();
       db.prepare("DELETE FROM sessions WHERE source IN ('claude-internal', 'codex-internal')").run();
       db.prepare("DELETE FROM tags WHERE NOT EXISTS (SELECT 1 FROM session_tags WHERE session_tags.tag_id = tags.id)").run();
+      db.prepare("INSERT INTO data_migrations (id, applied_at) VALUES (?, ?)").run(migrationId, Date.now());
+    }
+    db.exec("COMMIT");
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
+}
+
+function runCodexSessionSemanticsMigration(db: SessionStoreDatabase): void {
+  const migrationId = "codex-session-semantics-v2";
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    const applied = db.prepare("SELECT 1 FROM data_migrations WHERE id = ?").get(migrationId);
+    if (!applied) {
+      db.prepare(
+        `
+          UPDATE sessions
+          SET file_mtime_ms = 0,
+              content_indexed_mtime_ms = 0,
+              content_indexed_size = 0
+          WHERE source IN (
+            'claude-cli', 'claude-app', 'tclaude-cli',
+            'codex-cli', 'codex-app', 'tcodex-cli'
+          )
+        `,
+      ).run();
       db.prepare("INSERT INTO data_migrations (id, applied_at) VALUES (?, ?)").run(migrationId, Date.now());
     }
     db.exec("COMMIT");

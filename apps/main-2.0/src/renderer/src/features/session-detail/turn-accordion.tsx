@@ -3,6 +3,7 @@ import type { ReactElement } from "react";
 import { AlertCircle, ArrowRightLeft, ChevronDown, ChevronRight, Clock3, LoaderCircle, RotateCw, Wrench } from "lucide-react";
 
 import { formatMessageTime } from "../../../../core/format-session";
+import { tracePresentation } from "../../../../core/trace-presentation";
 import type {
   SessionTraceSpan,
   SessionTurnDetail,
@@ -111,6 +112,14 @@ export function buildTurnTimeline(
   detail: SessionTurnDetail,
   showTools = true,
 ): TurnTimelineItem[] {
+  const visibleSpans = showTools
+    ? detail.spans
+    : detail.spans.filter((span) => {
+        const traceKind = span.attributes.traceKind;
+        const kind = traceKind === "tool_call" || traceKind === "tool_result" ? traceKind : "event";
+        const eventType = typeof span.attributes.eventType === "string" ? span.attributes.eventType : null;
+        return tracePresentation({ kind, eventType }).category !== "tool";
+      });
   const items: TurnTimelineItem[] = [
     ...detail.messages.map((message) => ({
       kind: "message" as const,
@@ -119,15 +128,13 @@ export function buildTurnTimeline(
       order: message.messageIndex * 2,
       message,
     })),
-    ...(showTools
-      ? detail.spans.map((span) => ({
+    ...visibleSpans.map((span) => ({
           kind: "span" as const,
           key: `span:${span.id}`,
           timestampMs: timestampMs(span.startedAt),
           order: span.spanIndex * 2 + 1,
           span,
-        }))
-      : []),
+        })),
   ];
 
   return items.sort((left, right) => {
@@ -157,6 +164,7 @@ function durationLabel(value: number | null): string | null {
 }
 
 function turnStatusLabel(status: SessionTurnSummary["status"], language: LanguageMode): string {
+  if (status === "running") return localize(language, "Running", "进行中");
   if (status === "failed") return localize(language, "Failed", "失败");
   if (status === "aborted") return localize(language, "Interrupted", "已中断");
   return localize(language, "Completed", "已完成");
@@ -200,6 +208,14 @@ function spanStatusSymbol(status: SessionTraceSpan["status"]): string {
   return "•";
 }
 
+function spanStatusLabel(status: SessionTraceSpan["status"], language: LanguageMode): string {
+  if (status === "running") return localize(language, "Running", "进行中");
+  if (status === "completed") return localize(language, "Completed", "已完成");
+  if (status === "failed") return localize(language, "Failed", "失败");
+  if (status === "aborted") return localize(language, "Interrupted", "已中断");
+  return localize(language, "Status unknown", "状态未知");
+}
+
 function payloadText(payload: Record<string, unknown>): string {
   if (Object.keys(payload).length === 1 && typeof payload.text === "string") return payload.text;
   return JSON.stringify(payload, null, 2);
@@ -230,9 +246,12 @@ function TurnMessageBlock({
   const useMarkdown = message.role === "assistant" && terms.length === 0;
 
   return (
-    <div className={`turn-message ${message.role}`} data-message-index={message.sourceMessageIndex ?? undefined}>
+    <div className={`turn-message ${message.role} ${message.phase === "commentary" ? "commentary" : ""}`} data-message-index={message.sourceMessageIndex ?? undefined}>
       <div className="turn-message-head">
         <strong>{message.role === "user" ? localize(language, "User", "用户") : localize(language, "Assistant", "助手")}</strong>
+        {message.phase === "commentary"
+          ? <span className="message-phase">{localize(language, "Process note", "过程说明")}</span>
+          : null}
         <span>{formatMessageTime(message.timestamp)}</span>
       </div>
       {useMarkdown ? (
@@ -267,6 +286,7 @@ function TurnSpanBlock({
           <span className="turn-span-status">{spanStatusSymbol(span.status)}</span>
           <Wrench size={13} />
           {span.name}
+          <span className="turn-span-status-label">{spanStatusLabel(span.status, language)}</span>
         </span>
         <span className="turn-span-time">
           {elapsed ? <span>{elapsed}</span> : null}
@@ -334,6 +354,7 @@ export function TurnAccordion({
   showTools,
   query,
   language,
+  live = false,
   onLoadTurn,
   onMigrateTurn,
 }: {
@@ -344,6 +365,7 @@ export function TurnAccordion({
   showTools: boolean;
   query: string;
   language: LanguageMode;
+  live?: boolean;
   onLoadTurn: (turnId: string) => Promise<SessionTurnDetail | null>;
   onMigrateTurn?: (turn: SessionTurnSummary) => void;
 }): ReactElement {
@@ -443,11 +465,16 @@ export function TurnAccordion({
         const detail = state.detailsById[turn.id];
         const loadingDetail = state.loadingTurnIds.has(turn.id);
         const error = state.errorsById[turn.id];
-        const elapsed = durationLabel(durationMs(turn.startedAt, turn.endedAt));
+        const elapsed = durationLabel(turn.durationMs ?? durationMs(turn.startedAt, turn.endedAt));
+        const firstToken = durationLabel(turn.timeToFirstTokenMs ?? null);
+        const displayStatus: SessionTurnSummary["status"] =
+          turn.status === "running"
+            ? live ? "running" : "completed"
+            : turn.status;
         return (
           <article
             key={turn.id}
-            className={`turn-card ${turn.status} ${turn.id === matchedTurnId ? "match-target" : ""}`}
+            className={`turn-card ${displayStatus} ${turn.id === matchedTurnId ? "match-target" : ""}`}
             data-turn-id={turn.id}
             onContextMenu={onMigrateTurn && !turn.synthetic && turn.sourceMessageIndex !== null
               ? (event) => {
@@ -483,11 +510,17 @@ export function TurnAccordion({
                 {turn.userPreview && turn.assistantPreview ? <small>{turn.assistantPreview}</small> : null}
               </span>
               <span className="turn-card-meta">
-                <span className={`turn-status ${turn.status}`}>{turnStatusLabel(turn.status, language)}</span>
+                <span className={`turn-status ${displayStatus}`}>{turnStatusLabel(displayStatus, language)}</span>
                 {turn.spanCount > 0 ? (
-                  <span>
+                  <span title={localize(language, `${turn.spanCount} tool calls`, `${turn.spanCount} 次工具调用`)}>
                     <Wrench size={11} />
                     {turn.spanCount}
+                  </span>
+                ) : null}
+                {turn.errorCount > 0 ? (
+                  <span title={localize(language, `${turn.errorCount} errors`, `${turn.errorCount} 个错误`)}>
+                    <AlertCircle size={11} />
+                    {turn.errorCount}
                   </span>
                 ) : null}
                 {elapsed ? (
@@ -496,6 +529,7 @@ export function TurnAccordion({
                     {elapsed}
                   </span>
                 ) : null}
+                {firstToken ? <span>TTFT {firstToken}</span> : null}
                 {turn.totalTokens > 0 ? <span>{formatTokenCount(turn.totalTokens)} token</span> : null}
               </span>
             </button>

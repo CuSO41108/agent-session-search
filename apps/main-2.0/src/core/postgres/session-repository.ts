@@ -1,4 +1,5 @@
 import type {
+  CodexIncrementalState,
   IndexedSession,
   ProjectQueryOptions,
   ProjectSummary,
@@ -306,24 +307,30 @@ async function insertTurns(
     await client.query(
       `
         insert into agent_recall.session_turns (
-          id, session_key, turn_index, source_message_index, synthetic, status,
-          started_at, ended_at, user_text, assistant_text, tool_text, search_text,
+          id, session_key, turn_index, source_message_index, source_turn_id, synthetic, status,
+          started_at, ended_at, duration_ms, time_to_first_token_ms, abort_reason,
+          user_text, assistant_text, tool_text, search_text,
           input_tokens, output_tokens, cached_input_tokens, reasoning_output_tokens,
           total_tokens, error_count, tool_names, derivation_version
         )
         select
-          id, $1, turn_index, source_message_index, synthetic, status,
-          started_at, ended_at, user_text, assistant_text, tool_text, search_text,
+          id, $1, turn_index, source_message_index, source_turn_id, synthetic, status,
+          started_at, ended_at, duration_ms, time_to_first_token_ms, abort_reason,
+          user_text, assistant_text, tool_text, search_text,
           input_tokens, output_tokens, cached_input_tokens, reasoning_output_tokens,
           total_tokens, error_count, tool_names, derivation_version
         from jsonb_to_recordset($2::jsonb) as records(
           id text,
           turn_index integer,
           source_message_index integer,
+          source_turn_id text,
           synthetic boolean,
           status text,
           started_at timestamptz,
           ended_at timestamptz,
+          duration_ms bigint,
+          time_to_first_token_ms bigint,
+          abort_reason text,
           user_text text,
           assistant_text text,
           tool_text text,
@@ -342,10 +349,14 @@ async function insertTurns(
         id: turn.id,
         turn_index: turn.turnIndex,
         source_message_index: turn.sourceMessageIndex,
+        source_turn_id: turn.sourceTurnId,
         synthetic: turn.synthetic,
         status: turn.status,
         started_at: turn.startedAt,
         ended_at: turn.endedAt,
+        duration_ms: turn.durationMs,
+        time_to_first_token_ms: turn.timeToFirstTokenMs,
+        abort_reason: turn.abortReason,
         user_text: turn.userText,
         assistant_text: turn.assistantText,
         tool_text: turn.toolText,
@@ -451,6 +462,7 @@ export class PostgresSessionRepository {
     messages: readonly SessionMessage[],
     tokenEvents: readonly TokenUsageEvent[] = [],
     traceEvents: readonly SessionTraceEvent[] = [],
+    codexIncrementalState?: CodexIncrementalState,
   ): Promise<void> {
     let remainingAttachmentBytes = MAX_SESSION_ATTACHMENT_BYTES;
     const attachmentRows: Array<MaterializedAttachment & { messageIndex: number }> = [];
@@ -482,6 +494,7 @@ export class PostgresSessionRepository {
     const persistedTokenEvents = tokenEvents.map((event) => ({
       ...event,
       dedupeKey: postgresText(event.dedupeKey),
+      sourceTurnId: event.sourceTurnId ? postgresText(event.sourceTurnId).trim() || null : null,
     }));
     const persistedTraceEvents = traceEvents.map((event) => ({
       ...event,
@@ -495,6 +508,7 @@ export class PostgresSessionRepository {
       messages: persistedMessages,
       tokenEvents: persistedTokenEvents,
       traceEvents: persistedTraceEvents,
+      codexIncrementalState,
     });
     const tokenUsage = tokenUsageFromEvents(persistedTokenEvents, session.tokenUsage);
     const environmentId = session.environmentId || "local";
@@ -522,13 +536,14 @@ export class PostgresSessionRepository {
             original_title, first_question, started_at, file_mtime_ms, file_size,
             pr_url, pr_number, message_count, turn_count, input_tokens, output_tokens,
             cached_input_tokens, reasoning_output_tokens, total_tokens, indexed_at,
-            content_indexed_mtime_ms, content_indexed_size, is_subagent, parent_session_id
+            content_indexed_mtime_ms, content_indexed_size, is_subagent, parent_session_id,
+            codex_history_mode
           )
           values (
             $1, $2, $3, $4, $5, $6, $7,
             $8, $9, $10, $11, $12,
             $13, $14, $15, $16, $17, $18,
-            $19, $20, $21, now(), $22, $23, $24, $25
+            $19, $20, $21, now(), $22, $23, $24, $25, $26
           )
           on conflict (session_key) do update set
             raw_id = excluded.raw_id,
@@ -556,6 +571,7 @@ export class PostgresSessionRepository {
             content_indexed_size = excluded.content_indexed_size,
             is_subagent = excluded.is_subagent,
             parent_session_id = excluded.parent_session_id,
+            codex_history_mode = excluded.codex_history_mode,
             source_available = true
         `,
         [
@@ -584,6 +600,7 @@ export class PostgresSessionRepository {
           session.fileSize,
           Boolean(session.isSubagent),
           session.parentSessionId ?? null,
+          codexIncrementalState?.historyMode ?? null,
         ],
       );
 
@@ -663,11 +680,11 @@ export class PostgresSessionRepository {
           `
             insert into agent_recall.token_events (
               session_key, dedupe_key, occurred_at, input_tokens, output_tokens,
-              cached_input_tokens, reasoning_output_tokens, total_tokens
+              cached_input_tokens, reasoning_output_tokens, total_tokens, source_turn_id
             )
             select
               $1, dedupe_key, occurred_at, input_tokens, output_tokens,
-              cached_input_tokens, reasoning_output_tokens, total_tokens
+              cached_input_tokens, reasoning_output_tokens, total_tokens, source_turn_id
             from jsonb_to_recordset($2::jsonb) as records(
               dedupe_key text,
               occurred_at timestamptz,
@@ -675,7 +692,8 @@ export class PostgresSessionRepository {
               output_tokens bigint,
               cached_input_tokens bigint,
               reasoning_output_tokens bigint,
-              total_tokens bigint
+              total_tokens bigint,
+              source_turn_id text
             )
           `,
           [
@@ -688,6 +706,7 @@ export class PostgresSessionRepository {
               cached_input_tokens: event.cachedInputTokens,
               reasoning_output_tokens: event.reasoningOutputTokens,
               total_tokens: event.totalTokens,
+              source_turn_id: event.sourceTurnId ?? null,
             }))),
           ],
         );
@@ -829,9 +848,9 @@ export class PostgresSessionRepository {
             `
               insert into agent_recall.token_events (
                 session_key, dedupe_key, occurred_at, input_tokens, output_tokens,
-                cached_input_tokens, reasoning_output_tokens, total_tokens
+                cached_input_tokens, reasoning_output_tokens, total_tokens, source_turn_id
               )
-              values ($1, $2, $3, $4, $5, $6, $7, $8)
+              values ($1, $2, $3, $4, $5, $6, $7, $8, $9)
             `,
             [
               session.sessionKey,
@@ -842,6 +861,7 @@ export class PostgresSessionRepository {
               event.cachedInputTokens,
               event.reasoningOutputTokens,
               event.totalTokens,
+              event.sourceTurnId ? postgresText(event.sourceTurnId).trim() || null : null,
             ],
           );
         }
@@ -1001,9 +1021,10 @@ export class PostgresSessionRepository {
       cached_input_tokens: number | string;
       reasoning_output_tokens: number | string;
       total_tokens: number | string;
+      source_turn_id: string | null;
     }>(`
       select occurred_at, dedupe_key, input_tokens, output_tokens, cached_input_tokens,
-             reasoning_output_tokens, total_tokens
+             reasoning_output_tokens, total_tokens, source_turn_id
       from agent_recall.token_events
       where session_key = $1
       order by occurred_at, dedupe_key
@@ -1016,6 +1037,7 @@ export class PostgresSessionRepository {
       cachedInputTokens: numberValue(row.cached_input_tokens),
       reasoningOutputTokens: numberValue(row.reasoning_output_tokens),
       totalTokens: numberValue(row.total_tokens),
+      sourceTurnId: row.source_turn_id,
     }));
   }
 
@@ -1317,10 +1339,12 @@ export class PostgresSessionRepository {
         ai_summary_model: string | null;
         ai_summary_at: Date | string | null;
         ai_summary_basis: number | string | null;
+        codex_history_mode: string | null;
       }>(
         `
           select custom_title, favorited, hidden, last_opened_at, last_resumed_at,
-            ai_summary, ai_summary_model, ai_summary_at, ai_summary_basis
+            ai_summary, ai_summary_model, ai_summary_at, ai_summary_basis,
+            codex_history_mode
           from agent_recall.sessions
           where session_key = $1
         `,
@@ -1343,7 +1367,8 @@ export class PostgresSessionRepository {
               last_opened_at, last_resumed_at, message_count, turn_count,
               input_tokens, output_tokens, cached_input_tokens, reasoning_output_tokens,
               total_tokens, indexed_at, is_subagent, parent_session_id,
-              ai_summary, ai_summary_model, ai_summary_at, ai_summary_basis
+              ai_summary, ai_summary_model, ai_summary_at, ai_summary_basis,
+              codex_history_mode
             )
             select
               $2, raw_id, source, environment_id, storage_environment_id, project_path, file_path,
@@ -1352,7 +1377,8 @@ export class PostgresSessionRepository {
               last_opened_at, last_resumed_at, message_count, turn_count,
               input_tokens, output_tokens, cached_input_tokens, reasoning_output_tokens,
               total_tokens, indexed_at, is_subagent, parent_session_id,
-              ai_summary, ai_summary_model, ai_summary_at, ai_summary_basis
+              ai_summary, ai_summary_model, ai_summary_at, ai_summary_basis,
+              codex_history_mode
             from agent_recall.sessions
             where session_key = $1
           `,
@@ -1383,7 +1409,8 @@ export class PostgresSessionRepository {
               ai_summary = coalesce(ai_summary, $7),
               ai_summary_model = case when ai_summary is null then $8 else ai_summary_model end,
               ai_summary_at = case when ai_summary is null then $9 else ai_summary_at end,
-              ai_summary_basis = case when ai_summary is null then $10 else ai_summary_basis end
+              ai_summary_basis = case when ai_summary is null then $10 else ai_summary_basis end,
+              codex_history_mode = coalesce(codex_history_mode, $11)
             where session_key = $1
           `,
           [
@@ -1397,6 +1424,7 @@ export class PostgresSessionRepository {
             legacy.ai_summary_model,
             legacy.ai_summary_at,
             legacy.ai_summary_basis,
+            legacy.codex_history_mode,
           ],
         );
         await client.query(

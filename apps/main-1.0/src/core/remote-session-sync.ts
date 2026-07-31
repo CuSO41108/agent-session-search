@@ -3,6 +3,8 @@ import { readFileSync } from "node:fs";
 import { constants as zlibConstants, gzip, gzipSync, gunzip } from "node:zlib";
 import { remoteSessionAgentForSource } from "./session-sources";
 import type { SessionStore, SessionSyncBinding } from "./session-store";
+import { TRACE_DETAIL_PREVIEW_MAX_CHARS } from "./trace-detail";
+import { normalizeSessionTraceStatus, tracePresentation } from "./trace-presentation";
 import type { PortableSession, RemoteSessionAgent, SessionMessage, SessionSearchResult, SessionTraceEvent } from "./types";
 
 export const REMOTE_SESSION_TABLE = "agent_session_remote_sessions";
@@ -10,6 +12,7 @@ export const REMOTE_SESSION_BUCKET = "agent-session-remote";
 const REMOTE_SESSION_SOURCE_OBJECT_MAX_BYTES = 5 * 1024 * 1024;
 const REMOTE_SESSION_SOURCE_COMPRESSION_MIN_BYTES = 64 * 1024;
 const REMOTE_SESSION_STORAGE_UPLOAD_CONCURRENCY = 4;
+const REMOTE_TRACE_ATTRIBUTES_MAX_CHARS = TRACE_DETAIL_PREVIEW_MAX_CHARS * 4;
 const REMOTE_SESSION_COLUMNS =
   "id,source_session_key,source_agent,source_source,source_environment_id,source_environment_kind,source_environment_label,title,project_path,started_at,updated_at,content_hash,revision_version,message_count,trace_event_count,ai_summary,tags,search_text,detail_object_key,portable_object_key,detail_sha256,portable_sha256,created_at,synced_at";
 const REMOTE_SESSION_LEGACY_COLUMNS =
@@ -277,12 +280,15 @@ export function buildRemoteSessionSnapshot(
   now = Date.now(),
 ): RemoteSessionDetailSnapshot {
   const { sourceAvailable: _sourceAvailable, ...snapshotSession } = session;
+  const visibleTraceEvents = traceEvents
+    .filter((event) => tracePresentation(event).visibility !== "hidden")
+    .map((event, index) => ({ ...event, index }));
   return {
     schemaVersion: 1,
     exportedAt: now,
     session: snapshotSession,
     messages,
-    traceEvents,
+    traceEvents: visibleTraceEvents,
   };
 }
 
@@ -1211,8 +1217,14 @@ export function parseDetailSnapshot(value: unknown): RemoteSessionDetailSnapshot
     schemaVersion: snapshot.schemaVersion,
     exportedAt: typeof snapshot.exportedAt === "number" ? snapshot.exportedAt : 0,
     session: snapshot.session as SessionSearchResult,
-    messages: snapshot.messages.filter(isSessionMessage),
-    traceEvents: snapshot.traceEvents.filter(isTraceEvent),
+    messages: snapshot.messages.flatMap((value) => {
+      const message = parseSessionMessage(value);
+      return message ? [message] : [];
+    }),
+    traceEvents: snapshot.traceEvents.flatMap((value) => {
+      const event = parseTraceEvent(value);
+      return event ? [event] : [];
+    }),
     ...(snapshot.schemaVersion === 3
       ? { sourceArchive: parseRemoteSessionSourceArchive(snapshot.sourceArchive) }
       : {}),
@@ -1313,7 +1325,10 @@ function parsePortableSessionValue(value: unknown, depth: number, state: { count
     title: session.title,
     projectPath: session.projectPath,
     startedAt: session.startedAt,
-    messages: session.messages.filter(isSessionMessage),
+    messages: session.messages.flatMap((value) => {
+      const message = parseSessionMessage(value);
+      return message ? [message] : [];
+    }),
     isSubagent: session.isSubagent === true,
     parentSessionId: typeof session.parentSessionId === "string" ? session.parentSessionId : null,
     subagents: Array.isArray(session.subagents)
@@ -1322,28 +1337,79 @@ function parsePortableSessionValue(value: unknown, depth: number, state: { count
   };
 }
 
-function isSessionMessage(value: unknown): value is SessionMessage {
-  if (!value || typeof value !== "object") return false;
+function parseSessionMessage(value: unknown): SessionMessage | null {
+  if (!value || typeof value !== "object") return null;
   const message = value as Partial<SessionMessage>;
-  return (
-    (message.role === "user" || message.role === "assistant") &&
-    typeof message.content === "string" &&
-    typeof message.timestamp === "string" &&
-    typeof message.index === "number"
-  );
+  if (
+    (message.role !== "user" && message.role !== "assistant")
+    || typeof message.content !== "string"
+    || typeof message.timestamp !== "string"
+    || typeof message.index !== "number"
+  ) return null;
+  if (
+    "sourceTurnId" in message
+    && typeof message.sourceTurnId !== "string"
+    && message.sourceTurnId !== null
+  ) return null;
+  if (
+    "phase" in message
+    && message.phase !== "commentary"
+    && message.phase !== "final_answer"
+    && message.phase !== null
+  ) return null;
+  return {
+    role: message.role,
+    content: message.content,
+    timestamp: message.timestamp,
+    index: message.index,
+    ...("sourceTurnId" in message ? { sourceTurnId: message.sourceTurnId } : {}),
+    ...("phase" in message ? { phase: message.phase } : {}),
+    ...(Array.isArray(message.attachments) ? { attachments: message.attachments } : {}),
+  };
 }
 
-function isTraceEvent(value: unknown): value is SessionTraceEvent {
-  if (!value || typeof value !== "object") return false;
+function isBoundedTraceAttributes(value: unknown): value is Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  try {
+    return JSON.stringify(value).length <= REMOTE_TRACE_ATTRIBUTES_MAX_CHARS;
+  } catch {
+    return false;
+  }
+}
+
+function parseTraceEvent(value: unknown): SessionTraceEvent | null {
+  if (!value || typeof value !== "object") return null;
   const event = value as Partial<SessionTraceEvent>;
-  return (
-    typeof event.index === "number" &&
-    (event.kind === "tool_call" || event.kind === "tool_result" || event.kind === "event") &&
-    typeof event.source === "string" &&
-    typeof event.title === "string" &&
-    typeof event.detail === "string" &&
-    typeof event.timestamp === "string"
-  );
+  if (
+    typeof event.index !== "number"
+    || (event.kind !== "tool_call" && event.kind !== "tool_result" && event.kind !== "event")
+    || typeof event.source !== "string"
+    || typeof event.title !== "string"
+    || typeof event.detail !== "string"
+    || typeof event.timestamp !== "string"
+  ) return null;
+  if (
+    "sourceTurnId" in event
+    && typeof event.sourceTurnId !== "string"
+    && event.sourceTurnId !== null
+  ) return null;
+  if ("attributes" in event && !isBoundedTraceAttributes(event.attributes)) return null;
+  const status = normalizeSessionTraceStatus(event.status);
+  return {
+    index: event.index,
+    kind: event.kind,
+    source: event.source,
+    title: event.title,
+    detail: event.detail,
+    timestamp: event.timestamp,
+    ...(typeof event.callId === "string" || event.callId === null ? { callId: event.callId } : {}),
+    ...(typeof event.eventType === "string" || event.eventType === null ? { eventType: event.eventType } : {}),
+    ...(status ? { status } : {}),
+    ...(typeof event.sourceTurnId === "string" || event.sourceTurnId === null
+      ? { sourceTurnId: event.sourceTurnId }
+      : {}),
+    ...("attributes" in event ? { attributes: event.attributes as Record<string, unknown> } : {}),
+  };
 }
 
 function parseRemoteSessionAgent(value: string): RemoteSessionAgent {

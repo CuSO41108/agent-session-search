@@ -176,15 +176,23 @@ const REMOTE_VISIBLE_ROWS_PY = String.raw`def visible_codex_rows(rows):
       del turns[-count:]
       current = turns[-1] if turns else None
       continue
+    if row.get("type") == "event_msg" and isinstance(payload, dict) and payload.get("type") == "task_started":
+      current = {"rows": [row], "has_user": False}
+      turns.append(current)
+      continue
     parsed = parse_message(row, "codex")
     if parsed and parsed["role"] == "user":
-      current = [row]
-      turns.append(current)
+      if current is not None and not current["has_user"]:
+        current["rows"].append(row)
+        current["has_user"] = True
+      else:
+        current = {"rows": [row], "has_user": True}
+        turns.append(current)
     elif current is not None:
-      current.append(row)
+      current["rows"].append(row)
     else:
       preamble.append(row)
-  return preamble + [row for turn in turns for row in turn]
+  return preamble + [row for turn in turns for row in turn["rows"]]
 
 def visible_claude_rows(rows):
   nodes = {}
@@ -421,7 +429,7 @@ export async function syncRemoteEnvironment(
     const loaded = loadRemoteSessionPayloads(environment, payloads);
     for (const item of loaded) {
       migrateLegacyRemoteSessionRecord(store, item.session);
-      store.upsertIndexedSession(item.session, item.messages, item.tokenEvents, item.traceEvents);
+      store.upsertIndexedSession(item.session, item.messages, item.tokenEvents, item.traceEvents, item.codexIncrementalState);
     }
     store.updateEnvironmentSyncState(environment.id, "watching", { lastSyncedAt: Date.now(), lastError: null });
     return { environmentId: environment.id, indexed: enabledSummaries.length + loaded.length, error: null };
@@ -456,7 +464,7 @@ async function syncWslEnvironment(
       payloads.filter((payload) => isSupportedWslSource(payloadSourceForPayload(payload))),
     );
     for (const item of loaded) {
-      store.upsertIndexedSession(item.session, item.messages, item.tokenEvents, item.traceEvents);
+      store.upsertIndexedSession(item.session, item.messages, item.tokenEvents, item.traceEvents, item.codexIncrementalState);
     }
     store.updateEnvironmentSyncState(environment.id, "watching", { lastSyncedAt: Date.now(), lastError: null });
     return { environmentId: environment.id, indexed: enabledSummaries.length + loaded.length, error: null };
@@ -1009,6 +1017,10 @@ function parseTokenEvent(value: unknown, lineNumber: number, index: number): Tok
   const cachedInputTokens = nonNegativeFiniteField(value, "cachedInputTokens", prefix);
   const reasoningOutputTokens = nonNegativeFiniteField(value, "reasoningOutputTokens", prefix);
   const totalTokens = nonNegativeFiniteField(value, "totalTokens", prefix);
+  const sourceTurnId = value.sourceTurnId;
+  if (sourceTurnId !== undefined && sourceTurnId !== null && typeof sourceTurnId !== "string") {
+    throw new Error(`${prefix}.sourceTurnId`);
+  }
   if (totalTokens !== inputTokens + outputTokens + cachedInputTokens + reasoningOutputTokens) {
     throw new Error(`${prefix}.totalTokens`);
   }
@@ -1020,6 +1032,7 @@ function parseTokenEvent(value: unknown, lineNumber: number, index: number): Tok
     cachedInputTokens,
     reasoningOutputTokens,
     totalTokens,
+    ...(sourceTurnId !== undefined ? { sourceTurnId } : {}),
   };
 }
 

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { SessionMessage, SessionTraceEvent, TokenUsageEvent } from "../types";
+import { loadCodexSessionRows } from "../session-loader";
 import { deriveSessionTimeline, TURN_DERIVATION_VERSION } from "./derive-turns";
 
 const messages: SessionMessage[] = [
@@ -49,7 +50,7 @@ const traceEvents: SessionTraceEvent[] = [
     detail: "1 test failed",
     timestamp: "2026-07-23T10:00:05.000Z",
     callId: "call-1",
-    status: "failure",
+    status: "failed",
   },
   {
     index: 2,
@@ -59,7 +60,7 @@ const traceEvents: SessionTraceEvent[] = [
     detail: "updated the assertion",
     timestamp: "2026-07-23T10:01:02.000Z",
     eventType: "patch_apply_end",
-    status: "success",
+    status: "completed",
   },
 ];
 
@@ -85,6 +86,385 @@ const tokenEvents: TokenUsageEvent[] = [
 ];
 
 describe("deriveSessionTimeline", () => {
+  it("groups by Codex source turn id and projects lifecycle without creating spans", () => {
+    const sourceMessages: SessionMessage[] = [
+      {
+        role: "user",
+        content: "first",
+        timestamp: "2026-07-30T08:00:00.000Z",
+        index: 0,
+        sourceTurnId: "turn-a",
+      },
+      {
+        role: "user",
+        content: "second",
+        timestamp: "2026-07-30T08:00:00.500Z",
+        index: 1,
+        sourceTurnId: "turn-b",
+      },
+      {
+        role: "assistant",
+        content: "first done",
+        timestamp: "2026-07-30T08:00:02.000Z",
+        index: 2,
+        sourceTurnId: "turn-a",
+        phase: "final_answer",
+      },
+    ];
+    const lifecycle: SessionTraceEvent[] = [
+      {
+        index: 0,
+        kind: "event",
+        source: "codex",
+        title: "Turn started",
+        detail: "",
+        timestamp: "2026-07-30T08:00:00.000Z",
+        eventType: "codex.turn.started",
+        status: "running",
+        sourceTurnId: "turn-a",
+        attributes: { startedAt: "2026-07-30T08:00:00.000Z" },
+      },
+      {
+        index: 1,
+        kind: "event",
+        source: "codex",
+        title: "Turn completed",
+        detail: "",
+        timestamp: "2026-07-30T08:00:03.000Z",
+        eventType: "codex.turn.completed",
+        status: "completed",
+        sourceTurnId: "turn-a",
+        attributes: {
+          endedAt: "2026-07-30T08:00:03.000Z",
+          durationMs: 3_000,
+          timeToFirstTokenMs: 125,
+        },
+      },
+      {
+        index: 2,
+        kind: "event",
+        source: "codex",
+        title: "Turn aborted",
+        detail: "replaced",
+        timestamp: "2026-07-30T08:00:01.000Z",
+        eventType: "codex.turn.aborted",
+        status: "aborted",
+        sourceTurnId: "turn-b",
+        attributes: { abortReason: "replaced", durationMs: 500 },
+      },
+    ];
+
+    const timeline = deriveSessionTimeline({
+      sessionKey: "codex:source-turns",
+      messages: sourceMessages,
+      traceEvents: lifecycle,
+      codexIncrementalState: {
+        historyMode: "paginated",
+        messageProvenance: [
+          { messageIndex: 0, sourceRecordId: "response_item:user-a" },
+          { messageIndex: 1, sourceRecordId: "response_item:user-b" },
+          { messageIndex: 2, sourceRecordId: "response_item:answer-a" },
+        ],
+        activeTurnIds: [],
+      },
+    });
+
+    expect(timeline.turns).toHaveLength(2);
+    expect(timeline.turns[0]).toMatchObject({
+      sourceMessageIndex: 0,
+      sourceTurnId: "turn-a",
+      status: "completed",
+      durationMs: 3_000,
+      timeToFirstTokenMs: 125,
+      spans: [],
+    });
+    expect(timeline.turns[0].messages[1].metadata).toEqual({
+      sourceTurnId: "turn-a",
+      phase: "final_answer",
+      codex: { sourceItemId: "response_item:answer-a" },
+    });
+    expect(timeline.turns[1]).toMatchObject({
+      sourceMessageIndex: 1,
+      sourceTurnId: "turn-b",
+      status: "aborted",
+      durationMs: 500,
+      abortReason: "replaced",
+      spans: [],
+    });
+    expect(timeline.turns[0].id).toBe(
+      deriveSessionTimeline({
+        sessionKey: "codex:source-turns",
+        messages: sourceMessages.map((message) => ({ ...message, sourceTurnId: null })),
+      }).turns[0].id,
+    );
+  });
+
+  it("keeps a started Codex Turn running until a lifecycle terminal arrives", () => {
+    const timeline = deriveSessionTimeline({
+      sessionKey: "codex:active-turn",
+      messages: [{
+        role: "user",
+        content: "keep working",
+        timestamp: "2026-07-30T08:00:00.000Z",
+        index: 0,
+        sourceTurnId: "turn-active",
+      }],
+      traceEvents: [{
+        index: 0,
+        kind: "event",
+        source: "codex",
+        title: "Turn started",
+        detail: "",
+        timestamp: "2026-07-30T08:00:00.000Z",
+        eventType: "codex.turn.started",
+        status: "running",
+        sourceTurnId: "turn-active",
+      }],
+      codexIncrementalState: {
+        historyMode: "paginated",
+        messageProvenance: [{ messageIndex: 0, sourceRecordId: "response_item:user-active" }],
+        activeTurnIds: ["turn-active"],
+      },
+    });
+
+    expect(timeline.turns).toHaveLength(1);
+    expect(timeline.turns[0].status).toBe("running");
+  });
+
+  it("retains rolled-back token usage without creating a token-only Turn", () => {
+    const loaded = loadCodexSessionRows("/tmp/codex-token-only-rollback.jsonl", [
+      {
+        type: "session_meta",
+        timestamp: "2026-07-30T09:00:00Z",
+        payload: { id: "codex-token-only-rollback", cwd: "/repo", history_mode: "paginated" },
+      },
+      {
+        type: "event_msg",
+        timestamp: "2026-07-30T09:00:01Z",
+        payload: { type: "task_started", turn_id: "turn-rolled" },
+      },
+      {
+        type: "response_item",
+        timestamp: "2026-07-30T09:00:02Z",
+        payload: {
+          type: "message",
+          id: "user-rolled",
+          role: "user",
+          content: [{ type: "input_text", text: "撤销这轮" }],
+          internal_chat_message_metadata_passthrough: { turn_id: "turn-rolled" },
+        },
+      },
+      {
+        type: "event_msg",
+        timestamp: "2026-07-30T09:00:03Z",
+        payload: {
+          type: "token_count",
+          info: { last_token_usage: { input_tokens: 10, output_tokens: 1 } },
+        },
+      },
+      {
+        type: "event_msg",
+        timestamp: "2026-07-30T09:00:04Z",
+        payload: { type: "turn_aborted", turn_id: "turn-rolled", reason: "interrupted" },
+      },
+      {
+        type: "event_msg",
+        timestamp: "2026-07-30T09:00:05Z",
+        payload: { type: "thread_rolled_back", num_turns: 1 },
+      },
+    ]);
+    if (!loaded) throw new Error("Expected the rolled-back Codex fixture to load.");
+
+    const timeline = deriveSessionTimeline({
+      sessionKey: loaded.session.sessionKey,
+      messages: loaded.messages,
+      traceEvents: loaded.traceEvents,
+      tokenEvents: loaded.tokenEvents,
+      codexIncrementalState: loaded.codexIncrementalState,
+    });
+
+    expect(loaded.tokenEvents).toHaveLength(1);
+    expect(loaded.session.tokenUsage?.totalTokens).toBe(11);
+    expect(timeline.turns).toEqual([]);
+  });
+
+  it("does not attribute a rolled-back Turn's token usage to the preceding retained Turn", () => {
+    const loaded = loadCodexSessionRows("/tmp/codex-rollback-token-attribution.jsonl", [
+      {
+        type: "session_meta",
+        timestamp: "2026-07-30T09:00:00Z",
+        payload: { id: "codex-rollback-token-attribution", cwd: "/repo", history_mode: "paginated" },
+      },
+      {
+        type: "event_msg",
+        timestamp: "2026-07-30T09:00:01Z",
+        payload: { type: "task_started", turn_id: "turn-kept" },
+      },
+      {
+        type: "response_item",
+        timestamp: "2026-07-30T09:00:02Z",
+        payload: {
+          type: "message",
+          id: "user-kept",
+          role: "user",
+          content: [{ type: "input_text", text: "保留这轮" }],
+          internal_chat_message_metadata_passthrough: { turn_id: "turn-kept" },
+        },
+      },
+      {
+        type: "event_msg",
+        timestamp: "2026-07-30T09:00:03Z",
+        payload: {
+          type: "token_count",
+          info: { last_token_usage: { input_tokens: 10, output_tokens: 1 } },
+        },
+      },
+      {
+        type: "event_msg",
+        timestamp: "2026-07-30T09:00:04Z",
+        payload: { type: "task_complete", turn_id: "turn-kept" },
+      },
+      {
+        type: "event_msg",
+        timestamp: "2026-07-30T09:01:00Z",
+        payload: { type: "task_started", turn_id: "turn-rolled" },
+      },
+      {
+        type: "response_item",
+        timestamp: "2026-07-30T09:01:01Z",
+        payload: {
+          type: "message",
+          id: "user-rolled",
+          role: "user",
+          content: [{ type: "input_text", text: "撤销这轮" }],
+          internal_chat_message_metadata_passthrough: { turn_id: "turn-rolled" },
+        },
+      },
+      {
+        type: "event_msg",
+        timestamp: "2026-07-30T09:01:02Z",
+        payload: {
+          type: "token_count",
+          info: { last_token_usage: { input_tokens: 20, output_tokens: 2 } },
+        },
+      },
+      {
+        type: "event_msg",
+        timestamp: "2026-07-30T09:01:03Z",
+        payload: { type: "turn_aborted", turn_id: "turn-rolled", reason: "interrupted" },
+      },
+      {
+        type: "event_msg",
+        timestamp: "2026-07-30T09:01:04Z",
+        payload: { type: "thread_rolled_back", num_turns: 1 },
+      },
+    ]);
+    if (!loaded) throw new Error("Expected the rollback token attribution fixture to load.");
+
+    const timeline = deriveSessionTimeline({
+      sessionKey: loaded.session.sessionKey,
+      messages: loaded.messages,
+      traceEvents: loaded.traceEvents,
+      tokenEvents: loaded.tokenEvents,
+      codexIncrementalState: loaded.codexIncrementalState,
+    });
+
+    expect(loaded.session.tokenUsage?.totalTokens).toBe(33);
+    expect(loaded.tokenEvents?.map((event) => event.sourceTurnId)).toEqual(["turn-kept", "turn-rolled"]);
+    expect(timeline.turns).toHaveLength(1);
+    expect(timeline.turns[0]).toMatchObject({
+      sourceTurnId: "turn-kept",
+      totalTokens: 11,
+    });
+  });
+
+  it("derives legacy Codex token usage only for the retained lifecycle Turn", () => {
+    const loaded = loadCodexSessionRows("/tmp/codex-legacy-token-attribution.jsonl", [
+      {
+        type: "session_meta",
+        timestamp: "2025-08-01T09:00:00Z",
+        payload: { id: "codex-legacy-token-attribution", cwd: "/repo", history_mode: "legacy" },
+      },
+      {
+        type: "event_msg",
+        timestamp: "2025-08-01T09:00:01Z",
+        payload: { type: "task_started", model_context_window: 200_000 },
+      },
+      {
+        type: "response_item",
+        timestamp: "2025-08-01T09:00:02Z",
+        payload: {
+          type: "message",
+          role: "user",
+          content: [{ type: "input_text", text: "保留这轮" }],
+        },
+      },
+      {
+        type: "event_msg",
+        timestamp: "2025-08-01T09:00:03Z",
+        payload: {
+          type: "token_count",
+          info: { last_token_usage: { input_tokens: 10, output_tokens: 1 } },
+        },
+      },
+      {
+        type: "event_msg",
+        timestamp: "2025-08-01T09:00:04Z",
+        payload: { type: "task_complete", last_agent_message: null },
+      },
+      {
+        type: "event_msg",
+        timestamp: "2025-08-01T09:01:00Z",
+        payload: { type: "task_started", model_context_window: 200_000 },
+      },
+      {
+        type: "response_item",
+        timestamp: "2025-08-01T09:01:01Z",
+        payload: {
+          type: "message",
+          role: "user",
+          content: [{ type: "input_text", text: "撤销这轮" }],
+        },
+      },
+      {
+        type: "event_msg",
+        timestamp: "2025-08-01T09:01:02Z",
+        payload: {
+          type: "token_count",
+          info: { last_token_usage: { input_tokens: 20, output_tokens: 2 } },
+        },
+      },
+      {
+        type: "event_msg",
+        timestamp: "2025-08-01T09:01:03Z",
+        payload: { type: "turn_aborted", reason: "interrupted" },
+      },
+      {
+        type: "event_msg",
+        timestamp: "2025-08-01T09:01:04Z",
+        payload: { type: "thread_rolled_back", num_turns: 1 },
+      },
+    ]);
+    if (!loaded) throw new Error("Expected the legacy Codex fixture to load.");
+
+    const timeline = deriveSessionTimeline({
+      sessionKey: loaded.session.sessionKey,
+      messages: loaded.messages,
+      traceEvents: loaded.traceEvents,
+      tokenEvents: loaded.tokenEvents,
+      codexIncrementalState: loaded.codexIncrementalState,
+    });
+
+    expect(loaded.session.tokenUsage?.totalTokens).toBe(33);
+    expect(timeline.turns).toHaveLength(1);
+    expect(timeline.turns[0]).toMatchObject({
+      sourceTurnId: "agent-recall:legacy-turn:1",
+      status: "completed",
+      totalTokens: 11,
+      synthetic: false,
+    });
+  });
+
   it("creates one searchable Turn per user request and pairs tool calls with their results", () => {
     const timeline = deriveSessionTimeline({
       sessionKey: "codex:test",
@@ -183,6 +563,158 @@ describe("deriveSessionTimeline", () => {
     });
   });
 
+  it("projects a completed paginated tool item into one span with structured input and output", () => {
+    const timeline = deriveSessionTimeline({
+      sessionKey: "codex:completed-tool",
+      messages: [{
+        role: "user",
+        content: "list files",
+        timestamp: "2026-07-30T08:00:00.000Z",
+        index: 0,
+        sourceTurnId: "turn-1",
+      }],
+      traceEvents: [{
+        index: 0,
+        kind: "tool_result",
+        source: "codex",
+        title: "shell · ls",
+        detail: "input and output preview",
+        timestamp: "2026-07-30T08:00:02.000Z",
+        callId: "command-1",
+        eventType: "codex.command_execution",
+        status: "completed",
+        sourceTurnId: "turn-1",
+        attributes: {
+          startedAt: "2026-07-30T08:00:01.000Z",
+          endedAt: "2026-07-30T08:00:02.000Z",
+          input: { command: "ls" },
+          output: { stdout: "file.txt", exitCode: 0 },
+        },
+      }],
+    });
+
+    expect(timeline.turns[0].spans).toMatchObject([{
+      callId: "command-1",
+      status: "completed",
+      startedAt: "2026-07-30T08:00:01.000Z",
+      endedAt: "2026-07-30T08:00:02.000Z",
+      input: { command: "ls" },
+      output: { stdout: "file.txt", exitCode: 0 },
+    }]);
+  });
+
+  it("projects an aggregated Codex call through intermediate events with its call title and duration", () => {
+    const loaded = loadCodexSessionRows("/tmp/codex-intermediate-tool-span.jsonl", [
+      {
+        type: "session_meta",
+        timestamp: "2026-07-30T10:50:23Z",
+        payload: { id: "codex-intermediate-tool-span", cwd: "/repo" },
+      },
+      {
+        type: "response_item",
+        timestamp: "2026-07-30T10:50:23.500Z",
+        payload: {
+          type: "message",
+          role: "user",
+          content: [{ type: "input_text", text: "search the docs" }],
+        },
+      },
+      {
+        type: "response_item",
+        timestamp: "2026-07-30T10:50:24Z",
+        payload: {
+          type: "function_call",
+          name: "run",
+          namespace: "web",
+          call_id: "web-call-1",
+          arguments: JSON.stringify({
+            search_query: [{ q: "custom tool call input format" }],
+          }),
+        },
+      },
+      {
+        type: "event_msg",
+        timestamp: "2026-07-30T10:50:26Z",
+        payload: {
+          type: "web_search_end",
+          call_id: "web-call-1",
+          query: "custom tool call input format",
+          action: { type: "search" },
+        },
+      },
+      {
+        type: "response_item",
+        timestamp: "2026-07-30T10:50:31Z",
+        payload: {
+          type: "function_call_output",
+          call_id: "web-call-1",
+          output: { results: [{ title: "Custom tools" }] },
+        },
+      },
+    ]);
+
+    const timeline = deriveSessionTimeline({
+      sessionKey: "codex:intermediate-tool-span",
+      messages: loaded?.messages ?? [],
+      traceEvents: loaded?.traceEvents ?? [],
+    });
+
+    expect(timeline.turns[0].spans).toMatchObject([{
+      name: "web.run",
+      callId: "web-call-1",
+      status: "completed",
+      startedAt: "2026-07-30T10:50:24.000Z",
+      endedAt: "2026-07-30T10:50:31.000Z",
+      input: {
+        search_query: [{ q: "custom tool call input format" }],
+        query: "custom tool call input format",
+        action: { type: "search" },
+      },
+      output: { results: [{ title: "Custom tools" }] },
+    }]);
+  });
+
+  it("keeps rich Codex traces visible without counting them as tool names", () => {
+    const timeline = deriveSessionTimeline({
+      sessionKey: "codex:rich-traces",
+      messages: [{
+        role: "user",
+        content: "review this",
+        timestamp: "2026-07-30T08:00:00.000Z",
+        index: 0,
+        sourceTurnId: "turn-1",
+      }],
+      traceEvents: [
+        {
+          index: 0,
+          kind: "event",
+          source: "codex",
+          title: "Reasoning summary",
+          detail: "Checked the parser boundary",
+          timestamp: "2026-07-30T08:00:01.000Z",
+          eventType: "codex.reasoning_summary",
+          status: "completed",
+          sourceTurnId: "turn-1",
+        },
+        {
+          index: 1,
+          kind: "event",
+          source: "codex",
+          title: "Plan",
+          detail: "Run focused tests",
+          timestamp: "2026-07-30T08:00:02.000Z",
+          eventType: "codex.plan",
+          status: "completed",
+          sourceTurnId: "turn-1",
+        },
+      ],
+    });
+
+    expect(timeline.turns[0].spans).toHaveLength(2);
+    expect(timeline.turns[0].errorCount).toBe(0);
+    expect(timeline.turns[0].toolNames).toEqual([]);
+  });
+
   it("generates stable identifiers independent of input array order", () => {
     const sameTimeTokenEvents = tokenEvents.map((event) => ({
       ...event,
@@ -245,7 +777,7 @@ describe("deriveSessionTimeline", () => {
       title: "progress",
       detail: "",
       timestamp: new Date(startedAt + (index % manyMessages.length) * 1_000 + 1).toISOString(),
-      status: "success",
+      status: "completed",
     }));
 
     const before = performance.now();

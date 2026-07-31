@@ -2,8 +2,10 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
-import type { SessionSearchResult, SessionTurnSummary } from "../../../../core/types";
+import type { RemoteSessionDetailSnapshot } from "../../../../core/remote-session-sync";
+import type { SessionSearchResult, SessionTraceEvent, SessionTurnSummary } from "../../../../core/types";
 import { SessionDetails, type SessionDetailsActions } from "../sessions/session-details";
+import { conversationTimeline, filterConversationTimeline } from "./detail-panel";
 import { SessionContextMenu } from "../sessions/session-context-menu";
 
 const session: SessionSearchResult = {
@@ -105,6 +107,76 @@ function renderDetails(detail: SessionSearchResult = session): string {
 }
 
 describe("Session detail trajectory controls", () => {
+  it("keeps source-linked terminal lifecycle events outside the legacy message window", () => {
+    const lifecycle: SessionTraceEvent[] = [
+      {
+        index: 0,
+        kind: "event",
+        source: "codex",
+        title: "Turn started",
+        detail: "",
+        timestamp: "2026-07-27T08:00:01.000Z",
+        eventType: "codex.turn.started",
+        status: "running",
+        sourceTurnId: "turn-1",
+      },
+      {
+        index: 1,
+        kind: "event",
+        source: "codex",
+        title: "Turn completed",
+        detail: "",
+        timestamp: "2026-07-27T08:00:09.000Z",
+        eventType: "codex.turn.completed",
+        status: "completed",
+        sourceTurnId: "turn-1",
+      },
+      {
+        index: 2,
+        kind: "event",
+        source: "codex",
+        title: "Reasoning",
+        detail: "Checked the parser.",
+        timestamp: "2026-07-27T08:00:03.000Z",
+        eventType: "codex.reasoning_summary",
+        status: "completed",
+        sourceTurnId: "turn-1",
+      },
+      {
+        index: 3,
+        kind: "tool_call",
+        source: "codex",
+        title: "Read",
+        detail: "src/parser.ts",
+        timestamp: "2026-07-27T08:00:04.000Z",
+        eventType: "codex.tool.read",
+        status: "running",
+        sourceTurnId: "turn-1",
+      },
+    ];
+    const timeline = conversationTimeline([
+      {
+        role: "assistant",
+        content: "done",
+        timestamp: "2026-07-27T08:00:02.000Z",
+        index: 0,
+        sourceTurnId: "turn-1",
+      },
+    ], lifecycle);
+
+    expect(timeline.map((item) => item.key)).toEqual([
+      "message:0",
+      "trace:2",
+      "trace:3",
+      "trace:1",
+    ]);
+    expect(filterConversationTimeline(timeline, "all", false).map((item) => item.key)).toEqual([
+      "message:0",
+      "trace:2",
+      "trace:1",
+    ]);
+  });
+
   it("keeps trajectory controls outside the scrollable conversation body", () => {
     const html = renderDetails();
     const toolbarIndex = html.indexOf('class="detail-timeline-toolbar"');
@@ -121,6 +193,53 @@ describe("Session detail trajectory controls", () => {
     expect(html).toContain("已隐藏");
     expect(html).toContain('aria-live="polite"');
     expect(html).toContain('aria-pressed="false"');
+  });
+
+  it("renders synchronized Turn summaries in the existing flat remote timeline", () => {
+    const snapshot: RemoteSessionDetailSnapshot = {
+      schemaVersion: 2,
+      exportedAt: 10_000,
+      session,
+      messages: [{
+        role: "assistant",
+        content: "The synchronized answer",
+        timestamp: "2026-07-27T08:00:03.000Z",
+        index: 0,
+        phase: "final_answer",
+        sourceTurnId: "turn-1",
+      }],
+      traceEvents: [{
+        index: 0,
+        kind: "event",
+        source: "codex",
+        title: "Turn completed",
+        detail: "",
+        timestamp: "2026-07-27T08:00:03.000Z",
+        eventType: "codex.turn.completed",
+        status: "completed",
+        sourceTurnId: "turn-1",
+        attributes: { durationMs: 3_000 },
+      }],
+    };
+    const html = renderToStaticMarkup(createElement(SessionDetails, {
+      detail: null,
+      remoteDetail: { snapshot, query: "" },
+      turns: [],
+      turnsLoading: false,
+      matchedTurnId: null,
+      actionStatus: null,
+      query: "",
+      liveState: "closed",
+      language: "zh",
+      revealLabel: "访达",
+      showItermAction: false,
+      summarizing: false,
+      actions,
+    }));
+
+    expect(html).toContain("The synchronized answer");
+    expect(html).toContain("Turn completed");
+    expect(html).not.toContain("turn-accordion");
   });
 
   it("omits delete and remote-save actions for read-only Pi sessions", () => {

@@ -69,7 +69,8 @@ export const POSTGRES_MIGRATIONS: readonly PostgresMigration[] = [{
         ai_summary text,
         ai_summary_model text,
         ai_summary_at timestamptz,
-        ai_summary_basis integer
+        ai_summary_basis integer,
+        codex_history_mode text
       );
 
       CREATE TABLE agent_recall.session_raw_events (
@@ -97,8 +98,12 @@ export const POSTGRES_MIGRATIONS: readonly PostgresMigration[] = [{
         source_message_index integer,
         synthetic boolean NOT NULL DEFAULT false,
         status text NOT NULL DEFAULT 'completed',
+        source_turn_id text,
         started_at timestamptz,
         ended_at timestamptz,
+        duration_ms bigint,
+        time_to_first_token_ms bigint,
+        abort_reason text,
         user_text text NOT NULL DEFAULT '',
         assistant_text text NOT NULL DEFAULT '',
         tool_text text NOT NULL DEFAULT '',
@@ -155,6 +160,7 @@ export const POSTGRES_MIGRATIONS: readonly PostgresMigration[] = [{
         cached_input_tokens bigint NOT NULL DEFAULT 0,
         reasoning_output_tokens bigint NOT NULL DEFAULT 0,
         total_tokens bigint NOT NULL DEFAULT 0,
+        source_turn_id text,
         PRIMARY KEY (session_key, dedupe_key)
       );
 
@@ -1129,6 +1135,43 @@ export const POSTGRES_MIGRATIONS: readonly PostgresMigration[] = [{
     `
       ALTER TABLE agent_recall.skill_usage_events
         ADD COLUMN IF NOT EXISTS skill_hash text;
+    `,
+  ],
+}, {
+  version: 16,
+  name: "persist Codex turn lifecycle metadata",
+  statements: [
+    `
+      ALTER TABLE agent_recall.sessions
+        ADD COLUMN IF NOT EXISTS codex_history_mode text;
+
+      ALTER TABLE agent_recall.session_turns
+        ADD COLUMN IF NOT EXISTS source_turn_id text,
+        ADD COLUMN IF NOT EXISTS duration_ms bigint,
+        ADD COLUMN IF NOT EXISTS time_to_first_token_ms bigint,
+        ADD COLUMN IF NOT EXISTS abort_reason text;
+
+      CREATE INDEX IF NOT EXISTS session_turns_source_turn_idx
+        ON agent_recall.session_turns (session_key, source_turn_id)
+      WHERE source_turn_id IS NOT NULL;
+    `,
+  ],
+}, {
+  version: 17,
+  name: "refresh Codex and Claude session semantics",
+  statements: [
+    `
+      ALTER TABLE agent_recall.token_events
+        ADD COLUMN IF NOT EXISTS source_turn_id text;
+
+      UPDATE agent_recall.sessions
+      SET file_mtime_ms = 0,
+          content_indexed_mtime_ms = 0,
+          content_indexed_size = 0
+      WHERE source IN (
+        'claude-cli', 'claude-app', 'tclaude-cli',
+        'codex-cli', 'codex-app', 'tcodex-cli'
+      );
     `,
   ],
 }];

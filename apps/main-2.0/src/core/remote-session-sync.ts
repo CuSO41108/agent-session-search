@@ -3,13 +3,23 @@ import { readFileSync } from "node:fs";
 import { constants as zlibConstants, gzip, gzipSync, gunzip } from "node:zlib";
 import { remoteSessionAgentForSource } from "./session-sources";
 import type { SessionStore, SessionSyncBinding } from "./session-store";
-import type { PortableSession, RemoteSessionAgent, SessionMessage, SessionSearchResult, SessionTraceEvent } from "./types";
+import { TRACE_DETAIL_PREVIEW_MAX_CHARS } from "./trace-detail";
+import { normalizeSessionTraceStatus, tracePresentation } from "./trace-presentation";
+import type {
+  PortableSession,
+  RemoteSessionAgent,
+  SessionMessage,
+  SessionSearchResult,
+  SessionTraceEvent,
+  SessionTurnSummary,
+} from "./types";
 
 export const REMOTE_SESSION_TABLE = "agent_session_remote_sessions";
 export const REMOTE_SESSION_BUCKET = "agent-session-remote";
 const REMOTE_SESSION_SOURCE_OBJECT_MAX_BYTES = 5 * 1024 * 1024;
 const REMOTE_SESSION_SOURCE_COMPRESSION_MIN_BYTES = 64 * 1024;
 const REMOTE_SESSION_STORAGE_UPLOAD_CONCURRENCY = 4;
+const REMOTE_TRACE_ATTRIBUTES_MAX_CHARS = TRACE_DETAIL_PREVIEW_MAX_CHARS * 4;
 const REMOTE_SESSION_COLUMNS =
   "id,source_session_key,source_agent,source_source,source_environment_id,source_environment_kind,source_environment_label,title,project_path,started_at,updated_at,content_hash,revision_version,message_count,trace_event_count,ai_summary,tags,search_text,detail_object_key,portable_object_key,detail_sha256,portable_sha256,created_at,synced_at";
 const REMOTE_SESSION_LEGACY_COLUMNS =
@@ -277,13 +287,75 @@ export function buildRemoteSessionSnapshot(
   now = Date.now(),
 ): RemoteSessionDetailSnapshot {
   const { sourceAvailable: _sourceAvailable, ...snapshotSession } = session;
+  const terminalTurnIds = new Set(
+    traceEvents
+      .filter((event) => event.eventType === "codex.turn.completed" || event.eventType === "codex.turn.aborted")
+      .map((event) => event.sourceTurnId)
+      .filter((turnId): turnId is string => Boolean(turnId)),
+  );
+  const snapshotTraceEvents = traceEvents
+    .filter((event) => tracePresentation(event).visibility !== "hidden"
+      || (event.eventType === "codex.turn.started" && !terminalTurnIds.has(event.sourceTurnId ?? "")))
+    .map((event, index) => ({ ...event, index }));
   return {
     schemaVersion: 1,
     exportedAt: now,
     session: snapshotSession,
     messages,
-    traceEvents,
+    traceEvents: snapshotTraceEvents,
   };
+}
+
+function remoteTurnSummaryTraceEvents(
+  session: SessionSearchResult,
+  turns: readonly SessionTurnSummary[],
+  traceEvents: readonly SessionTraceEvent[],
+): SessionTraceEvent[] {
+  if (remoteSessionAgentForSource(session.source) !== "codex") return [];
+  const existingTerminalTurns = new Set(
+    traceEvents
+      .filter((event) => tracePresentation(event).category === "lifecycle"
+        && tracePresentation(event).visibility === "turn_summary")
+      .map((event) => event.sourceTurnId)
+      .filter((turnId): turnId is string => Boolean(turnId)),
+  );
+  const existingStartedTurns = new Set(
+    traceEvents
+      .filter((event) => event.eventType === "codex.turn.started")
+      .map((event) => event.sourceTurnId)
+      .filter((turnId): turnId is string => Boolean(turnId)),
+  );
+  return turns.flatMap((turn, offset) => {
+    const sourceTurnId = turn.sourceTurnId || null;
+    const running = turn.status === "running";
+    if (!sourceTurnId || existingTerminalTurns.has(sourceTurnId) || (running && existingStartedTurns.has(sourceTurnId))) return [];
+    const aborted = turn.status === "aborted";
+    const title = running ? "Turn started" : aborted ? "Turn aborted" : turn.status === "failed" ? "Turn failed" : "Turn completed";
+    const attributes: Record<string, unknown> = {
+      toolCount: turn.spanCount,
+      errorCount: turn.errorCount,
+    };
+    if (turn.startedAt) attributes.startedAt = turn.startedAt;
+    if (!running && turn.endedAt) attributes.endedAt = turn.endedAt;
+    if (!running && turn.durationMs !== null && turn.durationMs !== undefined) attributes.durationMs = turn.durationMs;
+    if (!running && turn.timeToFirstTokenMs !== null && turn.timeToFirstTokenMs !== undefined) {
+      attributes.timeToFirstTokenMs = turn.timeToFirstTokenMs;
+    }
+    if (!running && turn.abortReason) attributes.abortReason = turn.abortReason;
+    return [{
+      index: traceEvents.length + offset,
+      kind: "event",
+      source: "codex",
+      title,
+      detail: running ? "" : turn.abortReason || "",
+      timestamp: running ? turn.startedAt || "" : turn.endedAt || turn.startedAt || "",
+      callId: null,
+      eventType: running ? "codex.turn.started" : aborted ? "codex.turn.aborted" : "codex.turn.completed",
+      status: turn.status,
+      sourceTurnId,
+      attributes,
+    }];
+  });
 }
 
 export function remoteSessionSearchText(
@@ -299,7 +371,9 @@ export function remoteSessionSearchText(
     session.aiSummary ?? "",
     ...session.tags,
     ...messages.map((message) => message.content),
-    ...traceEvents.map((event) => `${event.title}\n${event.detail}`),
+    ...traceEvents
+      .filter((event) => tracePresentation(event).visibility !== "hidden")
+      .map((event) => `${event.title}\n${event.detail}`),
   ];
   return parts.map((part) => part.trim()).filter(Boolean).join("\n\n").slice(0, 200_000);
 }
@@ -411,6 +485,7 @@ export function buildRemoteSessionPayload(options: {
 export async function buildRemoteSessionUploadFromStore(
   store: Pick<SessionStore, "getSession" | "getAllMessages" | "getTraceEvents">
     & Partial<Pick<SessionStore, "searchSessions">>
+    & Partial<Pick<SessionStore, "listSessionTurns">>
     & Partial<Pick<SessionStore, "getAttachmentFile" | "getSessionSourceArtifacts">>,
   sessionKey: string,
   now = Date.now(),
@@ -428,12 +503,17 @@ export async function buildRemoteSessionUploadFromStore(
   attachmentObjects: RemoteSessionStorageObjectUpload[];
   sourceObjects: RemoteSessionStorageObjectUpload[];
 }> {
-  const [session, messages, traceEvents] = await Promise.all([
+  const [session, messages, traceEvents, turns] = await Promise.all([
     store.getSession(sessionKey),
     store.getAllMessages(sessionKey),
     store.getTraceEvents(sessionKey),
+    store.listSessionTurns?.(sessionKey) ?? Promise.resolve([]),
   ]);
   if (!session) throw new Error("Session not found.");
+  const snapshotTraceEvents = [
+    ...traceEvents,
+    ...remoteTurnSummaryTraceEvents(session, turns, traceEvents),
+  ];
   const portable = remotePortableSessionFrom(session, messages);
   const relatedSessions = await store.searchSessions?.({ limit: 100_000, excludeSubagents: false }) ?? [];
   const childrenByParentId = new Map<string, SessionSearchResult[]>();
@@ -583,7 +663,7 @@ export async function buildRemoteSessionUploadFromStore(
     ? { schemaVersion: 1 as const, entries: sourceArchiveEntries }
     : preservedSourceArchive;
   const detail: RemoteSessionDetailSnapshot = {
-    ...buildRemoteSessionSnapshot(session, remoteMessages, traceEvents, now),
+    ...buildRemoteSessionSnapshot(session, remoteMessages, snapshotTraceEvents, now),
     schemaVersion: sourceArchive ? 3 : 2,
     ...(sourceArchive ? { sourceArchive } : {}),
   };
@@ -1216,8 +1296,14 @@ export function parseDetailSnapshot(value: unknown): RemoteSessionDetailSnapshot
     schemaVersion: snapshot.schemaVersion,
     exportedAt: typeof snapshot.exportedAt === "number" ? snapshot.exportedAt : 0,
     session: snapshot.session as SessionSearchResult,
-    messages: snapshot.messages.filter(isSessionMessage),
-    traceEvents: snapshot.traceEvents.filter(isTraceEvent),
+    messages: snapshot.messages.flatMap((value) => {
+      const message = parseSessionMessage(value);
+      return message ? [message] : [];
+    }),
+    traceEvents: snapshot.traceEvents.flatMap((value) => {
+      const event = parseTraceEvent(value);
+      return event ? [event] : [];
+    }),
     ...(snapshot.schemaVersion === 3
       ? { sourceArchive: parseRemoteSessionSourceArchive(snapshot.sourceArchive) }
       : {}),
@@ -1318,7 +1404,10 @@ function parsePortableSessionValue(value: unknown, depth: number, state: { count
     title: session.title,
     projectPath: session.projectPath,
     startedAt: session.startedAt,
-    messages: session.messages.filter(isSessionMessage),
+    messages: session.messages.flatMap((value) => {
+      const message = parseSessionMessage(value);
+      return message ? [message] : [];
+    }),
     isSubagent: session.isSubagent === true,
     parentSessionId: typeof session.parentSessionId === "string" ? session.parentSessionId : null,
     subagents: Array.isArray(session.subagents)
@@ -1327,28 +1416,79 @@ function parsePortableSessionValue(value: unknown, depth: number, state: { count
   };
 }
 
-function isSessionMessage(value: unknown): value is SessionMessage {
-  if (!value || typeof value !== "object") return false;
+function parseSessionMessage(value: unknown): SessionMessage | null {
+  if (!value || typeof value !== "object") return null;
   const message = value as Partial<SessionMessage>;
-  return (
-    (message.role === "user" || message.role === "assistant") &&
-    typeof message.content === "string" &&
-    typeof message.timestamp === "string" &&
-    typeof message.index === "number"
-  );
+  if (
+    (message.role !== "user" && message.role !== "assistant")
+    || typeof message.content !== "string"
+    || typeof message.timestamp !== "string"
+    || typeof message.index !== "number"
+  ) return null;
+  if (
+    "sourceTurnId" in message
+    && typeof message.sourceTurnId !== "string"
+    && message.sourceTurnId !== null
+  ) return null;
+  if (
+    "phase" in message
+    && message.phase !== "commentary"
+    && message.phase !== "final_answer"
+    && message.phase !== null
+  ) return null;
+  return {
+    role: message.role,
+    content: message.content,
+    timestamp: message.timestamp,
+    index: message.index,
+    ...("sourceTurnId" in message ? { sourceTurnId: message.sourceTurnId } : {}),
+    ...("phase" in message ? { phase: message.phase } : {}),
+    ...(Array.isArray(message.attachments) ? { attachments: message.attachments } : {}),
+  };
 }
 
-function isTraceEvent(value: unknown): value is SessionTraceEvent {
-  if (!value || typeof value !== "object") return false;
+function isBoundedTraceAttributes(value: unknown): value is Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  try {
+    return JSON.stringify(value).length <= REMOTE_TRACE_ATTRIBUTES_MAX_CHARS;
+  } catch {
+    return false;
+  }
+}
+
+function parseTraceEvent(value: unknown): SessionTraceEvent | null {
+  if (!value || typeof value !== "object") return null;
   const event = value as Partial<SessionTraceEvent>;
-  return (
-    typeof event.index === "number" &&
-    (event.kind === "tool_call" || event.kind === "tool_result" || event.kind === "event") &&
-    typeof event.source === "string" &&
-    typeof event.title === "string" &&
-    typeof event.detail === "string" &&
-    typeof event.timestamp === "string"
-  );
+  if (
+    typeof event.index !== "number"
+    || (event.kind !== "tool_call" && event.kind !== "tool_result" && event.kind !== "event")
+    || typeof event.source !== "string"
+    || typeof event.title !== "string"
+    || typeof event.detail !== "string"
+    || typeof event.timestamp !== "string"
+  ) return null;
+  if (
+    "sourceTurnId" in event
+    && typeof event.sourceTurnId !== "string"
+    && event.sourceTurnId !== null
+  ) return null;
+  if ("attributes" in event && !isBoundedTraceAttributes(event.attributes)) return null;
+  const status = normalizeSessionTraceStatus(event.status);
+  return {
+    index: event.index,
+    kind: event.kind,
+    source: event.source,
+    title: event.title,
+    detail: event.detail,
+    timestamp: event.timestamp,
+    ...(typeof event.callId === "string" || event.callId === null ? { callId: event.callId } : {}),
+    ...(typeof event.eventType === "string" || event.eventType === null ? { eventType: event.eventType } : {}),
+    ...(status ? { status } : {}),
+    ...(typeof event.sourceTurnId === "string" || event.sourceTurnId === null
+      ? { sourceTurnId: event.sourceTurnId }
+      : {}),
+    ...("attributes" in event ? { attributes: event.attributes as Record<string, unknown> } : {}),
+  };
 }
 
 function parseRemoteSessionAgent(value: string): RemoteSessionAgent {
