@@ -129,6 +129,31 @@ describe("remote session loader", () => {
         [
           JSON.stringify({ type: "session_meta", timestamp: "2026-06-04T10:00:00Z", payload: { id: "codex-1", cwd: "/repo" } }),
           JSON.stringify({
+            type: "event_msg",
+            timestamp: "2026-06-04T10:00:00.100Z",
+            payload: { type: "task_started", turn_id: "turn-rolled" },
+          }),
+          JSON.stringify({
+            type: "response_item",
+            timestamp: "2026-06-04T10:00:00.200Z",
+            payload: {
+              type: "message",
+              role: "user",
+              content: [{ type: "input_text", text: "rolled-back detail question" }],
+              internal_chat_message_metadata_passthrough: { turn_id: "turn-rolled" },
+            },
+          }),
+          JSON.stringify({
+            type: "event_msg",
+            timestamp: "2026-06-04T10:00:00.300Z",
+            payload: { type: "turn_aborted", turn_id: "turn-rolled", reason: "interrupted" },
+          }),
+          JSON.stringify({
+            type: "event_msg",
+            timestamp: "2026-06-04T10:00:00.400Z",
+            payload: { type: "thread_rolled_back", num_turns: 1 },
+          }),
+          JSON.stringify({
             type: "response_item",
             timestamp: "2026-06-04T10:01:00Z",
             payload: { type: "message", role: "user", content: [{ type: "input_text", text: "remote codex" }] },

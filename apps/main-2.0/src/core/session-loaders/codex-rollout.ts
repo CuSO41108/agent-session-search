@@ -769,6 +769,10 @@ export class CodexRolloutAccumulator {
     return [...this.activeTurnIds];
   }
 
+  discardActiveTurnIds(turnIds: Iterable<string>): void {
+    for (const turnId of turnIds) this.activeTurnIds.delete(turnId);
+  }
+
   consume(value: unknown): CodexRolloutRecordResult {
     const row = record(value);
     if (!row) return emptyResult();

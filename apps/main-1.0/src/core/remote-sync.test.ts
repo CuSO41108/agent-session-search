@@ -206,9 +206,11 @@ describe("remote sync", () => {
     try {
       writeJsonl(path.join(tempHome, ".codex", "sessions", "2026", "07", "28", "visible.jsonl"), [
         { type: "session_meta", payload: { id: "codex-visible", cwd: "/repo" } },
+        { type: "event_msg", payload: { type: "task_started", turn_id: "turn-old" } },
         codexMessage("user", "Codex 根问题"),
         codexMessage("assistant", "旧回答"),
         { type: "event_msg", payload: { type: "thread_rolled_back", num_turns: 1 } },
+        { type: "event_msg", payload: { type: "task_started", turn_id: "turn-current" } },
         codexMessage("user", "Codex 当前问题"),
         codexMessage("assistant", "当前回答"),
       ]);

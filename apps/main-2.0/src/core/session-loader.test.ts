@@ -257,6 +257,89 @@ describe("Codex session loading", () => {
     expect(loaded?.session.tokenUsage?.inputTokens).toBe(60);
   });
 
+  it("removes the complete Codex lifecycle for a rolled-back turn", () => {
+    const retainedRows = [
+      { type: "session_meta", timestamp: "2026-07-30T09:00:00Z", payload: { id: "codex-lifecycle-rollback", cwd: "/repo" } },
+      { type: "event_msg", timestamp: "2026-07-30T09:00:01Z", payload: { type: "task_started", turn_id: "turn-kept" } },
+      {
+        type: "response_item",
+        timestamp: "2026-07-30T09:00:02Z",
+        payload: {
+          type: "message",
+          role: "user",
+          content: [{ type: "input_text", text: "保留的问题" }],
+          internal_chat_message_metadata_passthrough: { turn_id: "turn-kept" },
+        },
+      },
+      {
+        type: "response_item",
+        timestamp: "2026-07-30T09:00:03Z",
+        payload: {
+          type: "message",
+          role: "assistant",
+          content: [{ type: "output_text", text: "保留的回答" }],
+          internal_chat_message_metadata_passthrough: { turn_id: "turn-kept" },
+        },
+      },
+      { type: "event_msg", timestamp: "2026-07-30T09:00:04Z", payload: { type: "task_complete", turn_id: "turn-kept" } },
+    ];
+    const rolledBackRows = [
+      { type: "event_msg", timestamp: "2026-07-30T09:00:05Z", payload: { type: "task_started", turn_id: "turn-rolled" } },
+      {
+        type: "response_item",
+        timestamp: "2026-07-30T09:00:06Z",
+        payload: {
+          type: "message",
+          role: "user",
+          content: [{ type: "input_text", text: "撤销的问题" }],
+          internal_chat_message_metadata_passthrough: { turn_id: "turn-rolled" },
+        },
+      },
+      {
+        type: "event_msg",
+        timestamp: "2026-07-30T09:00:07Z",
+        payload: { type: "turn_aborted", turn_id: "turn-rolled", reason: "interrupted" },
+      },
+      { type: "event_msg", timestamp: "2026-07-30T09:00:08Z", payload: { type: "thread_rolled_back", num_turns: 1 } },
+      { type: "event_msg", timestamp: "2026-07-30T09:00:09Z", payload: { type: "task_started", turn_id: "turn-active-rolled" } },
+      { type: "event_msg", timestamp: "2026-07-30T09:00:10Z", payload: { type: "thread_rolled_back", num_turns: 1 } },
+    ];
+    const rows = [...retainedRows, ...rolledBackRows];
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "session-search-codex-lifecycle-rollback-"));
+    const filePath = path.join(tempDir, "sessions", "2026", "07", "30", "rollout.jsonl");
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.writeFileSync(filePath, `${retainedRows.map((row) => JSON.stringify(row)).join("\n")}\n`);
+
+    try {
+      const initialLoaded = loadCodexSessionFile(filePath);
+      if (!initialLoaded) throw new Error("expected the initial Codex fixture to load");
+      const initialOffset = fs.statSync(filePath).size;
+      fs.appendFileSync(filePath, `${rolledBackRows.map((row) => JSON.stringify(row)).join("\n")}\n`);
+      const incrementalLoaded = [...loadCodexSessionsIterator(tempDir, undefined, {
+        incrementalCodexSessions: new Map([[filePath, { offset: initialOffset, loaded: initialLoaded }]]),
+      })][0];
+
+      for (const loaded of [
+        loadCodexSessionRows(filePath, rows),
+        loadCodexSessionFile(filePath),
+        incrementalLoaded,
+      ]) {
+        const traceEvents = loaded?.traceEvents ?? [];
+        expect(loaded?.messages.map((message) => message.content)).toEqual(["保留的问题", "保留的回答"]);
+        expect(traceEvents.some((event) =>
+          event.sourceTurnId === "turn-rolled" || event.sourceTurnId === "turn-active-rolled"
+        )).toBe(false);
+        expect(traceEvents.filter((event) => event.sourceTurnId === "turn-kept")).toMatchObject([
+          { eventType: "codex.turn.started", status: "running" },
+          { eventType: "codex.turn.completed", status: "completed" },
+        ]);
+        expect(loaded?.codexIncrementalState?.activeTurnIds).toEqual([]);
+      }
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it("falls back to the complete Codex message sequence for an invalid rollback marker", () => {
     const rows = [
       { type: "session_meta", payload: { id: "codex-invalid-rollback", cwd: "/repo" } },

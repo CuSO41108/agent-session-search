@@ -534,6 +534,45 @@ describe("indexer", () => {
         messageIndex: 1,
         sourceRecordId: "item_completed:answer-tail",
       });
+
+      fs.appendFileSync(filePath, [
+        JSON.stringify({
+          type: "event_msg",
+          timestamp: "2026-06-01T10:05:00Z",
+          payload: { type: "task_started", turn_id: "turn-rolled" },
+        }),
+        JSON.stringify({
+          type: "response_item",
+          timestamp: "2026-06-01T10:06:00Z",
+          payload: {
+            type: "message",
+            id: "question-rolled",
+            role: "user",
+            content: [{ type: "input_text", text: "rolled-back tail question" }],
+            internal_chat_message_metadata_passthrough: { turn_id: "turn-rolled" },
+          },
+        }),
+        JSON.stringify({
+          type: "event_msg",
+          timestamp: "2026-06-01T10:07:00Z",
+          payload: { type: "turn_aborted", turn_id: "turn-rolled", reason: "interrupted" },
+        }),
+        JSON.stringify({
+          type: "event_msg",
+          timestamp: "2026-06-01T10:08:00Z",
+          payload: { type: "thread_rolled_back", num_turns: 1 },
+        }),
+        "",
+      ].join("\n"));
+      await syncDefaultSessionsInBatches(store, { batchSize: 1, loadOptions: { homeDir } });
+
+      expect(store.getAllMessages("codex:codex-lifecycle-tail").some(
+        (message) => message.sourceTurnId === "turn-rolled",
+      )).toBe(false);
+      expect(store.getTraceEvents("codex:codex-lifecycle-tail").some(
+        (event) => event.sourceTurnId === "turn-rolled",
+      )).toBe(false);
+      expect(store.getCodexIncrementalState("codex:codex-lifecycle-tail").activeTurnIds).toEqual([]);
     } finally {
       fs.rmSync(homeDir, { recursive: true, force: true });
     }

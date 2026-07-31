@@ -160,9 +160,9 @@ function codexVisibleConversationRows(rows: unknown[]): unknown[] {
   const adapter = getAdapter("codex");
   const rollout = new CodexRolloutAccumulator();
   const preamble: unknown[] = [];
-  const turns: unknown[][] = [];
+  const turns: Array<{ rows: unknown[]; hasUserMessage: boolean }> = [];
   const seenUserRecords = new Set<string>();
-  let currentTurn: unknown[] | null = null;
+  let currentTurn: (typeof turns)[number] | null = null;
 
   for (const row of rows) {
     const payload = objectField(row, "payload");
@@ -175,6 +175,11 @@ function codexVisibleConversationRows(rows: unknown[]): unknown[] {
     }
 
     const result = rollout.consume(row);
+    if (isRecord(row) && row.type === "event_msg" && payload?.type === "task_started") {
+      currentTurn = { rows: [row], hasUserMessage: false };
+      turns.push(currentTurn);
+      continue;
+    }
     const completedMessage = result.completedMessage;
     const parsed = adapter.parseLine(row);
     const responseUser = rollout.historyMode === "legacy" && parsed?.role === "user";
@@ -186,19 +191,24 @@ function codexVisibleConversationRows(rows: unknown[]): unknown[] {
         ? completedMessage.content
         : "";
     if ((responseUser || completedUser) && userContent && isMeaningfulUserMessage(userContent)) {
-      currentTurn = [row];
-      turns.push(currentTurn);
+      if (currentTurn && !currentTurn.hasUserMessage) {
+        currentTurn.rows.push(row);
+        currentTurn.hasUserMessage = true;
+      } else {
+        currentTurn = { rows: [row], hasUserMessage: true };
+        turns.push(currentTurn);
+      }
       if (responseUser && result.message?.sourceRecordId) {
         seenUserRecords.add(result.message.sourceRecordId);
       }
     } else if (currentTurn) {
-      currentTurn.push(row);
+      currentTurn.rows.push(row);
     } else {
       preamble.push(row);
     }
   }
 
-  return [...preamble, ...turns.flat()];
+  return [...preamble, ...turns.flatMap((turn) => turn.rows)];
 }
 
 function claudeVisibleConversationRows(rows: unknown[]): unknown[] {
@@ -964,6 +974,8 @@ export function loadCodexSessions(codexDir = path.join(os.homedir(), ".codex"), 
 interface StreamedCodexTurn {
   messages: SessionMessage[];
   traceEvents: TraceEventDraft[];
+  hasUserMessage: boolean;
+  sourceTurnIds: Set<string>;
 }
 
 function isCodexInlineImageOutput(line: Buffer): boolean {
@@ -1053,7 +1065,12 @@ function createCodexScanAccumulator(base?: { offset: number; loaded: LoadedSessi
     messageProvenance.set(message, sourceRecordId);
     if (sourceRecordId) provenanceMessages.set(sourceRecordId, message);
   }
-  const preamble: StreamedCodexTurn = { messages: [...allMessages], traceEvents: [...allTraceEvents] };
+  const preamble: StreamedCodexTurn = {
+    messages: [...allMessages],
+    traceEvents: [...allTraceEvents],
+    hasUserMessage: false,
+    sourceTurnIds: new Set(),
+  };
   const turns: StreamedCodexTurn[] = [];
   const tokenRows: unknown[] = [];
   let currentTurn: StreamedCodexTurn | null = null;
@@ -1093,7 +1110,8 @@ function createCodexScanAccumulator(base?: { offset: number; loaded: LoadedSessi
           const numTurns = payload.num_turns;
           if (!Number.isSafeInteger(numTurns) || (numTurns as number) <= 0 || (numTurns as number) > turns.length) invalidRollback = true;
           else {
-            turns.splice(turns.length - (numTurns as number), numTurns as number);
+            const removedTurns = turns.splice(turns.length - (numTurns as number), numTurns as number);
+            rollout.discardActiveTurnIds(removedTurns.flatMap((turn) => [...turn.sourceTurnIds]));
             currentTurn = turns.at(-1) ?? null;
           }
           return;
@@ -1156,14 +1174,37 @@ function createCodexScanAccumulator(base?: { offset: number; loaded: LoadedSessi
         if (sourceRecordId) provenanceMessages.set(sourceRecordId, message);
       }
       allTraceEvents.push(...traces);
-      if (message?.role === "user") {
-        currentTurn = { messages: [message], traceEvents: [...traces] };
+
+      const payload = isRecord(row) ? objectField(row, "payload") : null;
+      const startsTurn = isRecord(row) && row.type === "event_msg" && payload?.type === "task_started";
+      let target: StreamedCodexTurn;
+      if (startsTurn) {
+        currentTurn = {
+          messages: [],
+          traceEvents: [],
+          hasUserMessage: false,
+          sourceTurnIds: new Set(),
+        };
         turns.push(currentTurn);
+        target = currentTurn;
+      } else if (message?.role === "user") {
+        if (!currentTurn || currentTurn.hasUserMessage) {
+          currentTurn = {
+            messages: [],
+            traceEvents: [],
+            hasUserMessage: false,
+            sourceTurnIds: new Set(),
+          };
+          turns.push(currentTurn);
+        }
+        currentTurn.hasUserMessage = true;
+        target = currentTurn;
       } else {
-        const target = currentTurn ?? preamble;
-        if (message) target.messages.push(message);
-        target.traceEvents.push(...traces);
+        target = currentTurn ?? preamble;
       }
+      if (message) target.messages.push(message);
+      target.traceEvents.push(...traces);
+      if (rolloutRecord.sourceTurnId) target.sourceTurnIds.add(rolloutRecord.sourceTurnId);
     },
     finish: (committedOffset) => {
       if (!meta) return null;
