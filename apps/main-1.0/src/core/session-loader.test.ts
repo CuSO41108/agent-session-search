@@ -358,6 +358,107 @@ describe("Codex session loading", () => {
     }
   });
 
+  it("assigns internal Turn ownership to legacy Codex rollouts", () => {
+    const retainedRows = [
+      { type: "session_meta", timestamp: "2026-07-30T09:00:00Z", payload: { id: "codex-legacy-turns", cwd: "/repo" } },
+      { type: "event_msg", timestamp: "2026-07-30T09:00:01Z", payload: { type: "task_started" } },
+      {
+        type: "response_item",
+        timestamp: "2026-07-30T09:00:02Z",
+        payload: { type: "message", role: "user", content: [{ type: "input_text", text: "保留的问题" }] },
+      },
+      {
+        type: "response_item",
+        timestamp: "2026-07-30T09:00:03Z",
+        payload: { type: "message", role: "assistant", content: [{ type: "output_text", text: "保留的回答" }] },
+      },
+      {
+        type: "event_msg",
+        timestamp: "2026-07-30T09:00:03.500Z",
+        payload: { type: "token_count", info: { last_token_usage: { input_tokens: 10, output_tokens: 1 } } },
+      },
+      { type: "event_msg", timestamp: "2026-07-30T09:00:04Z", payload: { type: "task_complete" } },
+    ];
+    const rolledBackRows = [
+      { type: "event_msg", timestamp: "2026-07-30T09:00:05Z", payload: { type: "task_started" } },
+      {
+        type: "response_item",
+        timestamp: "2026-07-30T09:00:06Z",
+        payload: { type: "message", role: "user", content: [{ type: "input_text", text: "回滚的问题" }] },
+      },
+      {
+        type: "response_item",
+        timestamp: "2026-07-30T09:00:07Z",
+        payload: { type: "message", role: "assistant", content: [{ type: "output_text", text: "回滚的回答" }] },
+      },
+      {
+        type: "event_msg",
+        timestamp: "2026-07-30T09:00:07.500Z",
+        payload: { type: "token_count", info: { last_token_usage: { input_tokens: 20, output_tokens: 2 } } },
+      },
+      { type: "event_msg", timestamp: "2026-07-30T09:00:08Z", payload: { type: "task_complete" } },
+      { type: "event_msg", timestamp: "2026-07-30T09:00:09Z", payload: { type: "thread_rolled_back", num_turns: 1 } },
+    ];
+    const replacementRows = [
+      { type: "event_msg", timestamp: "2026-07-30T09:00:10Z", payload: { type: "task_started" } },
+      {
+        type: "response_item",
+        timestamp: "2026-07-30T09:00:11Z",
+        payload: { type: "message", role: "user", content: [{ type: "input_text", text: "新的问题" }] },
+      },
+      {
+        type: "response_item",
+        timestamp: "2026-07-30T09:00:12Z",
+        payload: { type: "message", role: "assistant", content: [{ type: "output_text", text: "新的回答" }] },
+      },
+      { type: "event_msg", timestamp: "2026-07-30T09:00:13Z", payload: { type: "task_complete" } },
+    ];
+    const rows = [...retainedRows, ...rolledBackRows, ...replacementRows];
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "session-search-codex-legacy-turns-"));
+    const filePath = path.join(tempDir, "sessions", "2026", "07", "30", "rollout.jsonl");
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.writeFileSync(filePath, `${retainedRows.map((row) => JSON.stringify(row)).join("\n")}\n`);
+
+    try {
+      const initialLoaded = loadCodexSessionFile(filePath);
+      if (!initialLoaded) throw new Error("expected the initial Codex fixture to load");
+      const initialOffset = fs.statSync(filePath).size;
+      fs.appendFileSync(filePath, `${rolledBackRows.map((row) => JSON.stringify(row)).join("\n")}\n`);
+      const rolledBackLoaded = [...loadCodexSessionsIterator(tempDir, undefined, {
+        incrementalCodexSessions: new Map([[filePath, { offset: initialOffset, loaded: initialLoaded }]]),
+      })][0];
+      if (!rolledBackLoaded) throw new Error("expected the rolled-back Codex fixture to load");
+      const rolledBackOffset = fs.statSync(filePath).size;
+      fs.appendFileSync(filePath, `${replacementRows.map((row) => JSON.stringify(row)).join("\n")}\n`);
+      const incrementalLoaded = [...loadCodexSessionsIterator(tempDir, undefined, {
+        incrementalCodexSessions: new Map([[filePath, { offset: rolledBackOffset, loaded: rolledBackLoaded }]]),
+      })][0];
+
+      for (const loaded of [
+        loadCodexSessionRows(filePath, rows),
+        loadCodexSessionFile(filePath),
+        incrementalLoaded,
+      ]) {
+        const keptTurnId = loaded?.messages.find((message) => message.content === "保留的问题")?.sourceTurnId;
+        const replacementTurnId = loaded?.messages.find((message) => message.content === "新的问题")?.sourceTurnId;
+        const traceEvents = loaded?.traceEvents ?? [];
+        expect(keptTurnId).toBe("agent-recall:legacy-turn:1");
+        expect(replacementTurnId).toBe("agent-recall:legacy-turn:3");
+        expect(traceEvents.filter((event) => event.sourceTurnId === keptTurnId)).toMatchObject([
+          { eventType: "codex.turn.started" },
+          { eventType: "codex.turn.completed" },
+        ]);
+        expect(loaded?.tokenEvents?.map((event) => event.sourceTurnId)).toEqual([
+          "agent-recall:legacy-turn:1",
+          "agent-recall:legacy-turn:2",
+        ]);
+        expect(loaded?.session.tokenUsage?.totalTokens).toBe(33);
+      }
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it("falls back to the complete Codex message sequence for an invalid rollback marker", () => {
     const rows = [
       { type: "session_meta", payload: { id: "codex-invalid-rollback", cwd: "/repo" } },

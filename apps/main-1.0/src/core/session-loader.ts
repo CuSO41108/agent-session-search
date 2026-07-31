@@ -220,7 +220,10 @@ function codexVisibleConversationRows(rows: unknown[]): unknown[] {
 
     const result = rollout.consume(row);
     if (isRecord(row) && row.type === "event_msg" && payload?.type === "task_started") {
-      currentTurn = { rows: [row], hasUserMessage: false };
+      const rowWithTurnId = result.sourceTurnId
+        ? { ...row, payload: { ...payload, turn_id: result.sourceTurnId } }
+        : row;
+      currentTurn = { rows: [rowWithTurnId], hasUserMessage: false };
       turns.push(currentTurn);
       continue;
     }
@@ -1488,7 +1491,15 @@ function scanCodexSessionFile(filePath: string, base?: { offset: number; loaded:
   const adapter = getAdapter("codex");
   const allMessages: SessionMessage[] = [...(base?.loaded.messages ?? [])];
   const allTraceEvents: TraceEventDraft[] = [...(base?.loaded.traceEvents ?? [])];
-  const rollout = new CodexRolloutAccumulator(base?.loaded.codexIncrementalState);
+  const rollout = new CodexRolloutAccumulator(base ? {
+    historyMode: base.loaded.codexIncrementalState?.historyMode ?? "legacy",
+    activeTurnIds: base.loaded.codexIncrementalState?.activeTurnIds ?? [],
+    sourceTurnIds: [
+      ...allMessages.map((message) => message.sourceTurnId),
+      ...allTraceEvents.map((event) => event.sourceTurnId),
+      ...(base.loaded.tokenEvents ?? []).map((event) => event.sourceTurnId),
+    ],
+  } : undefined);
   const messageProvenance = new Map<SessionMessage, string | null>();
   const provenanceMessages = new Map<string, SessionMessage>();
   for (const message of allMessages) {
