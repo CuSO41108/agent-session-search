@@ -516,6 +516,77 @@ describe("deriveSessionTimeline", () => {
     }]);
   });
 
+  it("projects an aggregated Codex call through intermediate events with its call title and duration", () => {
+    const loaded = loadCodexSessionRows("/tmp/codex-intermediate-tool-span.jsonl", [
+      {
+        type: "session_meta",
+        timestamp: "2026-07-30T10:50:23Z",
+        payload: { id: "codex-intermediate-tool-span", cwd: "/repo" },
+      },
+      {
+        type: "response_item",
+        timestamp: "2026-07-30T10:50:23.500Z",
+        payload: {
+          type: "message",
+          role: "user",
+          content: [{ type: "input_text", text: "search the docs" }],
+        },
+      },
+      {
+        type: "response_item",
+        timestamp: "2026-07-30T10:50:24Z",
+        payload: {
+          type: "function_call",
+          name: "run",
+          namespace: "web",
+          call_id: "web-call-1",
+          arguments: JSON.stringify({
+            search_query: [{ q: "custom tool call input format" }],
+          }),
+        },
+      },
+      {
+        type: "event_msg",
+        timestamp: "2026-07-30T10:50:26Z",
+        payload: {
+          type: "web_search_end",
+          call_id: "web-call-1",
+          query: "custom tool call input format",
+          action: { type: "search" },
+        },
+      },
+      {
+        type: "response_item",
+        timestamp: "2026-07-30T10:50:31Z",
+        payload: {
+          type: "function_call_output",
+          call_id: "web-call-1",
+          output: { results: [{ title: "Custom tools" }] },
+        },
+      },
+    ]);
+
+    const timeline = deriveSessionTimeline({
+      sessionKey: "codex:intermediate-tool-span",
+      messages: loaded?.messages ?? [],
+      traceEvents: loaded?.traceEvents ?? [],
+    });
+
+    expect(timeline.turns[0].spans).toMatchObject([{
+      name: "web.run",
+      callId: "web-call-1",
+      status: "completed",
+      startedAt: "2026-07-30T10:50:24.000Z",
+      endedAt: "2026-07-30T10:50:31.000Z",
+      input: {
+        search_query: [{ q: "custom tool call input format" }],
+        query: "custom tool call input format",
+        action: { type: "search" },
+      },
+      output: { results: [{ title: "Custom tools" }] },
+    }]);
+  });
+
   it("keeps rich Codex traces visible without counting them as tool names", () => {
     const timeline = deriveSessionTimeline({
       sessionKey: "codex:rich-traces",

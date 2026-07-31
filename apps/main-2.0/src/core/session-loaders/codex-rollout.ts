@@ -642,11 +642,33 @@ function mergeTraceValue(preferred: unknown, fallback: unknown): unknown {
 export function dedupeCodexTraceEvents(events: TraceEventDraft[]): SessionTraceEvent[] {
   const merged: TraceEventDraft[] = [];
   const callIndexes = new Map<string, number>();
+  const calls = new Map<string, TraceEventDraft>();
+  const terminals = new Map<string, TraceEventDraft>();
   const codexAttributes = (event: TraceEventDraft) => record(event.attributes?.codex);
   const isCompletedItem = (event: TraceEventDraft) => {
     const codex = codexAttributes(event);
     return typeof codex?.sourceItemId === "string"
       && codex.sourceItemId.startsWith("item_completed:");
+  };
+  const isTerminal = (event: TraceEventDraft) =>
+    event.kind === "tool_result"
+    || isCompletedItem(event)
+    || event.status === "completed"
+    || event.status === "failed"
+    || event.status === "aborted";
+  const terminalRank = (event: TraceEventDraft) =>
+    isCompletedItem(event) ? 3 : event.kind === "event" ? 2 : 1;
+  const latestTimestamp = (...values: unknown[]): string | null => {
+    let latest: { value: string; milliseconds: number } | null = null;
+    for (const value of values) {
+      if (typeof value !== "string" && typeof value !== "number") continue;
+      const milliseconds = typeof value === "number" ? value : Date.parse(value);
+      if (!Number.isFinite(milliseconds)) continue;
+      if (!latest || milliseconds > latest.milliseconds) {
+        latest = { value: typeof value === "number" ? new Date(value).toISOString() : value, milliseconds };
+      }
+    }
+    return latest?.value ?? null;
   };
   const semanticKeys = (event: TraceEventDraft): string[] => {
     const keys: string[] = [];
@@ -672,6 +694,15 @@ export function dedupeCodexTraceEvents(events: TraceEventDraft[]): SessionTraceE
       merged.push(event);
       continue;
     }
+    if (event.kind === "tool_call" && !calls.has(event.callId)) {
+      calls.set(event.callId, event);
+    }
+    if (isTerminal(event)) {
+      const terminal = terminals.get(event.callId);
+      if (!terminal || terminalRank(event) >= terminalRank(terminal)) {
+        terminals.set(event.callId, event);
+      }
+    }
     const existingIndex = callIndexes.get(event.callId);
     if (existingIndex === undefined) {
       callIndexes.set(event.callId, merged.length);
@@ -682,27 +713,50 @@ export function dedupeCodexTraceEvents(events: TraceEventDraft[]): SessionTraceE
     const existing = merged[existingIndex];
     const primary = rank(event) >= rank(existing) ? event : existing;
     const secondary = primary === event ? existing : event;
-    const call = event.kind === "tool_call" ? event : existing.kind === "tool_call" ? existing : null;
+    const call = calls.get(event.callId) ?? null;
+    const terminal = terminals.get(event.callId) ?? null;
     const primaryInput = primary.attributes?.input ?? (primary.kind === "tool_call" ? primary.detail || null : null);
     const secondaryInput = secondary.attributes?.input ?? (call === secondary ? secondary.detail || null : null);
     const primaryOutput = primary.attributes?.output
-      ?? (primary.kind === "tool_call" ? null : primary.detail || null);
+      ?? (primary.kind === "tool_result" ? primary.detail || null : null);
     const secondaryOutput = secondary.attributes?.output
-      ?? (secondary.kind === "tool_call" ? null : secondary.detail || null);
+      ?? (secondary.kind === "tool_result" ? secondary.detail || null : null);
     const input = mergeTraceValue(primaryInput, secondaryInput);
     const output = mergeTraceValue(primaryOutput, secondaryOutput);
+    const explicitStartedAt = call?.attributes?.startedAt;
+    let startedAt = call ? latestTimestamp(explicitStartedAt) ?? call.timestamp : null;
+    let endedAt = call && terminal
+      ? latestTimestamp(
+        existing.attributes?.endedAt,
+        isTerminal(existing) ? existing.timestamp : null,
+        event.attributes?.endedAt,
+        isTerminal(event) ? event.timestamp : null,
+      )
+      : null;
+    const startedAtMs = startedAt ? Date.parse(startedAt) : Number.NaN;
+    const endedAtMs = endedAt ? Date.parse(endedAt) : Number.NaN;
+    if (Number.isFinite(startedAtMs) && Number.isFinite(endedAtMs) && endedAtMs < startedAtMs) {
+      [startedAt, endedAt] = [endedAt, startedAt];
+    }
     merged[existingIndex] = {
       ...secondary,
       ...primary,
       title: isCompletedItem(primary)
         ? primary.title
-        : call?.title || primary.title,
+        : call?.title || existing.title || primary.title,
       detail: formatCodexToolDetail(input, output),
-      eventType: primary.eventType || secondary.eventType,
+      timestamp: terminal?.timestamp || call?.timestamp || primary.timestamp,
+      kind: call ? terminal ? "tool_result" : "tool_call" : primary.kind,
+      eventType: isCompletedItem(primary)
+        ? primary.eventType || call?.eventType || secondary.eventType
+        : call?.eventType || primary.eventType || secondary.eventType,
+      status: terminal?.status || call?.status || primary.status,
       sourceTurnId: primary.sourceTurnId || secondary.sourceTurnId,
       attributes: {
         ...(secondary.attributes ?? {}),
         ...(primary.attributes ?? {}),
+        ...(startedAt ? { startedAt } : {}),
+        ...(endedAt ? { endedAt } : {}),
         input: sanitizeCodexTraceValue(input),
         output: sanitizeCodexTraceValue(output),
       },

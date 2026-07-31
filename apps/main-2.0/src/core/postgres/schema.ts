@@ -1158,7 +1158,7 @@ export const POSTGRES_MIGRATIONS: readonly PostgresMigration[] = [{
   ],
 }, {
   version: 17,
-  name: "refresh Codex session semantics",
+  name: "refresh Codex and Claude session semantics",
   statements: [
     `
       ALTER TABLE agent_recall.token_events
@@ -1168,7 +1168,10 @@ export const POSTGRES_MIGRATIONS: readonly PostgresMigration[] = [{
       SET file_mtime_ms = 0,
           content_indexed_mtime_ms = 0,
           content_indexed_size = 0
-      WHERE source IN ('codex-cli', 'codex-app', 'tcodex-cli');
+      WHERE source IN (
+        'claude-cli', 'claude-app', 'tclaude-cli',
+        'codex-cli', 'codex-app', 'tcodex-cli'
+      );
     `,
   ],
 }];

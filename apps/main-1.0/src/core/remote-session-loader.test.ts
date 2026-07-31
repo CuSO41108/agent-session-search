@@ -255,10 +255,12 @@ describe("remote session loader", () => {
         title: "exec",
         status: "completed",
         callId: "remote-custom-1",
-        attributes: {
+        attributes: expect.objectContaining({
+          startedAt: "2026-06-04T10:03:00Z",
+          endedAt: "2026-06-04T10:04:00Z",
           input: "console.log('remote')",
           output: "remote",
-        },
+        }),
       }),
     ]);
   });

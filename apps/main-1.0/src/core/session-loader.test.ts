@@ -766,8 +766,90 @@ describe("Codex session loading", () => {
       status: "completed",
     });
     expect(loaded?.traceEvents?.[0].detail).toContain("total 8");
+    expect(loaded?.traceEvents?.[0].attributes).toMatchObject({
+      startedAt: "2026-06-01T10:02:00Z",
+      endedAt: "2026-06-01T10:04:00Z",
+      input: {
+        command: "ls -la",
+        workdir: "/repo",
+        cwd: "/repo",
+      },
+      output: {
+        stdout: "total 8",
+        exitCode: 0,
+        responseValue: "total 8",
+      },
+    });
 
     fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("uses the explicit Codex execution terminal without dropping response output", () => {
+    const loaded = loadCodexSessionRows("/tmp/codex-failed-execution.jsonl", [
+      {
+        type: "session_meta",
+        timestamp: "2026-07-30T08:00:00Z",
+        payload: { id: "codex-failed-execution", cwd: "/repo" },
+      },
+      {
+        type: "response_item",
+        timestamp: "2026-07-30T08:00:01Z",
+        payload: {
+          type: "function_call",
+          name: "shell_command",
+          call_id: "failed-call-1",
+          arguments: JSON.stringify({ command: "cat missing.txt" }),
+        },
+      },
+      {
+        type: "response_item",
+        timestamp: "2026-07-30T08:00:02Z",
+        payload: {
+          type: "function_call_output",
+          call_id: "failed-call-1",
+          output: "command returned an error",
+        },
+      },
+      {
+        type: "event_msg",
+        timestamp: "2026-07-30T08:00:03Z",
+        payload: {
+          type: "exec_command_end",
+          call_id: "failed-call-1",
+          command: "cat missing.txt",
+          cwd: "/repo",
+          exit_code: 1,
+          stdout: "",
+          stderr: "No such file",
+        },
+      },
+      {
+        type: "response_item",
+        timestamp: "2026-07-30T08:00:04Z",
+        payload: {
+          type: "function_call_output",
+          call_id: "failed-call-1",
+          output: "final wrapper output",
+        },
+      },
+    ]);
+
+    expect(loaded?.traceEvents).toHaveLength(1);
+    expect(loaded?.traceEvents?.[0]).toMatchObject({
+      kind: "tool_result",
+      title: "shell_command · cat missing.txt",
+      timestamp: "2026-07-30T08:00:03Z",
+      status: "failed",
+      attributes: {
+        startedAt: "2026-07-30T08:00:01Z",
+        endedAt: "2026-07-30T08:00:04Z",
+        output: {
+          stderr: "No such file",
+          exitCode: 1,
+          responseValue: "final wrapper output",
+        },
+      },
+    });
   });
 
   it("extracts Codex custom tool calls and outputs without rewriting freeform input", () => {
@@ -821,6 +903,68 @@ describe("Codex session loading", () => {
     expect(loaded?.traceEvents?.[0].detail).toContain("query completed");
 
     fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("preserves Codex tool identity and timing across intermediate call events", () => {
+    const loaded = loadCodexSessionRows("/tmp/codex-intermediate-tool-event.jsonl", [
+      {
+        type: "session_meta",
+        timestamp: "2026-07-30T10:50:23Z",
+        payload: { id: "codex-intermediate-tool-event", cwd: "/repo" },
+      },
+      {
+        type: "response_item",
+        timestamp: "2026-07-30T10:50:24Z",
+        payload: {
+          type: "function_call",
+          name: "run",
+          namespace: "web",
+          call_id: "web-call-1",
+          arguments: JSON.stringify({
+            search_query: [{ q: "custom tool call input format" }],
+          }),
+        },
+      },
+      {
+        type: "event_msg",
+        timestamp: "2026-07-30T10:50:26Z",
+        payload: {
+          type: "web_search_end",
+          call_id: "web-call-1",
+          query: "custom tool call input format",
+          action: { type: "search" },
+        },
+      },
+      {
+        type: "response_item",
+        timestamp: "2026-07-30T10:50:31Z",
+        payload: {
+          type: "function_call_output",
+          call_id: "web-call-1",
+          output: { results: [{ title: "Custom tools" }] },
+        },
+      },
+    ]);
+
+    expect(loaded?.traceEvents).toHaveLength(1);
+    expect(loaded?.traceEvents?.[0]).toMatchObject({
+      kind: "tool_result",
+      title: "web.run",
+      timestamp: "2026-07-30T10:50:31Z",
+      callId: "web-call-1",
+      eventType: "codex.function_call",
+      status: "completed",
+      attributes: {
+        startedAt: "2026-07-30T10:50:24Z",
+        endedAt: "2026-07-30T10:50:31Z",
+        input: {
+          search_query: [{ q: "custom tool call input format" }],
+          query: "custom tool call input format",
+          action: { type: "search" },
+        },
+        output: { results: [{ title: "Custom tools" }] },
+      },
+    });
   });
 
   it("pairs response tools in either order and never guesses for id-less calls", () => {
@@ -910,6 +1054,12 @@ describe("Codex session loading", () => {
       title: "reverse",
       eventType: "codex.custom_tool",
       status: "completed",
+      attributes: {
+        startedAt: "2026-07-30T08:00:01Z",
+        endedAt: "2026-07-30T08:00:02Z",
+        input: "payload",
+        output: "done",
+      },
     });
     expect(loaded?.traceEvents?.map((event) => event.eventType)).toEqual(expect.arrayContaining([
       "codex.local_shell",

@@ -580,7 +580,10 @@ function runCodexSessionSemanticsMigration(db: SessionStoreDatabase): void {
           SET file_mtime_ms = 0,
               content_indexed_mtime_ms = 0,
               content_indexed_size = 0
-          WHERE source IN ('codex-cli', 'codex-app', 'tcodex-cli')
+          WHERE source IN (
+            'claude-cli', 'claude-app', 'tclaude-cli',
+            'codex-cli', 'codex-app', 'tcodex-cli'
+          )
         `,
       ).run();
       db.prepare("INSERT INTO data_migrations (id, applied_at) VALUES (?, ?)").run(migrationId, Date.now());

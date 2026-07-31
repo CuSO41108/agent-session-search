@@ -140,7 +140,7 @@ describe("session store schema", () => {
     }
   });
 
-  it("invalidates only Codex content freshness while preserving user state", () => {
+  it("invalidates Codex and Claude content freshness while preserving user state", () => {
     const db = new DatabaseSync(":memory:");
     try {
       migrateSessionStore(db);
@@ -153,10 +153,17 @@ describe("session store schema", () => {
           custom_title, favorited, hidden
         ) VALUES (?, ?, ?, '/repo', ?, 'Title', 'Question', 1, 123, 456, 123, 456, ?, 1, 1)
       `);
-      for (const source of ["codex-cli", "codex-app", "tcodex-cli"]) {
+      const sessionSources = [
+        "claude-app",
+        "claude-cli",
+        "codex-app",
+        "codex-cli",
+        "tclaude-cli",
+        "tcodex-cli",
+      ];
+      for (const source of sessionSources) {
         insert.run(`${source}:session`, source, source, `/tmp/${source}.jsonl`, `Custom ${source}`);
       }
-      insert.run("claude-cli:session", "claude", "claude-cli", "/tmp/claude.jsonl", "Custom Claude");
       db.prepare("INSERT INTO tags (name) VALUES ('keep-me')").run();
       const tag = db.prepare("SELECT id FROM tags WHERE name = 'keep-me'").get() as { id: number };
       db.prepare("INSERT INTO session_tags (session_key, tag_id) VALUES ('codex-cli:session', ?)").run(tag.id);
@@ -170,18 +177,8 @@ describe("session store schema", () => {
         FROM sessions
         ORDER BY session_key
       `).all();
-      expect(rows).toEqual([
-        {
-          session_key: "claude-cli:session",
-          file_mtime_ms: 123,
-          file_size: 456,
-          content_indexed_mtime_ms: 123,
-          content_indexed_size: 456,
-          custom_title: "Custom Claude",
-          favorited: 1,
-          hidden: 1,
-        },
-        ...["codex-app", "codex-cli", "tcodex-cli"].map((source) => ({
+      expect(rows).toEqual(
+        [...sessionSources].sort().map((source) => ({
           session_key: `${source}:session`,
           file_mtime_ms: 0,
           file_size: 456,
@@ -191,7 +188,7 @@ describe("session store schema", () => {
           favorited: 1,
           hidden: 1,
         })),
-      ]);
+      );
       expect(db.prepare(`
         SELECT tags.name
         FROM tags

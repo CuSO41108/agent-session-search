@@ -219,14 +219,22 @@ describe("AgentRecall PostgreSQL schema", () => {
     await database.close();
   });
 
-  it("invalidates only Codex content freshness once while preserving user state", async () => {
+  it("invalidates Codex and Claude content freshness once while preserving user state", async () => {
     const pool = new PGliteTestPool();
     const legacyDatabase = new PostgresDatabase(pool, {
       migrationLock: false,
       migrations: POSTGRES_MIGRATIONS.filter((migration) => migration.version <= 16),
     });
     await legacyDatabase.initialize();
-    for (const source of ["codex-cli", "codex-app", "tcodex-cli", "claude-cli"]) {
+    const sessionSources = [
+      "claude-app",
+      "claude-cli",
+      "codex-app",
+      "codex-cli",
+      "tclaude-cli",
+      "tcodex-cli",
+    ];
+    for (const source of sessionSources) {
       await legacyDatabase.query(
         `
           insert into agent_recall.sessions (
@@ -278,18 +286,8 @@ describe("AgentRecall PostgreSQL schema", () => {
       file_size: Number(row.file_size),
       content_indexed_mtime_ms: Number(row.content_indexed_mtime_ms),
       content_indexed_size: Number(row.content_indexed_size),
-    }))).toEqual([
-      {
-        session_key: "claude-cli:session",
-        file_mtime_ms: 123,
-        file_size: 456,
-        content_indexed_mtime_ms: 123,
-        content_indexed_size: 456,
-        custom_title: "Custom claude-cli",
-        favorited: true,
-        hidden: true,
-      },
-      ...["codex-app", "codex-cli", "tcodex-cli"].map((source) => ({
+    }))).toEqual(
+      [...sessionSources].sort().map((source) => ({
         session_key: `${source}:session`,
         file_mtime_ms: 0,
         file_size: 456,
@@ -299,7 +297,7 @@ describe("AgentRecall PostgreSQL schema", () => {
         favorited: true,
         hidden: true,
       })),
-    ]);
+    );
     const tags = await upgradedDatabase.query<{ name: string }>(`
       select tags.name
       from agent_recall.tags tags
