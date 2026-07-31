@@ -138,7 +138,7 @@ export class OpenVikingGateway implements OpenVikingClientPort {
       ]) {
         await client.remove(uri, {
           recursive: true,
-          wait: true,
+          wait: false,
         });
       }
       await this.rootClient.adminRemoveUser(auth.accountId, auth.userId);

@@ -303,7 +303,7 @@ describe("OpenVikingGateway", () => {
     expect(requests.slice(0, 6).every((request) => {
       const url = new URL(request.path, "http://127.0.0.1");
       return url.searchParams.get("recursive") === "true"
-        && url.searchParams.get("wait") === "true";
+        && url.searchParams.get("wait") === "false";
     })).toBe(true);
     expect(requests[6]).toMatchObject({
       method: "DELETE",
