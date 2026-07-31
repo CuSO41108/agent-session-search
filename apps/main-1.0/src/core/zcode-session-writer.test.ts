@@ -2,7 +2,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { describe, expect, it } from "vitest";
-import { deleteZcodeSession } from "./zcode-session-writer";
+import { deleteZcodeSession, deleteZcodeSessions } from "./zcode-session-writer";
 
 const { DatabaseSync } = require("node:sqlite") as {
   DatabaseSync: new (path: string) => import("node:sqlite").DatabaseSync;
@@ -76,5 +76,23 @@ describe("ZCode session writer", () => {
     expect(deleteZcodeSession(dbPath, "does-not-exist")).toBe(false);
     expect(() => deleteZcodeSession(path.join(root, "other.sqlite"), "sess-delete")).toThrow(/non-ZCode database path/);
     fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  it("deletes multiple sessions from one shared database operation", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "agent-recall-zcode-delete-many-"));
+    const dbPath = databasePath(root);
+    createFixture(dbPath);
+
+    expect(deleteZcodeSessions(dbPath, ["sess-delete", "sess-keep", "sess-delete"])).toEqual(["sess-delete", "sess-keep"]);
+
+    const db = new DatabaseSync(dbPath);
+    try {
+      expect(db.prepare("SELECT id FROM session").all()).toEqual([]);
+      expect(db.prepare("SELECT session_id FROM message").all()).toEqual([]);
+      expect(db.prepare("SELECT session_id FROM part").all()).toEqual([]);
+    } finally {
+      db.close();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   });
 });

@@ -67,6 +67,7 @@ import type {
   TokenUsageEvent,
 } from "./types";
 import type { OpenVikingWorkspace } from "./openviking-memory";
+import type { SessionBulkDeleteTarget } from "./session-bulk-delete";
 
 export type {
   ApiProviderKeyTarget,
@@ -225,6 +226,16 @@ export class SessionStore {
   async deleteSessionRecord(sessionKey: string): Promise<boolean> {
     await this.ready;
     return this.sessions.deleteSessionRecord(sessionKey);
+  }
+
+  async getSessionDeletionTargets(sessionKeys: readonly string[]): Promise<SessionBulkDeleteTarget[]> {
+    await this.ready;
+    return this.sessions.getSessionDeletionTargets(sessionKeys);
+  }
+
+  async deleteSessionRecords(sessionKeys: readonly string[]): Promise<string[]> {
+    await this.ready;
+    return this.sessions.deleteSessionRecords(sessionKeys);
   }
 
   async migrateSessionKeyPreservingUserState(

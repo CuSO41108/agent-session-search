@@ -7,6 +7,7 @@ import type {
   SkillUsageSource,
 } from "./skill-usage";
 import type { SessionStoreDatabase } from "./store/database";
+import type { SessionBulkDeleteTarget } from "./session-bulk-delete";
 import { EnvironmentStore } from "./store/environments";
 import {
   MetadataStore,
@@ -157,6 +158,14 @@ export class SessionStore {
 
   deleteSessionRecord(sessionKey: string): boolean {
     return this.sessions.deleteSessionRecord(sessionKey);
+  }
+
+  getSessionDeletionTargets(sessionKeys: readonly string[]): SessionBulkDeleteTarget[] {
+    return this.sessions.getSessionDeletionTargets(sessionKeys);
+  }
+
+  deleteSessionRecords(sessionKeys: readonly string[]): string[] {
+    return this.sessions.deleteSessionRecords(sessionKeys);
   }
 
   setSessionSourceAvailable(sessionKey: string, available: boolean): void {

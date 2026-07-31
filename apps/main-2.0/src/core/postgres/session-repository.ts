@@ -12,6 +12,7 @@ import type {
   TagListOptions,
   TokenUsageEvent,
 } from "../types";
+import type { SessionBulkDeleteTarget } from "../session-bulk-delete";
 import {
   materializeSessionAttachment,
   MAX_SESSION_ATTACHMENT_BYTES,
@@ -1321,6 +1322,64 @@ export class PostgresSessionRepository {
       `);
       return true;
     });
+  }
+
+  async getSessionDeletionTargets(sessionKeys: readonly string[]): Promise<SessionBulkDeleteTarget[]> {
+    const uniqueKeys = [...new Set(sessionKeys.filter(Boolean))];
+    if (uniqueKeys.length === 0) return [];
+    const result = await this.database.query<{
+      session_key: string;
+      raw_id: string;
+      source: SessionSource;
+      file_path: string;
+      source_available: boolean;
+      favorited: boolean;
+      last_activity_at: Date | string;
+      environment_id: string;
+      environment_kind: SessionBulkDeleteTarget["environmentKind"];
+    }>(`
+      select sessions.session_key, sessions.raw_id, sessions.source, sessions.file_path,
+        sessions.source_available, sessions.favorited, ${SESSION_ACTIVITY_SQL} as last_activity_at,
+        sessions.environment_id, environments.kind as environment_kind
+      from agent_recall.sessions sessions
+      join agent_recall.environments environments on environments.id = sessions.environment_id
+      where sessions.session_key = any($1::text[])
+    `, [uniqueKeys]);
+    const byKey = new Map(result.rows.map((row) => [row.session_key, row]));
+    return uniqueKeys.flatMap((sessionKey) => {
+      const row = byKey.get(sessionKey);
+      return row ? [{
+        sessionKey: row.session_key,
+        rawId: row.raw_id,
+        source: row.source,
+        filePath: row.file_path,
+        sourceAvailable: Boolean(row.source_available),
+        favorited: Boolean(row.favorited),
+        lastActivityAt: timeValue(row.last_activity_at) ?? 0,
+        environmentId: row.environment_id,
+        environmentKind: row.environment_kind,
+      }] : [];
+    });
+  }
+
+  async deleteSessionRecords(sessionKeys: readonly string[]): Promise<string[]> {
+    const uniqueKeys = [...new Set(sessionKeys.filter(Boolean))];
+    if (uniqueKeys.length === 0) return [];
+    const deleted = await this.database.transaction(async (client) => {
+      const result = await client.query<{ session_key: string }>(
+        "delete from agent_recall.sessions where session_key = any($1::text[]) returning session_key",
+        [uniqueKeys],
+      );
+      await client.query(`
+        delete from agent_recall.tags
+        where not exists (
+          select 1 from agent_recall.session_tags where session_tags.tag_id = tags.id
+        )
+      `);
+      return result.rows.map((row) => row.session_key);
+    });
+    const deletedSet = new Set(deleted);
+    return uniqueKeys.filter((sessionKey) => deletedSet.has(sessionKey));
   }
 
   async migrateSessionKeyPreservingUserState(

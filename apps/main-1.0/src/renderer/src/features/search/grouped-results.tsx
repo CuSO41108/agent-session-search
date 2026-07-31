@@ -21,6 +21,8 @@ export function GroupedResults({
   onRename,
   onFavorite,
   onContextMenu,
+  bulkSelectedKeys,
+  onToggleBulk,
 }: {
   sessions: SessionSearchResult[];
   groupMode: GroupMode;
@@ -34,6 +36,8 @@ export function GroupedResults({
   onRename: (session: SessionSearchResult) => void;
   onFavorite: (session: SessionSearchResult) => void;
   onContextMenu: (event: ReactMouseEvent, session: SessionSearchResult) => void;
+  bulkSelectedKeys: Set<string>;
+  onToggleBulk: (sessionKey: string) => void;
 }): ReactElement {
   const l = (en: string, zh: string) => localize(language, en, zh);
   const groups = groupSessions(sessions, groupMode);
@@ -65,6 +69,8 @@ export function GroupedResults({
             onRename={onRename}
             onFavorite={onFavorite}
             onContextMenu={onContextMenu}
+            bulkSelected={bulkSelectedKeys.has(session.sessionKey)}
+            onToggleBulk={onToggleBulk}
           />
         ))}
       </div>
@@ -98,6 +104,8 @@ export function GroupedResults({
                     onRename={onRename}
                     onFavorite={onFavorite}
                     onContextMenu={onContextMenu}
+                    bulkSelected={bulkSelectedKeys.has(session.sessionKey)}
+                    onToggleBulk={onToggleBulk}
                   />
                 ))}
               </div>

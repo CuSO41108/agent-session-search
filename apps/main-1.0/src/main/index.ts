@@ -92,6 +92,8 @@ import { buildCombinedSupabaseSetupSql, supabaseSqlEditorUrl } from "../core/sup
 import { buildSshArgs, readUserSshConfig } from "../core/ssh-config";
 import { listWslDistributions } from "../core/wsl";
 import { deleteWslSessionFile } from "../core/wsl-session-actions";
+import { SessionBulkDeleteService } from "./services/session-bulk-delete-service";
+import type { SessionBulkDeleteRequest } from "../core/session-bulk-delete";
 import { AUTO_INDEX_REFRESH_INTERVAL_MS, INITIAL_INDEX_DELAY_MS } from "../core/refresh-policy";
 import { globalShortcutLabel, normalizeGlobalShortcut } from "../core/shortcuts";
 import { canDeleteSessionLocally, isLocalSessionEnvironment, isLocalSessionStorage, remoteSessionKey } from "../core/session-environment";
@@ -1964,6 +1966,11 @@ function registerIpc(): void {
   ipcMain.handle("tag:delete", (_event, tagName: string) => store.deleteTag(tagName));
   ipcMain.handle("favorite:set", (_event, sessionKey: string, favorited: boolean) => store.setFavorited(sessionKey, favorited));
   ipcMain.handle("hide:set", (_event, sessionKey: string, hidden: boolean) => store.setHidden(sessionKey, hidden));
+  const sessionBulkDeleteService = new SessionBulkDeleteService(store);
+  ipcMain.handle("session:bulk-delete-preview", (_event, request: SessionBulkDeleteRequest) =>
+    sessionBulkDeleteService.preview(request));
+  ipcMain.handle("session:bulk-delete", (_event, request: SessionBulkDeleteRequest) =>
+    sessionBulkDeleteService.delete(request));
   ipcMain.handle("session:delete", async (_event, sessionKey: string) => {
     const session = store.getSession(sessionKey);
     if (session?.source === "pi-cli") {

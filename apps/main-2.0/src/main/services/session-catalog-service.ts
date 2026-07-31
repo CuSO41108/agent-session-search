@@ -1,4 +1,5 @@
 import type { IndexStatus } from "../../core/indexer";
+import type { SessionBulkDeletePreview, SessionBulkDeleteRequest, SessionBulkDeleteResult } from "../../core/session-bulk-delete";
 import { canDeleteSessionLocally, isLocalSessionEnvironment } from "../../core/session-environment";
 import type { SessionStore, TraceEventQueryOptions } from "../../core/session-store";
 import type {
@@ -19,6 +20,7 @@ import type {
   SessionTurnSummary,
   TagListOptions,
 } from "../../core/types";
+import { SessionBulkDeleteService } from "./session-bulk-delete-service";
 
 export interface SessionCatalogServiceDependencies {
   store: SessionStore;
@@ -49,7 +51,11 @@ export interface SessionCatalogServiceDependencies {
  * here so IPC handlers and windows do not need to understand those branches.
  */
 export class SessionCatalogService {
-  constructor(private readonly dependencies: SessionCatalogServiceDependencies) {}
+  private readonly bulkDelete: SessionBulkDeleteService;
+
+  constructor(private readonly dependencies: SessionCatalogServiceDependencies) {
+    this.bulkDelete = new SessionBulkDeleteService(dependencies.store);
+  }
 
   search(options: SearchOptions): Promise<SessionSearchResult[]> {
     return this.dependencies.store.searchSessions(this.dependencies.visibleSearchOptions(options));
@@ -187,6 +193,14 @@ export class SessionCatalogService {
     const environment = await this.dependencies.requireWslEnvironment(session);
     await this.dependencies.deleteWslSession(environment, session.filePath);
     return this.dependencies.store.deleteSessionRecord(sessionKey);
+  }
+
+  previewBulkDelete(request: SessionBulkDeleteRequest): Promise<SessionBulkDeletePreview> {
+    return this.bulkDelete.preview(request);
+  }
+
+  bulkDeleteSessions(request: SessionBulkDeleteRequest): Promise<SessionBulkDeleteResult> {
+    return this.bulkDelete.delete(request);
   }
 
   refreshIndex(): Promise<IndexStatus> {

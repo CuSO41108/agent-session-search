@@ -99,6 +99,7 @@ export interface SessionsPageModel {
   pageSize: number;
   liveSessionKeys: Set<string>;
   liveDetectionFailed: boolean;
+  bulkSelectedKeys: Set<string>;
 }
 
 export interface SessionsPageActions {
@@ -126,6 +127,11 @@ export interface SessionsPageActions {
   toggleFavorite(session: SessionSearchResult): void;
   openContextMenu(event: ReactMouseEvent, session: SessionSearchResult): void;
   loadMore(): void;
+  toggleBulkSession(sessionKey: string): void;
+  toggleLoadedSelection(): void;
+  selectAllMatching(): void;
+  deleteSelected(): void;
+  openDateCleanup(): void;
 }
 
 export function SessionsPage({
@@ -287,10 +293,26 @@ export function SessionsPage({
         </header>
 
         <div className="result-count">
-          <span>{l(
+          <div className="bulk-result-actions">
+            <input
+              type="checkbox"
+              checked={model.sessions.length > 0 && model.sessions.every((session) => model.bulkSelectedKeys.has(session.sessionKey))}
+              onChange={actions.toggleLoadedSelection}
+              aria-label={l("Select loaded sessions", "选择已加载会话")}
+            />
+            <span>{l(
             `${model.sessionTotalCount} sessions`,
             `${model.sessionTotalCount} 个会话`,
-          )}</span>
+            )}</span>
+            {model.bulkSelectedKeys.size > 0 ? <strong>{l(`${model.bulkSelectedKeys.size} selected`, `已选 ${model.bulkSelectedKeys.size} 个`)}</strong> : null}
+            {model.bulkSelectedKeys.size > 0 && model.bulkSelectedKeys.size < model.sessionTotalCount ? (
+              <button type="button" onClick={actions.selectAllMatching}>{l(`Select all ${model.sessionTotalCount}`, `选择全部 ${model.sessionTotalCount} 个`)}</button>
+            ) : null}
+            {model.bulkSelectedKeys.size > 0 ? (
+              <button type="button" className="bulk-delete-button" onClick={actions.deleteSelected}><Trash2 size={13} />{l("Delete", "删除")}</button>
+            ) : null}
+            <button type="button" onClick={actions.openDateCleanup}><CalendarDays size={13} />{l("Clean up", "按日期清理")}</button>
+          </div>
           {model.selected
             ? <span className="selected-path">
                 {model.selected.projectPath || model.selected.rawId}
@@ -316,6 +338,8 @@ export function SessionsPage({
               onRename={actions.renameSession}
               onFavorite={actions.toggleFavorite}
               onContextMenu={actions.openContextMenu}
+              bulkSelected={model.bulkSelectedKeys.has(session.sessionKey)}
+              onToggleBulk={actions.toggleBulkSession}
             />
           ))}
           {model.sessions.length === 0 && !model.hasMoreSessions
