@@ -464,6 +464,40 @@ describe("extra session sources", () => {
     fs.rmSync(root, { recursive: true, force: true });
   });
 
+  it("loads the project path from the current Hermes sessions.cwd column", () => {
+    const root = tmpDir("hermes-current-schema");
+    const dbPath = path.join(root, "state.db");
+    const db = new DatabaseSync(dbPath);
+    db.exec(`
+      CREATE TABLE sessions (
+        id TEXT PRIMARY KEY,
+        cwd TEXT,
+        model_config TEXT,
+        started_at REAL NOT NULL
+      );
+      CREATE TABLE messages (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id TEXT NOT NULL,
+        timestamp REAL NOT NULL
+      );
+    `);
+    db.prepare(
+      "INSERT INTO sessions (id, cwd, model_config, started_at) VALUES (?, ?, ?, ?)",
+    ).run(
+      "hermes-current-1",
+      "/work/hermes-current",
+      JSON.stringify({ cwd: "/work/hermes-legacy", max_iterations: 2 }),
+      Date.parse("2026-07-31T03:32:15Z") / 1000,
+    );
+    db.close();
+
+    const loaded = loadHermesSessions(root);
+    fs.rmSync(root, { recursive: true, force: true });
+
+    expect(loaded).toHaveLength(1);
+    expect(loaded[0].session.projectPath).toBe("/work/hermes-current");
+  });
+
   it("skips unsupported Hermes database schemas without failing the index", () => {
     const root = tmpDir("hermes-schema");
     const dbPath = path.join(root, "state.db");

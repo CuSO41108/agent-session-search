@@ -473,7 +473,9 @@ function loadHermesSessionRow(db: import("node:sqlite").DatabaseSync, dbPath: st
       keyPrefix: "hermes",
       rawId,
       source: "hermes",
-      projectPath: extractProjectPathFromJson(unknownField(session, "model_config")),
+      projectPath:
+        stringField(session, "cwd") ||
+        extractProjectPathFromJson(unknownField(session, "model_config")),
       filePath: dbPath,
       originalTitle: title || cleanTitle(question) || rawId,
       firstQuestion: cleanTitle(question),

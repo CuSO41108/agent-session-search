@@ -37,7 +37,7 @@ describe("session source capability registry", () => {
     for (const descriptor of SESSION_SOURCE_DESCRIPTORS) {
       expect(descriptor.capabilities.live).toBe(descriptor.liveFamily !== null);
       expect(descriptor.capabilities.migrate).toBe(descriptor.migrationAgent !== null);
-      expect(descriptor.capabilities.sessionSync).toBe(descriptor.migrationAgent !== null);
+      if (descriptor.migrationAgent !== null) expect(descriptor.capabilities.sessionSync).toBe(true);
       expect(descriptor.capabilities.openApp).toBe(descriptor.nativeAppFamily !== null);
       if (descriptor.capabilities.resume) expect(descriptor.resumeTarget).not.toBeNull();
       if (descriptor.remoteCollectorOptional) expect(descriptor.optionalSetting).not.toBeNull();
@@ -61,6 +61,10 @@ describe("session source capability registry", () => {
     expect(sessionSourceDescriptor("tclaude-cli")).toMatchObject({ liveFamily: "tclaude", migrationAgent: "claude" });
     expect(sessionSourceDescriptor("tcodex-cli")).toMatchObject({ liveFamily: "tcodex", migrationAgent: "codex" });
     expect(sessionSourceDescriptor("qoder")).toMatchObject({ format: "qoder", liveFamily: "qoder", remoteFamily: "qoder" });
+    expect(sessionSourceDescriptor("hermes")).toMatchObject({
+      migrationAgent: null,
+      capabilities: { live: true, resume: false, migrate: false, sessionSync: true, openApp: false },
+    });
     expect(sessionSourceDescriptor("zcode-cli")).toMatchObject({
       format: "zcode",
       uiFamily: "zcode",

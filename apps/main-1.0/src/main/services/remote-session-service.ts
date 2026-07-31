@@ -1,7 +1,6 @@
 import { createHash } from "node:crypto";
 import * as path from "node:path";
 import type { AppSettings } from "../../core/platform";
-import { migrationAgentForSource } from "../../core/session-migration";
 import { restoreRemotePortableSession, type RemoteSessionRestoreDependencies } from "../../core/remote-session-restore";
 import {
   buildRemoteSessionSetupSql,
@@ -17,6 +16,7 @@ import {
   type RemoteSessionUploadResult,
   type SessionSyncItem,
 } from "../../core/remote-session-sync";
+import { remoteSessionAgentForSource } from "../../core/session-sources";
 import type { SessionStore } from "../../core/session-store";
 import {
   clearSessionSyncQueue,
@@ -279,7 +279,7 @@ export class RemoteSessionService {
     const indexedSessions = store.searchSessions({ limit: 100_000, excludeSubagents: false })
       .filter((session) =>
         session.environmentKind !== "wsl"
-        && migrationAgentForSource(session.source) !== null);
+        && remoteSessionAgentForSource(session.source) !== null);
     await this.runBounded(indexedSessions, 4, async (session) => {
       try {
         await this.dependencies.ensureSessionDetails(session.sessionKey);
@@ -449,7 +449,7 @@ export class RemoteSessionService {
       || !this.dependencies.getHookSetup().sessionSyncHookStatus().installed) return;
     const store = this.dependencies.getStore();
     const session = localSessions.find((candidate) =>
-      migrationAgentForSource(candidate.source) === event.agent
+      remoteSessionAgentForSource(candidate.source) === event.agent
       && ((event.transcriptPath && path.resolve(candidate.filePath) === path.resolve(event.transcriptPath))
         || candidate.rawId === event.sessionId));
     if (!session) {
