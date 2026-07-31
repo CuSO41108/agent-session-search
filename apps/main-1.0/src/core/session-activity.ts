@@ -165,7 +165,7 @@ export async function loadLiveSessionSnapshot(options: LoadLiveSessionOptions = 
         : await Promise.all([
             loadPlainCodexSessionFiles(lines, runner, options.homeDir ?? os.homedir()),
             loadCodexAppSessionFiles(lines, runner, now.getTime()),
-            loadPlainClaudeSessionFiles(lines, runner, options.homeDir ?? os.homedir()),
+            loadPlainClaudeSessionFiles(lines, runner, now.getTime(), options.homeDir ?? os.homedir()),
           ]);
     const traeSessionIdsByPid =
       platform === "win32" || options.includeTrae === false ? new Map<number, string>() : await loadTraeSessionIds(lines, runner);
@@ -300,7 +300,12 @@ function findMostRecentCodexSessionByCwd(homeDir: string, cwd: string): string |
   return best === null ? null : (best as { filePath: string }).filePath;
 }
 
-async function loadPlainClaudeSessionFiles(lines: string[], runner: ProcessListRunner, homeDir = os.homedir()): Promise<Map<number, string>> {
+async function loadPlainClaudeSessionFiles(
+  lines: string[],
+  runner: ProcessListRunner,
+  nowMs: number,
+  homeDir = os.homedir(),
+): Promise<Map<number, string>> {
   const entries = lines.map(parseProcessLine).filter((entry): entry is ProcessEntry => Boolean(entry));
   const plainPids = entries.filter((entry) => isPlainClaudeCommand(splitCommandLine(entry.command))).map((entry) => entry.pid);
   const claimedRawIds = new Set(
@@ -320,7 +325,7 @@ async function loadPlainClaudeSessionFiles(lines: string[], runner: ProcessListR
         if (sessionFile) return { pid, sessionFile, cwd: null, startedAtMs: null };
         const cwd = extractProcessCwd(lsofOutput);
         if (!cwd) return null;
-        return { pid, sessionFile: null, cwd, startedAtMs: await loadProcessStartedAtMs(pid, runner) };
+        return { pid, sessionFile: null, cwd, startedAtMs: await loadProcessStartedAtMs(pid, runner, nowMs) };
       } catch {
         return null;
       }
@@ -401,10 +406,21 @@ async function loadPlainSessionFiles(
   return sessionFiles;
 }
 
-async function loadProcessStartedAtMs(pid: number, runner: ProcessListRunner): Promise<number | null> {
+/**
+ * `ps -o lstart=` renders the start time through the active locale, so `Date.parse`
+ * returns NaN on any system that is not set to English and every caller silently
+ * degrades to matching sessions without a start time. `etime` reports the elapsed
+ * time as a locale-independent `[[dd-]hh:]mm:ss` value instead.
+ */
+async function loadProcessStartedAtMs(pid: number, runner: ProcessListRunner, nowMs: number): Promise<number | null> {
   try {
-    const startedAtMs = Date.parse((await runner("/bin/ps", ["-o", "lstart=", "-p", String(pid)])).trim());
-    return Number.isFinite(startedAtMs) ? startedAtMs : null;
+    const elapsed = (await runner("/bin/ps", ["-o", "etime=", "-p", String(pid)])).trim().match(/^(?:(\d+)-)?(?:(\d+):)?(\d+):(\d+)$/);
+    if (!elapsed) return null;
+    const days = Number(elapsed[1] ?? 0);
+    const hours = Number(elapsed[2] ?? 0);
+    const minutes = Number(elapsed[3] ?? 0);
+    const seconds = Number(elapsed[4] ?? 0);
+    return nowMs - (((days * 24 + hours) * 60 + minutes) * 60 + seconds) * 1000;
   } catch {
     return null;
   }
