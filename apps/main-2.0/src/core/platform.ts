@@ -82,6 +82,7 @@ export interface AppSettings {
   includeCursorAgent: boolean;
   includeTrae: boolean;
   includeQoder: boolean;
+  includePi: boolean;
   rulesSyncEnabled: boolean;
   memoriesSyncEnabled: boolean;
   evalEnabled: boolean;
@@ -149,6 +150,7 @@ export const defaultSettings: AppSettings = {
   includeCursorAgent: false,
   includeTrae: false,
   includeQoder: false,
+  includePi: false,
   rulesSyncEnabled: false,
   memoriesSyncEnabled: false,
   evalEnabled: false,
