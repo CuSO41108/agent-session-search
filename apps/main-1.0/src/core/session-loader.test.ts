@@ -448,6 +448,7 @@ describe("Codex session loading", () => {
           { eventType: "codex.turn.started" },
           { eventType: "codex.turn.completed" },
         ]);
+        expect(traceEvents.filter((event) => event.sourceTurnId === "agent-recall:legacy-turn:2")).toEqual([]);
         expect(loaded?.tokenEvents?.map((event) => event.sourceTurnId)).toEqual([
           "agent-recall:legacy-turn:1",
           "agent-recall:legacy-turn:2",
