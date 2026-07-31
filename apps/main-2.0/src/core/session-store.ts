@@ -66,6 +66,7 @@ import type {
   TokenUsageEvent,
 } from "./types";
 import type { OpenVikingWorkspace } from "./openviking-memory";
+import { deleteZcodeSession } from "./zcode-session-writer";
 
 export type {
   ApiProviderKeyTarget,
@@ -204,8 +205,14 @@ export class SessionStore {
     const target = await this.sessions.getSessionDeletionTarget(sessionKey);
     if (!target) return false;
     if (target.source === "pi-cli") throw new Error("Pi session source files are read-only.");
+    if (target.source === "zcode-cli") {
+      const sourceDeleted = deleteZcodeSession(target.filePath, target.rawId);
+      const indexDeleted = await this.sessions.deleteSessionRecord(sessionKey);
+      return sourceDeleted || indexDeleted;
+    }
     if (target.source === "hermes") throw new Error("Cannot delete shared Hermes source database.");
     if (target.source === "opencode-cli") throw new Error("Cannot delete shared OpenCode source database.");
+    if (target.source === "codewiz-cli") throw new Error("Cannot delete shared CodeWiz source database.");
     if (target.source === "cursor-agent" && /(^|[\\/])state\.vscdb$/iu.test(target.filePath)) {
       if (!target.sourceAvailable) return this.sessions.deleteSessionRecord(sessionKey);
       throw new Error("Cannot delete shared Cursor source database.");

@@ -1592,14 +1592,20 @@ export class PostgresSessionRepository {
 
   async getSessionDeletionTarget(
     sessionKey: string,
-  ): Promise<{ source: SessionSource; filePath: string; sourceAvailable: boolean } | null> {
-    const result = await this.database.query<{ source: SessionSource; file_path: string; source_available: boolean }>(
-      "select source, file_path, source_available from agent_recall.sessions where session_key = $1",
+  ): Promise<{ source: SessionSource; rawId: string; filePath: string; sourceAvailable: boolean } | null> {
+    const result = await this.database.query<{
+      source: SessionSource;
+      raw_id: string;
+      file_path: string;
+      source_available: boolean;
+    }>(
+      "select source, raw_id, file_path, source_available from agent_recall.sessions where session_key = $1",
       [sessionKey],
     );
     return result.rows[0]
       ? {
           source: result.rows[0].source,
+          rawId: result.rows[0].raw_id,
           filePath: result.rows[0].file_path,
           sourceAvailable: result.rows[0].source_available,
         }
