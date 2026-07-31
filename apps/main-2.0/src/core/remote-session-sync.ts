@@ -319,10 +319,16 @@ function remoteTurnSummaryTraceEvents(
       .map((event) => event.sourceTurnId)
       .filter((turnId): turnId is string => Boolean(turnId)),
   );
+  const existingStartedTurns = new Set(
+    traceEvents
+      .filter((event) => event.eventType === "codex.turn.started")
+      .map((event) => event.sourceTurnId)
+      .filter((turnId): turnId is string => Boolean(turnId)),
+  );
   return turns.flatMap((turn, offset) => {
     const sourceTurnId = turn.sourceTurnId || null;
-    if (!sourceTurnId || existingTerminalTurns.has(sourceTurnId)) return [];
     const running = turn.status === "running";
+    if (!sourceTurnId || existingTerminalTurns.has(sourceTurnId) || (running && existingStartedTurns.has(sourceTurnId))) return [];
     const aborted = turn.status === "aborted";
     const title = running ? "Turn started" : aborted ? "Turn aborted" : turn.status === "failed" ? "Turn failed" : "Turn completed";
     const attributes: Record<string, unknown> = {

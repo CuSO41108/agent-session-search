@@ -235,7 +235,7 @@ describe("remote session sync model", () => {
       status: "running",
       startedAt: "2026-07-31T08:00:00.000Z",
       endedAt: "2026-07-31T08:00:00.000Z",
-      durationMs: null,
+      durationMs: 60_000,
       timeToFirstTokenMs: null,
       abortReason: null,
       userPreview: "Keep working",
@@ -282,6 +282,83 @@ describe("remote session sync model", () => {
       eventType: "codex.turn.completed",
       sourceTurnId: "turn-running",
     }));
+    const started = built.detail.traceEvents.find((event) => event.sourceTurnId === "turn-running");
+    expect(started?.attributes).not.toHaveProperty("endedAt");
+    expect(started?.attributes).not.toHaveProperty("durationMs");
+    expect(deriveSessionTimeline({
+      sessionKey: session.sessionKey,
+      messages: built.detail.messages,
+      traceEvents: built.detail.traceEvents,
+    }).turns[0].status).toBe("running");
+    expect(built.payload.search_text).not.toContain("Turn started");
+  });
+
+  it("does not duplicate an existing hidden started event for a running Codex Turn", async () => {
+    const turn: SessionTurnSummary = {
+      id: "internal-turn-running",
+      turnIndex: 0,
+      sourceMessageIndex: 0,
+      sourceTurnId: "turn-running",
+      synthetic: false,
+      status: "running",
+      startedAt: "2026-07-31T08:00:00.000Z",
+      endedAt: "2026-07-31T08:01:00.000Z",
+      durationMs: 60_000,
+      timeToFirstTokenMs: null,
+      abortReason: null,
+      userPreview: "Keep working",
+      assistantPreview: "",
+      inputTokens: 1,
+      outputTokens: 0,
+      cachedInputTokens: 0,
+      reasoningOutputTokens: 0,
+      totalTokens: 1,
+      errorCount: 0,
+      toolNames: [],
+      messageCount: 1,
+      spanCount: 0,
+    };
+    const session = {
+      ...SESSION,
+      sessionKey: "codex:running-existing-start",
+      rawId: "running-existing-start",
+      originalTitle: "Running",
+      firstQuestion: "Keep working",
+      displayTitle: "Running",
+      aiSummary: null,
+      tags: [],
+    };
+    const built = await buildRemoteSessionUploadFromStore({
+      getSession: async () => session,
+      getAllMessages: async () => [{
+        role: "user",
+        content: "Keep working",
+        timestamp: turn.startedAt!,
+        index: 0,
+        sourceTurnId: "turn-running",
+      }],
+      getTraceEvents: async () => [{
+        index: 0,
+        kind: "event" as const,
+        source: "codex" as const,
+        title: "Turn started",
+        detail: "",
+        timestamp: turn.startedAt!,
+        eventType: "codex.turn.started",
+        status: "running" as const,
+        sourceTurnId: "turn-running",
+        attributes: { startedAt: turn.startedAt! },
+      }],
+      listSessionTurns: async () => [turn],
+    }, session.sessionKey, 12_000);
+
+    const startedEvents = built.detail.traceEvents.filter((event) => event.eventType === "codex.turn.started");
+    expect(startedEvents).toHaveLength(1);
+    expect(built.detail.traceEvents.filter((event) =>
+      event.eventType === "codex.turn.completed" || event.eventType === "codex.turn.aborted",
+    )).toHaveLength(0);
+    expect(startedEvents[0].attributes).not.toHaveProperty("endedAt");
+    expect(startedEvents[0].attributes).not.toHaveProperty("durationMs");
     expect(deriveSessionTimeline({
       sessionKey: session.sessionKey,
       messages: built.detail.messages,
