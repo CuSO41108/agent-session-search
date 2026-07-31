@@ -38,6 +38,7 @@ export type ContentAreaProps = {
   onRename: (session: SessionSearchResult) => void;
   onFavorite: (session: SessionSearchResult) => void;
   onContextMenu: (event: ReactMouseEvent, session: SessionSearchResult) => void;
+  bulkSelectionActive: boolean;
   bulkSelectedKeys: Set<string>;
   onToggleBulk: (sessionKey: string) => void;
   hasMoreSessions: boolean;
@@ -73,6 +74,7 @@ export function ContentArea(props: ContentAreaProps): ReactElement {
     onRename,
     onFavorite,
     onContextMenu,
+    bulkSelectionActive,
     bulkSelectedKeys,
     onToggleBulk,
     hasMoreSessions,
@@ -123,6 +125,7 @@ export function ContentArea(props: ContentAreaProps): ReactElement {
           onRename={onRename}
           onFavorite={onFavorite}
           onContextMenu={onContextMenu}
+          bulkSelectionActive={bulkSelectionActive}
           bulkSelectedKeys={bulkSelectedKeys}
           onToggleBulk={onToggleBulk}
         />

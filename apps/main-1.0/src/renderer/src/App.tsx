@@ -10,6 +10,7 @@ import {
   Download,
   Eye,
   FolderOpen,
+  ListChecks,
   Play,
   Search,
   Settings,
@@ -17,6 +18,7 @@ import {
   Tag,
   Terminal as TerminalIcon,
   Trash2,
+  X,
 } from "lucide-react";
 import type { ApiConfig, ClaudeApiConfig } from "../../core/api-config";
 import type { IndexStatus } from "../../core/indexer";
@@ -327,6 +329,7 @@ export function App(): ReactElement {
   const [deleteSessionCandidate, setDeleteSessionCandidate] = useState<SessionSearchResult | null>(null);
   const [deletingSession, setDeletingSession] = useState(false);
   const [bulkSelectedKeys, setBulkSelectedKeys] = useState<Set<string>>(() => new Set());
+  const [bulkSelectionActive, setBulkSelectionActive] = useState(false);
   const [bulkDeleteDialog, setBulkDeleteDialog] = useState<{
     mode: "selection" | "cleanup";
     dateValue: string;
@@ -458,7 +461,10 @@ export function App(): ReactElement {
     });
   }, [query, source, environmentId, tag, projectPath, projectEnvironmentId, visibility, dateRange, sortBy, sessionLimit, liveStatus, liveDetectionFailed, liveSearchKeys]);
 
-  useEffect(() => setBulkSelectedKeys(new Set()), [searchScopeKey]);
+  useEffect(() => {
+    setBulkSelectionActive(false);
+    setBulkSelectedKeys(new Set());
+  }, [searchScopeKey]);
 
   const loadSidebarMetadata = useCallback(async () => {
     const requestId = ++metadataLoadSeqRef.current;
@@ -1470,6 +1476,17 @@ export function App(): ReactElement {
     });
   }
 
+  function beginBulkSelection(sessionKey: string): void {
+    setBulkSelectionActive(true);
+    setBulkSelectedKeys((current) => new Set(current).add(sessionKey));
+    setContextMenu(null);
+  }
+
+  function exitBulkSelection(): void {
+    setBulkSelectionActive(false);
+    setBulkSelectedKeys(new Set());
+  }
+
   function toggleLoadedSelection(): void {
     setBulkSelectedKeys((current) => {
       const next = new Set(current);
@@ -2139,19 +2156,22 @@ export function App(): ReactElement {
         resultsHeader={
           <div className="result-count">
             <div className="bulk-result-actions">
-              <input
+              {bulkSelectionActive ? <input
                 type="checkbox"
                 checked={displayedResults.length > 0 && displayedResults.every((session) => bulkSelectedKeys.has(session.sessionKey))}
                 onChange={toggleLoadedSelection}
                 aria-label={t("Select loaded sessions", "选择已加载会话")}
-              />
+              /> : null}
               <span>{t(`${sessionTotalCount} sessions`, `${sessionTotalCount} 个会话`)}</span>
-              {bulkSelectedKeys.size > 0 ? <strong>{t(`${bulkSelectedKeys.size} selected`, `已选 ${bulkSelectedKeys.size} 个`)}</strong> : null}
-              {bulkSelectedKeys.size > 0 && bulkSelectedKeys.size < sessionTotalCount ? (
+              {bulkSelectionActive ? <strong>{t(`${bulkSelectedKeys.size} selected`, `已选 ${bulkSelectedKeys.size} 个`)}</strong> : null}
+              {bulkSelectionActive && bulkSelectedKeys.size > 0 && bulkSelectedKeys.size < sessionTotalCount ? (
                 <button type="button" onClick={() => void selectAllMatchingSessions()}>{t(`Select all ${sessionTotalCount}`, `选择全部 ${sessionTotalCount} 个`)}</button>
               ) : null}
-              {bulkSelectedKeys.size > 0 ? (
+              {bulkSelectionActive && bulkSelectedKeys.size > 0 ? (
                 <button type="button" className="bulk-delete-button" onClick={() => void previewSelectedSessions()}><Trash2 size={13} />{t("Delete", "删除")}</button>
+              ) : null}
+              {bulkSelectionActive ? (
+                <button type="button" onClick={exitBulkSelection} title={t("Exit multi-select", "退出多选")} aria-label={t("Exit multi-select", "退出多选")}><X size={13} /></button>
               ) : null}
               <button type="button" onClick={openDateCleanup}><CalendarDays size={13} />{t("Clean up", "按日期清理")}</button>
             </div>
@@ -2169,6 +2189,7 @@ export function App(): ReactElement {
         onRename={handleRowRename}
         onFavorite={handleRowFavorite}
         onContextMenu={handleRowContextMenu}
+        bulkSelectionActive={bulkSelectionActive}
         bulkSelectedKeys={bulkSelectedKeys}
         onToggleBulk={toggleBulkSession}
         hasMoreSessions={hasMoreSessions}
@@ -2295,6 +2316,7 @@ export function App(): ReactElement {
           canMigrate={contextMenu.session.environmentKind !== "ssh" && supportsMigrationSource(contextMenu.session.source)}
           onRename={() => beginRename(contextMenu.session)}
           onAddTag={() => beginAddTag(contextMenu.session)}
+          onSelectMultiple={() => beginBulkSelection(contextMenu.session.sessionKey)}
           onFavorite={() =>
             void runAction(
               contextMenu.session.favorited ? t("Removing favorite", "正在取消收藏") : t("Adding favorite", "正在加入收藏"),
@@ -2613,6 +2635,7 @@ function ContextMenu({
   canMigrate,
   onRename,
   onAddTag,
+  onSelectMultiple,
   onFavorite,
   onHide,
   onResume,
@@ -2634,6 +2657,7 @@ function ContextMenu({
   canMigrate: boolean;
   onRename: () => void;
   onAddTag: () => void;
+  onSelectMultiple: () => void;
   onFavorite: () => void;
   onHide: () => void;
   onResume: () => void;
@@ -2666,6 +2690,9 @@ function ContextMenu({
       </button>
       <button onClick={onAddTag}>
         <Tag size={14} /> {l("Add Tag", "添加标签")}
+      </button>
+      <button onClick={onSelectMultiple}>
+        <ListChecks size={14} /> {l("Multi-select", "多选")}
       </button>
       <button onClick={onFavorite}>
         <Star size={14} fill={state.session.favorited ? "currentColor" : "none"} />{" "}

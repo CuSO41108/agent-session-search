@@ -320,6 +320,7 @@ export function App(): ReactElement {
   const [deleteSessionCandidate, setDeleteSessionCandidate] = useState<SessionSearchResult | null>(null);
   const [deletingSession, setDeletingSession] = useState(false);
   const [bulkSelectedKeys, setBulkSelectedKeys] = useState<Set<string>>(() => new Set());
+  const [bulkSelectionActive, setBulkSelectionActive] = useState(false);
   const [bulkDeleteDialog, setBulkDeleteDialog] = useState<{
     mode: "selection" | "cleanup";
     dateValue: string;
@@ -389,7 +390,10 @@ export function App(): ReactElement {
     void loadSidebarMetadata();
   }, [loadSidebarMetadata]);
 
-  useEffect(() => setBulkSelectedKeys(new Set()), [
+  useEffect(() => {
+    setBulkSelectionActive(false);
+    setBulkSelectedKeys(new Set());
+  }, [
     query,
     source,
     environmentId,
@@ -815,6 +819,17 @@ export function App(): ReactElement {
       else next.add(sessionKey);
       return next;
     });
+  }
+
+  function beginBulkSelection(sessionKey: string): void {
+    setBulkSelectionActive(true);
+    setBulkSelectedKeys((current) => new Set(current).add(sessionKey));
+    setContextMenu(null);
+  }
+
+  function exitBulkSelection(): void {
+    setBulkSelectionActive(false);
+    setBulkSelectedKeys(new Set());
   }
 
   function toggleLoadedSelection(): void {
@@ -1456,6 +1471,7 @@ export function App(): ReactElement {
                 pageSize: SESSION_PAGE_SIZE,
                 liveSessionKeys,
                 liveDetectionFailed,
+                bulkSelectionActive,
                 bulkSelectedKeys,
               }}
               actions={{
@@ -1513,6 +1529,7 @@ export function App(): ReactElement {
                 loadMore,
                 toggleBulkSession,
                 toggleLoadedSelection,
+                exitBulkSelection,
                 selectAllMatching: () => void selectAllMatchingSessions(),
                 deleteSelected: () => void previewSelectedSessions(),
                 openDateCleanup,
@@ -1679,6 +1696,7 @@ export function App(): ReactElement {
           canMigrate={contextMenu.session.environmentKind !== "ssh" && supportsMigrationSource(contextMenu.session.source)}
           onRename={() => beginRename(contextMenu.session)}
           onAddTag={() => beginAddTag(contextMenu.session)}
+          onSelectMultiple={() => beginBulkSelection(contextMenu.session.sessionKey)}
           onFavorite={() =>
             void runAction(
               contextMenu.session.favorited ? t("Removing favorite", "正在取消收藏") : t("Adding favorite", "正在加入收藏"),

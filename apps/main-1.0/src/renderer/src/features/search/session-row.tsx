@@ -48,6 +48,7 @@ export const SessionRow = memo(function SessionRow({
   onRename,
   onFavorite,
   onContextMenu,
+  bulkSelectionActive = false,
   bulkSelected = false,
   onToggleBulk,
 }: {
@@ -62,6 +63,7 @@ export const SessionRow = memo(function SessionRow({
   onRename: (session: SessionSearchResult) => void;
   onFavorite: (session: SessionSearchResult) => void;
   onContextMenu: (event: ReactMouseEvent, session: SessionSearchResult) => void;
+  bulkSelectionActive?: boolean;
   bulkSelected?: boolean;
   onToggleBulk?: (sessionKey: string) => void;
 }): ReactElement {
@@ -85,7 +87,7 @@ export const SessionRow = memo(function SessionRow({
       }}
       onContextMenu={(event) => onContextMenu(event, session)}
     >
-      {onToggleBulk ? (
+      {bulkSelectionActive && onToggleBulk ? (
         <input
           className="session-bulk-checkbox"
           type="checkbox"

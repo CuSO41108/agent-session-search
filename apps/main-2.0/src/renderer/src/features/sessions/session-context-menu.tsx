@@ -8,6 +8,7 @@ import {
   Download,
   Eye,
   FolderOpen,
+  ListChecks,
   Play,
   Star,
   Tag,
@@ -35,6 +36,7 @@ export function SessionContextMenu({
   canMigrate,
   onRename,
   onAddTag,
+  onSelectMultiple,
   onFavorite,
   onHide,
   onResume,
@@ -56,6 +58,7 @@ export function SessionContextMenu({
   canMigrate: boolean;
   onRename(): void;
   onAddTag(): void;
+  onSelectMultiple(): void;
   onFavorite(): void;
   onHide(): void;
   onResume(): void;
@@ -96,6 +99,9 @@ export function SessionContextMenu({
       </button>
       <button onClick={onAddTag}>
         <Tag size={14} /> {l("Add Tag", "添加标签")}
+      </button>
+      <button onClick={onSelectMultiple}>
+        <ListChecks size={14} /> {l("Multi-select", "多选")}
       </button>
       <button onClick={onFavorite}>
         <Star size={14} fill={state.session.favorited ? "currentColor" : "none"} />{" "}

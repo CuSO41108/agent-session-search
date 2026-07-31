@@ -35,12 +35,19 @@ describe("session bulk delete UI", () => {
     container.remove();
   });
 
-  it("selects a row without opening it", async () => {
+  it("only shows row selection after multi-select is activated", async () => {
     const onToggleBulk = vi.fn();
     const onOpen = vi.fn();
     await act(async () => root.render(createElement(SessionRow, {
       session, selected: false, liveState: "closed", language: "zh",
       bulkSelected: false, onToggleBulk, onOpen,
+      onSelect: vi.fn(), onOpenMatch: vi.fn(), onRename: vi.fn(), onFavorite: vi.fn(), onContextMenu: vi.fn(),
+    })));
+
+    expect(container.querySelector(".session-bulk-checkbox")).toBeNull();
+    await act(async () => root.render(createElement(SessionRow, {
+      session, selected: false, liveState: "closed", language: "zh",
+      bulkSelectionActive: true, bulkSelected: true, onToggleBulk, onOpen,
       onSelect: vi.fn(), onOpenMatch: vi.fn(), onRename: vi.fn(), onFavorite: vi.fn(), onContextMenu: vi.fn(),
     })));
 
