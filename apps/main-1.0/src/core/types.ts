@@ -13,8 +13,9 @@ export type SessionSource =
   | "zcode-cli"
   | "cursor-agent"
   | "trae"
-  | "qoder";
-export type SessionFormat = "claude" | "codex" | "codebuddy" | "codewiz" | "openclaw" | "hermes" | "opencode" | "zcode" | "cursor" | "trae" | "qoder";
+  | "qoder"
+  | "pi-cli";
+export type SessionFormat = "claude" | "codex" | "codebuddy" | "codewiz" | "openclaw" | "hermes" | "opencode" | "zcode" | "cursor" | "trae" | "qoder" | "pi";
 export type SessionSortBy = "smart" | "activity" | "created";
 export type EnvironmentKind = "local" | "wsl" | "ssh";
 export type EnvironmentSyncState = "idle" | "syncing" | "watching" | "disconnected" | "error";

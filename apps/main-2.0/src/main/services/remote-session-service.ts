@@ -16,7 +16,7 @@ import {
   type RemoteSessionUploadResult,
   type SessionSyncItem,
 } from "../../core/remote-session-sync";
-import { remoteSessionAgentForSource } from "../../core/session-sources";
+import { remoteSessionAgentForSource, sessionSourceDescriptor } from "../../core/session-sources";
 import type { SessionStore } from "../../core/session-store";
 import {
   clearSessionSyncQueue,
@@ -206,12 +206,15 @@ export class RemoteSessionService {
   }
 
   async upload(sessionKey: string, force = false): Promise<RemoteSessionUploadResult> {
-    const client = this.createClient();
     const store = this.dependencies.getStore();
     const session = await store.getSession(sessionKey);
     if (!session) throw new Error("Session not found.");
-    if (session.source === "zcode-cli") throw new Error("ZCode sessions cannot be saved remotely yet.");
+    const sourceDescriptor = sessionSourceDescriptor(session.source);
+    if (!sourceDescriptor.capabilities.sessionSync) {
+      throw new Error(`${sourceDescriptor.label} sessions cannot be saved remotely yet.`);
+    }
     if (session.environmentKind === "wsl") throw new Error("WSL sessions cannot be saved to cloud yet.");
+    const client = this.createClient();
     await this.dependencies.ensureSessionDetails(sessionKey);
     const descendants = descendantSessions(
       session,

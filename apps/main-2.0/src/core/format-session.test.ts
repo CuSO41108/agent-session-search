@@ -62,6 +62,10 @@ describe("formatSessionMarkdown", () => {
   it("uses the shared source label for Qoder exports", () => {
     expect(formatSessionMarkdown({ ...session, source: "qoder" }, messages)).toContain("Qoder · `/repo`");
   });
+
+  it("uses the shared source label for Pi exports", () => {
+    expect(formatSessionMarkdown({ ...session, source: "pi-cli" }, messages)).toContain("Pi · `/repo`");
+  });
 });
 
 describe("formatSessionPlainText", () => {

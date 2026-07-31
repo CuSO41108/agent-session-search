@@ -611,6 +611,21 @@ export function SettingsDialog({
                 </label>
                 <label className="settings-field settings-toggle">
                   <div className="settings-field-text">
+                    <span className="settings-field-title">Include Pi</span>
+                    <span className="settings-field-sub">
+                      {l("Indexes local Pi sessions read-only.", "以只读方式索引本地 Pi 会话。")}
+                    </span>
+                  </div>
+                  <input
+                    type="checkbox"
+                    className="switch"
+                    checked={Boolean(settings?.includePi)}
+                    disabled={!settings || saving}
+                    onChange={(event) => onSettingsChange({ includePi: event.currentTarget.checked })}
+                  />
+                </label>
+                <label className="settings-field settings-toggle">
+                  <div className="settings-field-text">
                     <span className="settings-field-title">Include Cursor Agent</span>
                     <span className="settings-field-sub">{l("Indexes local Cursor agent transcripts.", "索引本地 Cursor agent 记录。")}</span>
                   </div>

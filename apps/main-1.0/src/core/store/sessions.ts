@@ -596,6 +596,9 @@ export class SessionsStore {
       | { source: SessionSource; raw_id: string; file_path: string; source_available: 0 | 1 }
       | undefined;
     if (!row) return false;
+    if (row.source === "pi-cli") {
+      throw new Error("Pi session source files are read-only.");
+    }
     if (row.source === "zcode-cli") {
       const sourceDeleted = deleteZcodeSession(row.file_path, row.raw_id);
       const indexDeleted = this.deleteSessionRecord(sessionKey);

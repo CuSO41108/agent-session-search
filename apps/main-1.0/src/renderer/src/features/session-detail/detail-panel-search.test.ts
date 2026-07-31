@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { act, createElement, type ComponentProps } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -9,7 +9,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SessionSearchResult } from "../../../../core/types";
 import { DetailPanel } from "./detail-panel";
 
-const styles = readFileSync(resolve("src/renderer/src/styles.css"), "utf8");
+const stylesPath = [
+  resolve("src/renderer/src/styles.css"),
+  resolve("apps/main-1.0/src/renderer/src/styles.css"),
+].find(existsSync);
+if (!stylesPath) throw new Error("Could not resolve the V1 renderer stylesheet fixture.");
+const styles = readFileSync(stylesPath, "utf8");
 const noop = () => undefined;
 const session: SessionSearchResult = {
   sessionKey: "codex:session-a",
@@ -152,5 +157,34 @@ describe("detail panel conversation search", () => {
     });
 
     expect(document.activeElement).toBe(input);
+  });
+
+  it("omits delete and remote-save actions for read-only Pi sessions", async () => {
+    await act(async () => root.render(createElement(DetailPanel, {
+      ...props,
+      session: {
+        ...session,
+        sessionKey: "pi:session-a",
+        rawId: "session-a",
+        source: "pi-cli",
+      },
+      onUploadRemote: noop,
+    })));
+
+    const actionText = [...container.querySelectorAll<HTMLButtonElement>(".detail-actions button")]
+      .map((button) => button.textContent)
+      .join("\n");
+    expect(actionText).not.toContain("保存到远程");
+    expect(actionText).not.toContain("删除");
+
+    await act(async () => root.render(createElement(DetailPanel, {
+      ...props,
+      onUploadRemote: noop,
+    })));
+    const supportedActionText = [...container.querySelectorAll<HTMLButtonElement>(".detail-actions button")]
+      .map((button) => button.textContent)
+      .join("\n");
+    expect(supportedActionText).toContain("保存到远程");
+    expect(supportedActionText).toContain("删除");
   });
 });

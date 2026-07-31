@@ -4,6 +4,7 @@ export interface SessionEnvironmentIdentity {
   environmentKind: EnvironmentKind;
   environmentId: string;
   sourceAvailable?: boolean;
+  source?: SessionSource;
 }
 
 export interface SessionStorageIdentity {
@@ -20,7 +21,8 @@ export function isLocalSessionStorage(session: SessionStorageIdentity): boolean 
 }
 
 export function canDeleteSessionLocally(session: SessionEnvironmentIdentity): boolean {
-  return session.environmentKind !== "ssh" || session.sourceAvailable === false;
+  return session.source !== "pi-cli"
+    && (session.environmentKind !== "ssh" || session.sourceAvailable === false);
 }
 
 export function remoteSessionKey(environment: SessionEnvironment, source: SessionSource | "codewiz", rawId: string): string {
