@@ -34,6 +34,8 @@ import {
   firstStringField,
   isRecord,
   joinNonEmpty,
+  mcpDurationAttribute,
+  mcpResultStatus,
   numberField,
   objectField,
   parseMaybeJson,
@@ -485,16 +487,18 @@ function extractCodexEventTrace(
   if (eventType === "mcp_tool_call_end") {
     const invocation = unknownField(payload, "invocation");
     const invocationName = firstStringField(invocation, ["name", "tool", "method"]);
+    const result = unknownField(payload, "result");
     return [
       {
         ...common,
         kind: "event",
         title: titleWithSummary("mcp", invocationName || stringField(payload, "plugin_id")),
-        detail: stringifyDetail(unknownField(payload, "result") || invocation),
-        status: "unknown",
+        detail: stringifyDetail(result || invocation),
+        status: mcpResultStatus(result),
         attributes: {
           input: sanitizeCodexTraceValue(invocation),
-          output: sanitizeCodexTraceValue(unknownField(payload, "result")),
+          output: sanitizeCodexTraceValue(result),
+          ...mcpDurationAttribute(unknownField(payload, "duration")),
         },
       },
     ];

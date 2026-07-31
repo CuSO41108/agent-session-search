@@ -179,6 +179,25 @@ export function titleWithSummary(name: string, summary: string): string {
   return summary ? `${name} · ${summary}` : name;
 }
 
+export function mcpResultStatus(result: unknown): SessionTraceEvent["status"] {
+  if (!isRecord(result)) return "unknown";
+  if ("Err" in result) return "failed";
+  const ok = result.Ok;
+  if (!isRecord(ok)) return "unknown";
+  if (ok.isError === true) return "failed";
+  if (ok.isError === false) return "completed";
+  return "unknown";
+}
+
+export function mcpDurationAttribute(duration: unknown): { durationMs?: number } {
+  if (!isRecord(duration)) return {};
+  const secs = typeof duration.secs === "number" && Number.isFinite(duration.secs) ? duration.secs : null;
+  const nanos = typeof duration.nanos === "number" && Number.isFinite(duration.nanos) ? duration.nanos : null;
+  if (secs === null && nanos === null) return {};
+  const durationMs = Math.round((secs ?? 0) * 1_000 + (nanos ?? 0) / 1_000_000);
+  return durationMs >= 0 ? { durationMs } : {};
+}
+
 export function statusFromExit(
   exitCode: number | undefined,
   fallback?: boolean,
