@@ -804,15 +804,25 @@ export function dedupeCodexTraceEvents(events: TraceEventDraft[]): SessionTraceE
     .map((event, index) => ({ ...event, index }));
 }
 
+const LEGACY_TURN_ID_PREFIX = "agent-recall:legacy-turn:";
+
 export class CodexRolloutAccumulator {
   private currentHistoryMode: CodexHistoryMode;
   private readonly activeTurnIds = new Set<string>();
+  private nextLegacyTurnSequence = 1;
 
-  constructor(state?: Pick<CodexIncrementalState, "historyMode" | "activeTurnIds">) {
+  constructor(
+    state?: Pick<CodexIncrementalState, "historyMode" | "activeTurnIds"> & {
+      sourceTurnIds?: Iterable<string | null | undefined>;
+    },
+  ) {
     this.currentHistoryMode = state?.historyMode ?? "legacy";
     for (const turnId of state?.activeTurnIds ?? []) {
-      if (turnId) this.activeTurnIds.add(turnId);
+      if (!turnId) continue;
+      this.activeTurnIds.add(turnId);
+      this.rememberSourceTurnId(turnId);
     }
+    for (const turnId of state?.sourceTurnIds ?? []) this.rememberSourceTurnId(turnId);
   }
 
   get historyMode(): CodexHistoryMode {
@@ -825,6 +835,18 @@ export class CodexRolloutAccumulator {
 
   discardActiveTurnIds(turnIds: Iterable<string>): void {
     for (const turnId of turnIds) this.activeTurnIds.delete(turnId);
+  }
+
+  private rememberSourceTurnId(value: string | null | undefined): void {
+    if (!value?.startsWith(LEGACY_TURN_ID_PREFIX)) return;
+    const sequence = Number(value.slice(LEGACY_TURN_ID_PREFIX.length));
+    if (Number.isSafeInteger(sequence) && sequence >= this.nextLegacyTurnSequence) {
+      this.nextLegacyTurnSequence = sequence + 1;
+    }
+  }
+
+  private createLegacyTurnId(): string {
+    return `${LEGACY_TURN_ID_PREFIX}${this.nextLegacyTurnSequence++}`;
   }
 
   consume(value: unknown): CodexRolloutRecordResult {
@@ -917,8 +939,8 @@ export class CodexRolloutAccumulator {
     const richTrace = richEventTrace(row, payload, sourceTurnId);
     if (richTrace) return emptyResult({ sourceTurnId, traceEvents: [richTrace] });
     if (rawType === "task_started") {
-      const sourceTurnId = stringValue(payload.turn_id) || null;
-      if (sourceTurnId) this.activeTurnIds.add(sourceTurnId);
+      const sourceTurnId = stringValue(payload.turn_id) || this.createLegacyTurnId();
+      this.activeTurnIds.add(sourceTurnId);
       const startedAt = unixSecondsToIso(payload.started_at) || stringValue(row.timestamp) || null;
       const attributes: Record<string, unknown> = { rawType };
       if (startedAt) attributes.startedAt = startedAt;

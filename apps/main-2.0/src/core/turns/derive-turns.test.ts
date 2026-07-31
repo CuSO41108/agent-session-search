@@ -378,6 +378,93 @@ describe("deriveSessionTimeline", () => {
     });
   });
 
+  it("derives legacy Codex token usage only for the retained lifecycle Turn", () => {
+    const loaded = loadCodexSessionRows("/tmp/codex-legacy-token-attribution.jsonl", [
+      {
+        type: "session_meta",
+        timestamp: "2025-08-01T09:00:00Z",
+        payload: { id: "codex-legacy-token-attribution", cwd: "/repo", history_mode: "legacy" },
+      },
+      {
+        type: "event_msg",
+        timestamp: "2025-08-01T09:00:01Z",
+        payload: { type: "task_started", model_context_window: 200_000 },
+      },
+      {
+        type: "response_item",
+        timestamp: "2025-08-01T09:00:02Z",
+        payload: {
+          type: "message",
+          role: "user",
+          content: [{ type: "input_text", text: "保留这轮" }],
+        },
+      },
+      {
+        type: "event_msg",
+        timestamp: "2025-08-01T09:00:03Z",
+        payload: {
+          type: "token_count",
+          info: { last_token_usage: { input_tokens: 10, output_tokens: 1 } },
+        },
+      },
+      {
+        type: "event_msg",
+        timestamp: "2025-08-01T09:00:04Z",
+        payload: { type: "task_complete", last_agent_message: null },
+      },
+      {
+        type: "event_msg",
+        timestamp: "2025-08-01T09:01:00Z",
+        payload: { type: "task_started", model_context_window: 200_000 },
+      },
+      {
+        type: "response_item",
+        timestamp: "2025-08-01T09:01:01Z",
+        payload: {
+          type: "message",
+          role: "user",
+          content: [{ type: "input_text", text: "撤销这轮" }],
+        },
+      },
+      {
+        type: "event_msg",
+        timestamp: "2025-08-01T09:01:02Z",
+        payload: {
+          type: "token_count",
+          info: { last_token_usage: { input_tokens: 20, output_tokens: 2 } },
+        },
+      },
+      {
+        type: "event_msg",
+        timestamp: "2025-08-01T09:01:03Z",
+        payload: { type: "turn_aborted", reason: "interrupted" },
+      },
+      {
+        type: "event_msg",
+        timestamp: "2025-08-01T09:01:04Z",
+        payload: { type: "thread_rolled_back", num_turns: 1 },
+      },
+    ]);
+    if (!loaded) throw new Error("Expected the legacy Codex fixture to load.");
+
+    const timeline = deriveSessionTimeline({
+      sessionKey: loaded.session.sessionKey,
+      messages: loaded.messages,
+      traceEvents: loaded.traceEvents,
+      tokenEvents: loaded.tokenEvents,
+      codexIncrementalState: loaded.codexIncrementalState,
+    });
+
+    expect(loaded.session.tokenUsage?.totalTokens).toBe(33);
+    expect(timeline.turns).toHaveLength(1);
+    expect(timeline.turns[0]).toMatchObject({
+      sourceTurnId: "agent-recall:legacy-turn:1",
+      status: "completed",
+      totalTokens: 11,
+      synthetic: false,
+    });
+  });
+
   it("creates one searchable Turn per user request and pairs tool calls with their results", () => {
     const timeline = deriveSessionTimeline({
       sessionKey: "codex:test",
