@@ -11,7 +11,8 @@ export type OptionalSessionSourceSetting =
   | "includeZcode"
   | "includeCursorAgent"
   | "includeTrae"
-  | "includeQoder";
+  | "includeQoder"
+  | "includePi";
 
 export type SessionSourceFamily =
   | "claude"
@@ -26,7 +27,8 @@ export type SessionSourceFamily =
   | "zcode"
   | "cursor"
   | "trae"
-  | "qoder";
+  | "qoder"
+  | "pi";
 
 export type SessionSourceUiFamily = "claude" | "codex" | "codebuddy" | "codewiz" | "zcode" | "other";
 
@@ -149,6 +151,12 @@ export const SESSION_SOURCE_REGISTRY = {
     optionalSetting: "includeQoder", pendingKey: "qoder", remoteCollectorOptional: true, liveFamily: "qoder", migrationAgent: null,
     resumeTarget: null, remoteFamily: "qoder", nativeAppFamily: null,
     capabilities: { live: true, resume: false, migrate: false, sessionSync: false, openApp: false },
+  },
+  "pi-cli": {
+    id: "pi-cli", label: "Pi", format: "pi", family: "pi", uiFamily: "other", statsGroup: null,
+    optionalSetting: "includePi", pendingKey: "pi", remoteCollectorOptional: false, liveFamily: null, migrationAgent: null,
+    resumeTarget: null, remoteFamily: null, nativeAppFamily: null,
+    capabilities: { live: false, resume: false, migrate: false, sessionSync: false, openApp: false },
   },
 } as const satisfies Record<SessionSource, SessionSourceDescriptor>;
 

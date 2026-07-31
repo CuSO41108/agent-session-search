@@ -44,16 +44,19 @@ function attachmentFromBlock(block: Record<string, unknown>, index: number): Ses
   const rawValue = block.image_url
     ?? block.file_path
     ?? block.path
+    ?? block.data
     ?? source?.data
     ?? source?.path;
   if (typeof rawValue !== "string" || !rawValue.trim()) return null;
   const value = rawValue.trim();
   const dataMatch = value.match(/^data:([^;,]+);base64,(.+)$/s);
   const sourceMime = typeof source?.media_type === "string" ? source.media_type : undefined;
+  const blockMime = typeof block.mimeType === "string" ? block.mimeType : undefined;
   const mimeType = dataMatch?.[1]
+    || blockMime
     || sourceMime
     || (type.includes("image") ? "image/png" : "application/octet-stream");
-  const sourceKind = dataMatch || source?.type === "base64" ? "inline" : "path";
+  const sourceKind = dataMatch || typeof block.data === "string" || source?.type === "base64" ? "inline" : "path";
   const sourceValue = dataMatch?.[2] ?? value;
   const fileName = attachmentFileName(
     mimeType,
@@ -83,7 +86,7 @@ function extractContentBlocks(content: unknown): { text: string; attachments?: S
       attachments.push(attachment);
       continue;
     }
-    if (block.type === "tool_use" || block.type === "tool_result") continue;
+    if (block.type === "tool_use" || block.type === "tool_result" || block.type === "toolCall") continue;
     if (typeof block.text === "string" && block.text) texts.push(block.text);
   }
   return {
@@ -262,6 +265,7 @@ export const zcodeAdapter = genericAdapter("zcode");
 export const codeWizAdapter = genericAdapter("codewiz");
 export const traeAdapter = genericAdapter("trae");
 export const qoderAdapter = genericAdapter("qoder");
+export const piAdapter = genericAdapter("pi");
 
 export function getFormatForSource(source: SessionSource): SessionFormat {
   return sessionSourceDescriptor(source).format;
@@ -280,6 +284,7 @@ export function getAdapter(sourceOrFormat: SessionSource | SessionFormat): Forma
   if (sourceOrFormat === "cursor") return cursorAdapter;
   if (sourceOrFormat === "trae") return traeAdapter;
   if (sourceOrFormat === "qoder") return qoderAdapter;
+  if (sourceOrFormat === "pi") return piAdapter;
   const format = getFormatForSource(sourceOrFormat);
   if (format === "claude") return claudeAdapter;
   if (format === "codebuddy") return codebuddyAdapter;
@@ -291,6 +296,7 @@ export function getAdapter(sourceOrFormat: SessionSource | SessionFormat): Forma
   if (format === "cursor") return cursorAdapter;
   if (format === "trae") return traeAdapter;
   if (format === "qoder") return qoderAdapter;
+  if (format === "pi") return piAdapter;
   return codexAdapter;
 }
 

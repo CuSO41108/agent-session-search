@@ -24,6 +24,7 @@ const ALL_SOURCES = [
   "cursor-agent",
   "trae",
   "qoder",
+  "pi-cli",
 ] as const satisfies readonly SessionSource[];
 
 describe("session source capability registry", () => {
@@ -57,6 +58,7 @@ describe("session source capability registry", () => {
       "includeCursorAgent",
       "includeTrae",
       "includeQoder",
+      "includePi",
     ]);
     expect(sessionSourceDescriptor("tclaude-cli")).toMatchObject({ liveFamily: "tclaude", migrationAgent: "claude" });
     expect(sessionSourceDescriptor("tcodex-cli")).toMatchObject({ liveFamily: "tcodex", migrationAgent: "codex" });
@@ -67,6 +69,23 @@ describe("session source capability registry", () => {
       optionalSetting: "includeZcode",
       liveFamily: "zcode",
       capabilities: { live: true, resume: false, migrate: false, sessionSync: false, openApp: false },
+    });
+    expect(sessionSourceDescriptor("pi-cli")).toMatchObject({
+      label: "Pi",
+      format: "pi",
+      family: "pi",
+      uiFamily: "other",
+      optionalSetting: "includePi",
+      liveFamily: null,
+      migrationAgent: null,
+      remoteFamily: null,
+      capabilities: {
+        live: false,
+        resume: false,
+        migrate: false,
+        sessionSync: false,
+        openApp: false,
+      },
     });
     expect(OPTIONAL_SESSION_SOURCE_DESCRIPTORS.filter(({ remoteCollectorOptional }) => remoteCollectorOptional).map(({ id }) => id)).toEqual([
       "tclaude-cli",
