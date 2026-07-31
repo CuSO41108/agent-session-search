@@ -40,10 +40,10 @@
 2. 单行 JSON 解析失败时忽略该行；缺少有效 `session` header、会话 ID、cwd 或消息内容的文件不产出会话。
 3. v2/v3 记录从文件最后一条带 ID 的记录开始，沿 `parentId` 回溯到根，再反转为当前活跃分支。检测到循环或断裂父链时跳过该文件，避免把不确定的分支拼成错误上下文。
 4. v1 或没有父子字段的记录按文件顺序作为线性会话读取。
-5. 只将活跃分支中的 user、assistant 和 toolResult 消息用于可见上下文；thinking 内容不进入搜索正文。文本块进入消息正文，Pi 的 base64 图片块复用现有附件表示。
-6. assistant 的 toolCall 和后续 toolResult 转换为 AgentRecall 工具事件，使会话详情保留工具调用上下文；未知的 custom 记录保持忽略。
+5. 只将活跃分支中的 user 和 assistant 消息用于可见上下文；thinking 内容不进入搜索正文。文本块进入消息正文，Pi 的 base64 图片块复用现有附件表示。
+6. assistant 的 toolCall 和后续 toolResult 转换为 AgentRecall 工具事件，使会话详情保留工具调用上下文；toolResult 不重复进入可见消息，未知的 custom 记录保持忽略。
 7. 标题遵循最后一条 `session_info`：名称非空时使用该名称，名称为空时视为显式清除；最终没有自定义名称时使用第一条非空用户文本。
-8. 会话开始时间来自 header，更新时间来自活跃分支最后一条消息；模型使用活跃分支最后一条 assistant 消息的模型。
+8. 会话开始时间来自 header，每条消息保留自身时间戳；文件 mtime 作为现有活动排序和增量索引信号。
 9. token 统计累计文件中所有有效 assistant 消息的用量，反映实际已发生的调用成本。Pi 的 `reasoning` 是 `output` 子集，因此映射时从普通输出中扣除 reasoning；`cacheRead` 与 `cacheWrite` 合并为缓存 token。
 10. 产出的标准 `IndexedSession` 进入现有索引、搜索、详情和导出链路，不新增专用导出实现。
 
