@@ -24,6 +24,15 @@ function createStore(targets: SessionBulkDeleteTarget[]) {
 }
 
 describe("SessionBulkDeleteService", () => {
+  it("previews an empty cleanup scope without failing", async () => {
+    const store = createStore([]);
+    await expect(new SessionBulkDeleteService(store).preview({ sessionKeys: [], liveSessionKeys: [], inactiveBefore: 200 })).resolves.toMatchObject({
+      requestedCount: 0,
+      deletableCount: 0,
+      skipped: [],
+    });
+  });
+
   it("previews protected sessions from one target lookup", async () => {
     const targets = [
       target("old"),
@@ -31,7 +40,10 @@ describe("SessionBulkDeleteService", () => {
       target("favorite", { favorited: true }),
       target("recent", { lastActivityAt: 500 }),
       target("pi", { source: "pi-cli" }),
-      target("shared", { source: "hermes" as SessionSource }),
+      target("hermes", { source: "hermes" as SessionSource }),
+      target("opencode", { source: "opencode-cli" }),
+      target("codewiz", { source: "codewiz-cli" }),
+      target("cursor", { source: "cursor-agent", filePath: "synthetic/state.vscdb", sourceAvailable: true }),
     ];
     const store = createStore(targets);
     const preview = await new SessionBulkDeleteService(store).preview({
@@ -39,8 +51,20 @@ describe("SessionBulkDeleteService", () => {
       liveSessionKeys: ["live"], inactiveBefore: 200, protectFavorites: false,
     });
     expect(preview.deletableCount).toBe(1);
-    expect(preview.skipped.map((item) => item.reason)).toEqual(["live", "favorite", "recent", "read-only", "shared-database", "not-found"]);
+    expect(preview.skipped.map((item) => item.reason)).toEqual([
+      "live", "favorite", "recent", "read-only",
+      "shared-database", "shared-database", "shared-database", "shared-database", "not-found",
+    ]);
     expect(store.getSessionDeletionTargets).toHaveBeenCalledTimes(1);
+  });
+
+  it("allows an explicitly selected favorite when favorite protection is disabled", async () => {
+    const store = createStore([target("favorite", { favorited: true })]);
+    const preview = await new SessionBulkDeleteService(store).preview({
+      sessionKeys: ["favorite"], liveSessionKeys: [], protectFavorites: false,
+    });
+    expect(preview.deletableCount).toBe(1);
+    expect(preview.skipped).toEqual([]);
   });
 
   it("keeps failures retryable and deletes successful indexes in one batch", async () => {

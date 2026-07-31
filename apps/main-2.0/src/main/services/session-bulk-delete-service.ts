@@ -60,7 +60,6 @@ function normalizeRequest(request: SessionBulkDeleteRequest): string[] {
     throw new Error("The bulk deletion request is invalid.");
   }
   const keys = [...new Set(request.sessionKeys.map((key) => key.trim()).filter(Boolean))];
-  if (keys.length === 0) throw new Error("Select at least one session to delete.");
   if (keys.length > 100_000) throw new Error("Too many sessions were selected.");
   if (request.inactiveBefore !== undefined && (!Number.isFinite(request.inactiveBefore) || request.inactiveBefore <= 0)) {
     throw new Error("The inactivity cutoff is invalid.");

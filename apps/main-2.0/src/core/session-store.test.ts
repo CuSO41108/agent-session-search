@@ -197,6 +197,29 @@ describe("SessionStore PostgreSQL facade", () => {
     await expect(store.getSession(sessionKey)).resolves.toBeNull();
   });
 
+  it("reads bulk deletion targets and deletes only explicit session records", async () => {
+    const store = createStore();
+    await store.upsertIndexedSession(indexedSession({ sessionKey: "codex:parent", rawId: "parent" }), messages);
+    await store.upsertIndexedSession(
+      indexedSession({ sessionKey: "codex:child", rawId: "child", isSubagent: true, parentSessionId: "parent" }),
+      messages,
+    );
+    await store.setFavorited("codex:parent", true);
+
+    await expect(store.getSessionDeletionTargets(["codex:child", "missing", "codex:parent"])).resolves.toEqual([
+      expect.objectContaining({ sessionKey: "codex:child", favorited: false, environmentKind: "local" }),
+      expect.objectContaining({
+        sessionKey: "codex:parent",
+        favorited: true,
+        lastActivityAt: Date.parse("2026-07-20T08:00:01.000Z"),
+      }),
+    ]);
+
+    await expect(store.deleteSessionRecords(["codex:parent", "missing"])).resolves.toEqual(["codex:parent"]);
+    await expect(store.getSession("codex:parent")).resolves.toBeNull();
+    await expect(store.getSession("codex:child")).resolves.toMatchObject({ messageCount: messages.length, isSubagent: true });
+  });
+
   it("rejects Pi source deletion while record-only source pruning keeps the file", async () => {
     const store = createStore();
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "session-search-delete-pi-"));

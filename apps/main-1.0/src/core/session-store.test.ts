@@ -872,6 +872,29 @@ describe("SessionStore", () => {
     expect(store.getSession(sessionKey)).toBeNull();
   });
 
+  it("reads bulk deletion targets and deletes only explicit session records", () => {
+    const store = createInMemoryStore();
+    store.upsertIndexedSession(sampleSession({ sessionKey: "codex:parent", rawId: "parent" }), messages);
+    store.upsertIndexedSession(
+      sampleSession({ sessionKey: "codex:child", rawId: "child", isSubagent: true, parentSessionId: "parent" }),
+      messages,
+    );
+    store.setFavorited("codex:parent", true);
+
+    expect(store.getSessionDeletionTargets(["codex:child", "missing", "codex:parent"])).toEqual([
+      expect.objectContaining({ sessionKey: "codex:child", favorited: false, environmentKind: "local" }),
+      expect.objectContaining({
+        sessionKey: "codex:parent",
+        favorited: true,
+        lastActivityAt: Date.parse("2026-06-01T10:01:00Z"),
+      }),
+    ]);
+
+    expect(store.deleteSessionRecords(["codex:parent", "missing"])).toEqual(["codex:parent"]);
+    expect(store.getSession("codex:parent")).toBeNull();
+    expect(store.getSession("codex:child")).toMatchObject({ messageCount: messages.length, isSubagent: true });
+  });
+
   it("uses the indexed title for display when first question is a long remote summary prompt", () => {
     const store = createInMemoryStore();
     const longFirstQuestion = [
