@@ -153,6 +153,7 @@ export class RemoteSessionAccess {
           loaded.messages,
           loaded.tokenEvents,
           loaded.traceEvents,
+          loaded.codexIncrementalState,
         );
       }
       return;
@@ -167,6 +168,7 @@ export class RemoteSessionAccess {
         loaded.messages,
         loaded.tokenEvents,
         loaded.traceEvents,
+        loaded.codexIncrementalState,
       );
     }
   }

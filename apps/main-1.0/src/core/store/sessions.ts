@@ -110,6 +110,7 @@ interface SessionRow {
   parent_session_id: string | null;
   content_indexed_mtime_ms: number;
   content_indexed_size: number;
+  codex_history_mode: string | null;
 }
 
 type ProjectAggregateRow = {
@@ -681,7 +682,7 @@ export class SessionsStore {
       const legacy = this.db
         .prepare(
           `SELECT custom_title, favorited, hidden, last_opened_at, last_resumed_at,
-             ai_summary, ai_summary_model, ai_summary_at, ai_summary_basis
+             ai_summary, ai_summary_model, ai_summary_at, ai_summary_basis, codex_history_mode
            FROM sessions WHERE session_key = ?`,
         )
         .get(legacyKey) as
@@ -696,6 +697,7 @@ export class SessionsStore {
           | "ai_summary_model"
           | "ai_summary_at"
           | "ai_summary_basis"
+          | "codex_history_mode"
         >
         | undefined;
       if (!legacy) return;
@@ -732,7 +734,8 @@ export class SessionsStore {
                ai_summary_model = CASE WHEN ai_summary IS NULL THEN ? ELSE ai_summary_model END,
                ai_summary_at = CASE WHEN ai_summary IS NULL THEN ? ELSE ai_summary_at END,
                ai_summary_basis = CASE WHEN ai_summary IS NULL THEN ? ELSE ai_summary_basis END,
-               ai_summary = COALESCE(ai_summary, ?)
+               ai_summary = COALESCE(ai_summary, ?),
+               codex_history_mode = COALESCE(codex_history_mode, ?)
              WHERE session_key = ?`,
           )
           .run(
@@ -749,6 +752,7 @@ export class SessionsStore {
             legacy.ai_summary_at,
             legacy.ai_summary_basis,
             legacy.ai_summary,
+            legacy.codex_history_mode,
             targetKey,
           );
         this.db
@@ -759,8 +763,13 @@ export class SessionsStore {
           .run(targetKey, legacyKey);
         this.db
           .prepare(
-            `INSERT OR IGNORE INTO messages (session_key, message_index, role, content, timestamp)
-             SELECT ?, message_index, role, content, timestamp FROM messages WHERE session_key = ?`,
+            `INSERT OR IGNORE INTO messages (
+               session_key, message_index, role, content, timestamp,
+               source_turn_id, phase, source_record_id
+             )
+             SELECT ?, message_index, role, content, timestamp,
+               source_turn_id, phase, source_record_id
+             FROM messages WHERE session_key = ?`,
           )
           .run(targetKey, legacyKey);
         this.db
@@ -784,10 +793,10 @@ export class SessionsStore {
           .prepare(
             `INSERT OR IGNORE INTO trace_events (
                session_key, trace_index, kind, source, title, detail,
-               timestamp, call_id, event_type, status
+               timestamp, call_id, event_type, status, source_turn_id, attributes_json
              )
              SELECT ?, trace_index, kind, source, title, detail,
-               timestamp, call_id, event_type, status
+               timestamp, call_id, event_type, status, source_turn_id, attributes_json
              FROM trace_events WHERE session_key = ?`,
           )
           .run(targetKey, legacyKey);

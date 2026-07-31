@@ -1339,10 +1339,12 @@ export class PostgresSessionRepository {
         ai_summary_model: string | null;
         ai_summary_at: Date | string | null;
         ai_summary_basis: number | string | null;
+        codex_history_mode: string | null;
       }>(
         `
           select custom_title, favorited, hidden, last_opened_at, last_resumed_at,
-            ai_summary, ai_summary_model, ai_summary_at, ai_summary_basis
+            ai_summary, ai_summary_model, ai_summary_at, ai_summary_basis,
+            codex_history_mode
           from agent_recall.sessions
           where session_key = $1
         `,
@@ -1365,7 +1367,8 @@ export class PostgresSessionRepository {
               last_opened_at, last_resumed_at, message_count, turn_count,
               input_tokens, output_tokens, cached_input_tokens, reasoning_output_tokens,
               total_tokens, indexed_at, is_subagent, parent_session_id,
-              ai_summary, ai_summary_model, ai_summary_at, ai_summary_basis
+              ai_summary, ai_summary_model, ai_summary_at, ai_summary_basis,
+              codex_history_mode
             )
             select
               $2, raw_id, source, environment_id, storage_environment_id, project_path, file_path,
@@ -1374,7 +1377,8 @@ export class PostgresSessionRepository {
               last_opened_at, last_resumed_at, message_count, turn_count,
               input_tokens, output_tokens, cached_input_tokens, reasoning_output_tokens,
               total_tokens, indexed_at, is_subagent, parent_session_id,
-              ai_summary, ai_summary_model, ai_summary_at, ai_summary_basis
+              ai_summary, ai_summary_model, ai_summary_at, ai_summary_basis,
+              codex_history_mode
             from agent_recall.sessions
             where session_key = $1
           `,
@@ -1405,7 +1409,8 @@ export class PostgresSessionRepository {
               ai_summary = coalesce(ai_summary, $7),
               ai_summary_model = case when ai_summary is null then $8 else ai_summary_model end,
               ai_summary_at = case when ai_summary is null then $9 else ai_summary_at end,
-              ai_summary_basis = case when ai_summary is null then $10 else ai_summary_basis end
+              ai_summary_basis = case when ai_summary is null then $10 else ai_summary_basis end,
+              codex_history_mode = coalesce(codex_history_mode, $11)
             where session_key = $1
           `,
           [
@@ -1419,6 +1424,7 @@ export class PostgresSessionRepository {
             legacy.ai_summary_model,
             legacy.ai_summary_at,
             legacy.ai_summary_basis,
+            legacy.codex_history_mode,
           ],
         );
         await client.query(

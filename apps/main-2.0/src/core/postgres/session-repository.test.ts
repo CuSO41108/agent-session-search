@@ -107,6 +107,76 @@ describe("PostgresSessionRepository", () => {
     await database.close();
   });
 
+  it("preserves paginated Codex history when migrating to a new Session key", async () => {
+    const legacyKey = "ssh:dev:codex:legacy-paginated";
+    const targetKey = "ssh:dev:codex-cli:legacy-paginated";
+    await repository.upsertIndexedSession(
+      session({ sessionKey: legacyKey, rawId: "legacy-paginated" }),
+      [{
+        role: "assistant",
+        content: "legacy answer",
+        timestamp: "2026-07-30T08:00:01.000Z",
+        index: 0,
+        sourceTurnId: "legacy-turn-1",
+        phase: "final_answer",
+      }],
+      [],
+      [{
+        index: 0,
+        kind: "event",
+        source: "codex",
+        title: "Turn started",
+        detail: "",
+        timestamp: "2026-07-30T08:00:00.000Z",
+        eventType: "codex.turn.started",
+        status: "running",
+        sourceTurnId: "legacy-turn-1",
+      }],
+      {
+        historyMode: "paginated",
+        messageProvenance: [{ messageIndex: 0, sourceRecordId: "response_item:legacy-answer" }],
+        activeTurnIds: ["legacy-turn-1"],
+      },
+    );
+
+    await expect(repository.migrateSessionKeyPreservingUserState(legacyKey, targetKey))
+      .resolves.toBe(true);
+
+    await expect(repository.getSession(legacyKey)).resolves.toBeNull();
+    await expect(turnsRepository.getCodexIncrementalState(targetKey)).resolves.toEqual({
+      historyMode: "paginated",
+      messageProvenance: [{ messageIndex: 0, sourceRecordId: "response_item:legacy-answer" }],
+      activeTurnIds: ["legacy-turn-1"],
+    });
+  });
+
+  it("fills a missing target Codex history mode while merging Session keys", async () => {
+    const legacyKey = "ssh:dev:codex:shared-paginated";
+    const targetKey = "ssh:dev:codex-cli:shared-paginated";
+    await repository.upsertIndexedSession(
+      session({ sessionKey: targetKey, rawId: "shared-paginated" }),
+      messages,
+    );
+    await repository.upsertIndexedSession(
+      session({ sessionKey: legacyKey, rawId: "shared-paginated" }),
+      [],
+      [],
+      [],
+      {
+        historyMode: "paginated",
+        messageProvenance: [],
+        activeTurnIds: [],
+      },
+    );
+
+    await expect(repository.migrateSessionKeyPreservingUserState(legacyKey, targetKey))
+      .resolves.toBe(true);
+
+    await expect(turnsRepository.getCodexIncrementalState(targetKey)).resolves.toMatchObject({
+      historyMode: "paginated",
+    });
+  });
+
   it("round-trips Codex lifecycle Turns and private incremental state", async () => {
     const lifecycleMessages: SessionMessage[] = [
       {
