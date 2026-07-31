@@ -85,6 +85,8 @@ export function useWorkflowDraft({
   const [workflowGrillBusy, setWorkflowGrillBusy] = useState(false);
   const requestTokenRef = useRef(0);
   const activeWorkflowIdRef = useRef<string | undefined>(undefined);
+  const workflowObjectiveDraftsRef = useRef(new Map<string, string>());
+  const workflowReplyDraftsRef = useRef(new Map<string, string>());
 
   const invalidatePendingWorkflowRequest = useCallback((): void => {
     requestTokenRef.current += 1;
@@ -93,6 +95,11 @@ export function useWorkflowDraft({
 
   const resetWorkflowLocalDraft = useCallback((): void => {
     invalidatePendingWorkflowRequest();
+    const workflowId = activeWorkflowIdRef.current;
+    if (workflowId) {
+      workflowObjectiveDraftsRef.current.delete(workflowId);
+      workflowReplyDraftsRef.current.delete(workflowId);
+    }
     setWorkflowObjectiveInput("");
     setWorkflowReplyInput("");
   }, [invalidatePendingWorkflowRequest]);
@@ -102,9 +109,45 @@ export function useWorkflowDraft({
     if (activeWorkflowIdRef.current === nextWorkflowId) return;
     activeWorkflowIdRef.current = nextWorkflowId;
     invalidatePendingWorkflowRequest();
-    setWorkflowObjectiveInput(activeWorkflow && activeWorkflow.messages.length === 0 ? activeWorkflow.objective : "");
-    setWorkflowReplyInput("");
+    setWorkflowObjectiveInput(
+      activeWorkflow && activeWorkflow.messages.length === 0
+        ? workflowObjectiveDraftsRef.current.get(activeWorkflow.workflowId) ?? activeWorkflow.objective
+        : "",
+    );
+    setWorkflowReplyInput(
+      activeWorkflow && activeWorkflow.messages.length > 0
+        ? workflowReplyDraftsRef.current.get(activeWorkflow.workflowId) ?? ""
+        : "",
+    );
   }, [activeWorkflow, invalidatePendingWorkflowRequest]);
+
+  const setWorkflowObjective = useCallback<Dispatch<SetStateAction<string>>>((value) => {
+    const workflowId = activeWorkflowIdRef.current;
+    if (typeof value !== "function") {
+      if (workflowId) workflowObjectiveDraftsRef.current.set(workflowId, value);
+      setWorkflowObjectiveInput(value);
+      return;
+    }
+    setWorkflowObjectiveInput((current) => {
+      const next = value(current);
+      if (workflowId) workflowObjectiveDraftsRef.current.set(workflowId, next);
+      return next;
+    });
+  }, []);
+
+  const setWorkflowReply = useCallback<Dispatch<SetStateAction<string>>>((value) => {
+    const workflowId = activeWorkflowIdRef.current;
+    if (typeof value !== "function") {
+      if (workflowId) workflowReplyDraftsRef.current.set(workflowId, value);
+      setWorkflowReplyInput(value);
+      return;
+    }
+    setWorkflowReplyInput((current) => {
+      const next = value(current);
+      if (workflowId) workflowReplyDraftsRef.current.set(workflowId, next);
+      return next;
+    });
+  }, []);
 
   const ensureActiveWorkflow = useCallback(async (): Promise<WorkflowDraftState | undefined> => {
     const currentWorkflow = snapshotRef.current.workflowDraft;
@@ -172,8 +215,10 @@ export function useWorkflowDraft({
     requestTokenRef.current = requestToken;
     setWorkflowGrillBusy(true);
     if (starting) {
+      workflowObjectiveDraftsRef.current.delete(workflow.workflowId);
       setWorkflowObjectiveInput("");
     } else {
+      workflowReplyDraftsRef.current.delete(workflow.workflowId);
       setWorkflowReplyInput("");
     }
 
@@ -208,7 +253,6 @@ export function useWorkflowDraft({
 
   const selectWorkflow = useCallback(async (workflowId: string): Promise<void> => {
     invalidatePendingWorkflowRequest();
-    setWorkflowReplyInput("");
     const next = await workflows.selectWorkflow(workflowId);
     setSnapshot(next);
   }, [invalidatePendingWorkflowRequest, setSnapshot, workflows]);
@@ -314,8 +358,8 @@ export function useWorkflowDraft({
       selectModel,
       selectReviewerConfiguredAgent,
       selectReviewerModel,
-      setWorkflowObjective: setWorkflowObjectiveInput,
-      setWorkflowReply: setWorkflowReplyInput,
+      setWorkflowObjective,
+      setWorkflowReply,
     }),
     [
       activeWorkflow,
@@ -340,6 +384,8 @@ export function useWorkflowDraft({
       workflowReviewerModelId,
       workflowObjectiveInput,
       workflowReplyInput,
+      setWorkflowObjective,
+      setWorkflowReply,
     ],
   );
 }

@@ -617,6 +617,7 @@ export function WorkflowPage({ controller: source }: { controller: WorkflowContr
             ariaLabel={workflowStarted ? (graphVisible ? workflowText.replyToAgent : workflowText.replyToQuestion) : workflowText.task}
             placeholder={composerPlaceholder}
             running={running}
+            onChange={workflowStarted ? source.onReplyChange : source.onObjectiveChange}
             onSubmit={(value) => onSendReply(value)}
           />
           <div className="composer-footer">

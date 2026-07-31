@@ -12,8 +12,9 @@ export const WorkflowComposerInput = forwardRef<WorkflowComposerInputHandle, {
   ariaLabel: string;
   placeholder: string;
   running: boolean;
+  onChange?: (value: string) => void;
   onSubmit: (value: string) => void;
-}>(({ initialValue, workflowKey, ariaLabel, placeholder, running, onSubmit }, ref) => {
+}>(({ initialValue, workflowKey, ariaLabel, placeholder, running, onChange, onSubmit }, ref) => {
   const [value, setValue] = useState(initialValue);
   useEffect(() => setValue(initialValue), [initialValue, workflowKey]);
   useImperativeHandle(ref, () => ({
@@ -29,7 +30,11 @@ export const WorkflowComposerInput = forwardRef<WorkflowComposerInputHandle, {
   return <textarea
     aria-label={ariaLabel}
     value={value}
-    onChange={(event) => setValue(event.currentTarget.value)}
+    onChange={(event) => {
+      const next = event.currentTarget.value;
+      setValue(next);
+      onChange?.(next);
+    }}
     onKeyDown={(event) => {
       if (shouldSendComposerKey({ key: event.key, shiftKey: event.shiftKey, metaKey: event.metaKey, ctrlKey: event.ctrlKey, isComposing: event.nativeEvent.isComposing })) {
         event.preventDefault();
