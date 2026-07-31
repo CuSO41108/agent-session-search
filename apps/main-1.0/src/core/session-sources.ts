@@ -1,4 +1,4 @@
-import type { LiveSessionFamily, MigrationAgent, MigrationTarget, SessionFormat, SessionSource } from "./types";
+import type { LiveSessionFamily, MigrationAgent, MigrationTarget, RemoteSessionAgent, SessionFormat, SessionSource } from "./types";
 
 export type OptionalSessionSourceSetting =
   | "includeTclaude"
@@ -120,7 +120,7 @@ export const SESSION_SOURCE_REGISTRY = {
     id: "hermes", label: "Hermes", format: "hermes", family: "hermes", uiFamily: "other", statsGroup: null,
     optionalSetting: "includeHermes", pendingKey: "hermes", remoteCollectorOptional: false, liveFamily: "hermes", migrationAgent: null,
     resumeTarget: null, remoteFamily: null, nativeAppFamily: null,
-    capabilities: { live: true, resume: false, migrate: false, sessionSync: false, openApp: false },
+    capabilities: { live: true, resume: false, migrate: false, sessionSync: true, openApp: false },
   },
   "opencode-cli": {
     id: "opencode-cli", label: "OpenCode", format: "opencode", family: "opencode", uiFamily: "other", statsGroup: null,
@@ -179,4 +179,9 @@ export function sessionSourceDescriptor(source: SessionSource): SessionSourceDes
 
 export function sessionSourceLabel(source: SessionSource): string {
   return sessionSourceDescriptor(source).label;
+}
+
+export function remoteSessionAgentForSource(source: SessionSource): RemoteSessionAgent | null {
+  if (source === "hermes") return "hermes";
+  return sessionSourceDescriptor(source).migrationAgent;
 }
