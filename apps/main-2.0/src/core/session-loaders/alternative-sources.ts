@@ -26,6 +26,7 @@ import {
   numberField,
   objectField,
   parseMaybeJson,
+  parseTimestampMs,
   putTokenEvent,
   readJsonl,
   safeStat,
@@ -51,6 +52,7 @@ const { DatabaseSync } = require("node:sqlite") as {
 };
 
 export const CODEWIZ_SHARE_DIR = path.join(".local", "share", "codewiz");
+export const PI_SESSIONS_DIR = path.join(".pi", "agent", "sessions");
 export const QODER_DIR = ".qoder";
 export const TRAE_DIR_NAMES = [".trae", ".trae-cn"] as const;
 
@@ -162,6 +164,155 @@ function traceEventsFromRows(rows: unknown[], format: SessionFormat): SessionTra
     });
   }
   return dedupeTraceEvents(events);
+}
+
+function piActiveRows(rows: unknown[]): unknown[] | null {
+  const header = rows[0];
+  if (!isRecord(header) || header.type !== "session" || !stringField(header, "id")) return null;
+  const version = numberField(header, "version");
+  if (!Number.isInteger(version) || version < 1) return null;
+  if (version < 2) return rows.slice(1);
+
+  const nodes = new Map<string, Record<string, unknown>>();
+  let current: Record<string, unknown> | null = null;
+  for (const row of rows.slice(1)) {
+    if (!isRecord(row)) continue;
+    const id = stringField(row, "id");
+    if (!id) continue;
+    if (nodes.has(id)) return null;
+    nodes.set(id, row);
+    current = row;
+  }
+  if (!current) return [];
+
+  const activeRows: unknown[] = [];
+  const visited = new Set<string>();
+  while (current) {
+    const id = stringField(current, "id");
+    if (!id || visited.has(id)) return null;
+    visited.add(id);
+    activeRows.push(current);
+
+    const parentId = unknownField(current, "parentId");
+    if (parentId === null) break;
+    if (typeof parentId !== "string" || !parentId) return null;
+    const parent = nodes.get(parentId);
+    if (!parent) return null;
+    current = parent;
+  }
+
+  return activeRows.reverse();
+}
+
+function piTokenEvents(rows: unknown[]): TokenUsageEvent[] {
+  const events: TokenUsageEvent[] = [];
+  rows.forEach((row, index) => {
+    if (!isRecord(row) || row.type !== "message") return;
+    const message = objectField(row, "message");
+    if (stringField(message, "role") !== "assistant") return;
+    const usage = objectField(message, "usage");
+    if (!usage) return;
+
+    const tokenUsage = createTokenUsage(
+      numberField(usage, "input"),
+      Math.max(0, numberField(usage, "output") - numberField(usage, "reasoning")),
+      numberField(usage, "cacheRead") + numberField(usage, "cacheWrite"),
+      numberField(usage, "reasoning"),
+    );
+    events.push({
+      ...tokenUsage,
+      timestamp: parseTimestampMs(row.timestamp),
+      dedupeKey: `pi:${stringField(row, "id") || index}`,
+    });
+  });
+  return events;
+}
+
+function piTraceEvents(rows: unknown[]): SessionTraceEvent[] {
+  const events: TraceEventDraft[] = [];
+
+  for (const row of rows) {
+    if (!isRecord(row) || row.type !== "message") continue;
+    const message = objectField(row, "message");
+    const role = stringField(message, "role");
+    if (role === "assistant") {
+      const content = unknownField(message, "content");
+      if (!Array.isArray(content)) continue;
+      for (const block of content) {
+        if (!isRecord(block) || block.type !== "toolCall") continue;
+        const args = unknownField(block, "arguments");
+        const name = stringField(block, "name") || "tool";
+        events.push({
+          kind: "tool_call",
+          source: "pi",
+          title: titleWithSummary(name, firstStringField(args, ["command", "cmd", "file_path", "path", "query", "url"])),
+          detail: stringifyDetail(args),
+          timestamp: stringField(row, "timestamp"),
+          callId: stringField(block, "id") || null,
+          eventType: null,
+          status: "unknown",
+        });
+      }
+      continue;
+    }
+
+    if (role !== "toolResult") continue;
+    const isError = unknownField(message, "isError");
+    events.push({
+      kind: "tool_result",
+      source: "pi",
+      title: titleWithSummary(stringField(message, "toolName") || "tool", "result"),
+      detail: stringifyDetail(unknownField(message, "content")),
+      timestamp: stringField(row, "timestamp"),
+      callId: stringField(message, "toolCallId") || null,
+      eventType: null,
+      status: typeof isError === "boolean" ? (isError ? "failure" : "success") : "unknown",
+    });
+  }
+
+  return events.map((event, index) => ({ ...event, index }));
+}
+
+function loadPiSessionFile(filePath: string, stat = safeStat(filePath)): LoadedSession | null {
+  const rows = readJsonl(filePath);
+  const activeRows = piActiveRows(rows);
+  if (!activeRows) return null;
+  const header = rows[0];
+  if (!isRecord(header)) return null;
+
+  const messages = extractMessages(activeRows, "pi");
+  const question = cleanTitle(firstQuestion(messages));
+  let latestName = "";
+  for (const row of activeRows) {
+    if (isRecord(row) && row.type === "session_info") latestName = stringField(row, "name").trim();
+  }
+  const tokenEvents = piTokenEvents(rows);
+  const traceEvents = piTraceEvents(activeRows);
+  const session = createIndexedSession({
+    keyPrefix: "pi",
+    rawId: stringField(header, "id"),
+    source: "pi-cli",
+    projectPath: stringField(header, "cwd"),
+    filePath,
+    originalTitle: latestName || question,
+    firstQuestion: question,
+    timestamp: parseTimestampMs(header.timestamp),
+    tokenUsage: tokenUsageFromEvents(tokenEvents),
+    stat,
+  });
+  return { session, messages, tokenEvents, traceEvents };
+}
+
+export function* loadPiSessionsIterator(
+  piSessionsDir: string,
+  options: SessionLoadOptions = {},
+): Generator<LoadedSession> {
+  for (const filePath of walkJsonlFiles(piSessionsDir)) {
+    const stat = safeStat(filePath);
+    if (shouldSkipFile(options, filePath, stat)) continue;
+    const loaded = loadPiSessionFile(filePath, stat);
+    if (loaded) yield loaded;
+  }
 }
 
 function loadOpenClawSessionFile(filePath: string, stat = safeStat(filePath)): LoadedSession | null {
