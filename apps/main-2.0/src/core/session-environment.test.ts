@@ -7,5 +7,10 @@ describe("session environment policy", () => {
     expect(canDeleteSessionLocally({ environmentKind: "ssh", environmentId: "dev", sourceAvailable: true })).toBe(false);
     expect(canDeleteSessionLocally({ environmentKind: "local", environmentId: "local" })).toBe(true);
     expect(canDeleteSessionLocally({ environmentKind: "wsl", environmentId: "ubuntu" })).toBe(true);
+    expect(canDeleteSessionLocally({
+      environmentKind: "local",
+      environmentId: "local",
+      source: "pi-cli",
+    })).toBe(false);
   });
 });

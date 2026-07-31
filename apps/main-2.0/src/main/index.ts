@@ -26,6 +26,7 @@ import { homedir } from "node:os";
 import { loadActiveCodexSummaryEndpointDefaults } from "../core/codex-profile";
 import type { CodexRequestFidelity } from "../core/codex-request-export";
 import { indexMigratedSessionFile, syncDefaultSessionsInBatches, type IndexStatus } from "../core/indexer";
+import { createIndexRunCoordinator } from "../core/index-run-coordinator";
 import { createIndexProgressPublisher } from "./index-progress";
 import { createSessionIndexFailureLogger } from "./session-index-failure-log";
 import {
@@ -305,7 +306,9 @@ let quickSearchWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
 let store: SessionStore;
 let indexStatus: IndexStatus = { running: false, indexed: 0, skipped: 0, total: 0, lastIndexedAt: null, error: null };
-let activeIndexRun: Promise<IndexStatus> | null = null;
+const indexRunCoordinator = createIndexRunCoordinator<IndexStatus>({
+  afterRun: () => pruneDisabledOptionalSources(getSettings()),
+});
 const indexProgressPublisher = createIndexProgressPublisher(
   (status) => mainWindow?.webContents.send("index-status", status),
   { minIntervalMs: 200 },
@@ -1414,63 +1417,61 @@ function ensureRemoteEnvironmentLifecycle(): RemoteEnvironmentLifecycle {
   return remoteEnvironmentLifecycle;
 }
 
-async function runIndexSync(): Promise<IndexStatus> {
-  if (activeIndexRun) return activeIndexRun;
+function runIndexSync(): Promise<IndexStatus> {
+  return indexRunCoordinator.request(async () => {
+    const settings = getSettings();
+    await pruneDisabledOptionalSources(settings);
+    indexStatus = { ...indexStatus, running: true, error: null };
+    indexProgressPublisher.publish(indexStatus, true);
+    const indexFailureLogger = createSessionIndexFailureLogger(app.getPath("userData"));
 
-  const settings = getSettings();
-  await pruneDisabledOptionalSources(settings);
-  indexStatus = { ...indexStatus, running: true, error: null };
-  indexProgressPublisher.publish(indexStatus, true);
-  const indexFailureLogger = createSessionIndexFailureLogger(app.getPath("userData"));
-
-  activeIndexRun = syncDefaultSessionsInBatches(store, {
-    batchSize: 50,
-    timeBudgetMs: 8,
-    loadOptions: {
-      includeTclaude: settings.includeTclaude,
-      includeTcodex: settings.includeTcodex,
-      includeCodeBuddyCli: settings.includeCodeBuddyCli,
-      includeCodeWizCli: settings.includeCodeWizCli,
-      includeOpenClaw: settings.includeOpenClaw,
-      includeHermes: settings.includeHermes,
-      includeOpenCode: settings.includeOpenCode,
-      includeZcode: settings.includeZcode,
-      includeCursorAgent: settings.includeCursorAgent,
-      includeTrae: settings.includeTrae,
-      includeQoder: settings.includeQoder,
-    },
-    indexFailureLogPath: indexFailureLogger.logPath,
-    logIndexFailure: indexFailureLogger.write,
-    onEnvironmentsChanged: emitEnvironmentsUpdated,
-    onProgress: (status) => {
-      indexStatus = { ...status, lastIndexedAt: indexStatus.lastIndexedAt };
-      indexProgressPublisher.publish(indexStatus);
-    },
-  })
-    .then((status) => {
-      indexStatus = status;
-      indexProgressPublisher.publish(indexStatus, true);
-      void maybeAutoBackfillSummaries();
-      return indexStatus;
+    return syncDefaultSessionsInBatches(store, {
+      batchSize: 50,
+      timeBudgetMs: 8,
+      loadOptions: {
+        includeTclaude: settings.includeTclaude,
+        includeTcodex: settings.includeTcodex,
+        includeCodeBuddyCli: settings.includeCodeBuddyCli,
+        includeCodeWizCli: settings.includeCodeWizCli,
+        includeOpenClaw: settings.includeOpenClaw,
+        includeHermes: settings.includeHermes,
+        includeOpenCode: settings.includeOpenCode,
+        includeZcode: settings.includeZcode,
+        includePi: settings.includePi,
+        includeCursorAgent: settings.includeCursorAgent,
+        includeTrae: settings.includeTrae,
+        includeQoder: settings.includeQoder,
+      },
+      indexFailureLogPath: indexFailureLogger.logPath,
+      logIndexFailure: indexFailureLogger.write,
+      onEnvironmentsChanged: emitEnvironmentsUpdated,
+      onProgress: (status) => {
+        indexStatus = { ...status, lastIndexedAt: indexStatus.lastIndexedAt };
+        indexProgressPublisher.publish(indexStatus);
+      },
     })
-    .catch((error) => {
-      indexStatus = {
-        running: false,
-        indexed: 0,
-        skipped: 0,
-        total: 0,
-        lastIndexedAt: indexStatus.lastIndexedAt,
-        error: String(error),
-      };
-      indexProgressPublisher.publish(indexStatus, true);
-      return indexStatus;
-    })
-    .finally(() => {
-      void ensureRemoteEnvironmentLifecycle().startEnabledEnvironments();
-      activeIndexRun = null;
-    });
-
-  return activeIndexRun;
+      .then((status) => {
+        indexStatus = status;
+        indexProgressPublisher.publish(indexStatus, true);
+        void maybeAutoBackfillSummaries();
+        return indexStatus;
+      })
+      .catch((error) => {
+        indexStatus = {
+          running: false,
+          indexed: 0,
+          skipped: 0,
+          total: 0,
+          lastIndexedAt: indexStatus.lastIndexedAt,
+          error: String(error),
+        };
+        indexProgressPublisher.publish(indexStatus, true);
+        return indexStatus;
+      })
+      .finally(() => {
+        void ensureRemoteEnvironmentLifecycle().startEnabledEnvironments();
+      });
+  });
 }
 
 const loadCachedLocalLiveSessionSnapshot = createCachedLiveSessionSnapshotLoader();

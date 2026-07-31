@@ -1,13 +1,13 @@
 import { createHash, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { constants as zlibConstants, gzip, gzipSync, gunzip } from "node:zlib";
-import { migrationAgentForSource } from "./session-migration";
+import { remoteSessionAgentForSource } from "./session-sources";
 import type { SessionStore, SessionSyncBinding } from "./session-store";
 import { TRACE_DETAIL_PREVIEW_MAX_CHARS } from "./trace-detail";
 import { normalizeSessionTraceStatus, tracePresentation } from "./trace-presentation";
 import type {
-  MigrationAgent,
   PortableSession,
+  RemoteSessionAgent,
   SessionMessage,
   SessionSearchResult,
   SessionTraceEvent,
@@ -70,7 +70,7 @@ export interface RemoteSessionStorageObjectUpload {
 export interface RemoteSessionListItem {
   id: string;
   sourceSessionKey: string;
-  sourceAgent: MigrationAgent;
+  sourceAgent: RemoteSessionAgent;
   sourceSource: string;
   sourceEnvironmentId: string;
   sourceEnvironmentKind: string;
@@ -172,7 +172,7 @@ interface RemoteSessionRow {
 interface RemoteSessionUploadPayload {
   id: string;
   source_session_key: string;
-  source_agent: MigrationAgent;
+  source_agent: RemoteSessionAgent;
   source_source: string;
   source_environment_id: string;
   source_environment_kind: string;
@@ -203,7 +203,7 @@ export function buildRemoteSessionSetupSql(tableName = REMOTE_SESSION_TABLE, buc
     `create table if not exists public.${tableName} (`,
     "  id text primary key,",
     "  source_session_key text not null,",
-    "  source_agent text not null check (source_agent in ('claude', 'codex', 'codebuddy', 'cursor')),",
+    "  source_agent text not null check (source_agent in ('claude', 'codex', 'codebuddy', 'cursor', 'hermes')),",
     "  source_source text not null,",
     "  source_environment_id text not null default 'local',",
     "  source_environment_kind text not null default 'local',",
@@ -235,7 +235,7 @@ export function buildRemoteSessionSetupSql(tableName = REMOTE_SESSION_TABLE, buc
     `-- Expand source_agent check for Cursor Agent uploads on existing tables.`,
     `alter table public.${tableName} drop constraint if exists ${tableName}_source_agent_check;`,
     `alter table public.${tableName} add constraint ${tableName}_source_agent_check`,
-    "  check (source_agent in ('claude', 'codex', 'codebuddy', 'cursor'));",
+    "  check (source_agent in ('claude', 'codex', 'codebuddy', 'cursor', 'hermes'));",
     "",
     `drop index if exists ${tableName}_content_hash_idx;`,
     `create index if not exists ${tableName}_content_hash_idx`,
@@ -304,7 +304,7 @@ function remoteTurnSummaryTraceEvents(
   turns: readonly SessionTurnSummary[],
   traceEvents: readonly SessionTraceEvent[],
 ): SessionTraceEvent[] {
-  if (migrationAgentForSource(session.source) !== "codex") return [];
+  if (remoteSessionAgentForSource(session.source) !== "codex") return [];
   const existingTerminalTurns = new Set(
     traceEvents
       .filter((event) => tracePresentation(event).category === "lifecycle"
@@ -788,7 +788,7 @@ function sessionSyncTitle(item: SessionSyncItem): string {
 }
 
 export function remotePortableSessionFrom(session: SessionSearchResult, messages: SessionMessage[]): PortableSession {
-  const sourceAgent = migrationAgentForSource(session.source);
+  const sourceAgent = remoteSessionAgentForSource(session.source);
   if (!sourceAgent) {
     throw new Error(`Session source ${session.source} cannot be saved remotely.`);
   }
@@ -1242,7 +1242,7 @@ function fromRow(row: RemoteSessionRow): RemoteSessionListItem {
   return {
     id: row.id,
     sourceSessionKey: row.source_session_key,
-    sourceAgent: parseMigrationAgent(row.source_agent),
+    sourceAgent: parseRemoteSessionAgent(row.source_agent),
     sourceSource: row.source_source,
     sourceEnvironmentId: row.source_environment_id || "local",
     sourceEnvironmentKind: row.source_environment_kind || "local",
@@ -1376,7 +1376,7 @@ function parsePortableSessionValue(value: unknown, depth: number, state: { count
   if (!value || typeof value !== "object") throw new Error("Remote portable session was not an object.");
   const session = value as Partial<PortableSession>;
   if (typeof session.sourceSessionKey !== "string") throw new Error("Remote portable session has no source key.");
-  if (!isMigrationAgent(session.sourceAgent)) throw new Error("Remote portable session source agent is unsupported.");
+  if (!isRemoteSessionAgent(session.sourceAgent)) throw new Error("Remote portable session source agent is unsupported.");
   if (typeof session.title !== "string") throw new Error("Remote portable session has no title.");
   if (typeof session.projectPath !== "string") throw new Error("Remote portable session has no project path.");
   if (typeof session.startedAt !== "string") throw new Error("Remote portable session has no start time.");
@@ -1475,13 +1475,13 @@ function parseTraceEvent(value: unknown): SessionTraceEvent | null {
   };
 }
 
-function parseMigrationAgent(value: string): MigrationAgent {
-  if (isMigrationAgent(value)) return value;
+function parseRemoteSessionAgent(value: string): RemoteSessionAgent {
+  if (isRemoteSessionAgent(value)) return value;
   throw new Error(`Unsupported remote session agent: ${value}`);
 }
 
-function isMigrationAgent(value: unknown): value is MigrationAgent {
-  return value === "claude" || value === "codex" || value === "codebuddy" || value === "cursor";
+function isRemoteSessionAgent(value: unknown): value is RemoteSessionAgent {
+  return value === "claude" || value === "codex" || value === "codebuddy" || value === "cursor" || value === "hermes";
 }
 
 function parseTags(value: unknown): string[] {

@@ -211,6 +211,7 @@ export class SessionStore {
     await this.ready;
     const target = await this.sessions.getSessionDeletionTarget(sessionKey);
     if (!target) return false;
+    if (target.source === "pi-cli") throw new Error("Pi session source files are read-only.");
     if (target.source === "hermes") throw new Error("Cannot delete shared Hermes source database.");
     if (target.source === "opencode-cli") throw new Error("Cannot delete shared OpenCode source database.");
     if (target.source === "cursor-agent" && /(^|[\\/])state\.vscdb$/iu.test(target.filePath)) {

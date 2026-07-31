@@ -11,6 +11,7 @@ import {
 } from "./session-loaders/codex-rollout";
 import {
   CODEWIZ_SHARE_DIR,
+  PI_SESSIONS_DIR,
   QODER_DIR,
   TRAE_DIR_NAMES,
   loadCodeWizSessions,
@@ -18,6 +19,7 @@ import {
   loadHermesSessions,
   loadOpenClawSessionsIterator,
   loadOpenCodeSessions,
+  loadPiSessionsIterator,
   loadQoderSessionsIterator,
   loadTraeSessionsIterator,
   loadZcodeSessions,
@@ -1699,6 +1701,7 @@ export function* loadDefaultSessionsIterator(options: SessionLoadOptions = {}): 
     for (const dirName of TRAE_DIR_NAMES) yield* loadTraeSessionsIterator(path.join(homeDir, dirName), options);
   }
   if (options.includeQoder) yield* loadQoderSessionsIterator(path.join(homeDir, QODER_DIR), options);
+  if (options.includePi) yield* loadPiSessionsIterator(path.join(homeDir, PI_SESSIONS_DIR), options);
   if (options.includeTclaude) yield* loadClaudeCliSessionsIterator(path.join(homeDir, TCLAUDE_DIR), "tclaude-cli", options);
   if (options.includeTcodex) yield* loadCodexSessionsIterator(path.join(homeDir, TCODEX_DIR), "tcodex-cli", options);
   if (options.includeCodeBuddyCli) yield* loadCodeBuddyCliSessionsIterator(path.join(homeDir, CODEBUDDY_DIR), options);
@@ -1726,6 +1729,7 @@ export async function* loadDefaultSessionsAsyncIterator(options: SessionLoadOpti
     for (const dirName of TRAE_DIR_NAMES) yield* loadTraeSessionsIterator(path.join(homeDir, dirName), options);
   }
   if (options.includeQoder) yield* loadQoderSessionsIterator(path.join(homeDir, QODER_DIR), options);
+  if (options.includePi) yield* loadPiSessionsIterator(path.join(homeDir, PI_SESSIONS_DIR), options);
   if (options.includeTclaude) yield* loadClaudeCliSessionsIterator(path.join(homeDir, TCLAUDE_DIR), "tclaude-cli", options);
   if (options.includeTcodex) yield* loadCodexSessionsAsyncIterator(path.join(homeDir, TCODEX_DIR), "tcodex-cli", options);
   if (options.includeCodeBuddyCli) yield* loadCodeBuddyCliSessionsIterator(path.join(homeDir, CODEBUDDY_DIR), options);

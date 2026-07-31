@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { createIndexProgressPublisher } from "./index-progress";
 import type { IndexStatus } from "../core/indexer";
@@ -30,5 +31,11 @@ describe("index progress publisher", () => {
     publisher.publish(status(10, false), true);
 
     expect(published).toEqual([0, 10, 10]);
+  });
+
+  it("re-prunes disabled optional sources after every serialized index run", () => {
+    const source = readFileSync(new URL("./index.ts", import.meta.url), "utf8");
+
+    expect(source).toContain("afterRun: () => pruneDisabledOptionalSources(getSettings()),");
   });
 });

@@ -2,9 +2,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { ReactElement } from "react";
 import { ArrowRightLeft, Cloud, CloudUpload, Eye, FolderOpen, Laptop, MoreHorizontal, RefreshCw, Search, Server, Trash2, X } from "lucide-react";
 import type { RemoteSessionDetailSnapshot, RemoteSessionListItem, RemoteSessionStatus, SessionSyncItem, SessionSyncState } from "../../../../core/remote-session-sync";
-import type { MigrationAgent, SessionMigrationResult } from "../../../../core/types";
-import { migrationAgentForSource } from "../../../../core/session-migration";
-import { isSessionSource, sessionSourceDescriptor } from "../../../../core/session-sources";
+import type { MigrationAgent, RemoteSessionAgent, SessionMigrationResult } from "../../../../core/types";
+import { isSessionSource, remoteSessionAgentForSource, sessionSourceDescriptor } from "../../../../core/session-sources";
 import { formatRelativeTime } from "../../../../core/format-session";
 import { localize, type LanguageMode } from "../../language";
 import { migrationAgentLabel, sourceUiFamily } from "../../session-ui";
@@ -13,9 +12,9 @@ import type { RemoteSessionsCache } from "../../remote-sessions-cache";
 import { SupabaseSetupGuide } from "../../components/supabase-setup-guide";
 
 const RESTORE_TARGETS: MigrationAgent[] = ["claude", "codex", "codebuddy", "codewiz", "cursor"];
-type RemoteSourceFilter = "all" | MigrationAgent;
+type RemoteSourceFilter = "all" | RemoteSessionAgent;
 type RestoreDestination = "local" | "source";
-const SOURCE_FILTERS: RemoteSourceFilter[] = ["all", ...RESTORE_TARGETS];
+const SOURCE_FILTERS: RemoteSourceFilter[] = ["all", ...RESTORE_TARGETS, "hermes"];
 
 export type SessionPrimaryAction = "upload" | "view" | "restore" | "resolve";
 export type SessionCopySummary =
@@ -100,7 +99,7 @@ export function RemoteSessionsDialog({
   const filtered = useMemo(() => {
     const normalized = query.trim().toLowerCase();
     return items.filter((item) => {
-      const sourceAgent = item.remote?.sourceAgent ?? (item.local ? migrationAgentForSource(item.local.source) : null);
+      const sourceAgent = item.remote?.sourceAgent ?? (item.local ? remoteSessionAgentForSource(item.local.source) : null);
       if (sourceFilter !== "all" && sourceAgent !== sourceFilter) return false;
       if (!normalized) return true;
       return [item.local?.displayTitle, item.remote?.title, item.local?.projectPath, item.remote?.projectPath, item.local?.aiSummary, item.remote?.aiSummary, ...(item.local?.tags ?? []), ...(item.remote?.tags ?? [])]
@@ -319,7 +318,7 @@ export function RemoteSessionsDialog({
           <div className="remote-targets compact" role="group" aria-label={l("Source filter", "来源筛选")}>
             {SOURCE_FILTERS.map((source) => (
               <button key={source} type="button" className={sourceFilter === source ? "active" : ""} onClick={() => setSourceFilter(source)}>
-                {source === "all" ? l("All", "全部") : migrationAgentLabel(source)}
+                {source === "all" ? l("All", "全部") : remoteSourceLabel(source)}
               </button>
             ))}
           </div>
@@ -394,7 +393,7 @@ export function RemoteSessionsDialog({
                  <div className="remote-session-heading">
                    <strong>{title}</strong>
                    <span className={`source-badge ${sourceDescriptor ? sourceUiFamily(sourceDescriptor.id) : "other"}`}>
-                     {sourceDescriptor?.label ?? remote?.sourceAgent ?? (local ? migrationAgentForSource(local.source) : "")}
+                     {sourceDescriptor?.label ?? remote?.sourceAgent ?? (local ? remoteSessionAgentForSource(local.source) : "")}
                    </span>
                    <span className={`sync-state-badge ${item.state}`}>{syncStateLabel(item.state, language)}</span>
                  </div>
@@ -488,6 +487,10 @@ export function RemoteSessionsDialog({
       </section>
     </div>
   );
+}
+
+function remoteSourceLabel(source: RemoteSessionAgent): string {
+  return source === "hermes" ? "Hermes" : migrationAgentLabel(source);
 }
 
 function SessionCopyCard({

@@ -258,6 +258,45 @@ describe("indexer", () => {
     expect(environmentsChanged).toBe(0);
   });
 
+  it("indexes opted-in Pi sessions so their content is searchable", async () => {
+    const store = createInMemoryStore();
+    const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "agent-recall-v2-pi-index-"));
+    const filePath = path.join(homeDir, ".pi", "agent", "sessions", "--repo--", "pi-indexed.jsonl");
+    try {
+      fs.mkdirSync(path.dirname(filePath), { recursive: true });
+      fs.writeFileSync(filePath, [
+        { type: "session", version: 1, id: "pi-indexed", timestamp: "2026-07-31T03:00:00.000Z", cwd: "/repo" },
+        {
+          type: "message",
+          timestamp: "2026-07-31T03:00:01.000Z",
+          message: { role: "user", content: [{ type: "text", text: "searchable Pi integration" }] },
+        },
+        {
+          type: "message",
+          timestamp: "2026-07-31T03:00:02.000Z",
+          message: { role: "assistant", content: [{ type: "text", text: "Pi search result" }] },
+        },
+      ].map((row) => JSON.stringify(row)).join("\n"));
+
+      await syncDefaultSessionsInBatches(store, {
+        batchSize: 1,
+        loadOptions: { homeDir, includePi: true },
+      });
+
+      const results = await Promise.resolve(
+        store.searchSessions({ query: "searchable Pi integration", limit: 10 }),
+      );
+      expect(results).toHaveLength(1);
+      expect(results[0]).toMatchObject({
+        sessionKey: "pi:pi-indexed",
+        source: "pi-cli",
+      });
+    } finally {
+      await store.close();
+      fs.rmSync(homeDir, { recursive: true, force: true });
+    }
+  });
+
   it("skips unchanged default session files before reading them", async () => {
     const store = createInMemoryStore();
     const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "agent-recall-default-skip-"));

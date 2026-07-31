@@ -24,6 +24,7 @@ const ALL_SOURCES = [
   "cursor-agent",
   "trae",
   "qoder",
+  "pi-cli",
 ] as const satisfies readonly SessionSource[];
 
 describe("session source capability registry", () => {
@@ -37,7 +38,7 @@ describe("session source capability registry", () => {
     for (const descriptor of SESSION_SOURCE_DESCRIPTORS) {
       expect(descriptor.capabilities.live).toBe(descriptor.liveFamily !== null);
       expect(descriptor.capabilities.migrate).toBe(descriptor.migrationAgent !== null);
-      expect(descriptor.capabilities.sessionSync).toBe(descriptor.migrationAgent !== null);
+      if (descriptor.migrationAgent !== null) expect(descriptor.capabilities.sessionSync).toBe(true);
       expect(descriptor.capabilities.openApp).toBe(descriptor.nativeAppFamily !== null);
       if (descriptor.capabilities.resume) expect(descriptor.resumeTarget).not.toBeNull();
       if (descriptor.remoteCollectorOptional) expect(descriptor.optionalSetting).not.toBeNull();
@@ -57,16 +58,38 @@ describe("session source capability registry", () => {
       "includeCursorAgent",
       "includeTrae",
       "includeQoder",
+      "includePi",
     ]);
     expect(sessionSourceDescriptor("tclaude-cli")).toMatchObject({ liveFamily: "tclaude", migrationAgent: "claude" });
     expect(sessionSourceDescriptor("tcodex-cli")).toMatchObject({ liveFamily: "tcodex", migrationAgent: "codex" });
     expect(sessionSourceDescriptor("qoder")).toMatchObject({ format: "qoder", liveFamily: "qoder", remoteFamily: "qoder" });
+    expect(sessionSourceDescriptor("hermes")).toMatchObject({
+      migrationAgent: null,
+      capabilities: { live: true, resume: false, migrate: false, sessionSync: true, openApp: false },
+    });
     expect(sessionSourceDescriptor("zcode-cli")).toMatchObject({
       format: "zcode",
       uiFamily: "zcode",
       optionalSetting: "includeZcode",
       liveFamily: "zcode",
       capabilities: { live: true, resume: false, migrate: false, sessionSync: false, openApp: false },
+    });
+    expect(sessionSourceDescriptor("pi-cli")).toMatchObject({
+      label: "Pi",
+      format: "pi",
+      family: "pi",
+      uiFamily: "other",
+      optionalSetting: "includePi",
+      liveFamily: null,
+      migrationAgent: null,
+      remoteFamily: null,
+      capabilities: {
+        live: false,
+        resume: false,
+        migrate: false,
+        sessionSync: false,
+        openApp: false,
+      },
     });
     expect(OPTIONAL_SESSION_SOURCE_DESCRIPTORS.filter(({ remoteCollectorOptional }) => remoteCollectorOptional).map(({ id }) => id)).toEqual([
       "tclaude-cli",

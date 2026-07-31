@@ -83,6 +83,7 @@ describe("remote session sync model", () => {
     expect(sql).toContain("storage.buckets");
     expect(sql).toContain("to anon");
     expect(sql).toContain("'cursor'");
+    expect(sql).toContain("'hermes'");
     expect(sql).toContain(`${REMOTE_SESSION_TABLE}_source_agent_check`);
     expect(sql).toContain(`grant select, insert, update, delete on table public.${REMOTE_SESSION_TABLE} to anon`);
     expect(sql).toContain("grant select on table storage.buckets to anon");
@@ -200,6 +201,27 @@ describe("remote session sync model", () => {
       }),
     ]);
     expect(remoteSessionSearchText(SESSION, detail.messages, detail.traceEvents)).not.toContain("Turn started");
+  });
+
+  it("builds remote upload payloads for Hermes sessions without enabling migration", () => {
+    const hermesSession: SessionSearchResult = {
+      ...SESSION,
+      sessionKey: "hermes:abc",
+      rawId: "abc",
+      source: "hermes",
+      filePath: "/home/.hermes/state.db",
+      displayTitle: "Hermes review",
+    };
+    const portable = remotePortableSessionFrom(hermesSession, MESSAGES);
+    const detail = buildRemoteSessionSnapshot(hermesSession, MESSAGES, [], 10_000);
+    const { payload } = buildRemoteSessionPayload({ session: hermesSession, detail, portable, now: 11_000 });
+
+    expect(portable.sourceAgent).toBe("hermes");
+    expect(payload).toMatchObject({
+      source_agent: "hermes",
+      source_source: "hermes",
+    });
+    expect(parsePortableSession(portable).sourceAgent).toBe("hermes");
   });
 
   it("builds upload payloads for indexed SSH remote sessions", () => {
@@ -587,7 +609,7 @@ describe("remote session sync model", () => {
     const detail = buildRemoteSessionSnapshot(SESSION, MESSAGES, [], 10_000);
     expect(parseDetailSnapshot(detail).messages).toHaveLength(2);
     expect(parsePortableSession(PORTABLE).sourceAgent).toBe("codex");
-    expect(() => parsePortableSession({ ...PORTABLE, sourceAgent: "hermes" })).toThrow("unsupported");
+    expect(parsePortableSession({ ...PORTABLE, sourceAgent: "hermes" }).sourceAgent).toBe("hermes");
   });
 
   it("normalizes legacy trace statuses in old detail snapshots", () => {

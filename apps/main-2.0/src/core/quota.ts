@@ -616,6 +616,7 @@ try {
       {
         timeout: 20_000,
         maxBuffer: HTTP_BODY_LIMIT,
+        windowsHide: true,
         env: {
           ...process.env,
           AGENT_RECALL_CODEX_USAGE_URL: endpoint,

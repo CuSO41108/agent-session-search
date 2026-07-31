@@ -78,4 +78,19 @@ describe("SessionCatalogService deletion policy", () => {
     expect(store.deleteSessionRecord).not.toHaveBeenCalled();
     expect(store.deleteSession).not.toHaveBeenCalled();
   });
+
+  it("rejects Pi deletion before the source file deletion path", async () => {
+    const { service, store } = createService(session({
+      sessionKey: "pi:local",
+      source: "pi-cli",
+      environmentId: "local",
+      environmentKind: "local",
+      filePath: "/fixtures/pi-session.jsonl",
+    }));
+
+    await expect(service.delete("pi:local")).rejects.toThrow("Pi session source files are read-only.");
+
+    expect(store.deleteSessionRecord).not.toHaveBeenCalled();
+    expect(store.deleteSession).not.toHaveBeenCalled();
+  });
 });

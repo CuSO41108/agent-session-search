@@ -1261,7 +1261,11 @@ function splitCommandLine(command: string): string[] {
 
 function execText(command: string, args: string[]): Promise<string> {
   return new Promise((resolve, reject) => {
-    execFile(command, args, { maxBuffer: 4 * 1024 * 1024, timeout: command === "lsof" ? 1500 : undefined }, (error, stdout, stderr) => {
+    execFile(command, args, {
+      maxBuffer: 4 * 1024 * 1024,
+      timeout: command === "lsof" ? 1500 : undefined,
+      windowsHide: true,
+    }, (error, stdout, stderr) => {
       if (!error) {
         resolve(stdout);
         return;

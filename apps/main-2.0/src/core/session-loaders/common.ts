@@ -29,6 +29,7 @@ export interface SessionLoadOptions {
   includeCursorAgent?: boolean;
   includeTrae?: boolean;
   includeQoder?: boolean;
+  includePi?: boolean;
   cursorStateDbPath?: string;
   cursorWorkspacePathMap?: ReadonlyMap<string, string>;
   shouldSkipFile?: (
@@ -275,7 +276,8 @@ export function createIndexedSession(input: {
     | "zcode"
     | "cursor"
     | "trae"
-    | "qoder";
+    | "qoder"
+    | "pi";
   rawId: string;
   source: SessionSource;
   projectPath: string;
