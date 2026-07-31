@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { EventEmitter } from "node:events";
 import {
+  access,
   chmod,
   mkdir,
   mkdtemp,
@@ -66,6 +67,10 @@ function manifest(
   };
 }
 
+function partialArchivePath(root: string): string {
+  return path.join(root, "downloads", "openviking-0.4.11-darwin-arm64.tar.gz.part");
+}
+
 async function runtimeWithPersistedCurrentProcess(
   root: string,
 ): Promise<OpenVikingRuntimeService> {
@@ -103,6 +108,7 @@ function runtimeHarness(root: string, options: {
   executablePath?: string;
   alive?: boolean;
   codexAuthBootstrapPath?: string;
+  download?: (url: string, destination: string) => Promise<void>;
 } = {}) {
   const child = new FakeChild();
   const spawnCalls: Array<{
@@ -118,9 +124,9 @@ function runtimeHarness(root: string, options: {
       ?? path.join(root, "synthetic-codex-home", "auth.json"),
     platform: options.platform ?? "darwin",
     arch: options.platform === "win32" ? "x64" : "arm64",
-    download: async (_url, destination) => {
+    download: options.download ?? (async (_url, destination) => {
       await writeFile(destination, "runtime archive");
-    },
+    }),
     extractArchive: async ({ destination, validateEntry }) => {
       const executablePath = options.executablePath ?? "bin/openviking-server";
       validateEntry(executablePath);
@@ -177,6 +183,8 @@ describe("OpenVikingRuntimeService", () => {
     expect(spawnCalls[0].env).toMatchObject({
       OPENVIKING_CODEX_BOOTSTRAP_PATH: authFile,
       OPENVIKING_CODEX_AUTH_PATH: path.join(root, "auth", "codex_auth.json"),
+      // Keeps litellm from stalling its import on a remote price table fetch.
+      LITELLM_LOCAL_MODEL_COST_MAP: "True",
     });
     const config = await readFile(path.join(root, "ov.conf"), "utf8");
     expect(config).not.toContain("synthetic-access-token");
@@ -385,6 +393,29 @@ describe("OpenVikingRuntimeService", () => {
     await expect(mismatched.install(manifest())).rejects.toThrow("checksum");
     expect(extractArchive).not.toHaveBeenCalled();
     await expect(service.getStatus()).resolves.toMatchObject({ state: "not-installed" });
+    // Unusable bytes must not be resumed by the next attempt.
+    await expect(access(partialArchivePath(root))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("keeps the partial archive after a failed transfer so the next attempt resumes it", async () => {
+    const root = await temporaryRoot();
+    let attempt = 0;
+    const { service } = runtimeHarness(root, {
+      download: async (_url, destination) => {
+        attempt += 1;
+        if (attempt === 1) {
+          await writeFile(destination, "runtime ");
+          throw new Error("connection reset");
+        }
+        // The second attempt appends the remainder, exactly as a range request would.
+        await writeFile(destination, `${await readFile(destination, "utf8")}archive`);
+      },
+    });
+
+    await expect(service.install(manifest())).rejects.toThrow("connection reset");
+    await expect(readFile(partialArchivePath(root), "utf8")).resolves.toBe("runtime ");
+
+    await expect(service.install(manifest())).resolves.toMatchObject({ state: "stopped" });
   });
 
   it("reports real download bytes while installing the runtime", async () => {
