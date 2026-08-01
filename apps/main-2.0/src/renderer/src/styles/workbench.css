@@ -1188,8 +1188,25 @@
   flex: 0 0 auto;
   margin-top: 7px;
   overflow-y: auto;
+  overscroll-behavior: contain;
   scrollbar-gutter: stable;
-  scrollbar-width: thin;
+}
+
+/* Slim session-style scrollbar so it never crowds the Resume button. */
+.workbench-session-list::-webkit-scrollbar {
+  width: 6px;
+}
+
+.workbench-session-list::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--text) 14%, transparent);
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background-clip: padding-box;
+}
+
+.workbench-session-list::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--text) 24%, transparent);
+  background-clip: padding-box;
 }
 
 .workbench-session-row {
@@ -1199,7 +1216,7 @@
   align-items: center;
   gap: 10px;
   min-height: 50px;
-  padding: 5px 0;
+  padding: 5px 10px 5px 0;
   cursor: pointer;
 }
 
