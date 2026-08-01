@@ -196,6 +196,14 @@ describe("WorkbenchPage cards", () => {
     );
   });
 
+  it("does not paint the model quota card head with a shaded background", () => {
+    const headBlock = workbenchStyles.match(
+      /\.workbench-quota-card-head\s*\{[^}]*\}/,
+    );
+    expect(headBlock).not.toBeNull();
+    expect(headBlock![0]).not.toMatch(/background\s*:\s*var\(--panel-subtle\)/);
+  });
+
   it("shows existing chat groups instead of configured employees", () => {
     const rooms: TeamChatRoomSummary[] = [{
       id: "room-1",

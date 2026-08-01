@@ -595,7 +595,6 @@
   gap: 10px;
   padding: 5px 10px 5px 11px;
   border-bottom: 1px solid var(--border-subtle);
-  background: var(--panel-subtle);
 }
 
 .workbench-quota-card-head > strong {
