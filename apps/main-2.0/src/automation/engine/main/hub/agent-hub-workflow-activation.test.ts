@@ -301,6 +301,6 @@ describe("AgentHub workflow materialization", () => {
     const workflowId = hub.createWorkflowDraft().workflowDraft!.workflowId;
     const result = hub.materializeWorkflowDraft(workflowId, { title: "Answer", objective: "Answer", definition: { workflowId, graphVersion: 1, objective: "Answer", nodes: [{ id: "answer", kind: "answer", title: "Answer", execModel: "llm", executionMode: "one-shot", configuredAgentId: specialist.id, prompt: "Answer.", outputFields: [{ key: "answer", required: true }] }], edges: [] } });
     expect(result.ok).toBe(true);
-    expect(() => hub.updateConfiguredAgents(existing)).toThrow(/Reassign the workflow node/);
+    expect(() => hub.updateConfiguredAgents(existing)).toThrow(/Workflow Answer node Answer/);
   });
 });
