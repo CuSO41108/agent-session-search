@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { canDeleteSessionLocally } from "./session-environment";
+import { canDeleteSessionLocally, isSharedSessionSourceDatabase } from "./session-environment";
 
 describe("session environment policy", () => {
   it("allows deleting SSH caches without allowing remote source deletion", () => {
@@ -12,5 +12,12 @@ describe("session environment policy", () => {
       environmentId: "local",
       source: "pi-cli",
     })).toBe(false);
+  });
+
+  it("identifies shared multi-session source databases", () => {
+    expect(isSharedSessionSourceDatabase({ source: "hermes", filePath: "/home/user/.hermes/state.db" })).toBe(true);
+    expect(isSharedSessionSourceDatabase({ source: "opencode-cli", filePath: "/tmp/opencode.db" })).toBe(true);
+    expect(isSharedSessionSourceDatabase({ source: "cursor-agent", filePath: "/tmp/state.vscdb" })).toBe(true);
+    expect(isSharedSessionSourceDatabase({ source: "codex-cli", filePath: "/tmp/rollout.jsonl" })).toBe(false);
   });
 });

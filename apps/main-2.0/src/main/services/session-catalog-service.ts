@@ -1,6 +1,10 @@
 import type { IndexStatus } from "../../core/indexer";
 import type { SessionBulkDeletePreview, SessionBulkDeleteRequest, SessionBulkDeleteResult } from "../../core/session-bulk-delete";
-import { canDeleteSessionLocally, isLocalSessionEnvironment } from "../../core/session-environment";
+import {
+  canDeleteSessionLocally,
+  isLocalSessionEnvironment,
+  isSharedSessionSourceDatabase,
+} from "../../core/session-environment";
 import type { SessionStore, TraceEventQueryOptions } from "../../core/session-store";
 import type {
   LiveSessionSnapshot,
@@ -189,6 +193,12 @@ export class SessionCatalogService {
     }
     if (!session || session.environmentKind !== "wsl") {
       return this.dependencies.store.deleteSession(sessionKey);
+    }
+    if (isSharedSessionSourceDatabase(session)) {
+      if (session.sourceAvailable === false) {
+        return this.dependencies.store.deleteSessionRecord(sessionKey);
+      }
+      throw new Error("Cannot delete shared source databases on WSL by removing the database file.");
     }
     const environment = await this.dependencies.requireWslEnvironment(session);
     await this.dependencies.deleteWslSession(environment, session.filePath);

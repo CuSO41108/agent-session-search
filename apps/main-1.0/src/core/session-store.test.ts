@@ -1602,7 +1602,6 @@ describe("SessionStore", () => {
     const store = createInMemoryStore();
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "session-search-delete-db-session-"));
     const sources = [
-      { sessionKey: "hermes:abc", source: "hermes", fileName: "hermes.db", message: "Cannot delete shared Hermes source database." },
       { sessionKey: "opencode:abc", source: "opencode-cli", fileName: "opencode.db", message: "Cannot delete shared OpenCode source database." },
       { sessionKey: "codewiz:abc", source: "codewiz-cli", fileName: "codewiz-opencode.db", message: "Cannot delete shared CodeWiz source database." },
       { sessionKey: "cursor:abc", source: "cursor-agent", fileName: "state.vscdb", message: "Cannot delete shared Cursor source database." },
@@ -1617,6 +1616,49 @@ describe("SessionStore", () => {
     }
 
     fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("deletes one Hermes session from the shared state.db without removing the database file", () => {
+    const store = createInMemoryStore();
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "session-search-delete-hermes-"));
+    const filePath = path.join(dir, "state.db");
+    const { DatabaseSync } = require("node:sqlite") as {
+      DatabaseSync: new (path: string) => import("node:sqlite").DatabaseSync;
+    };
+    const db = new DatabaseSync(filePath);
+    db.exec(`
+      CREATE TABLE sessions (id TEXT PRIMARY KEY, started_at REAL NOT NULL);
+      CREATE TABLE messages (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL, role TEXT NOT NULL, content TEXT, timestamp REAL NOT NULL);
+    `);
+    db.prepare("INSERT INTO sessions (id, started_at) VALUES (?, ?)").run("abc", 1);
+    db.prepare("INSERT INTO sessions (id, started_at) VALUES (?, ?)").run("keep", 2);
+    db.prepare("INSERT INTO messages (session_id, role, content, timestamp) VALUES (?, ?, ?, ?)").run("abc", "user", "delete me", 1);
+    db.prepare("INSERT INTO messages (session_id, role, content, timestamp) VALUES (?, ?, ?, ?)").run("keep", "user", "keep me", 2);
+    db.close();
+
+    store.upsertIndexedSession(
+      sampleSession({ sessionKey: "hermes:abc", source: "hermes", rawId: "abc", filePath }),
+      messages,
+    );
+    store.upsertIndexedSession(
+      sampleSession({ sessionKey: "hermes:keep", source: "hermes", rawId: "keep", filePath }),
+      messages,
+    );
+
+    expect(store.deleteSession("hermes:abc")).toBe(true);
+    expect(fs.existsSync(filePath)).toBe(true);
+    expect(store.getSession("hermes:abc")).toBeNull();
+    expect(store.getSession("hermes:keep")).not.toBeNull();
+
+    const verify = new DatabaseSync(filePath);
+    try {
+      expect(verify.prepare("SELECT id FROM sessions ORDER BY id").all()).toEqual([{ id: "keep" }]);
+      expect(verify.prepare("SELECT COUNT(*) AS count FROM messages WHERE session_id = ?").get("abc")).toEqual({ count: 0 });
+      expect(verify.prepare("SELECT COUNT(*) AS count FROM messages WHERE session_id = ?").get("keep")).toEqual({ count: 1 });
+    } finally {
+      verify.close();
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("rejects Pi source deletion while record-only source pruning keeps the file", () => {

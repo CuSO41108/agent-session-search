@@ -1,6 +1,8 @@
 import * as fs from "node:fs";
 
+import { deleteHermesSession } from "./hermes-session-writer";
 import { isLocalSessionStorage } from "./session-environment";
+import { deleteZcodeSession } from "./zcode-session-writer";
 import {
   readSessionSourceArtifacts,
   type SessionSourceArtifact,
@@ -68,7 +70,6 @@ import type {
 } from "./types";
 import type { OpenVikingWorkspace } from "./openviking-memory";
 import type { SessionBulkDeleteTarget } from "./session-bulk-delete";
-import { deleteZcodeSession } from "./zcode-session-writer";
 
 export type {
   ApiProviderKeyTarget,
@@ -219,7 +220,12 @@ export class SessionStore {
       const indexDeleted = await this.sessions.deleteSessionRecord(sessionKey);
       return sourceDeleted || indexDeleted;
     }
-    if (target.source === "hermes") throw new Error("Cannot delete shared Hermes source database.");
+    if (target.source === "hermes") {
+      if (!target.sourceAvailable) return this.sessions.deleteSessionRecord(sessionKey);
+      const sourceDeleted = deleteHermesSession(target.filePath, target.rawId);
+      const indexDeleted = await this.sessions.deleteSessionRecord(sessionKey);
+      return sourceDeleted || indexDeleted;
+    }
     if (target.source === "opencode-cli") throw new Error("Cannot delete shared OpenCode source database.");
     if (target.source === "codewiz-cli") throw new Error("Cannot delete shared CodeWiz source database.");
     if (target.source === "cursor-agent" && /(^|[\\/])state\.vscdb$/iu.test(target.filePath)) {

@@ -96,7 +96,13 @@ import { SessionBulkDeleteService } from "./services/session-bulk-delete-service
 import type { SessionBulkDeleteRequest } from "../core/session-bulk-delete";
 import { AUTO_INDEX_REFRESH_INTERVAL_MS, INITIAL_INDEX_DELAY_MS } from "../core/refresh-policy";
 import { globalShortcutLabel, normalizeGlobalShortcut } from "../core/shortcuts";
-import { canDeleteSessionLocally, isLocalSessionEnvironment, isLocalSessionStorage, remoteSessionKey } from "../core/session-environment";
+import {
+  canDeleteSessionLocally,
+  isLocalSessionEnvironment,
+  isLocalSessionStorage,
+  isSharedSessionSourceDatabase,
+  remoteSessionKey,
+} from "../core/session-environment";
 import { OPTIONAL_SESSION_SOURCE_DESCRIPTORS } from "../core/session-sources";
 import type { AppSettings, AppSettingsUpdate } from "../core/platform";
 import { APP_UPDATE_EVENTS } from "../shared/ipc/app-update";
@@ -1982,6 +1988,10 @@ function registerIpc(): void {
       throw new Error("Cannot delete sessions stored on SSH remote environments.");
     }
     if (!session || session.environmentKind !== "wsl") return store.deleteSession(sessionKey);
+    if (isSharedSessionSourceDatabase(session)) {
+      if (session.sourceAvailable === false) return store.deleteSessionRecord(sessionKey);
+      throw new Error("Cannot delete shared source databases on WSL by removing the database file.");
+    }
     await deleteWslSessionFile(requireWslEnvironment(session), session.filePath);
     return store.deleteSessionRecord(sessionKey);
   });
