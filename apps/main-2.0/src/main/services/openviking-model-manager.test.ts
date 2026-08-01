@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { access, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   BUILTIN_OPENVIKING_MODEL_MANIFEST,
   OpenVikingLocalModelManager,
+  resolveModelUrl,
   type OpenVikingModelManifest,
 } from "./openviking-model-manager";
 
@@ -84,6 +85,86 @@ describe("OpenVikingLocalModelManager", () => {
 
     await expect(manager.install("BAAI/bge-small-zh-v1.5")).rejects.toThrow("checksum");
     await expect(manager.getStatus()).resolves.toMatchObject({ installed: false });
+  });
+
+  it("discards the partial file when the checksum does not match so a retry restarts", async () => {
+    const directory = await root();
+    const partial = path.join(directory, "downloads", "bge-small-zh-v1.5-1.5-f16.gguf.part");
+    const manager = new OpenVikingLocalModelManager({
+      rootDir: directory,
+      resolveManifest: async () => manifest,
+      download: async (_url, destination) => writeFile(destination, "tampered"),
+    });
+
+    await expect(manager.install("BAAI/bge-small-zh-v1.5")).rejects.toThrow("checksum");
+
+    await expect(access(partial)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("keeps the partial file after a failed transfer so the next attempt resumes it", async () => {
+    const directory = await root();
+    const partial = path.join(directory, "downloads", "bge-small-zh-v1.5-1.5-f16.gguf.part");
+    let attempt = 0;
+    const manager = new OpenVikingLocalModelManager({
+      rootDir: directory,
+      resolveManifest: async () => manifest,
+      download: async (_url, destination) => {
+        attempt += 1;
+        if (attempt === 1) {
+          await writeFile(destination, "model ");
+          throw new Error("connection reset");
+        }
+        // The second attempt appends the remainder, exactly as a range request would.
+        await writeFile(destination, `${await readFile(destination, "utf8")}archive`);
+      },
+    });
+
+    await expect(manager.install("BAAI/bge-small-zh-v1.5")).rejects.toThrow("connection reset");
+    await expect(readFile(partial, "utf8")).resolves.toBe("model ");
+
+    await expect(manager.install("BAAI/bge-small-zh-v1.5")).resolves.toMatchObject({
+      installed: true,
+    });
+  });
+
+  it("redirects huggingface downloads to an HF_ENDPOINT mirror when one is configured", () => {
+    const official = BUILTIN_OPENVIKING_MODEL_MANIFEST.url;
+
+    expect(resolveModelUrl(official, {})).toBe(official);
+    expect(resolveModelUrl(official, { HF_ENDPOINT: "https://hf-mirror.com" })).toBe(
+      "https://hf-mirror.com/CompendiumLabs/bge-small-zh-v1.5-gguf/resolve/main/bge-small-zh-v1.5-f16.gguf?download=true",
+    );
+    expect(resolveModelUrl(official, { HF_ENDPOINT: "https://mirror.example/hf/" })).toBe(
+      "https://mirror.example/hf/CompendiumLabs/bge-small-zh-v1.5-gguf/resolve/main/bge-small-zh-v1.5-f16.gguf?download=true",
+    );
+    expect(resolveModelUrl("https://downloads.example/model.gguf", {
+      HF_ENDPOINT: "https://hf-mirror.com",
+    })).toBe("https://downloads.example/model.gguf");
+    expect(() => resolveModelUrl(official, { HF_ENDPOINT: "http://hf-mirror.com" }))
+      .toThrow("HTTPS");
+  });
+
+  it("downloads the model through the configured mirror", async () => {
+    const requested: string[] = [];
+    const manager = new OpenVikingLocalModelManager({
+      rootDir: await root(),
+      resolveManifest: async () => ({
+        ...manifest,
+        url: "https://huggingface.co/CompendiumLabs/bge/resolve/main/model.gguf",
+      }),
+      env: { HF_ENDPOINT: "https://hf-mirror.com" },
+      download: async (url, destination) => {
+        requested.push(url);
+        await writeFile(destination, "model archive");
+      },
+    });
+
+    await expect(manager.install("BAAI/bge-small-zh-v1.5")).resolves.toMatchObject({
+      installed: true,
+    });
+    expect(requested).toEqual([
+      "https://hf-mirror.com/CompendiumLabs/bge/resolve/main/model.gguf",
+    ]);
   });
 
   it("reports a clear error when this build has no model artifact", async () => {

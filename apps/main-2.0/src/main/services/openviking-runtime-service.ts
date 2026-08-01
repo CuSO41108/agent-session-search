@@ -1,7 +1,7 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import type { ChildProcess } from "node:child_process";
 import { spawn, spawnSync } from "node:child_process";
-import { createReadStream, createWriteStream } from "node:fs";
+import { createReadStream } from "node:fs";
 import {
   access,
   chmod,
@@ -14,8 +14,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import path from "node:path";
-import { Readable, Transform } from "node:stream";
-import { pipeline } from "node:stream/promises";
+import type { Readable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import * as tar from "tar";
 
@@ -23,6 +22,7 @@ import type {
   OpenVikingRuntimeInstallProgress,
   OpenVikingRuntimeStatus,
 } from "../../core/openviking-memory";
+import { downloadFileWithResume } from "./openviking-download";
 
 const OPENVIKING_SERVER_BOOTSTRAP = [
   "from openviking_cli.server_bootstrap import main",
@@ -134,7 +134,7 @@ export class OpenVikingRuntimeService {
     this.platform = options.platform ?? process.platform;
     this.arch = options.arch ?? process.arch;
     this.allowLocalRuntime = options.allowLocalRuntime === true;
-    this.download = options.download ?? downloadFile;
+    this.download = options.download ?? downloadFileWithResume;
     this.extractArchive = options.extractArchive ?? extractTarGz;
     this.allocatePort = options.allocatePort ?? allocateLoopbackPort;
     this.spawnProcess = options.spawnProcess ?? ((command, args, spawnOptions) =>
@@ -212,7 +212,7 @@ export class OpenVikingRuntimeService {
     try {
       await mkdir(downloadsDir, { recursive: true });
       await mkdir(runtimeDir, { recursive: true });
-      await rm(partialPath, { force: true });
+      // A partial file from an interrupted attempt is kept so the download resumes there.
       await this.download(manifest.url, partialPath, (downloadedBytes, totalBytes, bytesPerSecond) => {
         reportProgress({
           phase: "downloading-runtime",
@@ -224,6 +224,8 @@ export class OpenVikingRuntimeService {
       reportProgress({ phase: "verifying-runtime" });
       const actualSha = await sha256File(partialPath);
       if (actualSha !== manifest.sha256.toLowerCase()) {
+        // The bytes on disk are unusable, so a retry has to start over rather than resume.
+        await rm(partialPath, { force: true });
         throw new Error(`OpenViking runtime checksum mismatch: expected ${manifest.sha256}, received ${actualSha}.`);
       }
       await rename(partialPath, archivePath);
@@ -244,7 +246,6 @@ export class OpenVikingRuntimeService {
       this.transientStatus = null;
       return this.getStatus();
     } catch (error) {
-      await rm(partialPath, { force: true });
       await rm(stagingPath, { recursive: true, force: true });
       this.transientStatus = null;
       throw error;
@@ -308,6 +309,10 @@ export class OpenVikingRuntimeService {
         OPENVIKING_CODEX_AUTH_PATH: this.resolveOwnedPath("auth", "codex_auth.json"),
         OPENVIKING_CODEX_BOOTSTRAP_PATH: this.codexAuthBootstrapPath,
         OPENVIKING_SERVER_HOST: "127.0.0.1",
+        // litellm otherwise fetches its price table from raw.githubusercontent.com while
+        // importing, which costs ~8s on networks that cannot reach it. Local embedding and
+        // Codex VLM never read those prices, so the bundled backup table is enough.
+        LITELLM_LOCAL_MODEL_COST_MAP: "True",
       },
       stdio: ["ignore", "ignore", "pipe"],
     });
@@ -490,66 +495,6 @@ function resolveArchivePath(root: string, archivePath: string): string {
     throw new Error(`Unsafe OpenViking archive entry: ${archivePath}`);
   }
   return resolved;
-}
-
-async function downloadFile(
-  url: string,
-  destination: string,
-  onProgress?: (
-    downloadedBytes: number,
-    totalBytes?: number,
-    bytesPerSecond?: number,
-  ) => void,
-): Promise<void> {
-  const source = new URL(url);
-  if (source.protocol === "file:") {
-    const sourcePath = fileURLToPath(source);
-    const totalBytes = (await stat(sourcePath)).size;
-    await pipeline(
-      createReadStream(sourcePath),
-      createDownloadProgressTransform(totalBytes, onProgress),
-      createWriteStream(destination, { mode: 0o600 }),
-    );
-    return;
-  }
-  const response = await fetch(url, { redirect: "follow" });
-  if (!response.ok || !response.body) {
-    throw new Error(`OpenViking runtime download failed with HTTP ${response.status}.`);
-  }
-  const contentLength = Number(response.headers.get("content-length"));
-  const totalBytes = Number.isSafeInteger(contentLength) && contentLength > 0
-    ? contentLength
-    : undefined;
-  const body = Readable.fromWeb(response.body as never);
-  await pipeline(
-    body,
-    createDownloadProgressTransform(totalBytes, onProgress),
-    createWriteStream(destination, { mode: 0o600 }),
-  );
-}
-
-function createDownloadProgressTransform(
-  totalBytes: number | undefined,
-  onProgress?: (
-    downloadedBytes: number,
-    totalBytes?: number,
-    bytesPerSecond?: number,
-  ) => void,
-): Transform {
-  let downloadedBytes = 0;
-  const startedAt = Date.now();
-  onProgress?.(downloadedBytes, totalBytes);
-  return new Transform({
-    transform(chunk: Buffer, _encoding, callback) {
-      downloadedBytes += chunk.byteLength;
-      const elapsedMs = Date.now() - startedAt;
-      const bytesPerSecond = elapsedMs >= 250
-        ? Math.round(downloadedBytes / (elapsedMs / 1_000))
-        : undefined;
-      onProgress?.(downloadedBytes, totalBytes, bytesPerSecond);
-      callback(null, chunk);
-    },
-  });
 }
 
 async function extractTarGz(input: ExtractArchiveInput): Promise<void> {
