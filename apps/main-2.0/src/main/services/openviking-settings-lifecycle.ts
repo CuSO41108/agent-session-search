@@ -2,9 +2,9 @@ import type { OpenVikingRuntimeState } from "../../core/openviking-memory";
 import type { AppSettingsUpdate } from "../../core/platform";
 
 const EXTRACTION_SETTING_KEYS = new Set<keyof AppSettingsUpdate>([
-  "openVikingExtractionModel",
-  "openVikingExtractionReasoningEffort",
   "summarySource",
+  "summaryCodexModel",
+  "openVikingExtractionReasoningEffort",
   "summaryApiConfig",
 ]);
 

@@ -638,10 +638,10 @@ describe("API settings", () => {
     });
   });
 
-  it("defaults API config to Codex official and summary search to Custom", () => {
+  it("defaults API config and summary search to local Codex", () => {
     expect(defaultSettings.apiConfig).toEqual(defaultApiConfig);
     expect(defaultSettings.claudeApiConfig).toEqual(defaultClaudeApiConfig);
-    expect(defaultSettings.summarySource).toBe("custom");
+    expect(defaultSettings.summarySource).toBe("codex");
     expect(defaultSettings.summaryApiConfig).toMatchObject({
       activeProvider: "custom",
       customProviderId: "custom",

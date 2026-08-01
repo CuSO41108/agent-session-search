@@ -13,16 +13,10 @@ import type {
   AppSettings,
   AppSettingsUpdate,
 } from "../../../../core/platform";
-import {
-  DEFAULT_OPENVIKING_CODEX_EXTRACTION_MODEL,
-  OPENVIKING_EXTRACTION_REASONING_EFFORTS,
-  type OpenVikingExtractionReasoningEffort,
-} from "../../../../core/openviking-settings";
 import type {
   OpenVikingMemorySnapshot,
   OpenVikingRuntimeInstallPhase,
 } from "../../../../core/openviking-memory";
-import { CURRENT_CODEX_MODELS } from "../../../../automation/engine/shared/models";
 import { localize, type LanguageMode } from "../../language";
 
 type ComponentAction = "runtime" | "model" | "start" | "stop" | null;
@@ -43,8 +37,6 @@ export function OpenVikingMemorySettings({
   const [snapshot, setSnapshot] = useState<OpenVikingMemorySnapshot | null>(null);
   const [action, setAction] = useState<ComponentAction>(null);
   const [error, setError] = useState<string | null>(null);
-  const [extractionModel, setExtractionModel] = useState(settings?.openVikingExtractionModel ?? "");
-  const [codexProviderModel, setCodexProviderModel] = useState("");
 
   const refresh = useCallback(async () => {
     setSnapshot(await window.sessionSearch.getOpenVikingMemorySnapshot());
@@ -53,28 +45,6 @@ export function OpenVikingMemorySettings({
   useEffect(() => {
     void refresh().catch((cause) => setError(errorMessage(cause)));
   }, [refresh]);
-
-  useEffect(() => {
-    setExtractionModel(settings?.openVikingExtractionModel ?? "");
-  }, [settings?.openVikingExtractionModel]);
-
-  useEffect(() => {
-    if (settings?.summarySource !== "codex") {
-      setCodexProviderModel("");
-      return;
-    }
-    let cancelled = false;
-    void window.sessionSearch.getCodexConfig()
-      .then((config) => {
-        if (!cancelled) setCodexProviderModel(config.activeModel.trim());
-      })
-      .catch(() => {
-        if (!cancelled) setCodexProviderModel("");
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [settings?.summarySource]);
 
   useEffect(() => {
     if (
@@ -127,60 +97,6 @@ export function OpenVikingMemorySettings({
     : (snapshot.runtime.installedBytes / 1_000_000).toFixed(1);
   const modelInstalled = Boolean(snapshot?.model.installed);
   const controlsDisabled = !enabled || saving || action !== null;
-  const summarySource = settings?.summarySource ?? "custom";
-  const summaryConfig = settings?.summaryApiConfig;
-  const providerName = summarySource === "codex"
-    ? "Codex"
-    : summarySource === "claude"
-      ? "Claude CLI"
-      : summaryConfig?.customProviderName || l("Custom Provider", "自定义 Provider");
-  const providerModel = summarySource === "codex"
-    ? codexProviderModel
-    : summarySource === "custom"
-      ? summaryConfig?.customModel.trim() ?? ""
-      : "";
-  const selectedExtractionModel = extractionModel.trim()
-    || (summarySource === "codex" ? DEFAULT_OPENVIKING_CODEX_EXTRACTION_MODEL : providerModel);
-  const codexFamilyProvider = summarySource === "codex"
-    || summaryConfig?.customProviderId === "codexzh"
-    || providerName.toLowerCase().includes("codex");
-  const extractionModelOptions = Array.from(new Set([
-    selectedExtractionModel,
-    providerModel,
-    ...(codexFamilyProvider ? CURRENT_CODEX_MODELS.map((model) => model.id) : []),
-  ].filter(Boolean)));
-  const selectedCodexModel = CURRENT_CODEX_MODELS.find(
-    (model) => model.id.toLowerCase() === selectedExtractionModel.toLowerCase(),
-  );
-  const reasoningEffortOptions = selectedCodexModel?.reasoningEfforts
-    ?.filter((effort): effort is OpenVikingExtractionReasoningEffort =>
-      OPENVIKING_EXTRACTION_REASONING_EFFORTS.includes(
-        effort as OpenVikingExtractionReasoningEffort,
-      ))
-    ?? ["low", "medium", "high"];
-  const missingCustomProviderFields = summarySource !== "custom"
-    ? []
-    : [
-        !summaryConfig?.customBaseUrl.trim() ? l("URL", "地址") : null,
-        !summaryConfig?.customApiKey.trim() ? "API Key" : null,
-        !(extractionModel.trim() || summaryConfig?.customModel.trim()) ? l("model", "模型") : null,
-      ].filter((field): field is string => Boolean(field));
-  const extractionProviderError = summarySource === "claude"
-    ? l(
-      "Claude CLI is not currently supported for memory extraction. Choose Codex or a custom OpenAI Chat Provider on the Provider page.",
-      "记忆提取暂不支持 Claude CLI，请在 Provider 页面改用 Codex 或自定义 OpenAI Chat Provider。",
-    )
-    : summarySource === "custom" && summaryConfig?.customApiFormat !== "openai_chat"
-      ? l(
-        "Memory extraction currently supports custom OpenAI Chat Providers only.",
-        "记忆提取暂不支持该格式，目前仅支持自定义 OpenAI Chat Provider。",
-      )
-      : missingCustomProviderFields.length > 0
-        ? l(
-          `Missing ${missingCustomProviderFields.join(", ")} in the summary Provider.`,
-          `缺少 ${missingCustomProviderFields.join("、")}，请前往 Provider 页面补充。`,
-        )
-        : null;
   return (
     <section className="settings-pane openviking-settings-pane">
       <header className="settings-pane-head">
@@ -302,74 +218,6 @@ export function OpenVikingMemorySettings({
               {l("Download 47.9 MB", "下载 47.9 MB")}
             </button>
           ) : null}
-        </div>
-      </div>
-
-      <div className="openviking-extraction-settings">
-        <div className="settings-pane-head compact">
-          <h3>{l("Memory extraction", "记忆提取")}</h3>
-          <p>{l(
-            "Uses the summary Provider configured on the Provider page.",
-            "复用 Provider 页面配置的摘要 Provider。",
-          )}</p>
-        </div>
-        <div className={`openviking-extraction-provider${extractionProviderError ? " error" : ""}`}>
-          <div>
-            <strong>{l("Summary Provider", "摘要 Provider")}</strong>
-            <span>{providerName}</span>
-          </div>
-          <small>{extractionProviderError ?? l("Ready for memory extraction", "可用于记忆提取")}</small>
-        </div>
-        <div className="openviking-extraction-fields">
-          <label className="openviking-extraction-field">
-            <span>{l("Extraction model", "提取模型")}</span>
-            <select
-              value={selectedExtractionModel}
-              disabled={!settings || saving}
-              onChange={(event) => {
-                const model = event.currentTarget.value;
-                const modelDefinition = CURRENT_CODEX_MODELS.find((candidate) => candidate.id === model);
-                const supportedEfforts = modelDefinition?.reasoningEfforts ?? ["low", "medium", "high"];
-                const currentEffort = settings?.openVikingExtractionReasoningEffort ?? "medium";
-                const reasoningEffort = supportedEfforts.includes(currentEffort)
-                  ? currentEffort
-                  : supportedEfforts.includes(modelDefinition?.defaultReasoningEffort ?? "")
-                    ? modelDefinition!.defaultReasoningEffort as OpenVikingExtractionReasoningEffort
-                    : "medium";
-                setExtractionModel(model);
-                onSettingsChange({
-                  openVikingExtractionModel: model,
-                  openVikingExtractionReasoningEffort: reasoningEffort,
-                });
-              }}
-            >
-              {!selectedExtractionModel ? (
-                <option value="" disabled>{l("Choose a model", "选择模型")}</option>
-              ) : null}
-              {extractionModelOptions.map((model) => (
-                <option key={model} value={model}>
-                  {CURRENT_CODEX_MODELS.find((candidate) => candidate.id === model)?.label ?? model}
-                </option>
-              ))}
-            </select>
-            <small>{l("Model used to analyze and generate memories.", "用于分析并生成记忆。")}</small>
-          </label>
-          <label className="openviking-extraction-field">
-            <span>{l("Reasoning effort", "推理强度")}</span>
-            <select
-              value={settings?.openVikingExtractionReasoningEffort ?? "medium"}
-              disabled={!settings || saving}
-              onChange={(event) => onSettingsChange({
-                openVikingExtractionReasoningEffort:
-                  event.currentTarget.value as OpenVikingExtractionReasoningEffort,
-              })}
-            >
-              {reasoningEffortOptions.map((effort) => (
-                <option key={effort} value={effort}>{effort}</option>
-              ))}
-            </select>
-            <small>{l("Default: medium", "默认：medium")}</small>
-          </label>
         </div>
       </div>
 

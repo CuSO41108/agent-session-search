@@ -41,6 +41,10 @@ export class OpenVikingHookManifestService {
     return path.join(path.dirname(this.filePath), "hook-state");
   }
 
+  async clear(): Promise<void> {
+    await rm(this.filePath, { force: true });
+  }
+
   async write(input: WriteOpenVikingHookManifestInput): Promise<string> {
     const workspaces: HookWorkspace[] = [];
     for (const workspace of input.workspaces) {

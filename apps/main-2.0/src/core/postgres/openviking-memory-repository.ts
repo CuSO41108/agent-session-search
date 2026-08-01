@@ -20,6 +20,7 @@ export interface OpenVikingImportJob {
   completedTasks?: number;
   totalTasks?: number;
   cursorSessionKey: string | null;
+  selectedSessionKeys?: string[] | null;
   lastError: string | null;
   updatedAt: string;
 }
@@ -115,6 +116,7 @@ interface ImportJobRow extends Record<string, unknown> {
   completed_tasks: number;
   total_tasks: number;
   cursor_session_key: string | null;
+  selected_session_keys: unknown;
   last_error: string | null;
   updated_at: Date | string;
 }
@@ -279,6 +281,23 @@ export class PostgresOpenVikingMemoryRepository {
       [workspaceId],
     );
     return result.rows[0] ? mapImportJob(result.rows[0]) : null;
+  }
+
+  async setImportSelection(
+    workspaceId: string,
+    sessionKeys: string[],
+  ): Promise<OpenVikingImportJob> {
+    const result = await this.database.query<ImportJobRow>(
+      `
+        update agent_recall.openviking_import_jobs
+        set selected_session_keys = $2::jsonb, updated_at = $3
+        where workspace_id = $1
+        returning *
+      `,
+      [workspaceId, JSON.stringify(sessionKeys), new Date().toISOString()],
+    );
+    if (!result.rows[0]) throw new Error("OpenViking import job was not found.");
+    return mapImportJob(result.rows[0]);
   }
 
   async recordImportedTurn(workspaceId: string, sourceTurnId: string, fingerprint: string): Promise<void> {
@@ -606,6 +625,9 @@ function mapImportJob(row: ImportJobRow): OpenVikingImportJob {
     completedTasks: Number(row.completed_tasks),
     totalTasks: Number(row.total_tasks),
     cursorSessionKey: row.cursor_session_key,
+    selectedSessionKeys: Array.isArray(row.selected_session_keys)
+      ? row.selected_session_keys.filter((value): value is string => typeof value === "string")
+      : null,
     lastError: row.last_error,
     updatedAt: iso(row.updated_at),
   };

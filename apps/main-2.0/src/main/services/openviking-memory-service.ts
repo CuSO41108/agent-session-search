@@ -45,8 +45,6 @@ import type {
 
 const execFileAsync = promisify(execFile);
 const MAX_TURN_CONTENT = 12_000;
-const IMPORT_CHUNK_TOKEN_LIMIT = 20_000;
-const IMPORT_KEEP_RECENT_MESSAGES = 10;
 const IMPORT_CONCURRENCY = 2;
 
 export interface OpenVikingDirectoryPreview {
@@ -56,6 +54,15 @@ export interface OpenVikingDirectoryPreview {
   sessionCount: number;
   existingWorkspaceId: string | null;
   relinkWorkspaceId: string | null;
+}
+
+export interface OpenVikingImportSessionPreview {
+  sessionKey: string;
+  title: string;
+  source: SessionSearchResult["source"];
+  lastActivityAt: number;
+  messageCount: number;
+  state: "new" | "changed" | "importing" | "imported";
 }
 
 export interface OpenVikingMemoryStorePort {
@@ -75,6 +82,10 @@ export interface OpenVikingMemoryStorePort {
   listSessionTurns(sessionKey: string): Promise<SessionTurnSummary[]>;
   getSessionTurn(sessionKey: string, turnId: string): Promise<SessionTurnDetail | null>;
   getOpenVikingImportJob(workspaceId: string): Promise<OpenVikingImportJob | null>;
+  setOpenVikingImportSelection(
+    workspaceId: string,
+    sessionKeys: string[],
+  ): Promise<OpenVikingImportJob>;
   updateOpenVikingImportJob(
     workspaceId: string,
     input: UpdateOpenVikingImportJobInput,
@@ -139,17 +150,14 @@ interface ImportCandidate {
   sourceTurnId: string;
 }
 
-interface ImportChunk {
-  primary: ImportCandidate[];
-  keepRecentCount: number;
-}
-
 export class OpenVikingMemoryService {
   private readonly inspectDirectory: NonNullable<OpenVikingMemoryServiceOptions["inspectDirectory"]>;
   private readonly resolveIdentity: NonNullable<OpenVikingMemoryServiceOptions["resolveIdentity"]>;
   private readonly createId: NonNullable<OpenVikingMemoryServiceOptions["createId"]>;
   private readonly sleep: NonNullable<OpenVikingMemoryServiceOptions["sleep"]>;
   private readonly activeImports = new Map<string, Promise<OpenVikingImportJob>>();
+  private readonly followUpImports = new Map<string, Promise<OpenVikingImportJob>>();
+  private readonly selectionWrites = new Map<string, Promise<OpenVikingImportJob>>();
   private readonly importActivities = new Map<string, OpenVikingImportActivity>();
 
   constructor(private readonly options: OpenVikingMemoryServiceOptions) {
@@ -237,10 +245,80 @@ export class OpenVikingMemoryService {
     }
   }
 
-  importWorkspace(workspaceId: string): Promise<OpenVikingImportJob> {
+  async listImportSessions(workspaceId: string): Promise<OpenVikingImportSessionPreview[]> {
+    const workspace = await this.requireWorkspace(workspaceId);
+    const [sessions, checkpoints, job] = await Promise.all([
+      this.options.store.searchSessions({
+        projectPath: workspace.rootPath,
+        environmentId: "local",
+        limit: 10_000,
+        excludeSubagents: true,
+        sortBy: "activity",
+        prioritizeFavorites: false,
+      }),
+      this.options.store.listOpenVikingSessionCheckpoints(workspaceId),
+      this.options.store.getOpenVikingImportJob(workspaceId),
+    ]);
+    const checkpointBySession = new Map(
+      checkpoints.map((checkpoint) => [checkpoint.sessionKey, checkpoint]),
+    );
+    const importingSessionKeys = new Set(
+      job && ["queued", "running", "paused"].includes(job.state)
+        ? job.selectedSessionKeys ?? []
+        : [],
+    );
+    return sessions.map((session) => {
+      const checkpoint = checkpointBySession.get(session.sessionKey);
+      const imported = checkpoint?.sourceRevision === sessionImportRevision(session);
+      return {
+        sessionKey: session.sessionKey,
+        title: session.displayTitle,
+        source: session.source,
+        lastActivityAt: session.lastActivityAt,
+        messageCount: session.messageCount,
+        state: imported
+          ? "imported"
+          : importingSessionKeys.has(session.sessionKey)
+            ? "importing"
+            : checkpoint
+              ? "changed"
+              : "new",
+      };
+    });
+  }
+
+  importWorkspace(
+    workspaceId: string,
+    selectedSessionKeys?: string[],
+  ): Promise<OpenVikingImportJob> {
     const existing = this.activeImports.get(workspaceId);
-    if (existing) return existing;
-    const pending = this.performImportWorkspace(workspaceId);
+    if (existing) {
+      if (selectedSessionKeys === undefined) return existing;
+      const selectionWrite = this.mergeImportSelection(workspaceId, selectedSessionKeys);
+      const scheduled = this.followUpImports.get(workspaceId);
+      if (scheduled) return selectionWrite.then(() => scheduled);
+      const followUp = (async () => {
+        await selectionWrite;
+        const current = await existing;
+        const latestSelectionWrite = this.selectionWrites.get(workspaceId);
+        if (latestSelectionWrite) await latestSelectionWrite;
+        const latest = await this.requireImportJob(workspaceId);
+        if (current.state === "paused" || latest.state === "paused") return latest;
+        if (this.activeImports.get(workspaceId) === existing) {
+          this.activeImports.delete(workspaceId);
+        }
+        return this.importWorkspace(workspaceId);
+      })();
+      this.followUpImports.set(workspaceId, followUp);
+      const clearFollowUp = () => {
+        if (this.followUpImports.get(workspaceId) === followUp) {
+          this.followUpImports.delete(workspaceId);
+        }
+      };
+      void followUp.then(clearFollowUp, clearFollowUp);
+      return followUp;
+    }
+    const pending = this.performImportWorkspace(workspaceId, selectedSessionKeys);
     this.activeImports.set(workspaceId, pending);
     const clear = () => {
       if (this.activeImports.get(workspaceId) === pending) {
@@ -252,10 +330,25 @@ export class OpenVikingMemoryService {
     return pending;
   }
 
-  private async performImportWorkspace(workspaceId: string): Promise<OpenVikingImportJob> {
+  private async performImportWorkspace(
+    workspaceId: string,
+    selectedSessionKeys?: string[],
+  ): Promise<OpenVikingImportJob> {
     const workspace = await this.requireWorkspace(workspaceId);
+    if (selectedSessionKeys !== undefined) {
+      await this.mergeImportSelection(workspaceId, selectedSessionKeys);
+    }
     const existingJob = await this.options.store.getOpenVikingImportJob(workspaceId);
     if (existingJob?.state === "paused") return existingJob;
+    if (existingJob && existingJob.state !== "running") {
+      await this.options.store.updateOpenVikingImportJob(workspaceId, {
+        state: "running",
+        importedTurns: existingJob.importedTurns,
+        totalTurns: existingJob.totalTurns,
+        cursorSessionKey: existingJob.cursorSessionKey,
+        lastError: null,
+      });
+    }
     const auth = await this.requireAuth(workspace);
     try {
       const settled = await this.settleDispatchedTasks(workspaceId, auth);
@@ -271,7 +364,7 @@ export class OpenVikingMemoryService {
       throw error;
     }
     this.importActivities.set(workspaceId, { phase: "scanning" });
-    const sessions = await this.options.store.searchSessions({
+    const discoveredSessions = await this.options.store.searchSessions({
       projectPath: workspace.rootPath,
       environmentId: "local",
       limit: 10_000,
@@ -279,6 +372,15 @@ export class OpenVikingMemoryService {
       sortBy: "created",
       prioritizeFavorites: false,
     });
+    const selectedSessionKeySet = existingJob?.selectedSessionKeys
+      ? new Set(existingJob.selectedSessionKeys)
+      : null;
+    const sessions = selectedSessionKeySet
+      ? discoveredSessions.filter((session) => selectedSessionKeySet.has(session.sessionKey))
+      : discoveredSessions;
+    if (selectedSessionKeySet && sessions.length === 0) {
+      throw new Error("The selected sessions are no longer available in this directory.");
+    }
     const sessionCheckpoints = await this.options.store.listOpenVikingSessionCheckpoints(workspaceId);
     const checkpointBySession = new Map(
       sessionCheckpoints.map((checkpoint) => [checkpoint.sessionKey, checkpoint]),
@@ -319,29 +421,29 @@ export class OpenVikingMemoryService {
     const taskInputs: CreateOpenVikingImportTaskInput[] = [];
     for (const session of changedSessions) {
       const sourceRevision = revisionBySession.get(session.sessionKey)!;
-      for (const chunk of buildImportChunks(
-        candidatesBySession.get(session.sessionKey) ?? [],
-        importedCandidates,
-      )) {
-        taskInputs.push({
-          id: deterministicImportTaskId(
-            workspaceId,
-            session.sessionKey,
-            sourceRevision,
-            chunk.primary,
-          ),
-          position: taskInputs.length,
+      const primary = (candidatesBySession.get(session.sessionKey) ?? [])
+        .filter((candidate) => !importedCandidates.has(
+          importedTurnCheckpointKey(candidate.sourceTurnId, candidate.fingerprint),
+        ));
+      if (primary.length === 0) continue;
+      taskInputs.push({
+        id: deterministicImportTaskId(
           workspaceId,
-          sessionKey: session.sessionKey,
+          session.sessionKey,
           sourceRevision,
-          sessionTitle: session.displayTitle,
-          payload: {
-            context: [],
-            primary: chunk.primary.map(importTaskTurn),
-            keepRecentCount: chunk.keepRecentCount,
-          },
-        });
-      }
+          primary,
+        ),
+        position: taskInputs.length,
+        workspaceId,
+        sessionKey: session.sessionKey,
+        sourceRevision,
+        sessionTitle: session.displayTitle,
+        payload: {
+          context: [],
+          primary: primary.map(importTaskTurn),
+          keepRecentCount: 0,
+        },
+      });
     }
     const tasks = await this.options.store.syncOpenVikingImportTasks(
       workspaceId,
@@ -461,6 +563,35 @@ export class OpenVikingMemoryService {
       });
       throw error;
     }
+  }
+
+  private mergeImportSelection(
+    workspaceId: string,
+    selectedSessionKeys: string[],
+  ): Promise<OpenVikingImportJob> {
+    const normalizedSelection = [...new Set(
+      selectedSessionKeys.map((key) => key.trim()).filter(Boolean),
+    )];
+    if (normalizedSelection.length === 0) {
+      return Promise.reject(new Error("Select at least one session to import."));
+    }
+    const previous = this.selectionWrites.get(workspaceId);
+    const write = (previous?.catch(() => undefined) ?? Promise.resolve()).then(async () => {
+      const current = await this.requireImportJob(workspaceId);
+      const merged = [...new Set([
+        ...(current.selectedSessionKeys ?? []),
+        ...normalizedSelection,
+      ])];
+      return this.options.store.setOpenVikingImportSelection(workspaceId, merged);
+    });
+    this.selectionWrites.set(workspaceId, write);
+    const clear = () => {
+      if (this.selectionWrites.get(workspaceId) === write) {
+        this.selectionWrites.delete(workspaceId);
+      }
+    };
+    void write.then(clear, clear);
+    return write;
   }
 
   private async settleDispatchedTasks(
@@ -589,7 +720,19 @@ export class OpenVikingMemoryService {
     });
   }
 
+  async waitForImportToSettle(workspaceId: string): Promise<void> {
+    for (;;) {
+      const pending = [
+        this.activeImports.get(workspaceId),
+        this.followUpImports.get(workspaceId),
+      ].filter((operation): operation is Promise<OpenVikingImportJob> => operation !== undefined);
+      if (pending.length === 0) return;
+      await Promise.allSettled(pending);
+    }
+  }
+
   async resumeImport(workspaceId: string): Promise<OpenVikingImportJob> {
+    await this.waitForImportToSettle(workspaceId);
     const current = await this.requireImportJob(workspaceId);
     const queued = await this.options.store.updateOpenVikingImportJob(workspaceId, {
       state: "queued",
@@ -613,7 +756,11 @@ export class OpenVikingMemoryService {
   }
 
   async deleteWorkspace(workspaceId: string): Promise<void> {
-    const workspace = await this.requireWorkspace(workspaceId);
+    const workspace = await this.options.store.getOpenVikingWorkspace(workspaceId);
+    if (!workspace) {
+      await this.options.credentials.delete(workspaceId);
+      return;
+    }
     const auth = await this.options.client.ensureWorkspaceUser({
       accountId: OPENVIKING_ACCOUNT_ID,
       userId: workspace.userId,
@@ -840,33 +987,6 @@ function importTaskTurn(candidate: ImportCandidate): OpenVikingImportTaskTurn {
     ...(candidate.detail.startedAt ? { startedAt: candidate.detail.startedAt } : {}),
     ...(candidate.detail.endedAt ? { endedAt: candidate.detail.endedAt } : {}),
   };
-}
-
-function buildImportChunks(
-  candidates: ImportCandidate[],
-  importedCandidates: ReadonlySet<string>,
-): ImportChunk[] {
-  const pending = candidates.filter((candidate) => !importedCandidates.has(
-    importedTurnCheckpointKey(candidate.sourceTurnId, candidate.fingerprint),
-  ));
-  const batches: ImportCandidate[][] = [];
-  let batch: ImportCandidate[] = [];
-  let estimatedTokens = 0;
-  for (const candidate of pending) {
-    const candidateTokens = Math.ceil((candidate.user.length + candidate.assistant.length) / 4);
-    if (batch.length > 0 && estimatedTokens + candidateTokens > IMPORT_CHUNK_TOKEN_LIMIT) {
-      batches.push(batch);
-      batch = [];
-      estimatedTokens = 0;
-    }
-    batch.push(candidate);
-    estimatedTokens += candidateTokens;
-  }
-  if (batch.length > 0) batches.push(batch);
-  return batches.map((primary, index) => ({
-    primary,
-    keepRecentCount: index === batches.length - 1 ? 0 : IMPORT_KEEP_RECENT_MESSAGES,
-  }));
 }
 
 export async function resolveDirectoryIdentity(

@@ -57,6 +57,8 @@ interface OpenVikingGatewayOptions {
   baseUrl: string;
   rootApiKey: string;
   timeout?: number;
+  userOperationRetryDelayMs?: number;
+  userOperationMaxAttempts?: number;
 }
 
 export class OpenVikingGatewayError extends Error {
@@ -66,16 +68,16 @@ export class OpenVikingGatewayError extends Error {
     message: string,
     readonly code: string,
     readonly statusCode?: number,
-    options: { cause?: unknown } = {},
+    options: { cause?: unknown; retryable?: boolean } = {},
   ) {
     super(message, options);
     this.name = "OpenVikingGatewayError";
-    this.retryable = statusCode === 408
+    this.retryable = options.retryable ?? (statusCode === 408
       || statusCode === 429
       || (statusCode !== undefined && statusCode >= 500)
       || code === "DEADLINE_EXCEEDED"
       || code === "UNAVAILABLE"
-      || code === "QUEUE_UNAVAILABLE";
+      || code === "QUEUE_UNAVAILABLE");
   }
 }
 
@@ -83,10 +85,14 @@ export class OpenVikingGateway implements OpenVikingClientPort {
   private readonly rootClient: OpenVikingClient;
   private readonly baseUrl: string;
   private readonly timeout: number;
+  private readonly userOperationRetryDelayMs: number;
+  private readonly userOperationMaxAttempts: number;
 
   constructor(options: OpenVikingGatewayOptions) {
     this.baseUrl = options.baseUrl;
     this.timeout = options.timeout ?? 60_000;
+    this.userOperationRetryDelayMs = options.userOperationRetryDelayMs ?? 1_000;
+    this.userOperationMaxAttempts = options.userOperationMaxAttempts ?? 120;
     this.rootClient = new OpenVikingClient({
       baseUrl: options.baseUrl,
       apiKey: options.rootApiKey,
@@ -104,7 +110,7 @@ export class OpenVikingGateway implements OpenVikingClientPort {
     accountId: string;
     userId: string;
   }): Promise<OpenVikingWorkspaceAuth> {
-    return this.normalize(async () => {
+    return this.retryUserRegistryOperation(() => this.normalize(async () => {
       const accounts = await this.rootClient.adminListAccounts();
       const accountExists = accounts.some((account) => recordIdentifier(account, "account") === input.accountId);
       let result: JsonObject;
@@ -122,7 +128,7 @@ export class OpenVikingGateway implements OpenVikingClientPort {
         userId: input.userId,
         apiKey: extractApiKey(result),
       };
-    });
+    }));
   }
 
   async deleteWorkspaceUser(auth: OpenVikingWorkspaceAuth): Promise<void> {
@@ -138,7 +144,7 @@ export class OpenVikingGateway implements OpenVikingClientPort {
       ]) {
         await client.remove(uri, {
           recursive: true,
-          wait: false,
+          wait: true,
         });
       }
       await this.rootClient.adminRemoveUser(auth.accountId, auth.userId);
@@ -269,6 +275,25 @@ export class OpenVikingGateway implements OpenVikingClientPort {
     });
   }
 
+  private async retryUserRegistryOperation<T>(operation: () => Promise<T>): Promise<T> {
+    for (let attempt = 1; attempt <= this.userOperationMaxAttempts; attempt += 1) {
+      try {
+        return await operation();
+      } catch (error) {
+        if (
+          !(error instanceof OpenVikingGatewayError)
+          || error.code !== "CONFLICT"
+          || !error.retryable
+          || attempt === this.userOperationMaxAttempts
+        ) {
+          throw error;
+        }
+        await new Promise((resolve) => setTimeout(resolve, this.userOperationRetryDelayMs));
+      }
+    }
+    throw new Error("OpenViking user operation retry loop ended unexpectedly.");
+  }
+
   private async normalize<T>(operation: () => Promise<T>): Promise<T> {
     try {
       return await operation();
@@ -279,7 +304,12 @@ export class OpenVikingGateway implements OpenVikingClientPort {
           error.message,
           error.code || "OPENVIKING_ERROR",
           error.statusCode,
-          { cause: error },
+          {
+            cause: error,
+            retryable: typeof error.details?.retryable === "boolean"
+              ? error.details.retryable
+              : undefined,
+          },
         );
       }
       throw new OpenVikingGatewayError(

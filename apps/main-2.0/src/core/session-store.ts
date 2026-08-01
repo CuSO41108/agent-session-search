@@ -385,6 +385,14 @@ export class SessionStore {
     return this.openVikingMemory.getImportJob(workspaceId);
   }
 
+  async setOpenVikingImportSelection(
+    workspaceId: string,
+    sessionKeys: string[],
+  ): Promise<OpenVikingImportJob> {
+    await this.ready;
+    return this.openVikingMemory.setImportSelection(workspaceId, sessionKeys);
+  }
+
   async hasOpenVikingImportedTurn(
     workspaceId: string,
     sourceTurnId: string,

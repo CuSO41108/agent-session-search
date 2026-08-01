@@ -40,7 +40,7 @@ describe("OpenViking directory memory UI", () => {
     expect(html).toContain("OpenCode");
   });
 
-  it("configures memory extraction through the summary Provider", () => {
+  it("keeps AI Provider, model, and reasoning settings out of Memory", () => {
     const html = renderToStaticMarkup(createElement(OpenVikingMemorySettings, {
       language: "zh",
       settings: {
@@ -53,77 +53,10 @@ describe("OpenViking directory memory UI", () => {
       onSettingsChange: () => undefined,
     }));
 
-    expect(html).toContain("记忆提取");
-    expect(html).toContain("摘要 Provider");
-    expect(html).toContain("gpt-5.6-sol");
-    expect(html).toContain('value="medium"');
-    expect(html).toContain('value="xhigh"');
-    expect(html).toContain('value="max"');
-    expect(html).toContain('value="ultra"');
-    expect(html).not.toContain("跟随");
-  });
-
-  it("recognizes Codex model ids without requiring exact casing", () => {
-    const html = renderToStaticMarkup(createElement(OpenVikingMemorySettings, {
-      language: "zh",
-      settings: {
-        ...defaultSettings,
-        summarySource: "codex",
-        openVikingExtractionModel: "GPT-5.6-Sol",
-        openVikingExtractionReasoningEffort: "medium",
-      },
-      saving: false,
-      onSettingsChange: () => undefined,
-    }));
-
-    expect(html).toContain('value="xhigh"');
-    expect(html).toContain('value="max"');
-    expect(html).toContain('value="ultra"');
-  });
-
-  it("explains when the summary Provider cannot extract memories", () => {
-    const html = renderToStaticMarkup(createElement(OpenVikingMemorySettings, {
-      language: "zh",
-      settings: { ...defaultSettings, summarySource: "claude" },
-      saving: false,
-      onSettingsChange: () => undefined,
-    }));
-
-    expect(html).toContain("Claude CLI");
-    expect(html).toContain("暂不支持");
-  });
-
-  it("shows the exact missing custom Provider field in a compact extraction layout", async () => {
-    const html = renderToStaticMarkup(createElement(OpenVikingMemorySettings, {
-      language: "zh",
-      settings: {
-        ...defaultSettings,
-        summarySource: "custom",
-        summaryApiConfig: {
-          ...defaultSettings.summaryApiConfig,
-          customProviderName: "CodexZH",
-          customApiFormat: "openai_chat",
-          customBaseUrl: "https://api.codexzh.com/v1",
-          customApiKey: "",
-          customModel: "gpt-5.5",
-        },
-      },
-      saving: false,
-      onSettingsChange: () => undefined,
-    }));
-    const css = await readFile(
-      path.join(process.cwd(), "src/renderer/src/styles/openviking-memory.css"),
-      "utf8",
-    );
-
-    expect(html).toContain("CodexZH");
-    expect(html).toContain("缺少 API Key");
-    expect(html).not.toContain("地址、API Key 和模型");
-    expect(html).toContain('value="gpt-5.5" selected=""');
-    expect(html).toContain('value="gpt-5.6-sol"');
-    expect(html).not.toContain("跟随");
-    expect(html).toContain("openviking-extraction-fields");
-    expect(css).toMatch(/\.openviking-extraction-fields\s*\{[^}]*grid-template-columns:/su);
+    expect(html).not.toContain("记忆提取");
+    expect(html).not.toContain("摘要 Provider");
+    expect(html).not.toContain("提取模型");
+    expect(html).not.toContain("推理强度");
   });
 
   it("renders live runtime download stages, byte counts and a progress bar", async () => {
@@ -180,6 +113,24 @@ describe("OpenViking directory memory UI", () => {
     expect(source).toContain("workspace.importActivity.sessionTitle");
   });
 
+  it("keeps the picker available but disables sessions already being imported", async () => {
+    const source = await readFile(
+      path.join(process.cwd(), "src/renderer/src/features/openviking-memory/openviking-memory-page.tsx"),
+      "utf8",
+    );
+    const workspaceHeader = source.slice(
+      source.indexOf('className="openviking-workspace-head"'),
+      source.indexOf('className={`openviking-import-status'),
+    );
+
+    expect(workspaceHeader).toMatch(
+      /workspace\.managed\s*\?\s*\([\s\S]*?openImportPicker\(workspace\)/u,
+    );
+    expect(source).toContain('disabled={!isImportSessionSelectable(session)}');
+    expect(source).toContain('return session.state === "new" || session.state === "changed";');
+    expect(source).toContain('localize(language, "Importing", "导入中")');
+  });
+
   it("keeps refresh and directory management independent from unrelated memory actions", async () => {
     const source = await readFile(
       path.join(process.cwd(), "src/renderer/src/features/openviking-memory/openviking-memory-page.tsx"),
@@ -234,15 +185,20 @@ describe("OpenViking directory memory UI", () => {
     );
   });
 
-  it("keeps the import transition active until the final runtime status is loaded", async () => {
+  it("does not keep the page locked while a background import is running", async () => {
     const source = await readFile(
       path.join(process.cwd(), "src/renderer/src/features/openviking-memory/openviking-memory-page.tsx"),
       "utf8",
     );
-
-    expect(source).toMatch(
-      /\.finally\(async \(\) => \{[\s\S]*?await refresh\(\);[\s\S]*?setAction\(null\);[\s\S]*?\}\)/u,
+    const beginSelectedImportStart = source.indexOf("const beginSelectedImport = () =>");
+    const beginSelectedImport = source.slice(
+      beginSelectedImportStart,
+      source.indexOf("const startImport =", beginSelectedImportStart),
     );
+
+    expect(beginSelectedImport).toContain("importOpenVikingWorkspace(target.id, selectedKeys)");
+    expect(beginSelectedImport).not.toContain('setAction("import")');
+    expect(beginSelectedImport).not.toContain("setAction(null)");
   });
 
   it("silently invalidates an automatic memory request before pausing", async () => {
@@ -260,6 +216,22 @@ describe("OpenViking directory memory UI", () => {
     );
     expect(source).toContain(
       'disabled={!query.trim() || action !== null || snapshot.runtime.state !== "running"}',
+    );
+  });
+
+  it("refreshes stale workspace state even when permanent deletion reports an error", async () => {
+    const source = await readFile(
+      path.join(process.cwd(), "src/renderer/src/features/openviking-memory/openviking-memory-page.tsx"),
+      "utf8",
+    );
+    const deleteWorkspaceStart = source.indexOf("const deleteWorkspace = () =>");
+    const deleteWorkspace = source.slice(
+      deleteWorkspaceStart,
+      source.indexOf("if (!enabled)", deleteWorkspaceStart),
+    );
+
+    expect(deleteWorkspace).toMatch(
+      /browseRequestVersion\.current \+= 1;[\s\S]*?try \{[\s\S]*?deleteOpenVikingWorkspace[\s\S]*?\} finally \{[\s\S]*?await refresh\(\);/u,
     );
   });
 

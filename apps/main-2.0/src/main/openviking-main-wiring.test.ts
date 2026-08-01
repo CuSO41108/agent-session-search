@@ -13,6 +13,7 @@ describe("OpenViking main-process wiring", () => {
     expect(mainSource).toContain("OpenVikingHookStateFlusher");
     expect(mainSource).toContain("openVikingHookStateFlusher.start()");
     expect(mainSource).toContain("openVikingHookStateFlusher?.stop()");
+    expect(mainSource).toContain("openVikingHookManifestService?.clear()");
     expect(mainSource).toContain("reconcileOpenVikingMemoryHooks");
     expect(mainSource).toContain("refreshOpenVikingHookManifest");
     expect(mainSource).toContain("void openVikingControlService.syncManagedWorkspaces()");

@@ -1195,4 +1195,13 @@ export const POSTGRES_MIGRATIONS: readonly PostgresMigration[] = [{
         ON agent_recall.openviking_import_tasks (workspace_id, position);
     `,
   ],
+}, {
+  version: 19,
+  name: "persist selected OpenViking import sessions",
+  statements: [
+    `
+      ALTER TABLE agent_recall.openviking_import_jobs
+        ADD COLUMN IF NOT EXISTS selected_session_keys jsonb;
+    `,
+  ],
 }];

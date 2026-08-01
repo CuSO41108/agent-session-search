@@ -14,7 +14,7 @@ const MAX_TURN_CHARS = 12_000;
 const MAX_CONTEXT_CHARS = 6_000;
 const MAX_RECENT_CONTEXT_CHARS = 3_000;
 const MAX_CORE_MEMORY_CHARS = 2_000;
-const REQUEST_TIMEOUT_MS = 5_000;
+const REQUEST_TIMEOUT_MS = 2_000;
 const DEFAULT_COMMIT_TOKEN_THRESHOLD = 7_000;
 
 function findWorkspaceForCwd(manifest, cwd, platform = process.platform) {
@@ -134,7 +134,7 @@ async function recallForWorkspace(workspace, query, options) {
       body: JSON.stringify(searchBody),
     }),
   ]);
-  const response = initialResponse.accepted || !options.sessionId
+  const response = initialResponse.accepted || !options.sessionId || initialResponse.transportFailed
     ? initialResponse
     : await requestJson("/api/v1/search/find", workspace, options, {
     method: "POST",
@@ -350,9 +350,9 @@ async function requestJson(route, workspace, options, init) {
       // Successful endpoints may return no body.
     }
     const envelopeFailed = payload && (payload.status === "error" || payload.success === false || payload.code >= 400);
-    return { accepted: response.ok !== false && !envelopeFailed, payload };
+    return { accepted: response.ok !== false && !envelopeFailed, payload, transportFailed: false };
   } catch {
-    return { accepted: false, payload: null };
+    return { accepted: false, payload: null, transportFailed: true };
   } finally {
     clearTimeout(timer);
   }

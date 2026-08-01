@@ -363,6 +363,23 @@ export class OpenVikingRuntimeService {
     }
   }
 
+  async startFromPersistedConfig(): Promise<OpenVikingRuntimeStatus> {
+    const configPath = this.resolveOwnedPath("ov.conf");
+    let persisted: Partial<OpenVikingServerConfig>;
+    try {
+      persisted = JSON.parse(await readFile(configPath, "utf8")) as Partial<OpenVikingServerConfig>;
+    } catch (error) {
+      throw new Error("OpenViking has no usable previous configuration for cleanup.", { cause: error });
+    }
+    if (!persisted.embedding?.dense || !persisted.vlm) {
+      throw new Error("OpenViking has no usable previous configuration for cleanup.");
+    }
+    return this.start({
+      embedding: persisted.embedding,
+      vlm: persisted.vlm,
+    });
+  }
+
   async stop(): Promise<OpenVikingRuntimeStatus> {
     const state = await this.readRuntimeState();
     const child = this.child;
@@ -376,6 +393,13 @@ export class OpenVikingRuntimeService {
     await rm(this.runtimeStatePath(), { force: true });
     this.transientStatus = null;
     return this.getStatus();
+  }
+
+  async clearData(): Promise<void> {
+    if ((await this.getStatus()).state === "running") {
+      throw new Error("Stop OpenViking before clearing its data.");
+    }
+    await rm(this.resolveOwnedPath("data"), { recursive: true, force: true });
   }
 
   async getConnection(): Promise<{ baseUrl: string; rootApiKey: string }> {

@@ -151,6 +151,7 @@ function harness(options: {
     importedTurns: number;
     totalTurns: number;
     cursorSessionKey: string | null;
+    selectedSessionKeys?: string[] | null;
     lastError: string | null;
   }>();
   const imported = new Set<string>();
@@ -201,8 +202,15 @@ function harness(options: {
       const job = jobs.get(workspaceId);
       return job ? { workspaceId, updatedAt: "2026-07-24T00:00:00.000Z", ...job } : null;
     }),
+    setOpenVikingImportSelection: vi.fn(async (workspaceId, selectedSessionKeys) => {
+      const current = jobs.get(workspaceId);
+      if (!current) throw new Error("missing");
+      const next = { ...current, selectedSessionKeys };
+      jobs.set(workspaceId, next);
+      return { workspaceId, updatedAt: "2026-07-24T00:00:00.000Z", ...next };
+    }),
     updateOpenVikingImportJob: vi.fn(async (workspaceId, update) => {
-      jobs.set(workspaceId, update);
+      jobs.set(workspaceId, { ...jobs.get(workspaceId), ...update });
       const current = workspaces.find((item) => item.id === workspaceId);
       if (current) Object.assign(current, {
         importState: update.state,
@@ -210,7 +218,11 @@ function harness(options: {
         totalTurns: update.totalTurns,
         ...(update.lastError ? { lastError: update.lastError } : {}),
       });
-      return { workspaceId, updatedAt: "2026-07-24T00:00:00.000Z", ...update };
+      return {
+        workspaceId,
+        updatedAt: "2026-07-24T00:00:00.000Z",
+        ...jobs.get(workspaceId)!,
+      };
     }),
     hasOpenVikingImportedTurn: vi.fn(async (workspaceId, sourceTurnId, fingerprint) =>
       imported.has(`${workspaceId}:${sourceTurnId}:${fingerprint}`)),
@@ -366,6 +378,7 @@ function harness(options: {
     credentials,
     workspaces,
     jobs,
+    importTasks,
     imported,
     sessionCheckpoints,
     events,
@@ -494,9 +507,9 @@ describe("OpenVikingMemoryService", () => {
     expect(store.getSessionTurn).not.toHaveBeenCalled();
   });
 
-  it("commits about 20k tokens at a time while reusing one OpenViking Session", async () => {
-    const summaries = Array.from({ length: 4 }, (_, index) => turn(`turn-${index + 1}`, index));
-    const longContent = "x".repeat(12_000);
+  it("commits every Turn from one scanned Session in one OpenViking task", async () => {
+    const summaries = Array.from({ length: 60 }, (_, index) => turn(`turn-${index + 1}`, index));
+    const longContent = "x".repeat(1_000);
     const details = Object.fromEntries(summaries.map((summary, index) => [
       summary.id,
       detail(summary, `${longContent}${index}`, `${longContent}${index}`),
@@ -510,26 +523,23 @@ describe("OpenVikingMemoryService", () => {
 
     await expect(h.service.importWorkspace("workspace-1")).resolves.toMatchObject({
       state: "completed",
-      importedTurns: 4,
-      totalTurns: 4,
+      importedTurns: 60,
+      totalTurns: 60,
     });
 
+    const plannedTasks = vi.mocked(h.store.syncOpenVikingImportTasks).mock.calls[0][1];
+    expect(plannedTasks).toHaveLength(1);
+    expect(plannedTasks[0].payload.primary).toHaveLength(60);
     const appendedSessionIds = vi.mocked(h.client.appendMessages).mock.calls.map((call) => call[1]);
     expect(new Set(appendedSessionIds)).toHaveLength(1);
-    expect(h.client.commitSession).toHaveBeenCalledTimes(2);
-    expect(h.client.commitSession).toHaveBeenNthCalledWith(
-      1,
-      expect.anything(),
-      appendedSessionIds[0],
-      10,
-    );
-    expect(h.client.commitSession).toHaveBeenNthCalledWith(
-      2,
+    expect(h.client.appendMessages).toHaveBeenCalledTimes(60);
+    expect(h.client.commitSession).toHaveBeenCalledOnce();
+    expect(h.client.commitSession).toHaveBeenCalledWith(
       expect.anything(),
       appendedSessionIds[0],
       0,
     );
-    expect(h.store.completeOpenVikingImportTask).toHaveBeenCalledTimes(2);
+    expect(h.store.completeOpenVikingImportTask).toHaveBeenCalledOnce();
   });
 
   it("imports only changed Turns without replaying artificial overlap", async () => {
@@ -658,6 +668,72 @@ describe("OpenVikingMemoryService", () => {
     expect(h.client.commitSession).toHaveBeenCalledOnce();
   });
 
+  it("marks sessions already selected by an active import as importing", async () => {
+    const h = harness({
+      initialWorkspaces: [workspace({ importState: "running" })],
+      sessions: [session("codex:1"), session("codex:2")],
+    });
+    h.jobs.set("workspace-1", {
+      state: "running",
+      importedTurns: 0,
+      totalTurns: 1,
+      cursorSessionKey: "codex:1",
+      selectedSessionKeys: ["codex:1"],
+      lastError: null,
+    });
+
+    await expect(h.service.listImportSessions("workspace-1")).resolves.toEqual([
+      expect.objectContaining({ sessionKey: "codex:1", state: "importing" }),
+      expect.objectContaining({ sessionKey: "codex:2", state: "new" }),
+    ]);
+  });
+
+  it("imports newly selected sessions after the current import finishes", async () => {
+    const firstTurn = turn("turn-1", 0);
+    const secondTurn = turn("turn-2", 0);
+    const h = harness({
+      initialWorkspaces: [workspace()],
+      sessions: [session("codex:1"), session("codex:2")],
+      turns: {
+        "codex:1": [firstTurn],
+        "codex:2": [secondTurn],
+      },
+      details: {
+        "turn-1": detail(firstTurn, "first question", "first answer"),
+        "turn-2": detail(secondTurn, "second question", "second answer"),
+      },
+    });
+    h.jobs.set("workspace-1", {
+      state: "idle",
+      importedTurns: 0,
+      totalTurns: 0,
+      cursorSessionKey: null,
+      selectedSessionKeys: null,
+      lastError: null,
+    });
+    let finishFirstTask!: () => void;
+    const firstTaskFinished = new Promise<void>((resolve) => {
+      finishFirstTask = resolve;
+    });
+    vi.mocked(h.client.getTask)
+      .mockImplementationOnce(async () => {
+        await firstTaskFinished;
+        return { id: "task-1", status: "completed" };
+      })
+      .mockResolvedValue({ id: "task-2", status: "completed" });
+
+    const firstImport = h.service.importWorkspace("workspace-1", ["codex:1"]);
+    await vi.waitFor(() => expect(h.client.commitSession).toHaveBeenCalledOnce());
+    const additionalImport = h.service.importWorkspace("workspace-1", ["codex:2"]);
+    finishFirstTask();
+    await Promise.all([firstImport, additionalImport]);
+
+    expect(h.client.appendMessages).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(h.client.appendMessages).mock.calls.map((call) => call[2][0]?.content))
+      .toEqual(["first question", "second question"]);
+    expect(h.jobs.get("workspace-1")?.selectedSessionKeys).toEqual(["codex:1", "codex:2"]);
+  });
+
   it("pauses safely and resumes from persisted import checkpoints", async () => {
     const summary = turn("turn-1", 0);
     const h = harness({
@@ -714,8 +790,10 @@ describe("OpenVikingMemoryService", () => {
     const importing = h.service.importWorkspace("workspace-1");
     await sleeping;
     await h.service.pauseImport("workspace-1");
+    const settling = h.service.waitForImportToSettle("workspace-1");
     resumeSleeping();
 
+    await expect(settling).resolves.toBeUndefined();
     await expect(importing).resolves.toMatchObject({
       state: "paused",
       importedTurns: 0,
@@ -733,6 +811,90 @@ describe("OpenVikingMemoryService", () => {
     expect(h.client.appendMessages).not.toHaveBeenCalled();
     expect(h.client.commitSession).not.toHaveBeenCalled();
     expect(h.store.completeOpenVikingImportTask).toHaveBeenCalledOnce();
+  });
+
+  it("waits for the paused import loop to exit before queueing a resume", async () => {
+    const summary = turn("turn-1", 0);
+    const h = harness({
+      initialWorkspaces: [workspace()],
+      sessions: [session("codex:1")],
+      turns: { "codex:1": [summary] },
+      details: { "turn-1": detail(summary, "question", "answer") },
+    });
+    let reportTaskStarted!: () => void;
+    let rejectStoppedRequest!: (error: Error) => void;
+    const taskStarted = new Promise<void>((resolve) => {
+      reportTaskStarted = resolve;
+    });
+    vi.mocked(h.client.getTask).mockImplementationOnce(async () => {
+      reportTaskStarted();
+      return new Promise((_, reject) => {
+        rejectStoppedRequest = reject;
+      });
+    });
+
+    const importing = h.service.importWorkspace("workspace-1");
+    await taskStarted;
+    await h.service.pauseImport("workspace-1");
+    const resuming = h.service.resumeImport("workspace-1");
+    await Promise.resolve();
+
+    expect(h.jobs.get("workspace-1")?.state).toBe("paused");
+    rejectStoppedRequest(new Error("OpenViking stopped while polling the task."));
+    await expect(importing).resolves.toMatchObject({ state: "paused" });
+    await expect(resuming).resolves.toMatchObject({ state: "queued" });
+    await vi.waitFor(() => expect(h.jobs.get("workspace-1")?.state).toBe("completed"));
+  });
+
+  it("returns a resumed remote task to running state while it is still processing", async () => {
+    let reportSleeping!: () => void;
+    let resumeSleeping!: () => void;
+    const sleeping = new Promise<void>((resolve) => {
+      reportSleeping = resolve;
+    });
+    const sleepBarrier = new Promise<void>((resolve) => {
+      resumeSleeping = resolve;
+    });
+    const h = harness({
+      initialWorkspaces: [workspace({ importState: "queued" })],
+      sessions: [session("codex:1")],
+      sleep: async () => {
+        reportSleeping();
+        await sleepBarrier;
+      },
+    });
+    h.jobs.set("workspace-1", {
+      state: "queued",
+      importedTurns: 0,
+      totalTurns: 1,
+      cursorSessionKey: "codex:1",
+      selectedSessionKeys: ["codex:1"],
+      lastError: null,
+    });
+    h.importTasks.set("task-1", {
+      id: "task-1",
+      position: 0,
+      workspaceId: "workspace-1",
+      sessionKey: "codex:1",
+      sourceRevision: "revision-1",
+      sessionTitle: "Session 1",
+      payload: { context: [], primary: [] },
+      state: "waiting",
+      attemptCount: 1,
+      remoteTaskId: "remote-task-1",
+      lastError: null,
+      createdAt: "2026-07-24T00:00:00.000Z",
+      updatedAt: "2026-07-24T00:00:00.000Z",
+    });
+    vi.mocked(h.client.getTask).mockResolvedValue({ id: "remote-task-1", status: "running" });
+
+    const importing = h.service.importWorkspace("workspace-1");
+    await sleeping;
+
+    expect(h.jobs.get("workspace-1")?.state).toBe("running");
+    await h.service.pauseImport("workspace-1");
+    resumeSleeping();
+    await importing;
   });
 
   it("finishes dispatching the current batch before honoring pause", async () => {
@@ -860,14 +1022,14 @@ describe("OpenVikingMemoryService", () => {
       importedTurns: 8,
     });
     const plannedTasks = vi.mocked(h.store.syncOpenVikingImportTasks).mock.calls[0][1];
-    expect(plannedTasks).toHaveLength(4);
+    expect(plannedTasks).toHaveLength(2);
     expect(new Set(plannedTasks.map((task) => task.sessionKey))).toEqual(new Set([
       "codex:first",
       "codex:second",
     ]));
     expect(maximum).toBe(2);
     expect([...maximumBySession.values()]).toEqual([1, 1]);
-    expect(h.client.commitSession).toHaveBeenCalledTimes(4);
+    expect(h.client.commitSession).toHaveBeenCalledTimes(2);
   });
 
   it("keeps waiting while OpenViking reports a queued commit task", async () => {
@@ -946,6 +1108,16 @@ describe("OpenVikingMemoryService", () => {
       userId: "workspace_abcd",
     });
     expect(h.events).toEqual(["remote-delete", "local-delete"]);
+    expect(h.credentials.delete).toHaveBeenCalledWith("workspace-1");
+  });
+
+  it("treats deleting an already removed workspace as successful cleanup", async () => {
+    const h = harness();
+
+    await expect(h.service.deleteWorkspace("workspace-1")).resolves.toBeUndefined();
+
+    expect(h.client.ensureWorkspaceUser).not.toHaveBeenCalled();
+    expect(h.client.deleteWorkspaceUser).not.toHaveBeenCalled();
     expect(h.credentials.delete).toHaveBeenCalledWith("workspace-1");
   });
 });

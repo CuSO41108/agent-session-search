@@ -101,6 +101,41 @@ test("managed prompt recall combines fixed core memory with session-aware search
   assert.equal(result.hookSpecificOutput.hookEventName, "UserPromptSubmit");
 });
 
+test("unavailable recall fails open without a second search attempt", async () => {
+  const rootPath = path.join(os.tmpdir(), "managed-project");
+  const requests = [];
+  const result = await handleHook({
+    cwd: rootPath,
+    prompt: "Continue the current task.",
+    session_id: "session-1",
+  }, {
+    agent: "codex",
+    event: "UserPromptSubmit",
+    manifest: managedManifest(rootPath),
+    timeoutMs: 5,
+    fetchImpl: async (url, init) => {
+      requests.push(String(url));
+      return await new Promise((resolve, reject) => {
+        init.signal.addEventListener("abort", () => reject(init.signal.reason), { once: true });
+      });
+    },
+    realpathSync: (value) => path.resolve(value),
+  });
+
+  assert.deepEqual(result, {});
+  assert.equal(requests.filter((url) => url.includes("/api/v1/search/")).length, 1);
+  assert.equal(requests.length, 3);
+});
+
+test("the internal request budget stays well below the Codex hook deadline", () => {
+  const source = fs.readFileSync(
+    path.join(import.meta.dirname, "..", "bin", "openviking-memory-hook.cjs"),
+    "utf8",
+  );
+
+  assert.match(source, /const REQUEST_TIMEOUT_MS = 2_000;/u);
+});
+
 test("managed Stop appends once and waits for the session lifecycle to commit", async (context) => {
   const testHome = fs.mkdtempSync(path.join(os.tmpdir(), "agent-recall-openviking-hook-"));
   context.after(() => fs.rmSync(testHome, { recursive: true, force: true }));

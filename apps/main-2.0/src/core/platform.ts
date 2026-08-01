@@ -111,6 +111,7 @@ export interface AppSettings {
   compressionConcurrency: number;
   migrationCompleteTokenLimit: number;
   summarySource: "codex" | "claude" | "custom";
+  summaryCodexModel: string;
   sessionSearchMcpEnabled: boolean;
   skillAiRuntimeId: string;
   skillSyncEnabled: boolean;
@@ -180,7 +181,8 @@ export const defaultSettings: AppSettings = {
   summaryMaxAgeDays: 30,
   compressionConcurrency: 8,
   migrationCompleteTokenLimit: 100_000,
-  summarySource: "custom",
+  summarySource: "codex",
+  summaryCodexModel: "",
   sessionSearchMcpEnabled: true,
   skillAiRuntimeId: "",
   skillSyncEnabled: false,
@@ -223,6 +225,7 @@ export function mergeAppSettings(previous: AppSettings, updates: AppSettingsUpda
       : "medium",
     showInDock: merged.showInDock !== false,
     summarySource: merged.summarySource === "claude" || merged.summarySource === "custom" ? merged.summarySource : "codex",
+    summaryCodexModel: String(merged.summaryCodexModel ?? "").trim(),
     skillAiRuntimeId: String(merged.skillAiRuntimeId ?? "").trim(),
     skillSyncEnabled: Boolean(merged.skillSyncEnabled),
     skillSyncSupabaseUrl: normalizeSupabaseSettingUrl(merged.skillSyncSupabaseUrl),

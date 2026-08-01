@@ -39,7 +39,13 @@ function harness(
     getStatus: vi.fn(async (): Promise<OpenVikingRuntimeStatus> => ({ state: "not-installed" })),
     install: vi.fn(async () => ({ state: "stopped" as const, version: "0.4.11" })),
     start: vi.fn(async () => ({ state: "running" as const, version: "0.4.11", port: 21933 })),
+    startFromPersistedConfig: vi.fn(async () => ({
+      state: "running" as const,
+      version: "0.4.11",
+      port: 21933,
+    })),
     stop: vi.fn(async () => ({ state: "stopped" as const, version: "0.4.11" })),
+    clearData: vi.fn(async () => undefined),
   };
   const model = {
     getStatus: vi.fn(async () => ({
@@ -72,6 +78,7 @@ function harness(
       updatedAt: "2026-07-24T00:00:00.000Z",
     })),
     pauseImport: vi.fn(),
+    waitForImportToSettle: vi.fn(async () => undefined),
     resumeImport: vi.fn(),
     searchMemories: vi.fn(async () => []),
     readMemory: vi.fn(async () => ""),
@@ -144,18 +151,17 @@ describe("OpenVikingControlService", () => {
     }));
   });
 
-  it("previews the chosen directory and starts historical import after adding it", async () => {
+  it("previews the chosen directory and waits for session selection after adding it", async () => {
     const { service, memory } = harness();
 
     await expect(service.chooseDirectory()).resolves.toMatchObject({ rootPath: "/repo", sessionCount: 2 });
     await expect(service.addWorkspace("/repo")).resolves.toMatchObject({ id: "workspace-1" });
     expect(memory.addWorkspace).toHaveBeenCalledWith("/repo");
-    expect(memory.importWorkspace).toHaveBeenCalledWith("workspace-1");
+    expect(memory.importWorkspace).not.toHaveBeenCalled();
   });
 
-  it("returns the workspace while historical import continues in the background", async () => {
+  it("returns the workspace without starting historical import before session selection", async () => {
     const { service, memory } = harness();
-    vi.mocked(memory.importWorkspace).mockImplementation(() => new Promise(() => undefined));
 
     const outcome = await Promise.race([
       service.addWorkspace("/repo").then(() => "returned"),
@@ -163,7 +169,7 @@ describe("OpenVikingControlService", () => {
     ]);
 
     expect(outcome).toBe("returned");
-    expect(memory.importWorkspace).toHaveBeenCalledWith("workspace-1");
+    expect(memory.importWorkspace).not.toHaveBeenCalled();
   });
 
   it("checks managed workspaces for incremental updates without resuming paused imports", async () => {
@@ -241,13 +247,26 @@ describe("OpenVikingControlService", () => {
 
     await service.deleteWorkspace("workspace-1");
 
-    expect(runtime.start).toHaveBeenCalledOnce();
+    expect(runtime.startFromPersistedConfig).toHaveBeenCalledOnce();
+    expect(runtime.start).not.toHaveBeenCalled();
     expect(memory.deleteWorkspace).toHaveBeenCalledWith("workspace-1");
     expect(runtime.stop).toHaveBeenCalledOnce();
-    expect(runtime.start.mock.invocationCallOrder[0])
+    expect(runtime.startFromPersistedConfig.mock.invocationCallOrder[0])
       .toBeLessThan(vi.mocked(memory.deleteWorkspace).mock.invocationCallOrder[0]);
     expect(vi.mocked(memory.deleteWorkspace).mock.invocationCallOrder[0])
       .toBeLessThan(runtime.stop.mock.invocationCallOrder[0]);
+  });
+
+  it("deletes a workspace with its persisted runtime config when the current Provider is incomplete", async () => {
+    const { service, runtime, memory } = harness();
+    vi.mocked(memory.listWorkspaces).mockResolvedValue([]);
+    vi.mocked(runtime.getStatus).mockResolvedValue({ state: "stopped", version: "0.4.11" });
+
+    await service.deleteWorkspace("workspace-1");
+
+    expect(runtime.startFromPersistedConfig).toHaveBeenCalledOnce();
+    expect(runtime.start).not.toHaveBeenCalled();
+    expect(memory.deleteWorkspace).toHaveBeenCalledWith("workspace-1");
   });
 
   it("stops an already-running OpenViking backend after deleting the last workspace", async () => {
@@ -262,8 +281,40 @@ describe("OpenVikingControlService", () => {
     await service.deleteWorkspace("workspace-1");
 
     expect(runtime.start).not.toHaveBeenCalled();
+    expect(memory.pauseImport).toHaveBeenCalledWith("workspace-1");
+    expect(memory.waitForImportToSettle).toHaveBeenCalledWith("workspace-1");
+    expect(runtime.startFromPersistedConfig).toHaveBeenCalledOnce();
     expect(memory.deleteWorkspace).toHaveBeenCalledWith("workspace-1");
-    expect(runtime.stop).toHaveBeenCalledOnce();
+    expect(runtime.stop).toHaveBeenCalledTimes(2);
+    expect(runtime.clearData).toHaveBeenCalledOnce();
+    expect(runtime.stop.mock.invocationCallOrder[0])
+      .toBeLessThan(vi.mocked(memory.waitForImportToSettle).mock.invocationCallOrder[0]);
+    expect(vi.mocked(memory.waitForImportToSettle).mock.invocationCallOrder[0])
+      .toBeLessThan(runtime.startFromPersistedConfig.mock.invocationCallOrder[0]);
+    expect(runtime.startFromPersistedConfig.mock.invocationCallOrder[0])
+      .toBeLessThan(vi.mocked(memory.deleteWorkspace).mock.invocationCallOrder[0]);
+    expect(runtime.stop.mock.invocationCallOrder[1])
+      .toBeLessThan(runtime.clearData.mock.invocationCallOrder[0]);
+  });
+
+  it("preserves shared OpenViking data after deleting one of multiple workspaces", async () => {
+    const { service, runtime, memory } = harness();
+    const remaining = {
+      ...(await memory.listWorkspaces())[0],
+      id: "workspace-2",
+      importState: "completed" as const,
+    };
+    vi.mocked(runtime.getStatus).mockResolvedValue({
+      state: "running",
+      version: "0.4.11",
+      port: 21933,
+    });
+    vi.mocked(memory.listWorkspaces).mockResolvedValue([remaining]);
+
+    await service.deleteWorkspace("workspace-1");
+
+    expect(memory.deleteWorkspace).toHaveBeenCalledWith("workspace-1");
+    expect(runtime.clearData).not.toHaveBeenCalled();
   });
 
   it("waits for an in-flight memory read before stopping OpenViking", async () => {

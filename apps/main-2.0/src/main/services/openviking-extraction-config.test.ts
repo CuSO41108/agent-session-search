@@ -4,7 +4,7 @@ import { defaultSettings } from "../../core/platform";
 import { resolveOpenVikingExtractionConfig } from "./openviking-extraction-config";
 
 describe("resolveOpenVikingExtractionConfig", () => {
-  it("uses the memory model override with the Codex summary Provider", () => {
+  it("uses the active Codex Provider model instead of a stale Memory override", () => {
     expect(resolveOpenVikingExtractionConfig({
       settings: {
         ...defaultSettings,
@@ -15,13 +15,13 @@ describe("resolveOpenVikingExtractionConfig", () => {
       codex: { activeModel: "gpt-5.5" },
     })).toEqual({
       provider: "openai-codex",
-      model: "gpt-5.6-sol",
+      model: "gpt-5.5",
       api_base: "https://chatgpt.com/backend-api/codex",
       reasoning_effort: "medium",
     });
   });
 
-  it("uses Terra by default with the Codex summary Provider", () => {
+  it("uses the active Codex model with the Codex summary Provider", () => {
     expect(resolveOpenVikingExtractionConfig({
       settings: {
         ...defaultSettings,
@@ -29,7 +29,7 @@ describe("resolveOpenVikingExtractionConfig", () => {
         openVikingExtractionModel: "",
       },
       codex: { activeModel: " gpt-5.5 " },
-    }).model).toBe("gpt-5.6-terra");
+    }).model).toBe("gpt-5.5");
   });
 
   it("maps a custom OpenAI Chat Provider", () => {
@@ -45,6 +45,7 @@ describe("resolveOpenVikingExtractionConfig", () => {
           customModel: " custom-model ",
         },
         openVikingExtractionReasoningEffort: "high",
+        openVikingExtractionModel: "gpt-5.6-sol",
       },
       codex: { activeModel: "" },
     })).toEqual({
@@ -52,7 +53,7 @@ describe("resolveOpenVikingExtractionConfig", () => {
       model: "custom-model",
       api_base: "https://example.com/v1",
       api_key: "secret",
-      reasoning_effort: "high",
+      reasoning_effort: "medium",
     });
   });
 

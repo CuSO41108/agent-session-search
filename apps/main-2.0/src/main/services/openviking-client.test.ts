@@ -20,10 +20,12 @@ describe("OpenVikingGateway", () => {
   let baseUrl = "";
   let closeServer: (() => Promise<void>) | undefined;
   let failure: { path: string; status: number; body: unknown } | undefined;
+  let busyUserRegistryResponses = 0;
 
   beforeEach(async () => {
     requests.length = 0;
     failure = undefined;
+    busyUserRegistryResponses = 0;
     const server = createServer(async (request, response) => {
       const body = await readBody(request);
       const url = new URL(request.url ?? "/", "http://127.0.0.1");
@@ -33,6 +35,21 @@ describe("OpenVikingGateway", () => {
         headers: request.headers,
         body,
       });
+      if (url.pathname === "/api/v1/admin/accounts" && busyUserRegistryResponses > 0) {
+        busyUserRegistryResponses -= 1;
+        sendJson(response, 409, {
+          status: "error",
+          error: {
+            code: "CONFLICT",
+            message: "Another user operation is in progress for this account. Please retry.",
+            details: {
+              conflict_type: "user_registry_busy",
+              retryable: true,
+            },
+          },
+        });
+        return;
+      }
       if (failure?.path === url.pathname) {
         sendJson(response, failure.status, failure.body);
         return;
@@ -73,6 +90,26 @@ describe("OpenVikingGateway", () => {
       account_id: "agent-recall-v2",
       admin_user_id: "workspace_abcd",
     });
+  });
+
+  it("retries while the OpenViking user registry is busy", async () => {
+    busyUserRegistryResponses = 2;
+    const gateway = new OpenVikingGateway({
+      baseUrl,
+      rootApiKey: "root-key",
+      userOperationRetryDelayMs: 0,
+      userOperationMaxAttempts: 3,
+    });
+
+    await expect(gateway.ensureWorkspaceUser({
+      accountId: "agent-recall-v2",
+      userId: "workspace_abcd",
+    })).resolves.toMatchObject({
+      accountId: "agent-recall-v2",
+      userId: "workspace_abcd",
+    });
+    expect(requests.filter((request) => request.path === "/api/v1/admin/accounts"))
+      .toHaveLength(4);
   });
 
   it("registers another workspace user in an existing account", async () => {
@@ -303,7 +340,7 @@ describe("OpenVikingGateway", () => {
     expect(requests.slice(0, 6).every((request) => {
       const url = new URL(request.path, "http://127.0.0.1");
       return url.searchParams.get("recursive") === "true"
-        && url.searchParams.get("wait") === "false";
+        && url.searchParams.get("wait") === "true";
     })).toBe(true);
     expect(requests[6]).toMatchObject({
       method: "DELETE",

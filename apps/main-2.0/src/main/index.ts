@@ -2588,6 +2588,7 @@ app.on("before-quit", (event) => {
     appUpdateService.clearRunningProcess(),
     automationService?.shutdown() ?? Promise.resolve(),
     providerService.stopCodexChatProxy(),
+    openVikingHookManifestService?.clear() ?? Promise.resolve(),
     openVikingRuntimeService?.stop() ?? Promise.resolve(),
   ]).then(async () => {
     await postgresDatabase?.close().catch((error) => {

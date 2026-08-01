@@ -269,6 +269,64 @@ describe("OpenVikingRuntimeService", () => {
     await expect(service.getStatus()).resolves.toMatchObject({ state: "stopped" });
   });
 
+  it("clears OpenViking data without removing installed components", async () => {
+    const root = await temporaryRoot();
+    const { service } = runtimeHarness(root);
+    const runtimeFile = path.join(root, "runtime", "0.4.11", "bin", "python3");
+    const modelFile = path.join(root, "models", "bge-small", "model.gguf");
+    const downloadFile = path.join(root, "downloads", "openviking.tar.gz");
+    const dataFiles = [
+      path.join(root, "data", "_system", "queue", "queue.db"),
+      path.join(root, "data", "vectordb", "context", "store", "index.bin"),
+    ];
+    for (const filePath of [runtimeFile, modelFile, downloadFile, ...dataFiles]) {
+      await mkdir(path.dirname(filePath), { recursive: true });
+      await writeFile(filePath, "fixture");
+    }
+
+    await service.clearData();
+
+    for (const filePath of dataFiles) {
+      await expect(readFile(filePath)).rejects.toMatchObject({ code: "ENOENT" });
+    }
+    for (const filePath of [runtimeFile, modelFile, downloadFile]) {
+      await expect(readFile(filePath, "utf8")).resolves.toBe("fixture");
+    }
+  });
+
+  it("restarts from the last persisted model config for maintenance operations", async () => {
+    const root = await temporaryRoot();
+    const { service, spawnCalls } = runtimeHarness(root);
+    await service.install(manifest());
+    await writeFile(path.join(root, "ov.conf"), JSON.stringify({
+      embedding: {
+        dense: {
+          provider: "local",
+          model: "persisted-embedding",
+          dimension: 512,
+          model_path: "/models/persisted.gguf",
+        },
+      },
+      vlm: {
+        provider: "openai",
+        model: "persisted-model",
+        api_base: "https://provider.example/v1",
+        api_key: "persisted-key",
+      },
+      server: { host: "0.0.0.0", port: 9999, root_api_key: "stale-root-key" },
+      storage: { workspace: "/stale/path" },
+    }));
+
+    await service.startFromPersistedConfig();
+
+    expect(spawnCalls).toHaveLength(1);
+    const config = JSON.parse(await readFile(path.join(root, "ov.conf"), "utf8"));
+    expect(config.embedding.dense.model).toBe("persisted-embedding");
+    expect(config.vlm.model).toBe("persisted-model");
+    expect(config.server).toMatchObject({ host: "127.0.0.1", port: 21933 });
+    expect(config.storage.workspace).toBe(path.join(root, "data"));
+  });
+
   it("does not report a managed runtime as stopped until its process has exited", async () => {
     const root = await temporaryRoot();
     const child = new FakeChild(false);

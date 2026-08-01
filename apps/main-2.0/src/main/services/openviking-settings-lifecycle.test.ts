@@ -5,9 +5,8 @@ import { restartOpenVikingForExtractionSettings } from "./openviking-settings-li
 
 describe("restartOpenVikingForExtractionSettings", () => {
   it.each<AppSettingsUpdate>([
-    { openVikingExtractionModel: "gpt-5.6-sol" },
-    { openVikingExtractionReasoningEffort: "high" },
     { summarySource: "codex" },
+    { openVikingExtractionReasoningEffort: "high" },
     { summaryApiConfig: { customModel: "deepseek-chat" } },
   ])("stops a running service before starting it for extraction update %j", async (update) => {
     const calls: string[] = [];
@@ -27,7 +26,7 @@ describe("restartOpenVikingForExtractionSettings", () => {
     const calls: string[] = [];
 
     await restartOpenVikingForExtractionSettings({
-      update: { openVikingExtractionModel: "gpt-5.6-sol" },
+      update: { summaryApiConfig: { customModel: "deepseek-chat" } },
       enabled: true,
       runtimeState: "stopped",
       stop: async () => { calls.push("stop"); },
@@ -49,6 +48,7 @@ describe("restartOpenVikingForExtractionSettings", () => {
       });
 
     await run({ openVikingCodexEnabled: true }, true);
+    await run({ openVikingExtractionModel: "gpt-5.6-sol" }, true);
     await run({ openVikingExtractionModel: "gpt-5.6-sol" }, false);
 
     expect(calls).toEqual([]);
