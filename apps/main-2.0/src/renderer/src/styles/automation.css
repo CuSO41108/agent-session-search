@@ -351,6 +351,7 @@
   width: 100%;
   max-width: none;
   min-height: 0;
+  grid-auto-rows: max-content;
   gap: 10px;
   margin: 0;
   overflow-y: auto;

@@ -45,6 +45,7 @@ describe("Runtime execution config layout", () => {
     expect(workspaceRule).toContain("grid-template-rows: minmax(0, 1fr)");
     expect(workspaceRule).toContain("overflow: hidden");
     expect(editorRule).toContain("min-height: 0");
+    expect(editorRule).toContain("grid-auto-rows: max-content");
     expect(editorRule).toContain("overflow-y: auto");
   });
 });
