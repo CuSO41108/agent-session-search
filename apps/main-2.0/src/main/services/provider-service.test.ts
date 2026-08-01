@@ -62,6 +62,7 @@ function createHarness(settings: AppSettings = cloneSettings()) {
       providers: [],
     })),
     probeCodexModels: vi.fn(async () => ({ models: ["model-a"], endpoint: "https://api.example/v1/models" })),
+    requestSummaryCompletion: vi.fn(async () => "OK"),
     applyCodexApiConfig: vi.fn(async () => codexApplyResult()),
     applyClaudeApiConfig: vi.fn(async () => claudeApplyResult()),
     createCodexChatProxy: vi.fn((options) => {
@@ -252,6 +253,31 @@ describe("ProviderService settings and keys", () => {
       providerId: "deepseek",
     });
   });
+
+  it("uses the summary Provider key when probing summary models", async () => {
+    const settings = cloneSettings();
+    settings.summaryApiConfig = {
+      ...settings.summaryApiConfig,
+      customProviderId: "deepseek",
+    };
+    const harness = createHarness(settings);
+    harness.keys.set("codex:deepseek", "codex-key");
+    harness.keys.set("summary:deepseek", "summary-key");
+
+    await harness.service.probeCodexModels({
+      baseUrl: "https://api.deepseek.com",
+      apiKey: "",
+      providerId: "deepseek",
+      keyTarget: "summary",
+    });
+
+    expect(harness.operations.probeCodexModels).toHaveBeenCalledWith({
+      baseUrl: "https://api.deepseek.com",
+      apiKey: "summary-key",
+      providerId: "deepseek",
+    });
+  });
+
 });
 
 describe("ProviderService Codex Chat proxy lifecycle", () => {

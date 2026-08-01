@@ -22,6 +22,7 @@ import type {
   OpenVikingRuntimeInstallProgress,
   OpenVikingRuntimeStatus,
 } from "../../core/openviking-memory";
+import type { OpenVikingExtractionReasoningEffort } from "../../core/platform";
 import { downloadFileWithResume } from "./openviking-download";
 
 const OPENVIKING_SERVER_BOOTSTRAP = [
@@ -55,6 +56,7 @@ export interface OpenVikingServerConfig {
     model: string;
     api_base?: string;
     api_key?: string;
+    reasoning_effort?: OpenVikingExtractionReasoningEffort;
   };
 }
 
@@ -366,17 +368,43 @@ export class OpenVikingRuntimeService {
     }
   }
 
+  async startFromPersistedConfig(): Promise<OpenVikingRuntimeStatus> {
+    const configPath = this.resolveOwnedPath("ov.conf");
+    let persisted: Partial<OpenVikingServerConfig>;
+    try {
+      persisted = JSON.parse(await readFile(configPath, "utf8")) as Partial<OpenVikingServerConfig>;
+    } catch (error) {
+      throw new Error("OpenViking has no usable previous configuration for cleanup.", { cause: error });
+    }
+    if (!persisted.embedding?.dense || !persisted.vlm) {
+      throw new Error("OpenViking has no usable previous configuration for cleanup.");
+    }
+    return this.start({
+      embedding: persisted.embedding,
+      vlm: persisted.vlm,
+    });
+  }
+
   async stop(): Promise<OpenVikingRuntimeStatus> {
     const state = await this.readRuntimeState();
-    if (this.child?.exitCode === null) {
-      this.child.kill("SIGTERM");
+    const child = this.child;
+    if (child?.exitCode === null) {
+      await stopRuntimeChild(child);
       this.child = null;
     } else if (state && this.isProcessAlive(state.pid)) {
       this.killProcess(state.pid);
+      await waitForProcessExit(state.pid, this.isProcessAlive);
     }
     await rm(this.runtimeStatePath(), { force: true });
     this.transientStatus = null;
     return this.getStatus();
+  }
+
+  async clearData(): Promise<void> {
+    if ((await this.getStatus()).state === "running") {
+      throw new Error("Stop OpenViking before clearing its data.");
+    }
+    await rm(this.resolveOwnedPath("data"), { recursive: true, force: true });
   }
 
   async getConnection(): Promise<{ baseUrl: string; rootApiKey: string }> {
@@ -537,6 +565,37 @@ async function allocateLoopbackPort(): Promise<number> {
       server.close((error) => error ? reject(error) : resolve(port));
     });
   });
+}
+
+async function stopRuntimeChild(child: RuntimeChild): Promise<void> {
+  if (child.exitCode !== null) return;
+  await new Promise<void>((resolve) => {
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      child.removeListener("exit", onExit);
+      resolve();
+    };
+    const onExit = () => finish();
+    const timeout = setTimeout(() => {
+      child.kill("SIGKILL");
+      finish();
+    }, 15_000);
+    child.once("exit", onExit);
+    child.kill("SIGTERM");
+  });
+}
+
+async function waitForProcessExit(
+  pid: number,
+  isProcessAlive: (pid: number) => boolean,
+): Promise<void> {
+  const deadline = Date.now() + 15_000;
+  while (isProcessAlive(pid) && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
 }
 
 async function waitForHealthyServer(baseUrl: string, rootApiKey: string): Promise<void> {
