@@ -1076,21 +1076,11 @@
   background: var(--accent-soft);
 }
 
-.configured-agent-pick strong,
-.configured-agent-pick span:last-child {
+.configured-agent-pick strong {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.configured-agent-pick strong {
   font-size: 12px;
-}
-
-.configured-agent-pick span:last-child {
-  grid-column: 2;
-  color: var(--muted);
-  font-size: 11px;
 }
 
 .configured-agent-editor {

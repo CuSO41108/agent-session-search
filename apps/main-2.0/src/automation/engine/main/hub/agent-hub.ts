@@ -386,6 +386,7 @@ export class AgentHub {
   private scheduledWorkflowSchedules = new Map<string, ScheduledWorkflowSchedule>();
   private scheduledWorkflowRuns = new Map<string, ScheduledWorkflowRun>();
   private configuredAgents = new Map<string, ConfiguredAgent>();
+  private deletedManagedConfiguredAgentIds = new Set<string>();
   private mcpServers: McpServerDefinition[] = [];
   private activeScheduledWorkflowId: string | undefined;
   private scheduledWorkflowRunnerConfig: ScheduledWorkflowRunnerConfig = { baseUrl: "" };
@@ -798,8 +799,12 @@ export class AgentHub {
     }));
   }
 
-  updateConfiguredAgents(agents: ConfiguredAgent[]): AppSnapshot {
+  updateConfiguredAgents(
+    agents: ConfiguredAgent[],
+    options: { detectDeletedManagedAgents?: boolean } = {},
+  ): AppSnapshot {
     assertWorkflowV2ConfiguredAgentReplacement([...this.workflowStore.workflows.values()].map((workflow) => workflow.definition), this.configuredAgents.values(), agents);
+    if (options.detectDeletedManagedAgents) this.syncDeletedManagedConfiguredAgentIds(agents);
     this.installRestoredConfiguredAgents(agents);
     this.normalizeRunSelections();
     this.emit();
@@ -2984,6 +2989,11 @@ export class AgentHub {
     if (Array.isArray(record.channels)) {
       this.channels = normalizeConfigChannelsForStorage(normalizeChannels(record.channels));
     }
+    this.deletedManagedConfiguredAgentIds = new Set(
+      Array.isArray(record.deletedConfiguredAgentIds)
+        ? record.deletedConfiguredAgentIds.filter((id): id is string => typeof id === "string")
+        : [],
+    );
 
     this.installRestoredConfiguredAgents(Array.isArray(record.configuredAgents) ? record.configuredAgents : []);
     const restored = restorePersistedCollections(record, {
@@ -3009,6 +3019,7 @@ export class AgentHub {
   }
 
   private reinitializePersistedState(): void {
+    this.deletedManagedConfiguredAgentIds.clear();
     this.installRestoredConfiguredAgents([]);
     this.installRestoredChats([], undefined, undefined);
     this.installRestoredTasks([], undefined);
@@ -3018,6 +3029,7 @@ export class AgentHub {
   }
 
   private installRestoredConfiguredAgents(rawAgents: unknown[]): void {
+    this.pruneDeletedManagedConfiguredAgentIds();
     this.configuredAgents.clear();
     const now = Date.now();
     for (const rawAgent of rawAgents) {
@@ -3026,6 +3038,7 @@ export class AgentHub {
     }
     for (const channel of this.channels) {
       const id = managedRuntimeAgentId(channel);
+      if (this.deletedManagedConfiguredAgentIds.has(id)) continue;
       if (this.configuredAgents.has(id)) continue;
       this.configuredAgents.set(id, {
         id,
@@ -3042,8 +3055,30 @@ export class AgentHub {
     }
     if (this.configuredAgents.size === 0) {
       const agent = createDefaultConfiguredAgent(this.channels, now);
-      this.configuredAgents.set(agent.id, { ...agent, managed: true });
+      if (!this.deletedManagedConfiguredAgentIds.has(agent.id)) {
+        this.configuredAgents.set(agent.id, { ...agent, managed: true });
+      }
     }
+  }
+
+  private pruneDeletedManagedConfiguredAgentIds(): void {
+    const managedIds = new Set(this.channels.map(managedRuntimeAgentId));
+    for (const id of [...this.deletedManagedConfiguredAgentIds]) {
+      if (!managedIds.has(id)) this.deletedManagedConfiguredAgentIds.delete(id);
+    }
+  }
+
+  private syncDeletedManagedConfiguredAgentIds(agents: ConfiguredAgent[]): void {
+    const providedIds = new Set(agents.map((agent) => agent.id));
+    const managedIds = new Set(this.channels.map(managedRuntimeAgentId));
+    for (const id of managedIds) {
+      if (providedIds.has(id)) {
+        this.deletedManagedConfiguredAgentIds.delete(id);
+      } else {
+        this.deletedManagedConfiguredAgentIds.add(id);
+      }
+    }
+    this.pruneDeletedManagedConfiguredAgentIds();
   }
 
   private restoreConfiguredAgent(raw: unknown, now = Date.now()): ConfiguredAgent | undefined {
@@ -3345,6 +3380,7 @@ export class AgentHub {
       teams: this.teams.values(),
       teamRuns: this.teamRuns.values(),
       configuredAgents: this.listConfiguredAgents(),
+      deletedConfiguredAgentIds: [...this.deletedManagedConfiguredAgentIds],
       artifacts: this.artifacts,
       cloneConversation: (conversation) => this.runtimeRouter.cloneConversation(conversation),
       workflowStore: this.cloneWorkflowStore(),

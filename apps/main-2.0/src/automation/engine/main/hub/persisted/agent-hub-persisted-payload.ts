@@ -37,6 +37,7 @@ export function buildPersistedPayload(input: {
   teams: Iterable<AgentTeamState>;
   teamRuns: Iterable<TeamRunState>;
   configuredAgents: ConfiguredAgent[];
+  deletedConfiguredAgentIds: string[];
   artifacts: RegisteredArtifact[];
   cloneConversation: (conversation: RuntimeConversation) => RuntimeConversation;
   workflowStore: WorkflowStoreState;
@@ -179,6 +180,7 @@ export function buildPersistedPayload(input: {
     teams,
     teamRuns,
     configuredAgents: input.configuredAgents,
+    deletedConfiguredAgentIds: input.deletedConfiguredAgentIds,
     workflowStore: input.workflowStore,
     scheduledWorkflowStore: input.scheduledWorkflowStore,
     workflowNodeConversations: input.workflowNodeConversations.map((conversation) => structuredClone(conversation)),

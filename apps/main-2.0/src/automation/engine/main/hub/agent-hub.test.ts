@@ -798,6 +798,85 @@ describe("AgentHub chat sessions", () => {
     expect(hub.snapshot().configuredAgents.find((agent) => agent.id === "sol-agent")?.reasoningEffort).toBe("xhigh");
   });
 
+  test("keeps a deleted managed agent deleted across saves, reseeds, and restores", () => {
+    const hub = new AgentHub();
+    (hub as any).channels = [
+      {
+        id: "codex-openai",
+        agentId: "codex",
+        label: "Codex Official",
+        models: [{ id: DEFAULT_MODEL_ID, label: "Default" }],
+      },
+      {
+        id: "codex-glm",
+        agentId: "codex",
+        label: "Codex GLM",
+        models: [{ id: DEFAULT_MODEL_ID, label: "Default" }],
+      },
+    ];
+
+    // Omitting a managed agent from the saved list must delete it.
+    hub.updateConfiguredAgents(
+      hub.snapshot().configuredAgents.filter((agent) => agent.id !== "runtime-agent:codex-glm"),
+      { detectDeletedManagedAgents: true },
+    );
+    expect(hub.snapshot().configuredAgents.find((agent) => agent.id === "runtime-agent:codex-glm")).toBeUndefined();
+
+    // Re-seeding from scratch must not recreate the deleted agent while keeping other managed agents.
+    (hub as any).installRestoredConfiguredAgents([]);
+    expect(hub.snapshot().configuredAgents.find((agent) => agent.id === "runtime-agent:codex-glm")).toBeUndefined();
+    expect(hub.snapshot().configuredAgents.find((agent) => agent.id === "default-agent")).toBeDefined();
+
+    // The deletion survives a persistence round-trip.
+    const payload = (hub as any).buildPersistedPayload();
+    const restoredHub = new AgentHub();
+    expect((restoredHub as any).restorePersistedState(payload)).toBe(true);
+    expect(restoredHub.snapshot().configuredAgents.find((agent) => agent.id === "runtime-agent:codex-glm")).toBeUndefined();
+    expect(restoredHub.snapshot().configuredAgents.find((agent) => agent.id === "default-agent")).toBeDefined();
+  });
+
+  test("allows deleting every configured agent without forcing a default agent back", () => {
+    const hub = new AgentHub();
+    (hub as any).channels = [
+      {
+        id: "codex-openai",
+        agentId: "codex",
+        label: "Codex Official",
+        models: [{ id: DEFAULT_MODEL_ID, label: "Default" }],
+      },
+    ];
+
+    hub.updateConfiguredAgents([], { detectDeletedManagedAgents: true });
+    expect(hub.snapshot().configuredAgents).toEqual([]);
+
+    (hub as any).installRestoredConfiguredAgents([]);
+    expect(hub.snapshot().configuredAgents).toEqual([]);
+
+    const payload = (hub as any).buildPersistedPayload();
+    const restoredHub = new AgentHub();
+    expect((restoredHub as any).restorePersistedState(payload)).toBe(true);
+    expect(restoredHub.snapshot().configuredAgents).toEqual([]);
+  });
+
+  test("prunes deleted markers when their channel no longer exists", () => {
+    const hub = new AgentHub();
+    (hub as any).channels = [
+      {
+        id: "codex-openai",
+        agentId: "codex",
+        label: "Codex Official",
+        models: [{ id: DEFAULT_MODEL_ID, label: "Default" }],
+      },
+    ];
+    hub.updateConfiguredAgents([], { detectDeletedManagedAgents: true });
+    expect((hub as any).deletedManagedConfiguredAgentIds.has("default-agent")).toBe(true);
+
+    // Removing the channel prunes the marker so a future channel with the same id can be seeded again.
+    (hub as any).channels = [];
+    (hub as any).installRestoredConfiguredAgents([]);
+    expect((hub as any).deletedManagedConfiguredAgentIds.has("default-agent")).toBe(false);
+  });
+
   test("refreshes workflow agent timeout after activity", () => {
     vi.useFakeTimers();
     try {

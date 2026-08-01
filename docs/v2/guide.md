@@ -2,28 +2,41 @@
 
 [返回项目首页](../../README.md)
 
-AgentRecall v2 是开发版，提供会话搜索和整理，也包含 Runtime、Agent、Chat、Workflow、Eval、MCP、目录记忆和 Skill 库。
+AgentRecall v2 是预览版，提供会话搜索和整理，也包含 Runtime、Agent、Chat、Workflow、Eval、MCP、目录记忆和 Skill 库。
 
 v2 使用独立的启动命令、应用数据和数据库，可以和 v1 同时运行，但不会自动读取或导入 v1 数据。
 
 ## 1. 安装与快速开始
 
-AgentRecall v2 支持 macOS 和 Windows，需要 Node.js 22.13 或更高版本。当前需要从源码启动：
+AgentRecall v2 支持 macOS 和 Windows，需要 Node.js 22.13 或更高版本。安装最新的 v2 Release：
 
 ```bash
-git clone https://github.com/zszz3/AgentRecall.git
-cd AgentRecall
-npm run setup:v2
-npm run dev:v2
+npm install -g https://github.com/zszz3/AgentRecall/releases/download/v2-latest/agent-recall-v2.tgz
+agent-recall-v2
 ```
 
-后续启动只需在仓库根目录运行：
+后续在任意终端运行即可启动：
 
 ```bash
-npm run dev:v2
+agent-recall-v2
 ```
 
-应用会自动准备本地数据服务，不需要另外安装 PostgreSQL。拉取新代码后，如果依赖有变化，再执行一次 `npm run setup:v2`。
+应用会自动准备本地数据服务，不需要另外安装 PostgreSQL。
+
+macOS 上不想每次从终端启动时，可以生成一个本地启动器，之后从 Launchpad、Spotlight 或 Dock 打开：
+
+```bash
+agent-recall-v2 install-app
+```
+
+启动时会自动检查更新，也可以主动检查或直接更新，App 内还可以在 **设置 → 关于** 检查并安装：
+
+```bash
+agent-recall-v2 --check-update
+agent-recall-v2 --update
+```
+
+完整的安装、更新、回滚、卸载和国内镜像说明见 [Install.md](../../Install.md)。参与开发请看 [CONTRIBUTING.md](../../CONTRIBUTING.md)。
 
 首次打开后，只需完成与你相关的步骤：
 
@@ -380,4 +393,4 @@ Chat、Workflow 和 Eval 使用的模型统一在 **Runtime → 执行配置**�
 - **Skills**：选择 AI 探索 Runtime，并配置 Skills、Rules 和 Memories 同步。
 - **外观**：切换主题、语言和 macOS Dock 显示方式。
 
-v2 仍是开发版。更新代码时先拉取仓库改动，再按需要重新执行 `npm run setup:v2`。
+v2 仍是预览版。执行 `agent-recall-v2 --update`，或在 **设置 → 关于** 中检查并安装更新。

@@ -171,6 +171,16 @@
   -webkit-app-region: drag;
 }
 
+/* On macOS an `-webkit-app-region: drag` area is promoted to an OS-level drag
+   region, which swallows mouse events for anything painted over it no matter how
+   high the z-index. Overlays are centred and therefore routinely overlap
+   `.app-page-head` and `.titlebar-drag`, which left their close buttons dead
+   (Esc still worked, since keyboard events are unaffected). Opt every overlay
+   back out so clicks land on the dialog instead of dragging the window. */
+[class*="backdrop"] {
+  -webkit-app-region: no-drag;
+}
+
 .app-page-head > div {
   display: grid;
   gap: 3px;

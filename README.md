@@ -32,7 +32,7 @@ AgentRecall 用来集中管理分散在不同 AI Coding Agent 中的会话。你
 | 版本 | 适合的使用方式 | 启动入口 |
 | --- | --- | --- |
 | AgentRecall v1 | 安装后直接管理本机及远程环境中的 Agent 会话 | `agent-recall` |
-| AgentRecall v2（开发版） | 从源码体验工作台、Chat、Workflow、Eval、Runtime 和目录记忆等功能 | `npm run dev:v2` |
+| AgentRecall v2（预览版） | 在会话管理之外使用工作台、Chat、Workflow、Eval、Runtime 和目录记忆等功能 | `agent-recall-v2` |
 
 ## AgentRecall v1
 
@@ -69,7 +69,7 @@ agent-recall
 
 > 更详细的使用说明请查看 [AgentRecall v1 Guide](./docs/v1/guide.md)。
 
-## AgentRecall v2（开发版）
+## AgentRecall v2（预览版）
 
 v2 在会话管理、远程同步和用量统计之外，增加了可复用 Agent、多人 Chat、Workflow、Eval、MCP、目录记忆和 Skill 库。
 
@@ -84,20 +84,23 @@ v2 在会话管理、远程同步和用量统计之外，增加了可复用 Agen
 - **目录 Memory**：为主动选择的项目目录建立彼此隔离的长期记忆，导入历史会话，维护手动记忆，并为 Codex、Claude Code 或 OpenCode 开启自动召回。
 - **Skills 和 Provider**：查看本机 Skill 或从公共仓库发现 Skill，加入 Skill 库后安装到 Codex、Claude Code 等编码 Agent；Provider 页面单独管理本机 Codex、Claude Code 和会话 AI 功能使用的服务。
 
-### 从源码启动
+### 安装与启动
 
-v2 目前需要从仓库源码启动：
+准备 Node.js 22.13 或更高版本，然后安装最新的 v2 Release：
 
 ```bash
-git clone https://github.com/zszz3/AgentRecall.git
-cd AgentRecall
-npm run setup:v2
-npm run dev:v2
+npm install -g https://github.com/zszz3/AgentRecall/releases/download/v2-latest/agent-recall-v2.tgz
+agent-recall-v2
 ```
 
-Windows 用户首次执行 `npm run setup:v2` 时，需要以管理员身份运行终端，以便下载并准备内置 PostgreSQL；完成后再执行 `npm run dev:v2`。
+| 系统 | 启动命令 | 默认快捷键 |
+| --- | --- | --- |
+| macOS | `agent-recall-v2` | `⌥ Option + Space` |
+| Windows | `agent-recall-v2` | `Ctrl + Alt + Space` |
 
-v2 的命令、应用数据、数据库、MCP 标识和更新缓存都与 v1 分开，当前不会读取或导入 v1 数据。
+启动后应用会常驻菜单栏或系统托盘，并自动准备本地数据服务，不需要另外安装 PostgreSQL。macOS 上执行 `agent-recall-v2 install-app` 可以生成本地 `agent-recall-v2.app`，之后直接从 Launchpad / Spotlight / Dock 打开。更新执行 `agent-recall-v2 --update` 即可，App 内也可以在 **设置 → 关于** 检查更新。
+
+v2 的命令、应用数据、数据库、MCP 标识和更新缓存都与 v1 分开，当前不会读取或导入 v1 数据。两者可以同时安装并运行。完整的安装、更新、回滚和卸载说明见 [Install.md](./Install.md)。
 
 > 更详细的使用说明请查看 [AgentRecall v2 Guide](./docs/v2/guide.md)。
 
@@ -120,7 +123,7 @@ npm run setup:v1
 npm run dev:v1
 ```
 
-开发 `agent-recall-v2` 时改用 `npm run setup:v2` 和 `npm run dev:v2`。两个应用分别位于 `apps/main-1.0` 与 `apps/main-2.0`，根目录命令负责统一测试、类型检查和构建。
+开发 `agent-recall-v2` 时改用 `npm run setup:v2` 和 `npm run dev:v2`。Windows 上首次执行 `npm run setup:v2` 需要以管理员身份运行终端，以便准备内置 PostgreSQL 所需的符号链接。两个应用分别位于 `apps/main-1.0` 与 `apps/main-2.0`，根目录命令负责统一测试、类型检查和构建。
 
 提交前请阅读 [CONTRIBUTING.md](./CONTRIBUTING.md)，并确保 `npm test`、`npm run typecheck` 与 `npm run release-note:check` 通过。
 

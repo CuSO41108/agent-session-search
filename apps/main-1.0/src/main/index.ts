@@ -889,15 +889,17 @@ function toggleWindow(): void {
     mainWindow.hide();
     return;
   }
-  showWindow();
+  showWindow({ focusSearch: true });
 }
 
-function showWindow(): void {
+// Only the global shortcut asks for search focus; opening the window from the
+// tray, the Dock, or a session link must leave focus where the user expects.
+function showWindow(options: { focusSearch?: boolean } = {}): void {
   if (!mainWindow) createWindow();
   if (!mainWindow) return;
   mainWindow.show();
   mainWindow.focus();
-  mainWindow.webContents.send("focus-search");
+  if (options.focusSearch) mainWindow.webContents.send("focus-search");
 }
 
 function registerAppGlobalShortcut(accelerator: string): boolean {
@@ -930,14 +932,14 @@ function createTray(): void {
   tray.setToolTip(PRODUCT_NAME);
   tray.setContextMenu(
     Menu.buildFromTemplate([
-      { label: `Open ${PRODUCT_NAME}`, click: showWindow },
+      { label: `Open ${PRODUCT_NAME}`, click: () => showWindow() },
       { label: "快速搜索会话…", click: showQuickSearch },
       { label: "Refresh Now", click: () => void runIndexSync() },
       { type: "separator" },
       { label: "Quit", click: () => app.quit() },
     ]),
   );
-  tray.on("click", showWindow);
+  tray.on("click", () => showWindow());
 }
 
 function loadTrayIcon(): Electron.NativeImage {
