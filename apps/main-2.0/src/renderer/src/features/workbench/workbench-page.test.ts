@@ -204,6 +204,19 @@ describe("WorkbenchPage cards", () => {
     expect(headBlock![0]).not.toMatch(/background\s*:\s*var\(--panel-subtle\)/);
   });
 
+  it("insets the model quota card head so its divider line matches the trend card", () => {
+    const cardBlock = workbenchStyles.match(
+      /\.workbench-quota-card\s*\{[^}]*\}/,
+    );
+    const headBlock = workbenchStyles.match(
+      /\.workbench-quota-card-head\s*\{[^}]*\}/,
+    );
+    expect(cardBlock).not.toBeNull();
+    expect(cardBlock![0]).toMatch(/padding:\s*0\s+10px/);
+    expect(headBlock).not.toBeNull();
+    expect(headBlock![0]).toMatch(/padding:\s*5px\s+0/);
+  });
+
   it("shows existing chat groups instead of configured employees", () => {
     const rooms: TeamChatRoomSummary[] = [{
       id: "room-1",
