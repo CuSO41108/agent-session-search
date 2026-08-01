@@ -137,6 +137,7 @@ export interface PersistedAppStateV5 {
   scheduledWorkflowStore?: ScheduledWorkflowStoreState;
   channels?: AgentChannel[];
   configuredAgents?: ConfiguredAgent[];
+  deletedConfiguredAgentIds?: string[];
   workflowNodeConversations?: WorkflowNodeConversation[];
 }
 
