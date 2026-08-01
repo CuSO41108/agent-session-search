@@ -175,6 +175,7 @@ export function TeamChatPage({
   const [activeRootMessageId, setActiveRootMessageId] = useState<string>();
   const [streams, setStreams] = useState<Record<string, StreamDraft>>({});
   const [resettingAgentIds, setResettingAgentIds] = useState<Set<string>>(() => new Set());
+  const [removingAgentIds, setRemovingAgentIds] = useState<Set<string>>(() => new Set());
   const [createOpen, setCreateOpen] = useState(false);
   const [addEmployeeOpen, setAddEmployeeOpen] = useState(false);
   const [roomActionsOpen, setRoomActionsOpen] = useState(false);
@@ -523,6 +524,43 @@ export function TeamChatPage({
     setFeedback(undefined);
   };
 
+  const removeUnavailableRoomEmployee = async (member: TeamChatRoomAgent): Promise<void> => {
+    if (!activeRoom || removingAgentIds.has(member.agentId)) return;
+    const available = snapshot.configuredAgents.some((agent) => agent.id === member.configuredAgentId);
+    if (available) return;
+    if (!window.confirm(l(
+      `Remove unavailable employee “${member.displayName}” from this room?`,
+      `从当前房间移除配置不可用的员工“${member.displayName}”？`,
+    ))) return;
+    setRemovingAgentIds((current) => new Set(current).add(member.agentId));
+    setFeedback(undefined);
+    try {
+      const updated = await api.updateRoom({
+        roomId: activeRoom.id,
+        members: activeRoom.agents
+          .filter((existing) => existing.agentId !== member.agentId)
+          .map((existing) => ({
+            memberId: existing.agentId,
+            configuredAgentId: existing.configuredAgentId,
+            displayName: existing.displayName,
+          })),
+      });
+      setActiveRoom((current) => current?.id === updated.id ? updated : current);
+      setRooms((current) => current.map((room) =>
+        room.id === updated.id
+          ? { ...room, agentCount: updated.agents.length, updatedAt: updated.updatedAt }
+          : room));
+    } catch (error) {
+      setFeedback(errorMessage(error));
+    } finally {
+      setRemovingAgentIds((current) => {
+        const next = new Set(current);
+        next.delete(member.agentId);
+        return next;
+      });
+    }
+  };
+
   const resetAgentConversation = async (member: TeamChatRoomAgent): Promise<void> => {
     if (
       !activeRoom ||
@@ -786,6 +824,7 @@ export function TeamChatPage({
                     ? l("Continues after first reply", "首次回复后持续")
                     : l("New context each time", "每次新会话");
                 const resetting = resettingAgentIds.has(member.agentId);
+                const removing = removingAgentIds.has(member.agentId);
                 const running = Object.values(streams)
                   .some((stream) => stream.agentId === member.agentId);
                 const selected = targetMemberIds.includes(member.agentId);
@@ -808,6 +847,18 @@ export function TeamChatPage({
                         aria-label={l(`Start a new conversation for ${member.displayName}`, `为 ${member.displayName} 开始新会话`)}
                       >
                         {resetting ? <LoaderCircle className="spin" size={13} /> : <RotateCcw size={13} />}
+                      </button>
+                    ) : null}
+                    {!available ? (
+                      <button
+                        className="team-chat-member-remove"
+                        type="button"
+                        disabled={removing}
+                        onClick={() => void removeUnavailableRoomEmployee(member)}
+                        title={l("Remove unavailable employee", "移除配置不可用的员工")}
+                        aria-label={l(`Remove unavailable employee ${member.displayName}`, `移除配置不可用的员工 ${member.displayName}`)}
+                      >
+                        {removing ? <LoaderCircle className="spin" size={13} /> : <Trash2 size={13} />}
                       </button>
                     ) : null}
                   </div>

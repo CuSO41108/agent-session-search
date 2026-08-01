@@ -20,7 +20,7 @@ const memberSchema = z.object({
   configuredAgentId: idSchema,
   displayName: z.string().trim().min(1).max(120),
 }).strict();
-const membersSchema = z.array(memberSchema).min(1).max(24).superRefine((members, context) => {
+const membersSchema = z.array(memberSchema).max(24).superRefine((members, context) => {
   const memberIds = members
     .map((member) => member.memberId)
     .filter((memberId): memberId is string => Boolean(memberId));
@@ -35,7 +35,7 @@ const membersSchema = z.array(memberSchema).min(1).max(24).superRefine((members,
 const roomCreateSchema = z.object({
   name: z.string().trim().min(1).max(120),
   workDir: z.string().trim().max(4_096),
-  members: membersSchema,
+  members: membersSchema.refine((members) => members.length > 0, "Select at least one employee for the studio."),
 }).strict();
 const roomUpdateSchema = z.object({
   roomId: idSchema,

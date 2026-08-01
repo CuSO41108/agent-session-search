@@ -127,6 +127,16 @@ describe("registerTeamChatIpc", () => {
     });
   });
 
+  it("allows a room update to remove its final unavailable employee", async () => {
+    const { invoke, service } = setup();
+
+    await expect(invoke(TEAM_CHAT_CHANNELS.roomsUpdate, {
+      roomId: "room-1",
+      members: [],
+    })).resolves.toEqual({ roomId: "room-1", members: [] });
+    expect(service.updateRoom).toHaveBeenCalledWith({ roomId: "room-1", members: [] });
+  });
+
   it("bounds message length and pagination, then delegates valid requests", async () => {
     const { invoke, service } = setup();
 

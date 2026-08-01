@@ -613,7 +613,8 @@
 .team-chat-member-list strong { color: var(--text-dim); font-size: 11px; }
 .team-chat-member-list small { color: var(--text-faint); font-size: 9px; }
 
-.team-chat-member-reset {
+.team-chat-member-reset,
+.team-chat-member-remove {
   display: grid;
   flex: 0 0 26px;
   place-items: center;
@@ -628,9 +629,19 @@
   background: var(--panel-hover);
 }
 
-.team-chat-member-reset:disabled {
+.team-chat-member-reset:disabled,
+.team-chat-member-remove:disabled {
   cursor: not-allowed;
   opacity: .42;
+}
+
+.team-chat-member-remove {
+  color: var(--danger);
+}
+
+.team-chat-member-remove:hover {
+  color: var(--danger-hover);
+  background: var(--danger-soft);
 }
 
 .team-chat-member-avatar {

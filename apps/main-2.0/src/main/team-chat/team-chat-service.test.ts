@@ -443,8 +443,9 @@ async function createFixture(options: {
   let idSequence = 0;
   let timeSequence = 0;
   const profile = configuredAgent();
+  const configuredAgents = [profile];
   const service = new TeamChatService({
-    configuredAgents: () => [profile],
+    configuredAgents: () => configuredAgents,
     executeAgent: options.executeAgent ?? (async () => ({ output: "done", durationMs: 1 })),
     storeFactory: () => store,
     emit: (event) => events.push(event),
@@ -460,7 +461,7 @@ async function createFixture(options: {
       { configuredAgentId: profile.id, displayName: "Codex2" },
     ],
   });
-  return { service, store, events, room };
+  return { service, store, events, room, configuredAgents };
 }
 
 function waitForRoot(events: TeamChatEvent[], rootMessageId: string): Promise<void> {
@@ -510,6 +511,30 @@ describe("TeamChatService studio employees", () => {
       "codex-profile",
     ]);
     expect(room.agents.map((member) => member.displayName)).toEqual(["Codex", "Codex2"]);
+  });
+
+  it("removes unavailable employees while preserving other missing Agent ids", async () => {
+    const { service, room, configuredAgents } = await createFixture();
+    configuredAgents.length = 0;
+
+    const oneRemaining = await service.updateRoom({
+      roomId: room.id,
+      members: [{
+        memberId: room.agents[1]!.agentId,
+        configuredAgentId: room.agents[1]!.configuredAgentId,
+        displayName: room.agents[1]!.displayName,
+      }],
+    });
+    expect(oneRemaining.agents).toEqual([
+      expect.objectContaining({
+        agentId: room.agents[1]!.agentId,
+        configuredAgentId: "codex-profile",
+        enabled: false,
+      }),
+    ]);
+
+    await expect(service.updateRoom({ roomId: room.id, members: [] }))
+      .resolves.toMatchObject({ agents: [] });
   });
 
   it("permanently deletes a studio and removes it from the room list", async () => {

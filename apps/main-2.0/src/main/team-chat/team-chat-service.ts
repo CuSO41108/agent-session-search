@@ -219,7 +219,7 @@ export class TeamChatService {
   async createRoom(request: CreateTeamChatRoomRequest): Promise<TeamChatRoom> {
     const createdAt = this.timestamp();
     const roomId = this.id();
-    const agents = this.resolveRoomMembers(roomId, request.members, [], createdAt);
+    const agents = this.resolveRoomMembers(roomId, request.members, [], createdAt, false);
     const room: TeamChatRoom = {
       id: roomId,
       name: request.name.trim(),
@@ -240,7 +240,7 @@ export class TeamChatService {
     if (!current) throw new Error("Team Chat room was not found.");
     const updatedAt = this.timestamp();
     const agents = request.members
-      ? this.resolveRoomMembers(current.id, request.members, current.agents, updatedAt)
+      ? this.resolveRoomMembers(current.id, request.members, current.agents, updatedAt, true)
       : current.agents;
     const updated: TeamChatRoom = {
       ...current,
@@ -1298,18 +1298,15 @@ export class TeamChatService {
     inputs: TeamChatRoomMemberInput[],
     current: TeamChatRoomAgent[],
     joinedAt: string,
+    allowEmpty: boolean,
   ): TeamChatRoomAgent[] {
-    if (inputs.length === 0) throw new Error("Select at least one employee for the studio.");
+    if (!allowEmpty && inputs.length === 0) throw new Error("Select at least one employee for the studio.");
     const configuredById = new Map(
       this.dependencies.configuredAgents().map((agent) => [agent.id, agent]),
     );
     const memberIds = new Set<string>();
     const displayNames = new Set<string>();
     return inputs.map((input, position) => {
-      const configured = configuredById.get(input.configuredAgentId);
-      if (!configured) {
-        throw new Error(`Configured Agent is unavailable: ${input.configuredAgentId}`);
-      }
       const displayName = input.displayName.trim();
       if (!displayName) throw new Error("Employee name is required.");
       const normalizedName = displayName.toLocaleLowerCase();
@@ -1322,6 +1319,20 @@ export class TeamChatService {
         : undefined;
       if (input.memberId && !existing) {
         throw new Error(`Studio employee was not found: ${input.memberId}`);
+      }
+      const configured = configuredById.get(input.configuredAgentId);
+      if (!configured) {
+        if (!existing || existing.configuredAgentId !== input.configuredAgentId) {
+          throw new Error(`Configured Agent is unavailable: ${input.configuredAgentId}`);
+        }
+        if (memberIds.has(existing.agentId)) throw new Error("Studio employees must be unique.");
+        memberIds.add(existing.agentId);
+        return {
+          ...existing,
+          displayName,
+          enabled: false,
+          position,
+        };
       }
       const memberId = existing?.agentId ?? this.id();
       if (memberIds.has(memberId)) throw new Error("Studio employees must be unique.");
