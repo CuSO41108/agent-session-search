@@ -38,6 +38,7 @@ import type {
 } from "../types";
 import type { SessionStoreDatabase } from "./database";
 import { EnvironmentStore, localEnvironment } from "./environments";
+import { deleteHermesSession } from "../hermes-session-writer";
 import { deleteZcodeSession } from "../zcode-session-writer";
 
 const LIVE_SESSION_KEY_SQL = `
@@ -643,6 +644,12 @@ export class SessionsStore {
       const indexDeleted = this.deleteSessionRecord(sessionKey);
       return sourceDeleted || indexDeleted;
     }
+    if (row.source === "hermes") {
+      if (row.source_available === 0) return this.deleteSessionRecord(sessionKey);
+      const sourceDeleted = deleteHermesSession(row.file_path, row.raw_id);
+      const indexDeleted = this.deleteSessionRecord(sessionKey);
+      return sourceDeleted || indexDeleted;
+    }
     if (row.source === "cursor-agent" && /(^|[\\/])state\.vscdb$/i.test(row.file_path)) {
       if (row.source_available === 0) return this.deleteSessionRecord(sessionKey);
       throw new Error("Cannot delete shared Cursor source database.");
@@ -650,7 +657,6 @@ export class SessionsStore {
 
     let deleted = false;
     this.transaction(() => {
-      if (row.source === "hermes") throw new Error("Cannot delete shared Hermes source database.");
       if (row.source === "opencode-cli") throw new Error("Cannot delete shared OpenCode source database.");
       if (row.source === "codewiz-cli") throw new Error("Cannot delete shared CodeWiz source database.");
       this.deleteSessionSourceFile(row.file_path);

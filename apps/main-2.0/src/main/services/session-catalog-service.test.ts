@@ -93,4 +93,33 @@ describe("SessionCatalogService deletion policy", () => {
     expect(store.deleteSessionRecord).not.toHaveBeenCalled();
     expect(store.deleteSession).not.toHaveBeenCalled();
   });
+
+  it("refuses to delete a shared Hermes database file on WSL", async () => {
+    const deleteWslSession = vi.fn(async () => undefined);
+    const store = {
+      getSession: vi.fn(async () => session({
+        sessionKey: "hermes:wsl",
+        rawId: "wsl",
+        source: "hermes",
+        environmentId: "ubuntu",
+        environmentKind: "wsl",
+        filePath: "/home/user/.hermes/state.db",
+        sourceAvailable: true,
+      })),
+      deleteSession: vi.fn(async () => true),
+      deleteSessionRecord: vi.fn(async () => true),
+    };
+    const service = new SessionCatalogService({
+      store: store as unknown as SessionStore,
+      requireWslEnvironment: vi.fn(async () => ({ id: "ubuntu", kind: "wsl", label: "WSL" })),
+      deleteWslSession,
+    } as unknown as SessionCatalogServiceDependencies);
+
+    await expect(service.delete("hermes:wsl")).rejects.toThrow(
+      "Cannot delete shared source databases on WSL by removing the database file.",
+    );
+    expect(deleteWslSession).not.toHaveBeenCalled();
+    expect(store.deleteSession).not.toHaveBeenCalled();
+    expect(store.deleteSessionRecord).not.toHaveBeenCalled();
+  });
 });

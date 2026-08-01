@@ -1,6 +1,8 @@
 import * as fs from "node:fs";
 
+import { deleteHermesSession } from "./hermes-session-writer";
 import { isLocalSessionStorage } from "./session-environment";
+import { deleteZcodeSession } from "./zcode-session-writer";
 import {
   readSessionSourceArtifacts,
   type SessionSourceArtifact,
@@ -212,7 +214,17 @@ export class SessionStore {
     const target = await this.sessions.getSessionDeletionTarget(sessionKey);
     if (!target) return false;
     if (target.source === "pi-cli") throw new Error("Pi session source files are read-only.");
-    if (target.source === "hermes") throw new Error("Cannot delete shared Hermes source database.");
+    if (target.source === "zcode-cli") {
+      const sourceDeleted = deleteZcodeSession(target.filePath, target.rawId);
+      const indexDeleted = await this.sessions.deleteSessionRecord(sessionKey);
+      return sourceDeleted || indexDeleted;
+    }
+    if (target.source === "hermes") {
+      if (!target.sourceAvailable) return this.sessions.deleteSessionRecord(sessionKey);
+      const sourceDeleted = deleteHermesSession(target.filePath, target.rawId);
+      const indexDeleted = await this.sessions.deleteSessionRecord(sessionKey);
+      return sourceDeleted || indexDeleted;
+    }
     if (target.source === "opencode-cli") throw new Error("Cannot delete shared OpenCode source database.");
     if (target.source === "cursor-agent" && /(^|[\\/])state\.vscdb$/iu.test(target.filePath)) {
       if (!target.sourceAvailable) return this.sessions.deleteSessionRecord(sessionKey);
