@@ -141,7 +141,7 @@ describe("registerAutomationIpc", () => {
 
     await expect(invoke(AUTOMATION_CHANNELS.runtimeSaveAgents, [agent]))
       .resolves.toEqual({ configuredAgents: [agent] });
-    expect(hub.updateConfiguredAgents).toHaveBeenCalledWith([agent]);
+    expect(hub.updateConfiguredAgents).toHaveBeenCalledWith([agent], { detectDeletedManagedAgents: true });
 
     await expect(invoke(AUTOMATION_CHANNELS.runtimeSaveAgents, [{
       ...agent,

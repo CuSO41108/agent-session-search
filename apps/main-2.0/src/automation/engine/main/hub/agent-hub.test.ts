@@ -818,6 +818,7 @@ describe("AgentHub chat sessions", () => {
     // Omitting a managed agent from the saved list must delete it.
     hub.updateConfiguredAgents(
       hub.snapshot().configuredAgents.filter((agent) => agent.id !== "runtime-agent:codex-glm"),
+      { detectDeletedManagedAgents: true },
     );
     expect(hub.snapshot().configuredAgents.find((agent) => agent.id === "runtime-agent:codex-glm")).toBeUndefined();
 
@@ -845,7 +846,7 @@ describe("AgentHub chat sessions", () => {
       },
     ];
 
-    hub.updateConfiguredAgents([]);
+    hub.updateConfiguredAgents([], { detectDeletedManagedAgents: true });
     expect(hub.snapshot().configuredAgents).toEqual([]);
 
     (hub as any).installRestoredConfiguredAgents([]);
@@ -867,7 +868,7 @@ describe("AgentHub chat sessions", () => {
         models: [{ id: DEFAULT_MODEL_ID, label: "Default" }],
       },
     ];
-    hub.updateConfiguredAgents([]);
+    hub.updateConfiguredAgents([], { detectDeletedManagedAgents: true });
     expect((hub as any).deletedManagedConfiguredAgentIds.has("default-agent")).toBe(true);
 
     // Removing the channel prunes the marker so a future channel with the same id can be seeded again.

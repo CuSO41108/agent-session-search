@@ -799,9 +799,12 @@ export class AgentHub {
     }));
   }
 
-  updateConfiguredAgents(agents: ConfiguredAgent[]): AppSnapshot {
+  updateConfiguredAgents(
+    agents: ConfiguredAgent[],
+    options: { detectDeletedManagedAgents?: boolean } = {},
+  ): AppSnapshot {
     assertWorkflowV2ConfiguredAgentReplacement([...this.workflowStore.workflows.values()].map((workflow) => workflow.definition), this.configuredAgents.values(), agents);
-    this.syncDeletedManagedConfiguredAgentIds(agents);
+    if (options.detectDeletedManagedAgents) this.syncDeletedManagedConfiguredAgentIds(agents);
     this.installRestoredConfiguredAgents(agents);
     this.normalizeRunSelections();
     this.emit();
