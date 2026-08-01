@@ -27,7 +27,7 @@ export interface AppUpdateClient {
   clearInstallStatus(): Promise<void>;
   currentVersion(): string;
   formatUpdateError(error: unknown): string;
-  manualInstallCommand(version: string): string;
+  manualInstallCommand(): string;
   parseUpdateManifest(value: unknown): AppUpdateManifest;
   readInstallStatus(): Promise<{ status?: string; version?: string; error?: string | null } | null>;
   releaseUrl(version: string): string;
@@ -208,7 +208,7 @@ export class AppUpdateService {
         detail: "应用已经使用新版本重新启动。",
       });
     } else {
-      const command = client.manualInstallCommand(status!.version!);
+      const command = client.manualInstallCommand();
       const result = await this.dependencies.showMessageBox({
         type: "error",
         title: "更新失败",

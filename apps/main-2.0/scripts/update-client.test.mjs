@@ -454,16 +454,24 @@ test("keeps a cached V2 manifest when the release API is unavailable", async () 
   assert.equal(result.manifest.version, "0.2.0");
 });
 
+// GitHub's repository-wide "Latest" release belongs to V1, so the manual install
+// command must point at the rolling v2-latest tag rather than a version that goes
+// stale the moment the next release ships.
 test("provides an actionable manual fallback when automatic installation fails", () => {
-  const command = manualInstallCommand("0.2.0");
   assert.equal(
-    command,
-    "npm install -g https://github.com/zszz3/AgentRecall/releases/download/v2-0.2.0/agent-recall-v2.tgz",
+    manualInstallCommand(),
+    "npm install -g https://github.com/zszz3/AgentRecall/releases/download/v2-latest/agent-recall-v2.tgz",
   );
   const message = formatManualUpdateFallback("0.2.0");
   assert.match(message, /自动更新未完成/);
-  assert.match(message, /npm install -g https:\/\/github\.com\/zszz3\/AgentRecall\/releases\/download\/v2-0\.2\.0\/agent-recall-v2\.tgz/);
+  assert.match(message, /npm install -g https:\/\/github\.com\/zszz3\/AgentRecall\/releases\/download\/v2-latest\/agent-recall-v2\.tgz/);
   assert.match(message, /https:\/\/github\.com\/zszz3\/AgentRecall\/releases\/tag\/v2-0\.2\.0/);
+});
+
+test("falls back to the releases index when no version is known", () => {
+  const message = formatManualUpdateFallback();
+  assert.match(message, /npm install -g https:\/\/github\.com\/zszz3\/AgentRecall\/releases\/download\/v2-latest\/agent-recall-v2\.tgz/);
+  assert.match(message, /https:\/\/github\.com\/zszz3\/AgentRecall\/releases$/m);
 });
 
 test("converts subprocess update failures into readable text", () => {
@@ -506,6 +514,25 @@ test("shows a Windows-native fallback without requiring Electron", () => {
   assert.match(invocation.args.at(-1), /Set-Clipboard/);
   assert.match(invocation.args.at(-1), /Start-Process/);
   assert.equal(invocation.options.env.AGENT_RECALL_UPDATE_ERROR, "npm install failed");
+});
+
+// The dialog offers "复制安装命令" unconditionally, so the command must be usable
+// even when the failure happened before a target version was known.
+test("still offers a usable install command when no version was determined", () => {
+  let invocation = null;
+  const shown = showNativeUpdateFailure("npm install failed", {
+    platform: "win32",
+    execFileSyncImpl: (command, args, options) => {
+      invocation = { command, args, options };
+      return "";
+    },
+  });
+  assert.equal(shown, true);
+  assert.equal(
+    invocation.options.env.AGENT_RECALL_UPDATE_COMMAND,
+    "npm install -g https://github.com/zszz3/AgentRecall/releases/download/v2-latest/agent-recall-v2.tgz",
+  );
+  assert.equal(invocation.options.env.AGENT_RECALL_UPDATE_RELEASE_URL, "https://github.com/zszz3/AgentRecall/releases");
 });
 
 test("reports a clear error when the GitHub release check times out", async () => {

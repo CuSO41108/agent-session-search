@@ -32,7 +32,7 @@ This repository maintains both v1 and v2. They use separate commands, app data, 
 | Version | Best for | Launch command |
 | --- | --- | --- |
 | AgentRecall v1 | Managing local and remote agent sessions immediately after installation | `agent-recall` |
-| AgentRecall v2 (development) | Exploring Workbench, Chat, Workflow, Eval, Runtime, directory memory, and other features from source | `npm run dev:v2` |
+| AgentRecall v2 (preview) | Using Workbench, Chat, Workflow, Eval, Runtime, and directory memory on top of session management | `agent-recall-v2` |
 
 ## AgentRecall v1
 
@@ -69,7 +69,7 @@ After launch, the app stays in the menu bar or system tray. Settings, theme, lan
 
 > For more detailed usage instructions, see the [AgentRecall v1 Guide](./v1/guide.en.md).
 
-## AgentRecall v2 (Development)
+## AgentRecall v2 (Preview)
 
 In addition to session management, remote sync, and usage statistics, v2 adds reusable Agents, multi-agent Chat, Workflow, Eval, MCP, directory memory, and a Skill library.
 
@@ -84,20 +84,23 @@ In addition to session management, remote sync, and usage statistics, v2 adds re
 - **Directory Memory**: Create isolated long-term memory for each project directory you select. Import past sessions, maintain manual memories, and enable automatic recall for Codex, Claude Code, or OpenCode.
 - **Skills and Provider**: View local Skills or discover Skills from public repositories, add them to the Skill library, and install them for coding agents such as Codex and Claude Code. The Provider page separately manages the services used by local Codex, Claude Code, and session AI features.
 
-### Run from Source
+### Install and Launch
 
-v2 currently runs from the repository source:
+Install Node.js 22.13 or later, then install the latest v2 Release:
 
 ```bash
-git clone https://github.com/zszz3/AgentRecall.git
-cd AgentRecall
-npm run setup:v2
-npm run dev:v2
+npm install -g https://github.com/zszz3/AgentRecall/releases/download/v2-latest/agent-recall-v2.tgz
+agent-recall-v2
 ```
 
-On Windows, run the terminal as an administrator the first time you execute `npm run setup:v2`, so v2 can download and prepare its bundled PostgreSQL runtime. After setup completes, run `npm run dev:v2`.
+| System | Launch command | Default shortcut |
+| --- | --- | --- |
+| macOS | `agent-recall-v2` | `⌥ Option + Space` |
+| Windows | `agent-recall-v2` | `Ctrl + Alt + Space` |
 
-v2 uses separate commands, app data, a database, MCP identifiers, and an update cache from v1. It does not currently read or import v1 data.
+After launch, the app stays in the menu bar or system tray and prepares its local data service automatically, so you do not need to install PostgreSQL separately. On macOS, run `agent-recall-v2 install-app` to create a local `agent-recall-v2.app` that opens from Launchpad, Spotlight, or the Dock. Run `agent-recall-v2 --update` to update, or check for updates from **Settings → About** inside the app.
+
+v2 uses separate commands, app data, a database, MCP identifiers, and an update cache from v1. It does not currently read or import v1 data, and both versions can be installed and run at the same time. See [Install.md](../Install.md) for complete installation, update, rollback, and uninstall instructions.
 
 > For more detailed usage instructions, see the [AgentRecall v2 Guide](./v2/guide.md).
 
@@ -120,7 +123,7 @@ npm run setup:v1
 npm run dev:v1
 ```
 
-When developing `agent-recall-v2`, use `npm run setup:v2` and `npm run dev:v2` instead. The two apps live under `apps/main-1.0` and `apps/main-2.0`, while root-level commands run shared tests, type checks, and builds.
+When developing `agent-recall-v2`, use `npm run setup:v2` and `npm run dev:v2` instead. On Windows, run the terminal as an administrator the first time you execute `npm run setup:v2` so it can create the symlinks required by the bundled PostgreSQL runtime. The two apps live under `apps/main-1.0` and `apps/main-2.0`, while root-level commands run shared tests, type checks, and builds.
 
 Before submitting, read [CONTRIBUTING.md](../CONTRIBUTING.md) and make sure `npm test`, `npm run typecheck`, and `npm run release-note:check` pass.
 
