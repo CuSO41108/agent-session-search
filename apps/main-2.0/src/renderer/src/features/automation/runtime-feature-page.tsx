@@ -1,5 +1,5 @@
 import { Bot, Cpu, Save } from "lucide-react";
-import { useCallback, useEffect, useState, type ReactElement } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactElement } from "react";
 import { createConfiguredAgent } from "../../../../automation/engine/renderer/src/app/app-state";
 import { AgentPage } from "../../../../automation/engine/renderer/src/pages/agent/AgentPage";
 import { RuntimePage } from "../../../../automation/engine/renderer/src/pages/runtime/RuntimePage";
@@ -21,6 +21,17 @@ function readProviderKeys(): Record<string, string> {
   }
 }
 
+export function reconcileEditableAgentsAfterChannelSave(
+  editableAgents: ConfiguredAgent[],
+  previousAgents: ConfiguredAgent[],
+  savedAgents: ConfiguredAgent[],
+): ConfiguredAgent[] {
+  const previousIds = new Set(previousAgents.map((agent) => agent.id));
+  const editableIds = new Set(editableAgents.map((agent) => agent.id));
+  const generatedAgents = savedAgents.filter((agent) => agent.managed && !previousIds.has(agent.id) && !editableIds.has(agent.id));
+  return generatedAgents.length > 0 ? [...editableAgents, ...generatedAgents] : editableAgents;
+}
+
 export function RuntimeFeaturePage({
   language,
   onNavigationGuardChange,
@@ -35,14 +46,28 @@ export function RuntimeFeaturePage({
   const [selectedAgentId, setSelectedAgentId] = useState("");
   const [agentDirty, setAgentDirty] = useState(false);
   const [agentStatus, setAgentStatus] = useState("");
-  const manager = useRuntimeConfigManager({ chatApi: api, snapshot, setSnapshot, runtimeViewActive: true });
+  const editableAgentsRef = useRef(editableAgents);
+  const agentDirtyRef = useRef(agentDirty);
+  const onChannelsSaved = useCallback((previous: typeof snapshot, next: typeof snapshot): void => {
+    if (!agentDirtyRef.current) {
+      editableAgentsRef.current = next.configuredAgents;
+      setEditableAgents(next.configuredAgents);
+      return;
+    }
+    const reconciled = reconcileEditableAgentsAfterChannelSave(editableAgentsRef.current, previous.configuredAgents, next.configuredAgents);
+    editableAgentsRef.current = reconciled;
+    setEditableAgents(reconciled);
+  }, []);
+  const manager = useRuntimeConfigManager({ chatApi: api, snapshot, setSnapshot, runtimeViewActive: true, onChannelsSaved });
 
   const saveAgents = useCallback(async (): Promise<void> => {
     setAgentStatus("");
     try {
-      const next = await api.saveConfiguredAgents(editableAgents);
+      const next = await api.saveConfiguredAgents(editableAgentsRef.current);
       setSnapshot(next);
+      editableAgentsRef.current = next.configuredAgents;
       setEditableAgents(next.configuredAgents);
+      agentDirtyRef.current = false;
       setAgentDirty(false);
       setAgentStatus(localize(language, "Saved", "已保存"));
     } catch (cause) {
@@ -50,10 +75,13 @@ export function RuntimeFeaturePage({
       setAgentStatus(message);
       throw cause;
     }
-  }, [api, editableAgents, language, setSnapshot]);
+  }, [api, language, setSnapshot]);
 
   useEffect(() => {
-    if (!agentDirty) setEditableAgents(snapshot.configuredAgents);
+    if (!agentDirty) {
+      editableAgentsRef.current = snapshot.configuredAgents;
+      setEditableAgents(snapshot.configuredAgents);
+    }
   }, [agentDirty, snapshot.configuredAgents]);
 
   useEffect(() => {
@@ -91,27 +119,35 @@ export function RuntimeFeaturePage({
   };
 
   const addAgent = (): void => {
-    const agent = createConfiguredAgent(snapshot.channels, editableAgents.map((item) => item.id));
-    setEditableAgents((current) => [...current, agent]);
+    const agent = createConfiguredAgent(snapshot.channels, editableAgentsRef.current.map((item) => item.id));
+    const next = [...editableAgentsRef.current, agent];
+    editableAgentsRef.current = next;
+    setEditableAgents(next);
     setSelectedAgentId(agent.id);
+    agentDirtyRef.current = true;
     setAgentDirty(true);
     setAgentStatus("");
   };
 
   const updateAgent = (agentId: string, updater: (agent: ConfiguredAgent) => ConfiguredAgent): void => {
-    setEditableAgents((current) => current.map((agent) => {
+    const next = editableAgentsRef.current.map((agent) => {
       if (agent.id !== agentId) return agent;
       const { managed: _managed, ...editable } = updater(agent);
       return { ...editable, updatedAt: Date.now() };
-    }));
+    });
+    editableAgentsRef.current = next;
+    setEditableAgents(next);
+    agentDirtyRef.current = true;
     setAgentDirty(true);
     setAgentStatus("");
   };
 
   const deleteAgent = (agentId: string): void => {
-    const remaining = editableAgents.filter((agent) => agent.id !== agentId);
+    const remaining = editableAgentsRef.current.filter((agent) => agent.id !== agentId);
+    editableAgentsRef.current = remaining;
     setEditableAgents(remaining);
     if (selectedAgentId === agentId) setSelectedAgentId(remaining[0]?.id ?? "");
+    agentDirtyRef.current = true;
     setAgentDirty(true);
     setAgentStatus("");
   };

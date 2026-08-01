@@ -120,7 +120,7 @@ describe("registerAutomationIpc", () => {
     const channels = [{ id: "codex-local", label: "Codex", agentId: "codex", models: [] }];
 
     await expect(invoke(AUTOMATION_CHANNELS.runtimeSaveChannels, channels)).resolves.toEqual({ channels });
-    expect(hub.saveModelChannels).toHaveBeenCalledWith(channels);
+    expect(hub.saveModelChannels).toHaveBeenCalledWith(channels, { validateDeletedChannelReferences: true });
     await expect(invoke(AUTOMATION_CHANNELS.runtimeSaveChannels, [{ id: "" }])).rejects.toThrow(/id/i);
   });
 

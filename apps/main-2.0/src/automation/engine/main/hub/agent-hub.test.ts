@@ -835,6 +835,63 @@ describe("AgentHub chat sessions", () => {
     expect(restoredHub.snapshot().configuredAgents.find((agent) => agent.id === "default-agent")).toBeDefined();
   });
 
+  test("rejects deleting an execution config used by its managed Agent before changing state", async () => {
+    const hub = new AgentHub();
+    const before = hub.snapshot();
+    const channel = before.channels[0]!;
+
+    await expect(hub.saveModelChannels(
+      before.channels.filter((item) => item.id !== channel.id),
+      { validateDeletedChannelReferences: true },
+    ))
+      .rejects.toThrow(/is used by Agent/);
+    expect(hub.snapshot().channels).toEqual(before.channels);
+    expect(hub.snapshot().configuredAgents).toEqual(before.configuredAgents);
+  });
+
+  test("rejects deleting an Agent referenced by Chat, Task, Team, or Workflow", () => {
+    const cases: Array<{ expected: RegExp; reference: (hub: AgentHub) => void }> = [
+      {
+        expected: /used by Chat/,
+        reference: (hub) => { hub.createChat("worker"); },
+      },
+      {
+        expected: /used by Task/,
+        reference: (hub) => {
+          const task = (hub as any).createTaskState({ prompt: "Use worker", configuredAgentId: "worker" });
+          (hub as any).tasks.set(task.id, task);
+        },
+      },
+      {
+        expected: /used by Team/,
+        reference: (hub) => {
+          hub.createTeam({ name: "Review team", members: [{ roleName: "Reviewer", prompt: "Review", configuredAgentId: "worker" }] });
+        },
+      },
+      {
+        expected: /execution Agent for Workflow/,
+        reference: (hub) => { hub.createWorkflowDraft({ configuredAgentId: "worker" }); },
+      },
+      {
+        expected: /reviewer Agent for Workflow/,
+        reference: (hub) => { hub.createWorkflowDraft({ configuredAgentId: "default-agent", reviewerConfiguredAgentId: "worker" }); },
+      },
+    ];
+
+    for (const scenario of cases) {
+      const hub = new AgentHub();
+      addConfiguredAgents(hub, [configuredAgent("worker", { name: "Worker" })]);
+      scenario.reference(hub);
+      const before = hub.snapshot().configuredAgents;
+
+      expect(() => hub.updateConfiguredAgents(
+        before.filter((agent) => agent.id !== "worker"),
+        { detectDeletedManagedAgents: true },
+      )).toThrow(scenario.expected);
+      expect(hub.snapshot().configuredAgents).toEqual(before);
+    }
+  });
+
   test("allows deleting every configured agent without forcing a default agent back", () => {
     const hub = new AgentHub();
     (hub as any).channels = [
@@ -846,6 +903,7 @@ describe("AgentHub chat sessions", () => {
       },
     ];
 
+    (hub as any).chats.clear();
     hub.updateConfiguredAgents([], { detectDeletedManagedAgents: true });
     expect(hub.snapshot().configuredAgents).toEqual([]);
 
@@ -868,6 +926,7 @@ describe("AgentHub chat sessions", () => {
         models: [{ id: DEFAULT_MODEL_ID, label: "Default" }],
       },
     ];
+    (hub as any).chats.clear();
     hub.updateConfiguredAgents([], { detectDeletedManagedAgents: true });
     expect((hub as any).deletedManagedConfiguredAgentIds.has("default-agent")).toBe(true);
 
@@ -2175,6 +2234,7 @@ describe("AgentHub chat sessions", () => {
         ],
       },
     ]);
+    (hub as any).chats.clear();
     hub.updateConfiguredAgents([
       {
         id: "doubao-agent",

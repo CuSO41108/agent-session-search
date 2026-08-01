@@ -293,7 +293,7 @@ import {
   type ActiveWorkflowDraftRequest,
 } from "./workflow/agent-hub-workflow-draft-replies";
 import { abandonWorkflowDraftReplyState as abandonWorkflowDraftReplyStateValue } from "./workflow/agent-hub-workflow-draft-reply-state";
-import { assertWorkflowV2ConfiguredAgentReplacement, validateWorkflowV2Definition } from "../../shared/workflow-v2/validation";
+import { validateWorkflowV2Definition } from "../../shared/workflow-v2/validation";
 import { normalizeWorkflowV2TerminalNode } from "../../shared/workflow-v2/topology";
 import { WorkflowGenerationReviewCoordinator } from "./workflow/workflow-generation-review-service";
 import { applyWorkflowImportMappings, sanitizeWorkflowPortableDefinition, WorkflowPortableError } from "./workflow/workflow-portable-file";
@@ -704,8 +704,12 @@ export class AgentHub {
     }));
   }
 
-  async saveModelChannels(channels: AgentChannel[]): Promise<AppSnapshot> {
+  async saveModelChannels(
+    channels: AgentChannel[],
+    options: { validateDeletedChannelReferences?: boolean } = {},
+  ): Promise<AppSnapshot> {
     const normalizedChannels = normalizeConfigChannelsForStorage(normalizeChannels(channels));
+    if (options.validateDeletedChannelReferences) this.assertConfigChannelsCanBeReplaced(normalizedChannels);
     if (this.storagePath) {
       this.channels = normalizedChannels;
     } else {
@@ -803,12 +807,61 @@ export class AgentHub {
     agents: ConfiguredAgent[],
     options: { detectDeletedManagedAgents?: boolean } = {},
   ): AppSnapshot {
-    assertWorkflowV2ConfiguredAgentReplacement([...this.workflowStore.workflows.values()].map((workflow) => workflow.definition), this.configuredAgents.values(), agents);
+    this.assertConfiguredAgentsCanBeReplaced(agents, options);
     if (options.detectDeletedManagedAgents) this.syncDeletedManagedConfiguredAgentIds(agents);
     this.installRestoredConfiguredAgents(agents);
     this.normalizeRunSelections();
     this.emit();
     return this.snapshot();
+  }
+
+  private assertConfigChannelsCanBeReplaced(channels: AgentChannel[]): void {
+    const nextChannelIds = new Set(channels.map((channel) => channel.id));
+    const removedChannelIds = new Set(this.channels.filter((channel) => !nextChannelIds.has(channel.id)).map((channel) => channel.id));
+    if (removedChannelIds.size === 0) return;
+
+    const referencedAgent = [...this.configuredAgents.values()].find((agent) => removedChannelIds.has(agent.channelId));
+    if (!referencedAgent) return;
+    const channel = this.channels.find((item) => item.id === referencedAgent.channelId);
+    throw new Error(`Execution config ${channel?.label || referencedAgent.channelId} is used by Agent ${referencedAgent.name || referencedAgent.id}. Reassign or delete the Agent before deleting this execution config.`);
+  }
+
+  private assertConfiguredAgentsCanBeReplaced(
+    agents: ConfiguredAgent[],
+    options: { detectDeletedManagedAgents?: boolean },
+  ): void {
+    const nextAgentIds = new Set(agents.map((agent) => agent.id));
+    if (!options.detectDeletedManagedAgents) {
+      for (const channel of this.channels) {
+        const managedId = managedRuntimeAgentId(channel);
+        if (!this.deletedManagedConfiguredAgentIds.has(managedId)) nextAgentIds.add(managedId);
+      }
+    }
+
+    for (const agent of this.configuredAgents.values()) {
+      if (nextAgentIds.has(agent.id)) continue;
+      const agentName = agent.name || agent.id;
+      const chat = [...this.chats.values()].find((item) => item.configuredAgentId === agent.id);
+      if (chat) throw new Error(`Agent ${agentName} is used by Chat ${chat.title || chat.id}. Reassign or delete the Chat before deleting this Agent.`);
+      const task = [...this.tasks.values()].find((item) => item.configuredAgentId === agent.id);
+      if (task) throw new Error(`Agent ${agentName} is used by Task ${task.title || task.id}. Reassign or delete the Task before deleting this Agent.`);
+      for (const team of this.teams.values()) {
+        const member = team.members.find((item) => item.configuredAgentId === agent.id);
+        if (member) throw new Error(`Agent ${agentName} is used by Team ${team.name || team.id} member ${member.roleName || member.id}. Reassign the Team member before deleting this Agent.`);
+      }
+      for (const workflow of this.workflowStore.workflows.values()) {
+        if (workflow.configuredAgentId === agent.id) {
+          throw new Error(`Agent ${agentName} is the execution Agent for Workflow ${workflow.title || workflow.workflowId}. Reassign the Workflow before deleting this Agent.`);
+        }
+        if (workflow.reviewerConfiguredAgentId === agent.id) {
+          throw new Error(`Agent ${agentName} is the reviewer Agent for Workflow ${workflow.title || workflow.workflowId}. Reassign the Workflow reviewer before deleting this Agent.`);
+        }
+        const node = workflow.definition.nodes.find((item) => item.execModel === "llm" && item.configuredAgentId === agent.id);
+        if (node) {
+          throw new Error(`Agent ${agentName} is used by Workflow ${workflow.title || workflow.workflowId} node ${node.title || node.id}. Reassign the workflow node before deleting this Agent.`);
+        }
+      }
+    }
   }
   listConfiguredAgents(): ConfiguredAgent[] {
     return [...this.configuredAgents.values()]
