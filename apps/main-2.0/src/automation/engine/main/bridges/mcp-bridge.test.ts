@@ -391,7 +391,7 @@ describe("MCP bridge", () => {
     expect(agents).toMatchObject({ ok: true });
     expect(agents.agents).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ id: "default-agent", name: "Codex OpenAI", runtimeAgentId: "codex" }),
+        expect.objectContaining({ id: "runtime-agent:codex-openai", name: "Codex OpenAI", runtimeAgentId: "codex" }),
         expect.objectContaining({ id: "repo-reviewer", name: "Repo Reviewer", runtimeAgentId: "codex" }),
       ]),
     );

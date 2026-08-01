@@ -30,7 +30,7 @@ export function WorkflowNodeAgentSelect(props: {
       });
     }}
   >
-    <option value="">System default</option>
+    <option value="" disabled>Select Agent</option>
     {props.configuredAgents.map((agent) => <option key={agent.id} value={agent.id}>{agent.name} · {agent.modelId}</option>)}
   </select>;
 }

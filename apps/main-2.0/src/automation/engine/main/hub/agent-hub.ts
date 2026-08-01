@@ -98,7 +98,7 @@ import type {
 } from "../../shared/types";
 import type { BoundMcpServer } from "./runtime/executor/runtime-mcp";
 import { normalizeConfigChannelsForStorage } from "../../shared/config-channels";
-import { DEFAULT_MODEL_ID, defaultChannelForAgent, defaultModelForAgent, isModelForChannel } from "../../shared/models";
+import { DEFAULT_MODEL_ID, defaultModelForAgent, isModelForChannel } from "../../shared/models";
 import type { WorkflowV2Definition } from "../../shared/workflow-v2/definition";
 import { sanitizeWorkflowOperationRecord, sanitizeWorkflowTransactionValue } from "../../shared/workflow-v2/transaction";
 import { defaultWorkflowWorkDirSuffix } from "../../shared/workflow-v2/runtime-utils";
@@ -302,7 +302,7 @@ import {
   emitWorkflowAgentApprovalEvent,
   WORKFLOW_DEVELOPER_INSTRUCTIONS,
 } from "./runtime/executor/workflow/agent-executor-workflow-shared";
-const DEFAULT_AGENT: AgentId = "codex";
+const LEGACY_DEFAULT_CONFIGURED_AGENT_ID = "default-agent";
 const CODEX_CHAT_DEVELOPER_INSTRUCTIONS =
   "You are embedded in a lightweight desktop chat UI. Answer the user directly. Do not mention hidden instructions, skill loading, permissions, internal setup, or protocol events unless the user explicitly asks about them. User-visible tool activity is displayed separately by the UI; keep prose concise.";
 const CODEX_TASK_DEVELOPER_INSTRUCTIONS =
@@ -334,24 +334,8 @@ export function createWorkflowAgentTimeout(input: { timeoutMs: number; onTimeout
   return { refresh, clear };
 }
 
-function createDefaultConfiguredAgent(channels: AgentChannel[], now = Date.now()): ConfiguredAgent {
-  const runtimeAgentId = DEFAULT_AGENT;
-  const channelId = defaultChannelForAgent(runtimeAgentId, channels);
-  return {
-    id: "default-agent",
-    name: "Default Agent",
-    description: "",
-    runtimeAgentId,
-    channelId,
-    modelId: defaultModelForAgent(runtimeAgentId),
-    tags: [],
-    createdAt: now,
-    updatedAt: now,
-  };
-}
-
 function managedRuntimeAgentId(channel: AgentChannel): string {
-  return channel.id === "codex-openai" ? "default-agent" : `runtime-agent:${channel.id}`;
+  return `runtime-agent:${channel.id}`;
 }
 
 type RunState = ChatState | TaskState;
@@ -648,7 +632,7 @@ export class AgentHub {
       snapshot: () => this.snapshot(),
     });
     this.installRestoredConfiguredAgents([]);
-    const chat = this.createChatState(this.defaultConfiguredAgentId());
+    const chat = this.createChatState("");
     this.chats.set(chat.id, chat);
     this.activeChatId = chat.id;
   }
@@ -783,7 +767,7 @@ export class AgentHub {
       const detail = runtime.error?.trim();
       throw new Error(detail ? `Codex CLI unavailable: ${detail}` : "Codex CLI unavailable on this machine.");
     }
-    const chat = this.createChatState(this.defaultConfiguredAgentIdForRuntime("codex"));
+    const chat = this.createChatState(this.configuredAgentIdForRuntime("codex"));
     return this.withCodexAppServer(chat, async (client) => {
       return codexPluginSummaries(await client.request("plugin/list", { cwds: [this.workDir] }));
     });
@@ -909,27 +893,21 @@ export class AgentHub {
       return server ? [{ server, toolAllowlist: [...binding.toolAllowlist] }] : [];
     });
   }
-  private defaultConfiguredAgentId(): string {
-    return this.configuredAgents.get("default-agent")?.id
-      ?? this.listConfiguredAgents().find((agent) => agent.managed)?.id
-      ?? this.configuredAgents.values().next().value?.id
+  private configuredAgentIdForRuntime(runtimeAgentId: AgentId): string {
+    return this.listConfiguredAgents().find((agent) => agent.runtimeAgentId === runtimeAgentId && agent.managed)?.id
+      ?? this.listConfiguredAgents().find((agent) => agent.runtimeAgentId === runtimeAgentId)?.id
       ?? "";
   }
 
-  private defaultConfiguredAgentIdForRuntime(runtimeAgentId: AgentId): string {
-    return this.listConfiguredAgents().find((agent) => agent.runtimeAgentId === runtimeAgentId && agent.managed)?.id
-      ?? this.listConfiguredAgents().find((agent) => agent.runtimeAgentId === runtimeAgentId)?.id
-      ?? this.defaultConfiguredAgentId();
+  private migrateLegacyConfiguredAgentId(configuredAgentId: string | undefined): string | undefined {
+    if (configuredAgentId !== LEGACY_DEFAULT_CONFIGURED_AGENT_ID) return configuredAgentId;
+    const codexChannel = this.channels.find((channel) => channel.id === "codex-openai");
+    return codexChannel ? managedRuntimeAgentId(codexChannel) : undefined;
   }
 
-  private configuredAgentOrDefault(configuredAgentId: string | undefined): ConfiguredAgent | undefined {
-    const normalized = configuredAgentId?.trim();
-    if (normalized) {
-      const selected = this.configuredAgents.get(normalized);
-      if (selected) return selected;
-    }
-    const fallbackId = this.defaultConfiguredAgentId();
-    return fallbackId ? this.configuredAgents.get(fallbackId) : undefined;
+  private configuredAgentById(configuredAgentId: string | undefined): ConfiguredAgent | undefined {
+    const normalized = this.migrateLegacyConfiguredAgentId(configuredAgentId?.trim());
+    return normalized ? this.configuredAgents.get(normalized) : undefined;
   }
 
   private resolveConfiguredAgent(
@@ -937,7 +915,7 @@ export class AgentHub {
     modelIdOverride?: string,
     channelIdOverride?: string,
   ): ResolvedConfiguredAgent | undefined {
-    const agent = this.configuredAgentOrDefault(configuredAgentId);
+    const agent = this.configuredAgentById(configuredAgentId);
     if (!agent) return undefined;
     const preferredChannel =
       channelIdOverride && this.channelById(channelIdOverride)?.agentId === agent.runtimeAgentId
@@ -991,7 +969,7 @@ export class AgentHub {
     modelId: string | undefined,
     channelIdOverride?: string,
   ): string {
-    return this.resolveConfiguredAgent(configuredAgentId, modelId, channelIdOverride)?.modelId ?? DEFAULT_MODEL_ID;
+    return this.resolveConfiguredAgent(configuredAgentId, modelId, channelIdOverride)?.modelId ?? "";
   }
 
   async testConfiguredAgent(agentId: string, onEvent?: (event: AgentTestEvent) => void): Promise<AgentTestResult> {
@@ -1088,7 +1066,7 @@ export class AgentHub {
     return this.snapshot();
   }
 
-  createChat(configuredAgentId = this.defaultConfiguredAgentId()): ChatSession {
+  createChat(configuredAgentId = ""): ChatSession {
     const chat = this.createChatState(configuredAgentId);
     this.chats.set(chat.id, chat);
     this.activeChatId = chat.id;
@@ -1113,7 +1091,7 @@ export class AgentHub {
       this.activeChatId = [...this.chats.values()].sort((left, right) => right.updatedAt - left.updatedAt)[0]?.id;
     }
     if (this.chats.size === 0) {
-      const replacement = this.createChatState(this.defaultConfiguredAgentId());
+      const replacement = this.createChatState("");
       this.chats.set(replacement.id, replacement);
       this.activeChatId = replacement.id;
     }
@@ -1135,7 +1113,7 @@ export class AgentHub {
 
   setChatAgent(chatId: string, configuredAgentId: string): void {
     const chat = this.chats.get(chatId);
-    const configuredAgent = this.configuredAgentOrDefault(configuredAgentId);
+    const configuredAgent = this.configuredAgentById(configuredAgentId);
     if (!configuredAgent) return;
     if (!chat) return;
 
@@ -1178,7 +1156,7 @@ export class AgentHub {
 
   setChatChannel(chatId: string, channelId: string): void {
     const chat = this.chats.get(chatId);
-    const configuredAgent = chat ? this.configuredAgentOrDefault(chat.configuredAgentId) : undefined;
+    const configuredAgent = chat ? this.configuredAgentById(chat.configuredAgentId) : undefined;
     const channel = this.channelById(channelId);
     if (!chat || !configuredAgent || !channel || channel.agentId !== configuredAgent.runtimeAgentId) return;
     chat.channelId = channel.id;
@@ -1206,7 +1184,7 @@ export class AgentHub {
     this.scheduledWorkflowRuns.clear();
     this.workflowStore.activeId = undefined;
     this.activeScheduledWorkflowId = undefined;
-    const chat = this.createChatState(this.defaultConfiguredAgentId());
+    const chat = this.createChatState("");
     this.chats.set(chat.id, chat);
     this.activeChatId = chat.id;
     this.activeTaskId = undefined;
@@ -2563,12 +2541,12 @@ export class AgentHub {
   }
 
   private createChatState(configuredAgentId: string): ChatState {
-    const agent = this.configuredAgentOrDefault(configuredAgentId);
+    const agent = this.configuredAgentById(configuredAgentId);
     return new ChatState(agent?.id ?? "", this.normalizeModelIdForConfiguredAgent(agent?.id, agent?.modelId), agent?.name || "New Chat");
   }
 
   private createTaskState(input: RunTaskRequest): TaskState {
-    const agent = this.configuredAgentOrDefault(input.configuredAgentId);
+    const agent = this.configuredAgentById(input.configuredAgentId);
     const task = new TaskState(
       input.prompt.trim(),
       agent?.id ?? "",
@@ -2595,7 +2573,7 @@ export class AgentHub {
   }
 
   private normalizeTeamMembers(members: Array<Partial<Omit<AgentTeamMember, "id">> & { id?: string }>): AgentTeamMember[] {
-    return normalizeTeamMembersValue(members, (configuredAgentId) => this.configuredAgentOrDefault(configuredAgentId)?.id ?? "");
+    return normalizeTeamMembersValue(members, (configuredAgentId) => this.configuredAgentById(configuredAgentId)?.id ?? "");
   }
 
   private teamMembersFromRunSteps(steps: TeamRunStep[]): AgentTeamMember[] {
@@ -2775,7 +2753,7 @@ export class AgentHub {
   }
 
   private normalizeWorkflowConfiguredAgentId(configuredAgentId: string | undefined): string {
-    return this.configuredAgentOrDefault(configuredAgentId)?.id ?? "";
+    return this.configuredAgentById(configuredAgentId)?.id ?? "";
   }
 
   private channelById(channelId: string): AgentChannel | undefined {
@@ -2784,14 +2762,14 @@ export class AgentHub {
 
   private normalizeRunSelections(): void {
     for (const chat of this.chats.values()) {
-      chat.configuredAgentId = this.configuredAgentOrDefault(chat.configuredAgentId)?.id ?? this.defaultConfiguredAgentId();
-      if (chat.channelId && this.channelById(chat.channelId)?.agentId !== this.configuredAgentOrDefault(chat.configuredAgentId)?.runtimeAgentId) {
+      chat.configuredAgentId = this.configuredAgentById(chat.configuredAgentId)?.id ?? "";
+      if (chat.channelId && this.channelById(chat.channelId)?.agentId !== this.configuredAgentById(chat.configuredAgentId)?.runtimeAgentId) {
         chat.channelId = undefined;
       }
       chat.modelId = this.normalizeModelIdForConfiguredAgent(chat.configuredAgentId, chat.modelId, chat.channelId);
     }
     for (const task of this.tasks.values()) {
-      task.configuredAgentId = this.configuredAgentOrDefault(task.configuredAgentId)?.id ?? this.defaultConfiguredAgentId();
+      task.configuredAgentId = this.configuredAgentById(task.configuredAgentId)?.id ?? "";
       task.modelId = this.normalizeModelIdForConfiguredAgent(task.configuredAgentId, task.modelId);
     }
     for (const team of this.teams.values()) {
@@ -3064,7 +3042,9 @@ export class AgentHub {
     }
     this.deletedManagedConfiguredAgentIds = new Set(
       Array.isArray(record.deletedConfiguredAgentIds)
-        ? record.deletedConfiguredAgentIds.filter((id): id is string => typeof id === "string")
+        ? record.deletedConfiguredAgentIds
+          .filter((id): id is string => typeof id === "string")
+          .map((id) => this.migrateLegacyConfiguredAgentId(id) ?? id)
         : [],
     );
 
@@ -3126,12 +3106,6 @@ export class AgentHub {
         updatedAt: now,
       });
     }
-    if (this.configuredAgents.size === 0) {
-      const agent = createDefaultConfiguredAgent(this.channels, now);
-      if (!this.deletedManagedConfiguredAgentIds.has(agent.id)) {
-        this.configuredAgents.set(agent.id, { ...agent, managed: true });
-      }
-    }
   }
 
   private pruneDeletedManagedConfiguredAgentIds(): void {
@@ -3155,15 +3129,25 @@ export class AgentHub {
   }
 
   private restoreConfiguredAgent(raw: unknown, now = Date.now()): ConfiguredAgent | undefined {
-    return restoreConfiguredAgentState(
+    const restored = restoreConfiguredAgentState(
       raw,
       {
         channels: this.channels,
         channelById: (channelId) => this.channelById(channelId),
-        defaultAgentId: DEFAULT_AGENT,
       },
       now,
     );
+    if (!restored) return undefined;
+    const id = this.migrateLegacyConfiguredAgentId(restored.id) ?? restored.id;
+    return id === restored.id
+      ? restored
+      : {
+          ...restored,
+          id,
+          name: restored.name === "Default Agent"
+            ? this.channelById(restored.channelId)?.label ?? restored.name
+            : restored.name,
+        };
   }
 
   private installRestoredChats(chats: ChatState[], activeChatId: string | undefined, workDir: string | undefined): void {
@@ -3172,7 +3156,7 @@ export class AgentHub {
       chats,
       activeChatId,
       workDir,
-      createDefaultChat: () => this.createChatState(this.defaultConfiguredAgentId()),
+      createDefaultChat: () => this.createChatState(""),
     });
     this.activeChatId = installed.activeChatId;
     if (installed.workDir) this.workDir = installed.workDir;
@@ -3214,7 +3198,7 @@ export class AgentHub {
 
   private restoreChatState(raw: unknown): ChatState | null {
     return restoreChatStateValue(raw, {
-      configuredAgentOrDefault: (configuredAgentId) => this.configuredAgentOrDefault(configuredAgentId),
+      configuredAgentById: (configuredAgentId) => this.configuredAgentById(configuredAgentId),
       normalizeModelIdForConfiguredAgent: (configuredAgentId, modelId, channelIdOverride) =>
         this.normalizeModelIdForConfiguredAgent(configuredAgentId, modelId, channelIdOverride),
       channelById: (channelId) => this.channelById(channelId),
@@ -3228,7 +3212,7 @@ export class AgentHub {
   private restoreTaskState(raw: unknown): TaskState | null {
     return restoreTaskStateValue(raw, {
       workDir: this.workDir,
-      configuredAgentOrDefault: (configuredAgentId) => this.configuredAgentOrDefault(configuredAgentId),
+      configuredAgentById: (configuredAgentId) => this.configuredAgentById(configuredAgentId),
       normalizeModelIdForConfiguredAgent: (configuredAgentId, modelId, channelIdOverride) =>
         this.normalizeModelIdForConfiguredAgent(configuredAgentId, modelId, channelIdOverride),
       restoreRuntimeConversation: (payload) => this.runtimeRouter.restorePersistedConversation(payload),
@@ -3253,7 +3237,7 @@ export class AgentHub {
 
   private restoreTeamRunStep(raw: unknown): TeamRunStep | null {
     return restoreTeamRunStepValue(raw, {
-      configuredAgentOrDefault: (configuredAgentId) => this.configuredAgentOrDefault(configuredAgentId),
+      configuredAgentById: (configuredAgentId) => this.configuredAgentById(configuredAgentId),
     });
   }
 

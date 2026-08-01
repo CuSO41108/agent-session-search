@@ -10,7 +10,8 @@ describe("WorkflowDraftEditorDialog", () => {
   test("renders a configured-agent selector for every LLM node", () => {
     const html = renderToStaticMarkup(<WorkflowDraftEditorDialog definition={definition} configuredAgents={[agent]} onSave={() => undefined} onClose={() => undefined} />);
     expect(html).toContain("Agent for Answer");
-    expect(html).toContain("System default");
+    expect(html).toContain("Select Agent");
+    expect(html).not.toContain("System default");
     expect(html).toContain("Specialist · gpt-specialist");
     expect(html).toContain('value="specialist" selected=""');
   });
