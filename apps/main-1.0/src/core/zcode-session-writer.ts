@@ -41,15 +41,22 @@ function assertZcodeDatabasePath(dbPath: string): string {
 
 /** Permanently removes one ZCode session while keeping the shared database and all other sessions intact. */
 export function deleteZcodeSession(dbPath: string, sessionId: string): boolean {
+  return deleteZcodeSessions(dbPath, [sessionId]).length > 0;
+}
+
+export function deleteZcodeSessions(dbPath: string, sessionIds: readonly string[]): string[] {
   const normalizedPath = assertZcodeDatabasePath(dbPath);
-  const normalizedId = sessionId.trim();
-  if (!SESSION_ID_PATTERN.test(normalizedId)) throw new Error("ZCode session id is invalid.");
+  const normalizedIds = [...new Set(sessionIds.map((sessionId) => sessionId.trim()))];
+  if (normalizedIds.some((sessionId) => !SESSION_ID_PATTERN.test(sessionId))) {
+    throw new Error("ZCode session id is invalid.");
+  }
+  if (normalizedIds.length === 0) return [];
 
   let stat: fs.Stats;
   try {
     stat = fs.statSync(normalizedPath);
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
     throw error;
   }
   if (!stat.isFile()) throw new Error("ZCode database path is not a regular file.");
@@ -64,20 +71,24 @@ export function deleteZcodeSession(dbPath: string, sessionId: string): boolean {
 
     db.exec("BEGIN IMMEDIATE");
     try {
-      const exists = Boolean(db.prepare("SELECT 1 FROM session WHERE id = ? LIMIT 1").get(normalizedId));
-      if (!exists) {
+      const existingIds = selectExistingSessionIds(db, normalizedIds);
+      if (existingIds.length === 0) {
         db.exec("COMMIT");
-        return false;
+        return [];
       }
 
       for (const tableName of SESSION_RELATED_TABLES) {
         if (tableExists(db, tableName) && hasColumn(db, tableName, "session_id")) {
-          db.prepare(`DELETE FROM ${tableName} WHERE session_id = ?`).run(normalizedId);
+          for (const ids of chunks(existingIds, 500)) {
+            db.prepare(`DELETE FROM ${tableName} WHERE session_id IN (${ids.map(() => "?").join(", ")})`).run(...ids);
+          }
         }
       }
-      db.prepare("DELETE FROM session WHERE id = ?").run(normalizedId);
+      for (const ids of chunks(existingIds, 500)) {
+        db.prepare(`DELETE FROM session WHERE id IN (${ids.map(() => "?").join(", ")})`).run(...ids);
+      }
       db.exec("COMMIT");
-      return true;
+      return existingIds;
     } catch (error) {
       db.exec("ROLLBACK");
       throw error;
@@ -85,4 +96,19 @@ export function deleteZcodeSession(dbPath: string, sessionId: string): boolean {
   } finally {
     db.close();
   }
+}
+
+function selectExistingSessionIds(db: DatabaseSyncType, sessionIds: readonly string[]): string[] {
+  const existing = new Set<string>();
+  for (const ids of chunks(sessionIds, 500)) {
+    const rows = db.prepare(`SELECT id FROM session WHERE id IN (${ids.map(() => "?").join(", ")})`).all(...ids) as Array<{ id: string }>;
+    for (const row of rows) existing.add(row.id);
+  }
+  return sessionIds.filter((sessionId) => existing.has(sessionId));
+}
+
+function chunks<T>(values: readonly T[], size: number): T[][] {
+  const result: T[][] = [];
+  for (let index = 0; index < values.length; index += size) result.push(values.slice(index, index + size));
+  return result;
 }

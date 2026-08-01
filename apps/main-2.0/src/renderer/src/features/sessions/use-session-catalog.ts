@@ -164,6 +164,32 @@ export function useSessionCatalog({
     liveSearchKeys,
   ]);
 
+  const searchAllMatching = useCallback(async (ignoreDate: boolean): Promise<SessionSearchResult[]> => {
+    const searchScope = resolveSearchScope(environmentId, projectPath, projectEnvironmentId);
+    if (searchScope.projectEnvironmentConflict) return [];
+    const { dateFrom, dateTo } = ignoreDate
+      ? { dateFrom: undefined, dateTo: undefined }
+      : customDateRange
+        ? { dateFrom: customDateRange.dayStart, dateTo: customDateRange.dayEndExclusive - 1 }
+        : resolveDateRange(dateRange);
+    const page = await window.sessionSearch.searchSessionPage({
+      query,
+      source,
+      tag,
+      projectPath: searchScope.projectPath,
+      environmentId: searchScope.environmentId,
+      visibility,
+      sortBy,
+      dateFrom,
+      dateTo,
+      limit: 100_000,
+      liveStatus: liveStatus === "all" ? undefined : liveStatus,
+      liveSessionKeys: liveDetectionFailed ? [] : liveSearchKeys,
+    });
+    if (page.hasMore) throw new Error("More than 100,000 sessions match. Narrow the filters first.");
+    return page.sessions;
+  }, [environmentId, projectPath, projectEnvironmentId, customDateRange, dateRange, query, source, tag, visibility, sortBy, liveStatus, liveDetectionFailed, liveSearchKeys]);
+
   const clearProjectFilter = useCallback((): void => {
     setProjectPath(undefined);
     setProjectEnvironmentId(undefined);
@@ -311,6 +337,7 @@ export function useSessionCatalog({
     liveSearchKeys,
     load,
     loadMore,
+    searchAllMatching,
     clearProjectFilter,
     clearProjectScopeFilter,
     clearEnvironmentScopeFilter,

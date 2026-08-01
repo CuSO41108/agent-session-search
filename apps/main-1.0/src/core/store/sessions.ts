@@ -39,6 +39,7 @@ import type {
 import type { SessionStoreDatabase } from "./database";
 import { EnvironmentStore, localEnvironment } from "./environments";
 import { deleteZcodeSession } from "../zcode-session-writer";
+import type { SessionBulkDeleteTarget } from "../session-bulk-delete";
 
 const LIVE_SESSION_KEY_SQL = `
   CASE
@@ -673,6 +674,54 @@ export class SessionsStore {
       deleted = true;
     });
     return deleted;
+  }
+
+  getSessionDeletionTargets(sessionKeys: readonly string[]): SessionBulkDeleteTarget[] {
+    const uniqueKeys = [...new Set(sessionKeys.filter(Boolean))];
+    const rows: Array<SessionRow & { environment_kind: SessionEnvironment["kind"] }> = [];
+    for (const keys of chunks(uniqueKeys, 500)) {
+      rows.push(...this.db.prepare(`
+        SELECT sessions.*, environments.kind AS environment_kind,
+          ${sessionActivitySql("sessions")} AS last_activity_at
+        FROM sessions
+        JOIN environments ON environments.id = sessions.environment_id
+        WHERE sessions.session_key IN (${keys.map(() => "?").join(", ")})
+      `).all(...keys) as unknown as Array<SessionRow & { environment_kind: SessionEnvironment["kind"] }>);
+    }
+    const byKey = new Map(rows.map((row) => [row.session_key, row]));
+    return uniqueKeys.flatMap((sessionKey) => {
+      const row = byKey.get(sessionKey);
+      return row ? [{
+        sessionKey: row.session_key,
+        rawId: row.raw_id,
+        source: row.source,
+        filePath: row.file_path,
+        sourceAvailable: row.source_available === 1,
+        favorited: row.favorited === 1,
+        lastActivityAt: row.last_activity_at,
+        environmentId: row.environment_id,
+        environmentKind: row.environment_kind,
+      }] : [];
+    });
+  }
+
+  deleteSessionRecords(sessionKeys: readonly string[]): string[] {
+    const uniqueKeys = [...new Set(sessionKeys.filter(Boolean))];
+    if (uniqueKeys.length === 0) return [];
+    const deleted: string[] = [];
+    this.transaction(() => {
+      for (const keys of chunks(uniqueKeys, 500)) {
+        const existing = this.db.prepare(
+          `SELECT session_key FROM sessions WHERE session_key IN (${keys.map(() => "?").join(", ")})`,
+        ).all(...keys) as unknown as Array<{ session_key: string }>;
+        deleted.push(...existing.map((row) => row.session_key));
+        this.db.prepare(`DELETE FROM session_fts WHERE session_key IN (${keys.map(() => "?").join(", ")})`).run(...keys);
+        this.db.prepare(`DELETE FROM sessions WHERE session_key IN (${keys.map(() => "?").join(", ")})`).run(...keys);
+      }
+      this.deleteUnusedTags();
+    });
+    const deletedSet = new Set(deleted);
+    return uniqueKeys.filter((sessionKey) => deletedSet.has(sessionKey));
   }
 
   migrateSessionKeyPreservingUserState(legacyKey: string, targetKey: string): boolean {
@@ -2420,6 +2469,12 @@ function sessionActivitySql(sessionTable: string): string {
       0
     )
   `;
+}
+
+function chunks<T>(values: readonly T[], size: number): T[][] {
+  const result: T[][] = [];
+  for (let index = 0; index < values.length; index += size) result.push(values.slice(index, index + size));
+  return result;
 }
 
 function branchTagName(branch: string | null | undefined): string | null {

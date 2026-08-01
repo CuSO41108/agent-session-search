@@ -1423,6 +1423,24 @@
   padding: 14px;
 }
 
+.bulk-delete-dialog {
+  width: min(460px, calc(100vw - 32px));
+  padding: 14px;
+}
+
+.bulk-delete-date {
+  display: grid;
+  gap: 8px;
+  margin: 12px 0;
+  color: var(--text);
+  font-size: 12.5px;
+}
+
+.bulk-delete-date input { min-height: 34px; }
+.bulk-delete-date small { color: var(--text-muted); }
+.bulk-delete-summary { display: flex; flex-wrap: wrap; gap: 6px; }
+.bulk-delete-summary span { padding: 4px 7px; border: 1px solid var(--border-subtle); border-radius: 6px; color: var(--text-muted); font-size: 11px; }
+
 .delete-skill-dialog .dialog-title,
 .delete-session-dialog .dialog-title {
   margin-bottom: 8px;

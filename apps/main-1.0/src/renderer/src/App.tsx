@@ -4,11 +4,13 @@ import {
   AppWindow,
   Archive,
   ArrowRightLeft,
+  CalendarDays,
   Clipboard,
   Copy,
   Download,
   Eye,
   FolderOpen,
+  ListChecks,
   Play,
   Search,
   Settings,
@@ -16,6 +18,7 @@ import {
   Tag,
   Terminal as TerminalIcon,
   Trash2,
+  X,
 } from "lucide-react";
 import type { ApiConfig, ClaudeApiConfig } from "../../core/api-config";
 import type { IndexStatus } from "../../core/indexer";
@@ -30,6 +33,7 @@ import { canDeleteSessionLocally } from "../../core/session-environment";
 import type { SessionSyncHookStatus } from "../../core/session-sync-queue";
 import { OPTIONAL_SESSION_SOURCE_DESCRIPTORS } from "../../core/session-sources";
 import type { TraceEventQueryOptions } from "../../core/session-store";
+import type { SessionBulkDeletePreview, SessionBulkDeleteRequest } from "../../core/session-bulk-delete";
 import type { RemoteSkill, SkillSyncSnapshot, SkillSyncUploadOutcome } from "../../core/skill-sync";
 import type { InstalledSkill, InstalledSkillsSnapshot } from "../../core/skill-manager";
 import type {
@@ -92,7 +96,7 @@ import type {
 import { ApiConfigDialog } from "./features/providers/api-config-dialog";
 import { DetailPanel } from "./features/session-detail/detail-panel";
 import { SessionMigrationDialog, SessionMigrationLaunchFailedDialog } from "./components/session-migration-dialog";
-import { CommandDialog, DeleteSessionDialog, DeleteTagDialog } from "./components/session-dialogs";
+import { BulkDeleteDialog, CommandDialog, DeleteSessionDialog, DeleteTagDialog } from "./components/session-dialogs";
 import { SkillsDialog } from "./features/skills/skills-dialog";
 import { DigitalAssetsDialog } from "./features/digital-assets/digital-assets-dialog";
 import { DEFAULT_QUERY_BUILDER_STATE, countActiveFilters, toSearchOptionsPatch, type QueryBuilderState } from "./features/search/query-builder-types";
@@ -164,6 +168,13 @@ function emptyPendingPersonalSources(): Record<PendingSourceKey, boolean> {
 
 const INITIAL_SESSION_LIMIT = 30;
 const SESSION_PAGE_SIZE = 30;
+
+function formatDateInput(date: Date): string {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
 const INITIAL_MESSAGE_LIMIT = 20;
 const MESSAGE_PAGE_SIZE = 80;
 const TRACE_EVENT_WINDOW_LIMIT = 300;
@@ -317,6 +328,16 @@ export function App(): ReactElement {
   const [deleteTagName, setDeleteTagName] = useState<string | null>(null);
   const [deleteSessionCandidate, setDeleteSessionCandidate] = useState<SessionSearchResult | null>(null);
   const [deletingSession, setDeletingSession] = useState(false);
+  const [bulkSelectedKeys, setBulkSelectedKeys] = useState<Set<string>>(() => new Set());
+  const [bulkSelectionActive, setBulkSelectionActive] = useState(false);
+  const [bulkDeleteDialog, setBulkDeleteDialog] = useState<{
+    mode: "selection" | "cleanup";
+    dateValue: string;
+    request: SessionBulkDeleteRequest | null;
+    preview: SessionBulkDeletePreview | null;
+    favoriteCount: number;
+  } | null>(null);
+  const [bulkDeleteBusy, setBulkDeleteBusy] = useState(false);
   const [actionStatus, setActionStatus] = useState<ActionStatus | null>(null);
   const [summarizing, setSummarizing] = useState(false);
   const [refreshFeedback, setRefreshFeedback] = useState<RefreshFeedback>(null);
@@ -384,6 +405,28 @@ export function App(): ReactElement {
   const liveDetectionFailed = Boolean(liveSessions.error);
   const liveSearchKeys = useMemo(() => [...liveSessionKeys], [liveSessionKeys]);
 
+  const searchAllMatching = useCallback(async (ignoreDate: boolean): Promise<SessionSearchResult[]> => {
+    const searchScope = resolveSearchScope(environmentId, projectPath, projectEnvironmentId);
+    if (searchScope.projectEnvironmentConflict) return [];
+    const { dateFrom, dateTo } = ignoreDate ? { dateFrom: undefined, dateTo: undefined } : resolveDateRange(dateRange);
+    const page = await window.sessionSearch.searchSessionPage({
+      query,
+      source,
+      tag,
+      projectPath: searchScope.projectPath,
+      environmentId: searchScope.environmentId,
+      visibility,
+      sortBy,
+      dateFrom,
+      dateTo,
+      limit: 100_000,
+      liveStatus: liveStatus === "all" ? undefined : liveStatus,
+      liveSessionKeys: liveDetectionFailed ? [] : liveSearchKeys,
+    });
+    if (page.hasMore) throw new Error(t("More than 100,000 sessions match. Narrow the filters first.", "匹配会话超过 100,000 个，请先缩小筛选范围。"));
+    return page.sessions;
+  }, [environmentId, projectPath, projectEnvironmentId, dateRange, query, source, tag, visibility, sortBy, liveStatus, liveDetectionFailed, liveSearchKeys, t]);
+
   const load = useCallback(async () => {
     const requestId = ++loadSeqRef.current;
     const searchScope = resolveSearchScope(environmentId, projectPath, projectEnvironmentId);
@@ -417,6 +460,11 @@ export function App(): ReactElement {
       );
     });
   }, [query, source, environmentId, tag, projectPath, projectEnvironmentId, visibility, dateRange, sortBy, sessionLimit, liveStatus, liveDetectionFailed, liveSearchKeys]);
+
+  useEffect(() => {
+    setBulkSelectionActive(false);
+    setBulkSelectedKeys(new Set());
+  }, [searchScopeKey]);
 
   const loadSidebarMetadata = useCallback(async () => {
     const requestId = ++metadataLoadSeqRef.current;
@@ -1045,7 +1093,7 @@ export function App(): ReactElement {
     searchRef.current?.select();
   }, []);
   useMainSearchShortcut(
-    !(detail || remoteDetail || dialog || migrationDialog || deleteSessionCandidate || deleteTagName || contextMenu || skillsOpen || assetsOpen || apiConfigOpen || aiAssistantOpen || settingsOpen || sshDialogOpen || wslDialogOpen || remoteSessionsOpen),
+    !(detail || remoteDetail || dialog || migrationDialog || deleteSessionCandidate || bulkDeleteDialog || deleteTagName || contextMenu || skillsOpen || assetsOpen || apiConfigOpen || aiAssistantOpen || settingsOpen || sshDialogOpen || wslDialogOpen || remoteSessionsOpen),
     focusMainSearch,
   );
 
@@ -1067,6 +1115,7 @@ export function App(): ReactElement {
         else if (wslDialogOpen) setWslDialogOpen(false);
         else if (migrationDialog) setMigrationDialog(null);
         else if (dialog) setDialog(null);
+        else if (bulkDeleteDialog && !bulkDeleteBusy) setBulkDeleteDialog(null);
         else if (deleteSessionCandidate && !deletingSession) setDeleteSessionCandidate(null);
         else if (deleteTagName) setDeleteTagName(null);
         else if (contextMenu) setContextMenu(null);
@@ -1084,7 +1133,7 @@ export function App(): ReactElement {
       }
 
       // Leave list navigation alone while an overlay or menu is in front.
-      if (detail || remoteDetail || dialog || migrationDialog || deleteSessionCandidate || deleteTagName || contextMenu || skillsOpen || apiConfigOpen || aiAssistantOpen || settingsOpen || sshDialogOpen || wslDialogOpen || remoteSessionsOpen) return;
+      if (detail || remoteDetail || dialog || migrationDialog || deleteSessionCandidate || bulkDeleteDialog || deleteTagName || contextMenu || skillsOpen || apiConfigOpen || aiAssistantOpen || settingsOpen || sshDialogOpen || wslDialogOpen || remoteSessionsOpen) return;
 
       if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
         event.preventDefault();
@@ -1124,7 +1173,7 @@ export function App(): ReactElement {
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [displayedResults, selectedKey, detail, remoteDetail, dialog, migrationDialog, deleteSessionCandidate, deletingSession, deleteTagName, contextMenu, skillsOpen, apiConfigOpen, aiAssistantOpen, settingsOpen, sshDialogOpen, wslDialogOpen, remoteSessionsOpen, actionStatus, t]);
+  }, [displayedResults, selectedKey, detail, remoteDetail, dialog, migrationDialog, deleteSessionCandidate, deletingSession, bulkDeleteDialog, bulkDeleteBusy, deleteTagName, contextMenu, skillsOpen, apiConfigOpen, aiAssistantOpen, settingsOpen, sshDialogOpen, wslDialogOpen, remoteSessionsOpen, actionStatus, t]);
 
   useEffect(() => {
     if (!selectedKey) return;
@@ -1132,9 +1181,9 @@ export function App(): ReactElement {
   }, [selectedKey]);
 
   useEffect(() => {
-    document.body.classList.toggle("overlay-open", Boolean(detail || remoteDetail || skillsOpen || assetsOpen || apiConfigOpen || aiAssistantOpen || settingsOpen || sshDialogOpen || wslDialogOpen || remoteSessionsOpen));
+    document.body.classList.toggle("overlay-open", Boolean(detail || remoteDetail || bulkDeleteDialog || skillsOpen || assetsOpen || apiConfigOpen || aiAssistantOpen || settingsOpen || sshDialogOpen || wslDialogOpen || remoteSessionsOpen));
     return () => document.body.classList.remove("overlay-open");
-  }, [detail, remoteDetail, skillsOpen, apiConfigOpen, aiAssistantOpen, settingsOpen, sshDialogOpen, wslDialogOpen, remoteSessionsOpen]);
+  }, [detail, remoteDetail, bulkDeleteDialog, skillsOpen, apiConfigOpen, aiAssistantOpen, settingsOpen, sshDialogOpen, wslDialogOpen, remoteSessionsOpen]);
 
   const visibleSourceFilters = useMemo(() => {
     if (!appSettings) return sourceFilters(null);
@@ -1415,6 +1464,135 @@ export function App(): ReactElement {
       setActionStatus({ kind: "error", message: error instanceof Error ? error.message : String(error) });
     } finally {
       setDeletingSession(false);
+    }
+  }
+
+  function toggleBulkSession(sessionKey: string): void {
+    setBulkSelectedKeys((current) => {
+      const next = new Set(current);
+      if (next.has(sessionKey)) next.delete(sessionKey);
+      else next.add(sessionKey);
+      return next;
+    });
+  }
+
+  function beginBulkSelection(sessionKey: string): void {
+    setBulkSelectionActive(true);
+    setBulkSelectedKeys((current) => new Set(current).add(sessionKey));
+    setContextMenu(null);
+  }
+
+  function exitBulkSelection(): void {
+    setBulkSelectionActive(false);
+    setBulkSelectedKeys(new Set());
+  }
+
+  function toggleLoadedSelection(): void {
+    setBulkSelectedKeys((current) => {
+      const next = new Set(current);
+      const allSelected = displayedResults.length > 0 && displayedResults.every((session) => next.has(session.sessionKey));
+      for (const session of displayedResults) {
+        if (allSelected) next.delete(session.sessionKey);
+        else next.add(session.sessionKey);
+      }
+      return next;
+    });
+  }
+
+  async function selectAllMatchingSessions(): Promise<void> {
+    try {
+      const sessions = await searchAllMatching(false);
+      setBulkSelectedKeys(new Set(sessions.map((session) => session.sessionKey)));
+    } catch (error) {
+      setActionStatus({ kind: "error", message: error instanceof Error ? error.message : String(error) });
+    }
+  }
+
+  async function freshLiveKeysForBulkDelete(): Promise<string[]> {
+    const snapshot = await window.sessionSearch.getLiveSessions();
+    setLiveSessions(snapshot);
+    if (snapshot.error) throw new Error(t("Live session detection failed. Bulk deletion is disabled.", "Live 会话检测失败，批量删除已禁用。"));
+    return snapshot.sessions.map((session) => `${session.family}:${session.rawId}`);
+  }
+
+  async function previewSelectedSessions(): Promise<void> {
+    if (bulkSelectedKeys.size === 0 || bulkDeleteBusy) return;
+    setBulkDeleteBusy(true);
+    try {
+      const sessions = (await searchAllMatching(false)).filter((session) => bulkSelectedKeys.has(session.sessionKey));
+      const request: SessionBulkDeleteRequest = {
+        sessionKeys: sessions.map((session) => session.sessionKey),
+        liveSessionKeys: await freshLiveKeysForBulkDelete(),
+        protectFavorites: false,
+      };
+      const preview = await window.sessionSearch.previewBulkDelete(request);
+      setBulkDeleteDialog({
+        mode: "selection",
+        dateValue: "",
+        request,
+        preview,
+        favoriteCount: sessions.filter((session) => session.favorited).length,
+      });
+    } catch (error) {
+      setActionStatus({ kind: "error", message: error instanceof Error ? error.message : String(error) });
+    } finally {
+      setBulkDeleteBusy(false);
+    }
+  }
+
+  function openDateCleanup(): void {
+    const date = new Date();
+    date.setDate(date.getDate() - 30);
+    setBulkDeleteDialog({ mode: "cleanup", dateValue: formatDateInput(date), request: null, preview: null, favoriteCount: 0 });
+  }
+
+  async function previewDateCleanup(): Promise<void> {
+    if (!bulkDeleteDialog?.dateValue || bulkDeleteBusy) return;
+    setBulkDeleteBusy(true);
+    try {
+      const sessions = await searchAllMatching(true);
+      const inactiveBefore = new Date(`${bulkDeleteDialog.dateValue}T00:00:00`).getTime();
+      if (!Number.isFinite(inactiveBefore)) throw new Error(t("Choose a valid date.", "请选择有效日期。"));
+      const request: SessionBulkDeleteRequest = {
+        sessionKeys: sessions.map((session) => session.sessionKey),
+        liveSessionKeys: await freshLiveKeysForBulkDelete(),
+        inactiveBefore,
+        protectFavorites: true,
+      };
+      const preview = await window.sessionSearch.previewBulkDelete(request);
+      setBulkDeleteDialog((current) => current ? { ...current, request, preview } : current);
+    } catch (error) {
+      setActionStatus({ kind: "error", message: error instanceof Error ? error.message : String(error) });
+    } finally {
+      setBulkDeleteBusy(false);
+    }
+  }
+
+  async function confirmBulkDelete(): Promise<void> {
+    if (!bulkDeleteDialog?.request || !bulkDeleteDialog.preview || bulkDeleteBusy) return;
+    setBulkDeleteBusy(true);
+    setActionStatus({ kind: "running", message: t("Deleting sessions...", "正在批量删除会话...") });
+    try {
+      const request = { ...bulkDeleteDialog.request, liveSessionKeys: await freshLiveKeysForBulkDelete() };
+      const result = await window.sessionSearch.bulkDeleteSessions(request);
+      if (detail && result.deletedSessionKeys.includes(detail.sessionKey)) closeDetail();
+      setBulkSelectedKeys((current) => {
+        const next = new Set(current);
+        for (const sessionKey of result.deletedSessionKeys) next.delete(sessionKey);
+        return next;
+      });
+      setBulkDeleteDialog(null);
+      await Promise.all([load(), loadSidebarMetadata(), loadStats()]);
+      setActionStatus({
+        kind: result.failed.length > 0 ? "error" : "success",
+        message: result.failed.length > 0
+          ? t(`Deleted ${result.deletedSessionKeys.length}; ${result.failed.length} failed.`, `已删除 ${result.deletedSessionKeys.length} 个，${result.failed.length} 个失败。`)
+          : t(`Deleted ${result.deletedSessionKeys.length} sessions.`, `已删除 ${result.deletedSessionKeys.length} 个会话。`),
+      });
+    } catch (error) {
+      setActionStatus({ kind: "error", message: error instanceof Error ? error.message : String(error) });
+    } finally {
+      setBulkDeleteBusy(false);
     }
   }
 
@@ -1977,9 +2155,26 @@ export function App(): ReactElement {
         onCloseSavedSearches={() => setSavedSearchesOpen(false)}
         resultsHeader={
           <div className="result-count">
-            <span>
-              {t(`${sessionTotalCount} sessions`, `${sessionTotalCount} 个会话`)}
-            </span>
+            <div className="bulk-result-actions">
+              {bulkSelectionActive ? <input
+                type="checkbox"
+                checked={displayedResults.length > 0 && displayedResults.every((session) => bulkSelectedKeys.has(session.sessionKey))}
+                onChange={toggleLoadedSelection}
+                aria-label={t("Select loaded sessions", "选择已加载会话")}
+              /> : null}
+              <span>{t(`${sessionTotalCount} sessions`, `${sessionTotalCount} 个会话`)}</span>
+              {bulkSelectionActive ? <strong>{t(`${bulkSelectedKeys.size} selected`, `已选 ${bulkSelectedKeys.size} 个`)}</strong> : null}
+              {bulkSelectionActive && bulkSelectedKeys.size > 0 && bulkSelectedKeys.size < sessionTotalCount ? (
+                <button type="button" onClick={() => void selectAllMatchingSessions()}>{t(`Select all ${sessionTotalCount}`, `选择全部 ${sessionTotalCount} 个`)}</button>
+              ) : null}
+              {bulkSelectionActive && bulkSelectedKeys.size > 0 ? (
+                <button type="button" className="bulk-delete-button" onClick={() => void previewSelectedSessions()}><Trash2 size={13} />{t("Delete", "删除")}</button>
+              ) : null}
+              {bulkSelectionActive ? (
+                <button type="button" onClick={exitBulkSelection} title={t("Exit multi-select", "退出多选")} aria-label={t("Exit multi-select", "退出多选")}><X size={13} /></button>
+              ) : null}
+              <button type="button" onClick={openDateCleanup}><CalendarDays size={13} />{t("Clean up", "按日期清理")}</button>
+            </div>
             {selected ? <span className="selected-path">{selected.projectPath || selected.rawId}</span> : null}
           </div>
         }
@@ -1994,6 +2189,9 @@ export function App(): ReactElement {
         onRename={handleRowRename}
         onFavorite={handleRowFavorite}
         onContextMenu={handleRowContextMenu}
+        bulkSelectionActive={bulkSelectionActive}
+        bulkSelectedKeys={bulkSelectedKeys}
+        onToggleBulk={toggleBulkSession}
         hasMoreSessions={hasMoreSessions}
         onLoadMore={() => setSessionLimit((current) => current + SESSION_PAGE_SIZE)}
         loadMoreCount={SESSION_PAGE_SIZE}
@@ -2118,6 +2316,7 @@ export function App(): ReactElement {
           canMigrate={contextMenu.session.environmentKind !== "ssh" && supportsMigrationSource(contextMenu.session.source)}
           onRename={() => beginRename(contextMenu.session)}
           onAddTag={() => beginAddTag(contextMenu.session)}
+          onSelectMultiple={() => beginBulkSelection(contextMenu.session.sessionKey)}
           onFavorite={() =>
             void runAction(
               contextMenu.session.favorited ? t("Removing favorite", "正在取消收藏") : t("Adding favorite", "正在加入收藏"),
@@ -2217,6 +2416,21 @@ export function App(): ReactElement {
           onCancel={() => {
             if (!deletingSession) setDeleteSessionCandidate(null);
           }}
+        />
+      ) : null}
+
+      {bulkDeleteDialog ? (
+        <BulkDeleteDialog
+          mode={bulkDeleteDialog.mode}
+          preview={bulkDeleteDialog.preview}
+          dateValue={bulkDeleteDialog.dateValue}
+          favoriteCount={bulkDeleteDialog.favoriteCount}
+          busy={bulkDeleteBusy}
+          language={language}
+          onDateChange={(dateValue) => setBulkDeleteDialog((current) => current ? { ...current, dateValue, request: null, preview: null } : current)}
+          onPreview={() => void previewDateCleanup()}
+          onConfirm={() => void confirmBulkDelete()}
+          onCancel={() => { if (!bulkDeleteBusy) setBulkDeleteDialog(null); }}
         />
       ) : null}
 
@@ -2421,6 +2635,7 @@ function ContextMenu({
   canMigrate,
   onRename,
   onAddTag,
+  onSelectMultiple,
   onFavorite,
   onHide,
   onResume,
@@ -2442,6 +2657,7 @@ function ContextMenu({
   canMigrate: boolean;
   onRename: () => void;
   onAddTag: () => void;
+  onSelectMultiple: () => void;
   onFavorite: () => void;
   onHide: () => void;
   onResume: () => void;
@@ -2474,6 +2690,9 @@ function ContextMenu({
       </button>
       <button onClick={onAddTag}>
         <Tag size={14} /> {l("Add Tag", "添加标签")}
+      </button>
+      <button onClick={onSelectMultiple}>
+        <ListChecks size={14} /> {l("Multi-select", "多选")}
       </button>
       <button onClick={onFavorite}>
         <Star size={14} fill={state.session.favorited ? "currentColor" : "none"} />{" "}
