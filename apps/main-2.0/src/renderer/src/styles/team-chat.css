@@ -613,8 +613,7 @@
 .team-chat-member-list strong { color: var(--text-dim); font-size: 11px; }
 .team-chat-member-list small { color: var(--text-faint); font-size: 9px; }
 
-.team-chat-member-reset,
-.team-chat-member-remove {
+.team-chat-member-reset {
   display: grid;
   flex: 0 0 26px;
   place-items: center;
@@ -629,19 +628,41 @@
   background: var(--panel-hover);
 }
 
-.team-chat-member-reset:disabled,
-.team-chat-member-remove:disabled {
+.team-chat-member-reset:disabled {
   cursor: not-allowed;
   opacity: .42;
 }
 
-.team-chat-member-remove {
-  color: var(--danger);
+.team-chat-member-context-menu {
+  position: fixed;
+  z-index: 1000;
+  min-width: 148px;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--panel-bg);
+  box-shadow: var(--shadow-lg);
 }
 
-.team-chat-member-remove:hover {
-  color: var(--danger-hover);
+.team-chat-member-context-action {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 9px;
+  color: var(--danger);
+  text-align: left;
+  border-radius: var(--radius-sm);
+}
+
+.team-chat-member-context-action:hover {
   background: var(--danger-soft);
+  color: var(--danger-hover);
+}
+
+.team-chat-member-context-action:disabled {
+  cursor: not-allowed;
+  opacity: .5;
 }
 
 .team-chat-member-avatar {

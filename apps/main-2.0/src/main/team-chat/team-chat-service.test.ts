@@ -537,6 +537,14 @@ describe("TeamChatService studio employees", () => {
       .resolves.toMatchObject({ agents: [] });
   });
 
+  it("removes an employee even when its configured Agent no longer exists", async () => {
+    const { service, room, configuredAgents } = await createFixture();
+    configuredAgents.length = 0;
+
+    await expect(service.removeRoomMember(room.id, room.agents[0]!.agentId))
+      .resolves.toMatchObject({ agents: [expect.objectContaining({ configuredAgentId: "codex-profile" })] });
+  });
+
   it("permanently deletes a studio and removes it from the room list", async () => {
     const fixture = await createFixture();
 

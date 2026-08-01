@@ -43,6 +43,10 @@ const roomUpdateSchema = z.object({
   workDir: z.string().trim().max(4_096).optional(),
   members: membersSchema.optional(),
 }).strict();
+const roomMemberRemoveSchema = z.object({
+  roomId: idSchema,
+  memberId: idSchema,
+}).strict();
 const messageListSchema = z.object({
   roomId: idSchema,
   before: idSchema.optional(),
@@ -88,6 +92,10 @@ export function registerTeamChatIpc({ ipc, service, send, ensureReady }: Registe
   handle(TEAM_CHAT_CHANNELS.roomsGet, (value) => service.getRoom(idSchema.parse(value)));
   handle(TEAM_CHAT_CHANNELS.roomsCreate, (value) => service.createRoom(roomCreateSchema.parse(value)));
   handle(TEAM_CHAT_CHANNELS.roomsUpdate, (value) => service.updateRoom(roomUpdateSchema.parse(value)));
+  handle(TEAM_CHAT_CHANNELS.roomsRemoveMember, (value) => {
+    const request = roomMemberRemoveSchema.parse(value);
+    return service.removeRoomMember(request.roomId, request.memberId);
+  });
   handle(TEAM_CHAT_CHANNELS.roomsArchive, (value) => service.archiveRoom(idSchema.parse(value)));
   handle(TEAM_CHAT_CHANNELS.roomsDelete, (value) => service.deleteRoom(idSchema.parse(value)));
   handle(TEAM_CHAT_CHANNELS.messagesList, (value) => service.listMessages(messageListSchema.parse(value)));

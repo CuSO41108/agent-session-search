@@ -62,6 +62,12 @@ interface StudioAgentOption {
   description: string;
 }
 
+interface MemberContextMenu {
+  member: TeamChatRoomAgent;
+  x: number;
+  y: number;
+}
+
 const INITIAL_CONNECTION: TeamChatConnectionStatus = { state: "connecting" };
 
 export function TeamChatRoomTitle({
@@ -176,6 +182,7 @@ export function TeamChatPage({
   const [streams, setStreams] = useState<Record<string, StreamDraft>>({});
   const [resettingAgentIds, setResettingAgentIds] = useState<Set<string>>(() => new Set());
   const [removingAgentIds, setRemovingAgentIds] = useState<Set<string>>(() => new Set());
+  const [memberContextMenu, setMemberContextMenu] = useState<MemberContextMenu>();
   const [createOpen, setCreateOpen] = useState(false);
   const [addEmployeeOpen, setAddEmployeeOpen] = useState(false);
   const [roomActionsOpen, setRoomActionsOpen] = useState(false);
@@ -524,26 +531,19 @@ export function TeamChatPage({
     setFeedback(undefined);
   };
 
-  const removeUnavailableRoomEmployee = async (member: TeamChatRoomAgent): Promise<void> => {
+  const removeRoomEmployee = async (member: TeamChatRoomAgent): Promise<void> => {
     if (!activeRoom || removingAgentIds.has(member.agentId)) return;
-    const available = snapshot.configuredAgents.some((agent) => agent.id === member.configuredAgentId);
-    if (available) return;
     if (!window.confirm(l(
-      `Remove unavailable employee “${member.displayName}” from this room?`,
-      `从当前房间移除配置不可用的员工“${member.displayName}”？`,
+      `Remove employee “${member.displayName}” from this room?`,
+      `从当前房间移除员工“${member.displayName}”？`,
     ))) return;
     setRemovingAgentIds((current) => new Set(current).add(member.agentId));
+    setMemberContextMenu(undefined);
     setFeedback(undefined);
     try {
-      const updated = await api.updateRoom({
+      const updated = await api.removeRoomMember({
         roomId: activeRoom.id,
-        members: activeRoom.agents
-          .filter((existing) => existing.agentId !== member.agentId)
-          .map((existing) => ({
-            memberId: existing.agentId,
-            configuredAgentId: existing.configuredAgentId,
-            displayName: existing.displayName,
-          })),
+        memberId: member.agentId,
       });
       setActiveRoom((current) => current?.id === updated.id ? updated : current);
       setRooms((current) => current.map((room) =>
@@ -560,6 +560,22 @@ export function TeamChatPage({
       });
     }
   };
+
+  useEffect(() => {
+    if (!memberContextMenu) return undefined;
+    const close = (): void => setMemberContextMenu(undefined);
+    const onKeyDown = (event: globalThis.KeyboardEvent): void => {
+      if (event.key === "Escape") close();
+    };
+    window.addEventListener("click", close);
+    window.addEventListener("blur", close);
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      window.removeEventListener("click", close);
+      window.removeEventListener("blur", close);
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, [memberContextMenu]);
 
   const resetAgentConversation = async (member: TeamChatRoomAgent): Promise<void> => {
     if (
@@ -824,12 +840,22 @@ export function TeamChatPage({
                     ? l("Continues after first reply", "首次回复后持续")
                     : l("New context each time", "每次新会话");
                 const resetting = resettingAgentIds.has(member.agentId);
-                const removing = removingAgentIds.has(member.agentId);
                 const running = Object.values(streams)
                   .some((stream) => stream.agentId === member.agentId);
                 const selected = targetMemberIds.includes(member.agentId);
                 return (
-                  <div className={`team-chat-member-row ${selected ? "selected" : ""}`} key={member.agentId}>
+                  <div
+                    className={`team-chat-member-row ${selected ? "selected" : ""}`}
+                    key={member.agentId}
+                    onContextMenu={(event) => {
+                      event.preventDefault();
+                      setMemberContextMenu({
+                        member,
+                        x: Math.max(8, Math.min(event.clientX, window.innerWidth - 164)),
+                        y: Math.max(8, Math.min(event.clientY, window.innerHeight - 48)),
+                      });
+                    }}
+                  >
                     <button className="team-chat-member-main" type="button" disabled={!available || !member.enabled} onClick={() => toggleTargetMember(member.agentId)} title={available ? l(`Select ${member.displayName}`, `选择 ${member.displayName}`) : l("Agent configuration is unavailable", "Agent 配置不可用")}>
                       <span className={`team-chat-member-avatar ${available ? "available" : "missing"} ${running ? "running" : ""}`}><Bot size={14} /></span>
                       <span>
@@ -849,18 +875,6 @@ export function TeamChatPage({
                         {resetting ? <LoaderCircle className="spin" size={13} /> : <RotateCcw size={13} />}
                       </button>
                     ) : null}
-                    {!available ? (
-                      <button
-                        className="team-chat-member-remove"
-                        type="button"
-                        disabled={removing}
-                        onClick={() => void removeUnavailableRoomEmployee(member)}
-                        title={l("Remove unavailable employee", "移除配置不可用的员工")}
-                        aria-label={l(`Remove unavailable employee ${member.displayName}`, `移除配置不可用的员工 ${member.displayName}`)}
-                      >
-                        {removing ? <LoaderCircle className="spin" size={13} /> : <Trash2 size={13} />}
-                      </button>
-                    ) : null}
                   </div>
                 );
               })}
@@ -868,6 +882,26 @@ export function TeamChatPage({
           </aside>
         </div>
       )}
+
+      {memberContextMenu ? (
+        <div
+          className="team-chat-member-context-menu"
+          style={{ left: memberContextMenu.x, top: memberContextMenu.y }}
+          role="menu"
+          onClick={(event) => event.stopPropagation()}
+        >
+          <button
+            type="button"
+            role="menuitem"
+            className="team-chat-member-context-action"
+            disabled={removingAgentIds.has(memberContextMenu.member.agentId)}
+            onClick={() => void removeRoomEmployee(memberContextMenu.member)}
+          >
+            {removingAgentIds.has(memberContextMenu.member.agentId) ? <LoaderCircle className="spin" size={13} /> : <Trash2 size={13} />}
+            <span>{l("Remove employee", "删除员工")}</span>
+          </button>
+        </div>
+      ) : null}
 
       {createOpen ? (
         <CreateRoomDialog

@@ -254,6 +254,25 @@ export class TeamChatService {
     return this.decorateRoom(saved);
   }
 
+  async removeRoomMember(roomId: string, memberId: string): Promise<TeamChatRoom> {
+    const store = this.requireStore();
+    const current = await store.getRoom(roomId);
+    if (!current) throw new Error("Team Chat room was not found.");
+    if (!current.agents.some((member) => member.agentId === memberId)) {
+      throw new Error("Studio employee was not found.");
+    }
+    const updated: TeamChatRoom = {
+      ...current,
+      agents: current.agents
+        .filter((member) => member.agentId !== memberId)
+        .map((member, position) => ({ ...member, position })),
+      updatedAt: this.timestamp(),
+    };
+    const saved = await store.updateRoom(updated);
+    this.emit({ type: "rooms-changed" });
+    return this.decorateRoom(saved);
+  }
+
   async archiveRoom(roomId: string): Promise<void> {
     await this.requireStore().archiveRoom(roomId, this.timestamp());
     this.emit({ type: "rooms-changed" });
