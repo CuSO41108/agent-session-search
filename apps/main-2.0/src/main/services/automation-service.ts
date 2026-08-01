@@ -410,6 +410,18 @@ export class NativeAutomationService {
     return this.hubInstance.updateConfiguredAgents(agents, options);
   }
 
+  async deleteConfiguredAgent(agentId: string): Promise<AppSnapshot> {
+    const normalizedAgentId = agentId.trim();
+    const agents = this.hubInstance.snapshot().configuredAgents;
+    if (!agents.some((agent) => agent.id === normalizedAgentId)) {
+      throw new Error(`Agent was not found: ${normalizedAgentId}`);
+    }
+    return this.updateConfiguredAgents(
+      agents.filter((agent) => agent.id !== normalizedAgentId),
+      { detectDeletedManagedAgents: true },
+    );
+  }
+
   subscribe(listener: SnapshotListener): () => void {
     this.listeners.add(listener);
     listener(this.currentSnapshot);

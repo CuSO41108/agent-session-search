@@ -224,8 +224,22 @@ describe("NativeAutomationService", () => {
       { agentId: "worker", location: "Evaluation experiment Regression" },
     ]);
 
-    await expect(service.updateConfiguredAgents([])).rejects.toThrow(/Chat Support.*Team Chat room Release member Reviewer.*Evaluation experiment Regression/);
+    await expect(service.deleteConfiguredAgent("worker")).rejects.toThrow(/Chat Support.*Team Chat room Release member Reviewer.*Evaluation experiment Regression/);
     expect(hub.updateConfiguredAgents).not.toHaveBeenCalled();
+  });
+
+  it("deletes an unreferenced Agent by id without replacing unrelated Agents", async () => {
+    const { service, hub, emit } = fixture();
+    const worker = {
+      id: "worker", name: "Worker", description: "", runtimeAgentId: "codex" as const,
+      channelId: "codex-openai", modelId: "default", tags: [], createdAt: 1, updatedAt: 1,
+    };
+    const reviewer = { ...worker, id: "reviewer", name: "Reviewer" };
+    emit({ ...snapshot(), configuredAgents: [worker, reviewer] });
+
+    await expect(service.deleteConfiguredAgent("worker"))
+      .resolves.toMatchObject({ configuredAgents: [reviewer] });
+    expect(hub.updateConfiguredAgents).toHaveBeenCalledWith([reviewer], { detectDeletedManagedAgents: true });
   });
 
   it("publishes ordered workflow changes without rebroadcasting a full snapshot", () => {

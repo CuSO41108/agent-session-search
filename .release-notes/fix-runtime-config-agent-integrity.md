@@ -4,5 +4,5 @@
 
 - 修复离开 Runtime 页面保存执行配置时可能未保留自动生成 Agent 的问题。
 - Runtime 不再创建或隐式选择默认 Agent；Chat 和 Workflow 会明确提示从 Agent 列表选择配置，Workflow 的每个 AI 节点在运行前都必须指定 Agent。
-- 删除执行配置或 Agent 时会汇总检查 Chat、任务、团队聊天、团队、Workflow 和评估实验的使用关系，并明确提示所有引用位置，避免仍在使用的配置被误删。
+- 点击删除 Agent 时会立即按 Agent ID 检查 Chat、任务、团队聊天、团队、Workflow 节点和评估实验的使用关系；存在引用时会保留 Agent 并明确提示所有引用位置。
 - 修复执行配置详情内容较长时无法向下滚动、底部配置项无法操作的问题。

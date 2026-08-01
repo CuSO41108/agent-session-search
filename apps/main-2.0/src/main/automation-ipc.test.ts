@@ -65,6 +65,7 @@ function setup(pickDirectory?: (defaultPath?: string) => Promise<string | undefi
     subscribeChanges: vi.fn(() => () => undefined),
     runtime: hub,
     updateConfiguredAgents: vi.fn((value, options) => hub.updateConfiguredAgents(value, options)),
+    deleteConfiguredAgent: vi.fn(async (agentId: string) => ({ configuredAgents: hub.listConfiguredAgents().filter((agent) => agent.id !== agentId) })),
     workflows: hub,
     mcp,
     evaluations,
@@ -150,6 +151,16 @@ describe("registerAutomationIpc", () => {
       ...agent,
       mcpBindings: "not-an-array",
     }])).rejects.toThrow(/array/i);
+  });
+
+  it("validates and delegates deletion using the concrete Agent id", async () => {
+    const { invoke, service } = setup();
+
+    await expect(invoke(AUTOMATION_CHANNELS.runtimeDeleteAgent, "agent-1"))
+      .resolves.toEqual({ configuredAgents: [] });
+    expect(service.deleteConfiguredAgent).toHaveBeenCalledWith("agent-1");
+    await expect(invoke(AUTOMATION_CHANNELS.runtimeDeleteAgent, ""))
+      .rejects.toThrow(/too small/i);
   });
 
   it("rejects unsafe MCP URLs before touching the registry", async () => {

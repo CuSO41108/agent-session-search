@@ -142,14 +142,32 @@ export function RuntimeFeaturePage({
     setAgentStatus("");
   };
 
-  const deleteAgent = (agentId: string): void => {
+  const deleteAgent = async (agentId: string): Promise<void> => {
     const remaining = editableAgentsRef.current.filter((agent) => agent.id !== agentId);
-    editableAgentsRef.current = remaining;
-    setEditableAgents(remaining);
-    if (selectedAgentId === agentId) setSelectedAgentId(remaining[0]?.id ?? "");
-    agentDirtyRef.current = true;
-    setAgentDirty(true);
     setAgentStatus("");
+    if (!snapshot.configuredAgents.some((agent) => agent.id === agentId)) {
+      editableAgentsRef.current = remaining;
+      setEditableAgents(remaining);
+      if (selectedAgentId === agentId) setSelectedAgentId(remaining[0]?.id ?? "");
+      agentDirtyRef.current = true;
+      setAgentDirty(true);
+      return;
+    }
+
+    const hadUnsavedChanges = agentDirtyRef.current;
+    try {
+      const next = await api.deleteConfiguredAgent(agentId);
+      setSnapshot(next);
+      const nextEditableAgents = hadUnsavedChanges ? remaining : next.configuredAgents;
+      editableAgentsRef.current = nextEditableAgents;
+      setEditableAgents(nextEditableAgents);
+      if (selectedAgentId === agentId) setSelectedAgentId(nextEditableAgents[0]?.id ?? "");
+      agentDirtyRef.current = hadUnsavedChanges;
+      setAgentDirty(hadUnsavedChanges);
+      setAgentStatus(localize(language, "Deleted", "已删除"));
+    } catch (cause) {
+      setAgentStatus(cause instanceof Error ? cause.message : String(cause));
+    }
   };
 
   return (
