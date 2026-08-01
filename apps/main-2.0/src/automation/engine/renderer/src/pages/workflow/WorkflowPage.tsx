@@ -314,7 +314,7 @@ export function WorkflowPage({ controller: source }: { controller: WorkflowContr
     const nodeAgentRow =
       node.execModel === "llm" ? (
         <div className="workflow-node-agent-row" title={`Agent: ${nodeAgentName} · Model: ${nodeModelId}`}>
-          {canConfigureNodeAgent ? <WorkflowNodeAgentSelect nodeTitle={node.title} {...(node.configuredAgentId ? { configuredAgentId: node.configuredAgentId } : {})} workflowDefaultAgentId={configuredAgentId} configuredAgents={configuredAgents} onSelect={(selectedAgentId) => source.onUpdateNode(node.id, { configuredAgentId: selectedAgentId, modelId: undefined } as Partial<WorkflowV2Node>)} /> : <><span className="workflow-node-agent-name">{nodeAgentName}</span><span className="workflow-node-agent-model">{nodeModelId}</span></>}
+          {canConfigureNodeAgent ? <WorkflowNodeAgentSelect nodeTitle={node.title} {...(node.configuredAgentId ? { configuredAgentId: node.configuredAgentId } : {})} configuredAgents={configuredAgents} onSelect={(selectedAgentId) => source.onUpdateNode(node.id, { configuredAgentId: selectedAgentId, modelId: undefined } as Partial<WorkflowV2Node>)} /> : <><span className="workflow-node-agent-name">{nodeAgentName}</span><span className="workflow-node-agent-model">{nodeModelId}</span></>}
         </div>
       ) : null;
 
@@ -630,6 +630,7 @@ export function WorkflowPage({ controller: source }: { controller: WorkflowContr
               running={running}
               workDir={workDir}
               runtimes={runtimes}
+              showAgentControls={false}
               onSelectConfiguredAgent={onSelectConfiguredAgent}
               onSelectModel={onSelectModel}
               onChooseWorkDir={onChooseWorkDir}

@@ -195,6 +195,27 @@ export class TeamChatService {
     return room ? this.decorateRoom(room) : undefined;
   }
 
+  async configuredAgentReferences(agentIds: ReadonlySet<string>): Promise<Array<{ agentId: string; location: string }>> {
+    if (agentIds.size === 0) return [];
+    await this.connect();
+    const store = this.requireStore();
+    const rooms = await store.listRooms();
+    const references: Array<{ agentId: string; location: string }> = [];
+    for (const summary of rooms) {
+      const room = await store.getRoom(summary.id);
+      if (!room) continue;
+      for (const member of room.agents) {
+        if (agentIds.has(member.configuredAgentId)) {
+          references.push({
+            agentId: member.configuredAgentId,
+            location: `Team Chat room ${room.name || room.id} member ${member.displayName || member.agentId}`,
+          });
+        }
+      }
+    }
+    return references;
+  }
+
   async createRoom(request: CreateTeamChatRoomRequest): Promise<TeamChatRoom> {
     const createdAt = this.timestamp();
     const roomId = this.id();

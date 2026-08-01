@@ -852,29 +852,39 @@ describe("AgentHub chat sessions", () => {
   test("rejects deleting an Agent referenced by Chat, Task, Team, or Workflow", () => {
     const cases: Array<{ expected: RegExp; reference: (hub: AgentHub) => void }> = [
       {
-        expected: /used by Chat/,
+        expected: /Chat/,
         reference: (hub) => { hub.createChat("worker"); },
       },
       {
-        expected: /used by Task/,
+        expected: /Task/,
         reference: (hub) => {
           const task = (hub as any).createTaskState({ prompt: "Use worker", configuredAgentId: "worker" });
           (hub as any).tasks.set(task.id, task);
         },
       },
       {
-        expected: /used by Team/,
+        expected: /Team/,
         reference: (hub) => {
           hub.createTeam({ name: "Review team", members: [{ roleName: "Reviewer", prompt: "Review", configuredAgentId: "worker" }] });
         },
       },
       {
-        expected: /execution Agent for Workflow/,
-        reference: (hub) => { hub.createWorkflowDraft({ configuredAgentId: "worker" }); },
+        expected: /Workflow.*reviewer/,
+        reference: (hub) => { hub.createWorkflowDraft({ configuredAgentId: "default-agent", reviewerConfiguredAgentId: "worker" }); },
       },
       {
-        expected: /reviewer Agent for Workflow/,
-        reference: (hub) => { hub.createWorkflowDraft({ configuredAgentId: "default-agent", reviewerConfiguredAgentId: "worker" }); },
+        expected: /Workflow.*node Answer/,
+        reference: (hub) => {
+          const workflow = hub.createWorkflowDraft().workflowDraft!;
+          hub.patchWorkflowDraft({
+            workflowId: workflow.workflowId,
+            definition: {
+              ...workflow.definition,
+              objective: "Answer",
+              nodes: [{ id: "answer", kind: "answer", title: "Answer", execModel: "llm", executionMode: "one-shot", configuredAgentId: "worker", prompt: "Answer.", outputFields: [{ key: "answer", required: true }] }],
+            },
+          });
+        },
       },
     ];
 
@@ -890,6 +900,31 @@ describe("AgentHub chat sessions", () => {
       )).toThrow(scenario.expected);
       expect(hub.snapshot().configuredAgents).toEqual(before);
     }
+  });
+
+  test("uses the system default Agent for Workflow execution and reports all remaining references", () => {
+    const hub = new AgentHub();
+    addConfiguredAgents(hub, [configuredAgent("worker", { name: "Worker" })]);
+    const workflow = hub.createWorkflowDraft({ configuredAgentId: "worker" }).workflowDraft!;
+    expect(workflow.configuredAgentId).toBe("default-agent");
+    const patched = hub.patchWorkflowDraft({
+      workflowId: workflow.workflowId,
+      configuredAgentId: "worker",
+      modelId: "worker-model",
+    }).workflowDraft!;
+    expect(patched.configuredAgentId).toBe("default-agent");
+    expect(patched.modelId).toBe(hub.snapshot().configuredAgents.find((agent) => agent.id === "default-agent")?.modelId);
+
+    hub.createChat("worker");
+    const task = (hub as any).createTaskState({ prompt: "Use worker", configuredAgentId: "worker" });
+    (hub as any).tasks.set(task.id, task);
+    const before = hub.snapshot().configuredAgents;
+
+    expect(() => hub.updateConfiguredAgents(
+      before.filter((agent) => agent.id !== "worker"),
+      { detectDeletedManagedAgents: true },
+    )).toThrow(/Chat.*Task/);
+    expect(hub.snapshot().configuredAgents).toEqual(before);
   });
 
   test("allows deleting every configured agent without forcing a default agent back", () => {
@@ -3469,7 +3504,7 @@ fs.writeFileSync(${JSON.stringify(argsPath)}, process.argv.slice(2).join("\\n") 
       .not.toContain("mcp_servers.agent_recall");
   });
 
-  test("rejects one-shot-only runtimes in the Workflow planning dialog", async () => {
+  test("rejects a one-shot-only system default runtime in the Workflow planning dialog", async () => {
     const hub = new AgentHub({
       codex: "missing-codex-for-test",
       claude: "missing-claude-for-test",
@@ -3484,7 +3519,9 @@ fs.writeFileSync(${JSON.stringify(argsPath)}, process.argv.slice(2).join("\\n") 
         models: [{ id: "default", label: "Default" }],
       },
     ];
-    addConfiguredAgents(hub, [configuredAgent("api-agent", { runtimeAgentId: "api" })]);
+    hub.updateConfiguredAgents(hub.snapshot().configuredAgents.map((agent) => agent.id === "default-agent"
+      ? { ...agent, runtimeAgentId: "api", channelId: "api-openai" }
+      : agent));
     (hub as any).runtimes.set("api", {
       id: "api",
       label: "API",
@@ -3492,7 +3529,7 @@ fs.writeFileSync(${JSON.stringify(argsPath)}, process.argv.slice(2).join("\\n") 
       version: "test",
       available: true,
     });
-    const workflowId = hub.createWorkflowDraft({ configuredAgentId: "api-agent" }).workflowDraft!.workflowId;
+    const workflowId = hub.createWorkflowDraft().workflowDraft!.workflowId;
 
     const snapshot = await hub.sendWorkflowDraftReply({ workflowId, reply: "Plan this task." });
 

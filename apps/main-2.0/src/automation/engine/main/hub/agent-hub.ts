@@ -364,6 +364,25 @@ interface ResolvedConfiguredAgent {
   reasoningEffort?: string;
   runtime: AgentRuntime | undefined;
 }
+
+export interface ConfiguredAgentReference {
+  agentId: string;
+  agentName: string;
+  location: string;
+}
+
+export function configuredAgentReferenceError(references: ConfiguredAgentReference[]): Error {
+  const grouped = new Map<string, { name: string; locations: string[] }>();
+  for (const reference of references) {
+    const current = grouped.get(reference.agentId) ?? { name: reference.agentName || reference.agentId, locations: [] };
+    if (!current.locations.includes(reference.location)) current.locations.push(reference.location);
+    grouped.set(reference.agentId, current);
+  }
+  const detail = [...grouped.values()]
+    .map((item) => `Agent ${item.name} is referenced by: ${item.locations.join("; ")}`)
+    .join(" | ");
+  return new Error(`Cannot delete referenced Agent configurations. ${detail}. Reassign or remove every reference before deleting.`);
+}
 export type AgentHubChange =
   | { kind: "snapshot"; snapshot: AppSnapshot }
   | { kind: "workflow"; detectedAt: number; payload: Partial<WorkflowAutomationProjection>; patch?: WorkflowAutomationPatch };
@@ -807,7 +826,8 @@ export class AgentHub {
     agents: ConfiguredAgent[],
     options: { detectDeletedManagedAgents?: boolean } = {},
   ): AppSnapshot {
-    this.assertConfiguredAgentsCanBeReplaced(agents, options);
+    const references = this.configuredAgentDeletionReferences(agents, options);
+    if (references.length > 0) throw configuredAgentReferenceError(references);
     if (options.detectDeletedManagedAgents) this.syncDeletedManagedConfiguredAgentIds(agents);
     this.installRestoredConfiguredAgents(agents);
     this.normalizeRunSelections();
@@ -826,10 +846,10 @@ export class AgentHub {
     throw new Error(`Execution config ${channel?.label || referencedAgent.channelId} is used by Agent ${referencedAgent.name || referencedAgent.id}. Reassign or delete the Agent before deleting this execution config.`);
   }
 
-  private assertConfiguredAgentsCanBeReplaced(
+  configuredAgentDeletionReferences(
     agents: ConfiguredAgent[],
-    options: { detectDeletedManagedAgents?: boolean },
-  ): void {
+    options: { detectDeletedManagedAgents?: boolean } = {},
+  ): ConfiguredAgentReference[] {
     const nextAgentIds = new Set(agents.map((agent) => agent.id));
     if (!options.detectDeletedManagedAgents) {
       for (const channel of this.channels) {
@@ -838,30 +858,33 @@ export class AgentHub {
       }
     }
 
+    const references: ConfiguredAgentReference[] = [];
     for (const agent of this.configuredAgents.values()) {
       if (nextAgentIds.has(agent.id)) continue;
       const agentName = agent.name || agent.id;
-      const chat = [...this.chats.values()].find((item) => item.configuredAgentId === agent.id);
-      if (chat) throw new Error(`Agent ${agentName} is used by Chat ${chat.title || chat.id}. Reassign or delete the Chat before deleting this Agent.`);
-      const task = [...this.tasks.values()].find((item) => item.configuredAgentId === agent.id);
-      if (task) throw new Error(`Agent ${agentName} is used by Task ${task.title || task.id}. Reassign or delete the Task before deleting this Agent.`);
+      for (const chat of this.chats.values()) {
+        if (chat.configuredAgentId === agent.id) references.push({ agentId: agent.id, agentName, location: `Chat ${chat.title || chat.id}` });
+      }
+      for (const task of this.tasks.values()) {
+        if (task.configuredAgentId === agent.id) references.push({ agentId: agent.id, agentName, location: `Task ${task.title || task.id}` });
+      }
       for (const team of this.teams.values()) {
-        const member = team.members.find((item) => item.configuredAgentId === agent.id);
-        if (member) throw new Error(`Agent ${agentName} is used by Team ${team.name || team.id} member ${member.roleName || member.id}. Reassign the Team member before deleting this Agent.`);
+        for (const member of team.members) {
+          if (member.configuredAgentId === agent.id) references.push({ agentId: agent.id, agentName, location: `Team ${team.name || team.id} member ${member.roleName || member.id}` });
+        }
       }
       for (const workflow of this.workflowStore.workflows.values()) {
-        if (workflow.configuredAgentId === agent.id) {
-          throw new Error(`Agent ${agentName} is the execution Agent for Workflow ${workflow.title || workflow.workflowId}. Reassign the Workflow before deleting this Agent.`);
-        }
         if (workflow.reviewerConfiguredAgentId === agent.id) {
-          throw new Error(`Agent ${agentName} is the reviewer Agent for Workflow ${workflow.title || workflow.workflowId}. Reassign the Workflow reviewer before deleting this Agent.`);
+          references.push({ agentId: agent.id, agentName, location: `Workflow ${workflow.title || workflow.workflowId} reviewer` });
         }
-        const node = workflow.definition.nodes.find((item) => item.execModel === "llm" && item.configuredAgentId === agent.id);
-        if (node) {
-          throw new Error(`Agent ${agentName} is used by Workflow ${workflow.title || workflow.workflowId} node ${node.title || node.id}. Reassign the workflow node before deleting this Agent.`);
+        for (const node of workflow.definition.nodes) {
+          if (node.execModel === "llm" && node.configuredAgentId === agent.id) {
+            references.push({ agentId: agent.id, agentName, location: `Workflow ${workflow.title || workflow.workflowId} node ${node.title || node.id}` });
+          }
         }
       }
     }
+    return references;
   }
   listConfiguredAgents(): ConfiguredAgent[] {
     return [...this.configuredAgents.values()]
@@ -1297,12 +1320,8 @@ export class AgentHub {
       current,
       request: { ...input, workflowId, definition, workflowV2Plan },
       definition,
-      configuredAgentId: input.configuredAgentId !== undefined
-        ? this.normalizeWorkflowConfiguredAgentId(input.configuredAgentId)
-        : current.configuredAgentId,
-      modelId: input.configuredAgentId !== undefined || input.modelId !== undefined
-        ? this.normalizeModelIdForConfiguredAgent(input.configuredAgentId ?? current.configuredAgentId, input.modelId ?? current.modelId)
-        : current.modelId,
+      configuredAgentId: this.normalizeWorkflowConfiguredAgentId(undefined),
+      modelId: this.normalizeModelIdForConfiguredAgent(undefined, undefined),
       reviewerConfiguredAgentId: input.reviewerConfiguredAgentId !== undefined
         ? this.normalizeWorkflowConfiguredAgentId(input.reviewerConfiguredAgentId)
         : current.reviewerConfiguredAgentId,
@@ -1644,12 +1663,8 @@ export class AgentHub {
       current,
       request: input,
       definition,
-      configuredAgentId:
-        input.configuredAgentId !== undefined ? this.normalizeWorkflowConfiguredAgentId(input.configuredAgentId) : current.configuredAgentId,
-      modelId:
-        input.configuredAgentId !== undefined || input.modelId !== undefined
-          ? this.normalizeModelIdForConfiguredAgent(input.configuredAgentId ?? current.configuredAgentId, input.modelId ?? current.modelId)
-          : current.modelId,
+      configuredAgentId: this.normalizeWorkflowConfiguredAgentId(undefined),
+      modelId: this.normalizeModelIdForConfiguredAgent(undefined, undefined),
       reviewerConfiguredAgentId:
         input.reviewerConfiguredAgentId !== undefined ? this.normalizeWorkflowConfiguredAgentId(input.reviewerConfiguredAgentId) : current.reviewerConfiguredAgentId,
       reviewerModelId:
@@ -2742,8 +2757,13 @@ export class AgentHub {
   }
 
   private cloneWorkflowDraft(draft: WorkflowDraftState): WorkflowDraftState {
+    const configuredAgentId = this.normalizeWorkflowConfiguredAgentId(undefined);
     return cloneWorkflowDraftValue({
-      draft,
+      draft: {
+        ...draft,
+        configuredAgentId,
+        modelId: this.normalizeModelIdForConfiguredAgent(configuredAgentId, undefined),
+      },
       normalizeConfiguredAgentId: (configuredAgentId) => this.normalizeWorkflowConfiguredAgentId(configuredAgentId),
       normalizeModelId: (configuredAgentId, modelId) => this.normalizeModelIdForConfiguredAgent(configuredAgentId, modelId),
       cloneConversation: (conversation) => this.runtimeRouter.cloneConversation(conversation),

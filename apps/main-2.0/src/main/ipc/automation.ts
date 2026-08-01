@@ -253,7 +253,7 @@ export function registerAutomationIpc({
       { validateDeletedChannelReferences: true },
     ));
   ready(AUTOMATION_CHANNELS.runtimeSaveAgents, (value: unknown) =>
-    service.runtime.updateConfiguredAgents(
+    service.updateConfiguredAgents(
       z.array(agentSchema).max(500).parse(value) as ConfiguredAgent[],
       { detectDeletedManagedAgents: true },
     ));

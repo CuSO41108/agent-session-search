@@ -491,6 +491,15 @@ function conversation(threadId: string): RuntimeConversation {
 }
 
 describe("TeamChatService studio employees", () => {
+  it("reports every room member that references an Agent", async () => {
+    const { service } = await createFixture();
+
+    await expect(service.configuredAgentReferences(new Set(["codex-profile"]))).resolves.toEqual([
+      { agentId: "codex-profile", location: "Team Chat room Release studio member Codex" },
+      { agentId: "codex-profile", location: "Team Chat room Release studio member Codex2" },
+    ]);
+  });
+
   it("creates separate employee instances backed by the same configured Agent", async () => {
     const { room } = await createFixture();
 

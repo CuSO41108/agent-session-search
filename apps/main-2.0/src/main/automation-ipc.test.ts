@@ -12,7 +12,7 @@ function setup(pickDirectory?: (defaultPath?: string) => Promise<string | undefi
   };
   const hub = {
     saveModelChannels: vi.fn(async (value) => ({ channels: value })),
-    updateConfiguredAgents: vi.fn((value) => ({ configuredAgents: value })),
+    updateConfiguredAgents: vi.fn((value, _options?: { detectDeletedManagedAgents?: boolean }) => ({ configuredAgents: value })),
     createWorkflowDraft: vi.fn((value) => ({ workflowDraft: value })),
     sendWorkflowDraftReply: vi.fn(async (value) => ({ workflowDraft: value })),
     setMcpServers: vi.fn(),
@@ -64,6 +64,7 @@ function setup(pickDirectory?: (defaultPath?: string) => Promise<string | undefi
     subscribe: vi.fn(() => () => undefined),
     subscribeChanges: vi.fn(() => () => undefined),
     runtime: hub,
+    updateConfiguredAgents: vi.fn((value, options) => hub.updateConfiguredAgents(value, options)),
     workflows: hub,
     mcp,
     evaluations,
@@ -125,7 +126,7 @@ describe("registerAutomationIpc", () => {
   });
 
   it("validates Agent instructions and MCP bindings before saving", async () => {
-    const { invoke, hub } = setup();
+    const { invoke, service } = setup();
     const agent = {
       id: "agent-1",
       agentType: "execution",
@@ -143,7 +144,7 @@ describe("registerAutomationIpc", () => {
 
     await expect(invoke(AUTOMATION_CHANNELS.runtimeSaveAgents, [agent]))
       .resolves.toEqual({ configuredAgents: [agent] });
-    expect(hub.updateConfiguredAgents).toHaveBeenCalledWith([agent], { detectDeletedManagedAgents: true });
+    expect(service.updateConfiguredAgents).toHaveBeenCalledWith([agent], { detectDeletedManagedAgents: true });
 
     await expect(invoke(AUTOMATION_CHANNELS.runtimeSaveAgents, [{
       ...agent,

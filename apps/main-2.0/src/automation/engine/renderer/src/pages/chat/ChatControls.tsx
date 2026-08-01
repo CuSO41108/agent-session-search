@@ -22,6 +22,7 @@ interface ChatControlsProps {
   running: boolean;
   workDir: string;
   runtimes: AgentRuntime[];
+  showAgentControls?: boolean;
   onSelectConfiguredAgent: (configuredAgentId: string) => MaybePromise;
   onSelectModel?: (modelId: string) => MaybePromise;
   onChooseWorkDir: () => MaybePromise;
@@ -36,6 +37,7 @@ export function ChatControls({
   running,
   workDir,
   runtimes,
+  showAgentControls = true,
   onSelectConfiguredAgent,
   onSelectModel = () => undefined,
   onChooseWorkDir,
@@ -60,7 +62,7 @@ export function ChatControls({
 
   return (
     <div className="composer-controls">
-      <label className="composer-select-wrap" title={configTitle}>
+      {showAgentControls ? <><label className="composer-select-wrap" title={configTitle}>
         <span className={`runtime-dot ${agentAccent(runtimeId)}`} />
         <select
           className="composer-select"
@@ -90,7 +92,7 @@ export function ChatControls({
             </option>
           ))}
         </select>
-      </label>
+      </label></> : null}
       <button
         className="workdir-picker composer-workdir-picker"
         onClick={() => void onChooseWorkDir()}
