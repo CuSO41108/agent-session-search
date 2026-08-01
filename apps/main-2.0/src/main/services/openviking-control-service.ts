@@ -169,11 +169,17 @@ export class OpenVikingControlService implements OpenVikingMemoryIpcService {
 
   async deleteWorkspace(workspaceId: string): Promise<void> {
     this.requireEnabled();
+    const previousMemoryAccessPaused = this.memoryAccessPaused;
+    this.memoryAccessPaused = true;
     try {
       await this.options.memory.pauseImport(workspaceId);
     } catch (error) {
-      if (!(error instanceof Error) || !error.message.includes("was not found")) throw error;
+      if (!(error instanceof Error) || !error.message.includes("was not found")) {
+        this.memoryAccessPaused = previousMemoryAccessPaused;
+        throw error;
+      }
     }
+    await Promise.allSettled([...this.activeDataOperations]);
     if ((await this.options.runtime.getStatus()).state === "running") {
       await this.options.runtime.stop();
     }
