@@ -3,10 +3,11 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 
 const require = createRequire(import.meta.url);
-const { applyClaudeConfig, applyCodexConfig, removeCodexBlock } = require(path.resolve("bin", "setup-mcp.cjs")) as {
+const { applyClaudeConfig, applyCodexConfig, removeCodexBlock, serverDefinition } = require(path.resolve("bin", "setup-mcp.cjs")) as {
   applyClaudeConfig: (config: unknown, scriptPath: string, remove: boolean) => Record<string, unknown>;
   applyCodexConfig: (toml: string, scriptPath: string, remove: boolean, command?: string) => string;
   removeCodexBlock: (toml: string) => string;
+  serverDefinition: () => { id: string; name: string; command: string; args: string[] };
 };
 
 describe("setup-mcp Claude config", () => {
@@ -64,5 +65,17 @@ describe("setup-mcp Codex config", () => {
     const toml = applyCodexConfig("", "C:\\Users\\me\\bin\\server.mjs", false, "C:\\Program Files\\nodejs\\node.exe");
     expect(toml).toContain('args = ["C:\\\\Users\\\\me\\\\bin\\\\server.mjs"]');
     expect(toml).toContain('command = "C:\\\\Program Files\\\\nodejs\\\\node.exe"');
+  });
+});
+
+describe("setup-mcp serverDefinition", () => {
+  it("returns the launch command shared with the app MCP registry", () => {
+    const definition = serverDefinition();
+    expect(definition.id).toBe("agent-recall-session-search");
+    expect(definition.name).toBe("agent-recall-v2");
+    expect(definition.command).toBeTruthy();
+    expect(definition.args).toEqual([
+      expect.stringMatching(/agent-recall-mcp\.mjs$/),
+    ]);
   });
 });

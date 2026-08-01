@@ -1,8 +1,10 @@
 import type { AppSnapshot, ConfiguredAgent, McpServerDefinition } from "../../automation/contracts";
+import type { BuiltinSessionSearchServer } from "../../automation/engine/main/mcp-builtin-server";
 import { discoverMcpTools } from "../../automation/engine/main/mcp-client";
 import type { McpAgentManagementService } from "../../automation/engine/main/mcp/agent-management-service";
 import type { McpRegistryStore } from "../../automation/engine/main/mcp-registry-store";
 import type { McpInstallRequest } from "../../automation/engine/shared/mcp-config";
+import type { McpToolDefinition } from "../../automation/engine/shared/mcp/types";
 
 interface McpRuntimeState {
   listConfiguredAgents(): ConfiguredAgent[];
@@ -14,6 +16,7 @@ interface McpAutomationModuleDependencies {
   registry: Pick<McpRegistryStore, "list" | "upsert" | "recordTest" | "delete">;
   agents: Pick<McpAgentManagementService, "status" | "listInstalled" | "listForAgent" | "install" | "uninstall">;
   runtime: McpRuntimeState;
+  builtin?: BuiltinSessionSearchServer;
   discoverTools?: typeof discoverMcpTools;
 }
 
@@ -25,35 +28,53 @@ export class McpAutomationModule {
   }
 
   list(): Promise<McpServerDefinition[]> {
-    return this.dependencies.registry.list();
+    return this.listWithBuiltin();
+  }
+
+  private async listWithBuiltin(): Promise<McpServerDefinition[]> {
+    const servers = await this.dependencies.registry.list();
+    if (!this.dependencies.builtin) return servers;
+    const builtin = await this.dependencies.builtin.resolve();
+    return [builtin, ...servers.filter((server) => server.id !== builtin.id)];
   }
 
   async save(server: McpServerDefinition): Promise<McpServerDefinition> {
+    const builtin = this.dependencies.builtin;
+    if (builtin && builtin.isBuiltinId(server.id)) {
+      const saved = await builtin.saveDraft(server);
+      await this.publishRegistry();
+      return saved;
+    }
     const saved = await this.dependencies.registry.upsert(server);
     await this.publishRegistry();
     return saved;
   }
 
   async test(server: McpServerDefinition): Promise<McpServerDefinition> {
+    const builtin = this.dependencies.builtin;
+    const useBuiltin = Boolean(builtin && builtin.isBuiltinId(server.id));
+    // Test against the fixed launch config for the built-in server, never
+    // against client-supplied connection fields.
+    const target = useBuiltin && builtin ? await builtin.resolve() : server;
+    const record = useBuiltin && builtin
+      ? (tools: McpToolDefinition[], error?: string) => builtin.recordTest(server, tools, error)
+      : (tools: McpToolDefinition[], error?: string) => this.dependencies.registry.recordTest(target, tools, error);
     try {
-      const tested = await this.dependencies.registry.recordTest(
-        server,
-        await this.discoverTools(server),
-      );
+      const tested = await record(await this.discoverTools(target));
       await this.publishRegistry();
       return tested;
     } catch (error) {
-      const tested = await this.dependencies.registry.recordTest(
-        server,
-        [],
-        error instanceof Error ? error.message : String(error),
-      );
+      const tested = await record([], error instanceof Error ? error.message : String(error));
       await this.publishRegistry();
       return tested;
     }
   }
 
   async delete(serverId: string): Promise<boolean> {
+    const builtin = this.dependencies.builtin;
+    if (builtin && builtin.isBuiltinId(serverId)) {
+      throw new Error("The built-in session-search MCP server cannot be deleted. Turn it off in Settings instead.");
+    }
     const deleted = await this.dependencies.registry.delete(serverId);
     if (!deleted) return false;
 
@@ -93,6 +114,6 @@ export class McpAutomationModule {
   }
 
   private async publishRegistry(): Promise<void> {
-    this.dependencies.runtime.setMcpServers(await this.dependencies.registry.list());
+    this.dependencies.runtime.setMcpServers(await this.listWithBuiltin());
   }
 }

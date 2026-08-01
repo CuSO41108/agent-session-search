@@ -1,10 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 import { AUTOMATION_CHANNELS } from "../shared/ipc/automation";
+import type { McpServerDefinition, McpToolDefinition } from "../automation/engine/shared/mcp/types";
 import type { NativeAutomationService } from "./services/automation-service";
 import { McpAutomationModule } from "./services/mcp-automation-module";
 import { registerAutomationIpc } from "./ipc/automation";
 
-function setup(pickDirectory?: (defaultPath?: string) => Promise<string | undefined>) {
+function setup(pickDirectory?: (defaultPath?: string) => Promise<string | undefined>, builtin?: { isBuiltinId: (id: string) => boolean; resolve: () => Promise<McpServerDefinition>; saveDraft: (server: McpServerDefinition) => Promise<McpServerDefinition>; recordTest: (server: McpServerDefinition, tools: McpToolDefinition[], error?: string) => Promise<McpServerDefinition> }) {
   const handlers = new Map<string, (...args: any[]) => unknown>();
   const ipc = {
     handle: vi.fn((channel: string, handler: (...args: any[]) => unknown) => handlers.set(channel, handler)),
@@ -52,6 +53,7 @@ function setup(pickDirectory?: (defaultPath?: string) => Promise<string | undefi
     registry: registry as never,
     agents: mcpAgents as never,
     runtime: hub as never,
+    ...(builtin ? { builtin: builtin as never } : {}),
     discoverTools: vi.fn(async () => []),
   });
   const service = {
@@ -254,5 +256,82 @@ describe("registerAutomationIpc", () => {
 
     await expect(invoke(AUTOMATION_CHANNELS.evaluationExperimentRun, { experimentId: "experiment-1" })).resolves.toEqual({ experimentId: "experiment-1" });
     expect(evaluations.runExperiment).toHaveBeenCalledWith("experiment-1");
+  });
+});
+
+const BUILTIN_ID = "agent-recall-session-search";
+
+function builtinServer(): McpServerDefinition {
+  return {
+    id: BUILTIN_ID,
+    name: "agent-recall-v2",
+    transport: "stdio",
+    command: "node",
+    args: ["/bin/agent-recall-mcp.mjs"],
+    env: {},
+    enabled: true,
+    tools: [],
+    disabledTools: [],
+    status: "untested",
+    createdAt: 1,
+    updatedAt: 1,
+    managed: true,
+  };
+}
+
+function createBuiltin() {
+  return {
+    isBuiltinId: vi.fn((id: string) => id === BUILTIN_ID),
+    resolve: vi.fn(async () => builtinServer()),
+    saveDraft: vi.fn(async (server: McpServerDefinition) => ({
+      ...builtinServer(),
+      enabled: server.enabled,
+      tools: server.tools,
+      disabledTools: server.disabledTools,
+    })),
+    recordTest: vi.fn(async (server: McpServerDefinition, tools: McpToolDefinition[]) => ({
+      ...builtinServer(),
+      tools,
+      disabledTools: server.disabledTools,
+      status: "connected" as const,
+    })),
+  };
+}
+
+describe("registerAutomationIpc with built-in session-search server", () => {
+  it("merges the built-in server into the server list", async () => {
+    const builtin = createBuiltin();
+    const { invoke } = setup(undefined, builtin);
+    const servers = await invoke(AUTOMATION_CHANNELS.mcpList) as McpServerDefinition[];
+    expect(builtin.resolve).toHaveBeenCalled();
+    expect(servers).toEqual([expect.objectContaining({ id: BUILTIN_ID, managed: true })]);
+  });
+
+  it("routes saves for the built-in server to settings, never the user registry", async () => {
+    const builtin = createBuiltin();
+    const { invoke, registry } = setup(undefined, builtin);
+    const saved = await invoke(AUTOMATION_CHANNELS.mcpSave, {
+      ...builtinServer(),
+      enabled: false,
+      tools: [{ name: "search_sessions", inputSchema: {} }],
+    }) as McpServerDefinition;
+
+    expect(registry.upsert).not.toHaveBeenCalled();
+    expect(builtin.saveDraft).toHaveBeenCalledWith(expect.objectContaining({ id: BUILTIN_ID }));
+    expect(saved).toMatchObject({ id: BUILTIN_ID, managed: true, enabled: false });
+  });
+
+  it("tests the built-in server against its fixed launch config", async () => {
+    const builtin = createBuiltin();
+    const { invoke } = setup(undefined, builtin);
+    await invoke(AUTOMATION_CHANNELS.mcpTest, builtinServer());
+    expect(builtin.recordTest).toHaveBeenCalled();
+  });
+
+  it("rejects deleting the built-in server", async () => {
+    const builtin = createBuiltin();
+    const { invoke, registry } = setup(undefined, builtin);
+    await expect(invoke(AUTOMATION_CHANNELS.mcpDelete, BUILTIN_ID)).rejects.toThrow(/cannot be deleted/i);
+    expect(registry.delete).not.toHaveBeenCalled();
   });
 });

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { Eye, FileJson, PlugZap, Save, Server, Trash2, Wifi } from "lucide-react";
+import { Eye, FileJson, PlugZap, Power, Save, Server, Trash2, Wifi } from "lucide-react";
 import type { Language } from "../../app/language";
 import { APP_SAVE_REQUEST_EVENT } from "../../app/save-shortcut";
 import {
@@ -121,6 +121,7 @@ export function McpPage({
                     selected={server.id === draft?.id}
                     title={server.name}
                     meta={`${server.transport.toUpperCase()} · ${toolCountLabel(server, zh ? "工具" : "tools")}`}
+                    badge={server.managed ? (zh ? "内置" : "Built-in") : undefined}
                     status={
                       server.status === "connected"
                         ? "success"
@@ -169,24 +170,36 @@ export function McpPage({
                               ? "未测试"
                               : "Not tested"}
                     </InlineStatus>
-                    <button
-                      className="control-btn compact danger"
-                      type="button"
-                      disabled={Boolean(model.busy)}
-                      onClick={() => {
-                        if (
-                          window.confirm(
-                            zh
-                              ? `删除 ${draft.name}？`
-                              : `Delete ${draft.name}?`,
+                    {draft.managed ? (
+                      <button
+                        className="control-btn compact secondary"
+                        type="button"
+                        disabled={Boolean(model.busy)}
+                        onClick={() => void model.toggleEnabled()}
+                      >
+                        <Power size={13} />
+                        {draft.enabled ? (zh ? "禁用" : "Disable") : (zh ? "启用" : "Enable")}
+                      </button>
+                    ) : (
+                      <button
+                        className="control-btn compact danger"
+                        type="button"
+                        disabled={Boolean(model.busy)}
+                        onClick={() => {
+                          if (
+                            window.confirm(
+                              zh
+                                ? `删除 ${draft.name}？`
+                                : `Delete ${draft.name}?`,
+                            )
                           )
-                        )
-                          void model.remove();
-                      }}
-                    >
-                      <Trash2 size={13} />
-                      {zh ? "删除" : "Delete"}
-                    </button>
+                            void model.remove();
+                        }}
+                      >
+                        <Trash2 size={13} />
+                        {zh ? "删除" : "Delete"}
+                      </button>
+                    )}
                     <button
                       className="control-btn compact secondary"
                       type="button"
@@ -229,11 +242,19 @@ export function McpPage({
                       : "Choose a transport and configure a command or remote endpoint."
                   }
                 >
+                  {draft.managed ? (
+                    <p className="workbench-form-note">
+                      {zh
+                        ? "内置 Server，启动命令由「设置 → 会话检索 MCP」统一管理，此处只读。"
+                        : "Built-in server; its launch command is managed by Settings → Session search MCP and is read-only here."}
+                    </p>
+                  ) : null}
                   <div className="workbench-form-grid">
                     <label>
                       <span>{zh ? "名称" : "Name"}</span>
                       <input
                         value={draft.name}
+                        disabled={draft.managed}
                         onChange={(event) =>
                           model.update({ ...draft, name: event.target.value })
                         }
@@ -247,6 +268,7 @@ export function McpPage({
                           className={
                             draft.transport === "stdio" ? "is-active" : ""
                           }
+                          disabled={draft.managed}
                           onClick={() =>
                             model.update({ ...draft, transport: "stdio" })
                           }
@@ -258,6 +280,7 @@ export function McpPage({
                           className={
                             draft.transport === "http" ? "is-active" : ""
                           }
+                          disabled={draft.managed}
                           onClick={() =>
                             model.update({ ...draft, transport: "http" })
                           }
@@ -273,6 +296,7 @@ export function McpPage({
                           <input
                             placeholder="npx"
                             value={draft.command ?? ""}
+                            disabled={draft.managed}
                             onChange={(event) =>
                               model.update({
                                 ...draft,
@@ -286,6 +310,7 @@ export function McpPage({
                           <input
                             placeholder="-y @modelcontextprotocol/server-filesystem"
                             value={draft.args.join(" ")}
+                            disabled={draft.managed}
                             onChange={(event) =>
                               model.update({
                                 ...draft,
@@ -303,6 +328,7 @@ export function McpPage({
                         <input
                           placeholder="http://127.0.0.1:3000/mcp"
                           value={draft.url ?? ""}
+                          disabled={draft.managed}
                           onChange={(event) =>
                             model.update({ ...draft, url: event.target.value })
                           }
@@ -317,6 +343,7 @@ export function McpPage({
                     </div>
                   ) : null}
                 </WorkbenchSection>
+                {draft.managed ? null : (
                 <WorkbenchSection
                   title={zh ? "环境变量引用" : "Environment references"}
                   description={
@@ -385,6 +412,7 @@ export function McpPage({
                     ))}
                   </div>
                 </WorkbenchSection>
+                )}
                 <WorkbenchSection
                   title={zh ? "已发现工具" : "Discovered tools"}
                   description={

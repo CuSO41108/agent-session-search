@@ -12,6 +12,7 @@ import {
 } from "../../automation/engine/main/bridges/mcp-bridge";
 import { McpRegistryStore } from "../../automation/engine/main/mcp-registry-store";
 import { McpAgentManagementService } from "../../automation/engine/main/mcp/agent-management-service";
+import type { BuiltinSessionSearchServer } from "../../automation/engine/main/mcp-builtin-server";
 import { EvaluationStore } from "../../automation/engine/main/evaluation-store";
 import { ConfiguredAgentExecutionService } from "../../automation/engine/main/platform/configured-agent-execution-service";
 import {
@@ -45,6 +46,7 @@ export interface AutomationServiceOptions {
   appDataPath: string;
   bundledWorkflowsPath: string;
   workflowMcpServerPath: string;
+  builtinSessionSearch?: BuiltinSessionSearchServer;
   chooseWorkflowImportFile?: () => Promise<WorkflowPortableFileSelection | undefined>;
   chooseWorkflowExportPath?: (defaultFileName: string) => Promise<string | undefined>;
   writeWorkflowExportFile?: (filePath: string, content: string) => Promise<void>;
@@ -283,6 +285,7 @@ export class NativeAutomationService {
       registry: this.registryInstance,
       agents: this.agentsInstance,
       runtime: this.hubInstance,
+      ...(options.builtinSessionSearch ? { builtin: options.builtinSessionSearch } : {}),
     });
     this.currentSnapshot = this.hubInstance.snapshot();
     this.unsubscribeHub = this.hubInstance.onChange((change) => this.handleHubChange(change));
