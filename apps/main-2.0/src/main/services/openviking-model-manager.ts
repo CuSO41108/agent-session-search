@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { createReadStream, createWriteStream } from "node:fs";
+import { createReadStream } from "node:fs";
 import {
   access,
   mkdir,
@@ -9,13 +9,12 @@ import {
   writeFile,
 } from "node:fs/promises";
 import path from "node:path";
-import { Readable } from "node:stream";
-import { pipeline } from "node:stream/promises";
 
 import {
   OPENVIKING_LOCAL_EMBEDDING_MODEL,
   type OpenVikingModelStatus,
 } from "../../core/openviking-memory";
+import { downloadFileWithResume } from "./openviking-download";
 import { assertSafeArchiveEntry } from "./openviking-runtime-service";
 
 export interface OpenVikingModelManifest {
@@ -42,15 +41,18 @@ interface OpenVikingLocalModelManagerOptions {
   rootDir: string;
   resolveManifest(): Promise<OpenVikingModelManifest | null>;
   download?: (url: string, destination: string) => Promise<void>;
+  env?: NodeJS.ProcessEnv;
 }
 
 export class OpenVikingLocalModelManager {
   private readonly rootDir: string;
   private readonly download: NonNullable<OpenVikingLocalModelManagerOptions["download"]>;
+  private readonly env: NodeJS.ProcessEnv;
 
   constructor(private readonly options: OpenVikingLocalModelManagerOptions) {
     this.rootDir = path.resolve(options.rootDir);
-    this.download = options.download ?? downloadFile;
+    this.download = options.download ?? downloadFileWithResume;
+    this.env = options.env ?? process.env;
   }
 
   async getStatus(): Promise<OpenVikingModelStatus> {
@@ -95,10 +97,12 @@ export class OpenVikingLocalModelManager {
     try {
       await mkdir(downloadsRoot, { recursive: true });
       await mkdir(modelRoot, { recursive: true });
-      await rm(partial, { force: true });
-      await this.download(manifest.url, partial);
+      // A partial file from an interrupted attempt is kept so the download resumes there.
+      await this.download(resolveModelUrl(manifest.url, this.env), partial);
       const actualSha = await sha256File(partial);
       if (actualSha !== manifest.sha256.toLowerCase()) {
+        // The bytes on disk are unusable, so a retry has to start over rather than resume.
+        await rm(partial, { force: true });
         throw new Error(`OpenViking model checksum mismatch: expected ${manifest.sha256}, received ${actualSha}.`);
       }
       await mkdir(staging, { recursive: true });
@@ -111,7 +115,6 @@ export class OpenVikingLocalModelManager {
       });
       return this.getStatus();
     } catch (error) {
-      await rm(partial, { force: true });
       await rm(staging, { recursive: true, force: true });
       throw error;
     }
@@ -179,6 +182,31 @@ function validateManifest(manifest: OpenVikingModelManifest): void {
   }
 }
 
+/**
+ * Redirects a huggingface.co artifact to the mirror named by `HF_ENDPOINT`, which is the
+ * variable the Hugging Face client libraries already read. The default stays the official
+ * host, and the manifest checksum is still enforced afterwards, so a mirror can only make
+ * the download faster or fail — never substitute different bytes.
+ */
+export function resolveModelUrl(url: string, env: NodeJS.ProcessEnv): string {
+  const endpoint = env.HF_ENDPOINT?.trim();
+  if (!endpoint) return url;
+  const source = new URL(url);
+  if (source.hostname !== "huggingface.co") return url;
+  const mirror = new URL(endpoint);
+  if (mirror.protocol !== "https:") {
+    throw new Error("HF_ENDPOINT must use HTTPS.");
+  }
+  source.protocol = mirror.protocol;
+  source.host = mirror.host;
+  source.pathname = `${trimTrailingSlash(mirror.pathname)}${source.pathname}`;
+  return source.href;
+}
+
+function trimTrailingSlash(value: string): string {
+  return value === "/" ? "" : value.replace(/\/$/u, "");
+}
+
 function resolveModelFile(directory: string, file: string): string {
   assertSafeArchiveEntry(file);
   const resolved = path.resolve(directory, ...file.replaceAll("\\", "/").split("/"));
@@ -187,17 +215,6 @@ function resolveModelFile(directory: string, file: string): string {
     throw new Error(`Unsafe OpenViking model file: ${file}`);
   }
   return resolved;
-}
-
-async function downloadFile(url: string, destination: string): Promise<void> {
-  const response = await fetch(url, { redirect: "follow" });
-  if (!response.ok || !response.body) {
-    throw new Error(`OpenViking model download failed with HTTP ${response.status}.`);
-  }
-  await pipeline(
-    Readable.fromWeb(response.body as never),
-    createWriteStream(destination, { mode: 0o600 }),
-  );
 }
 
 async function sha256File(filePath: string): Promise<string> {

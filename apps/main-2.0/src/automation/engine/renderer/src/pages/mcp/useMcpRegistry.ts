@@ -19,6 +19,15 @@ function createServer(): McpServerDefinition {
   };
 }
 
+function sortServers(items: McpServerDefinition[]): McpServerDefinition[] {
+  return [...items].sort((left, right) => {
+    if (Boolean(left.managed) !== Boolean(right.managed)) {
+      return left.managed ? -1 : 1;
+    }
+    return left.name.localeCompare(right.name);
+  });
+}
+
 export function useMcpRegistry() {
   const [servers, setServers] = useState<McpServerDefinition[]>([]);
   const [selectedId, setSelectedId] = useState<string>();
@@ -40,7 +49,9 @@ export function useMcpRegistry() {
       const items = await agentRecallAutomationService().listMcpServers();
       setServers(items);
       setSelectedId((current) =>
-        items.some((item) => item.id === current) ? current : items[0]?.id,
+        items.some((item) => item.id === current)
+          ? current
+          : (items.find((item) => !item.managed) ?? items[0])?.id,
       );
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
@@ -88,28 +99,34 @@ export function useMcpRegistry() {
     setDirty(true);
   }, []);
   const select = useCallback((id: string) => setSelectedId(id), []);
-  const save = useCallback(async () => {
-    if (!draft?.name.trim()) return;
-    setBusy("save");
-    setError(undefined);
-    try {
-      const saved = await agentRecallAutomationService().saveMcpServer({
-        ...draft,
-        updatedAt: Date.now(),
-      });
-      setServers((items) =>
-        [...items.filter((item) => item.id !== saved.id), saved].sort((a, b) =>
-          a.name.localeCompare(b.name),
-        ),
-      );
-      setDraft(saved);
-      setDirty(false);
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
-    } finally {
-      setBusy(undefined);
-    }
-  }, [draft]);
+  const save = useCallback(
+    async (next?: McpServerDefinition) => {
+      const value = next ?? draft;
+      if (!value?.name.trim()) return;
+      setBusy("save");
+      setError(undefined);
+      try {
+        const saved = await agentRecallAutomationService().saveMcpServer({
+          ...value,
+          updatedAt: Date.now(),
+        });
+        setServers((items) =>
+          sortServers([...items.filter((item) => item.id !== saved.id), saved]),
+        );
+        setDraft(saved);
+        setDirty(false);
+      } catch (cause) {
+        setError(cause instanceof Error ? cause.message : String(cause));
+      } finally {
+        setBusy(undefined);
+      }
+    },
+    [draft],
+  );
+  const toggleEnabled = useCallback(async () => {
+    if (!draft) return;
+    await save({ ...draft, enabled: !draft.enabled });
+  }, [draft, save]);
   const test = useCallback(async () => {
     if (!draft) return;
     setBusy("test");
@@ -120,9 +137,7 @@ export function useMcpRegistry() {
         updatedAt: Date.now(),
       });
       setServers((items) =>
-        [...items.filter((item) => item.id !== tested.id), tested].sort(
-          (a, b) => a.name.localeCompare(b.name),
-        ),
+        sortServers([...items.filter((item) => item.id !== tested.id), tested]),
       );
       setDraft(tested);
       setDirty(false);
@@ -156,9 +171,7 @@ export function useMcpRegistry() {
     }
     setServers((items) => {
       const ids = new Set(saved.map((item) => item.id));
-      return [...items.filter((item) => !ids.has(item.id)), ...saved].sort((a, b) =>
-        a.name.localeCompare(b.name),
-      );
+      return sortServers([...items.filter((item) => !ids.has(item.id)), ...saved]);
     });
     if (saved[0]) setSelectedId(saved[0].id);
     return saved.length;
@@ -174,6 +187,7 @@ export function useMcpRegistry() {
     update,
     toggleTool,
     save,
+    toggleEnabled,
     test,
     remove,
     importServers,

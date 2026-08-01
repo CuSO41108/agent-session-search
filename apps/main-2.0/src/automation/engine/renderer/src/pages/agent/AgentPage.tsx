@@ -1,4 +1,4 @@
-import { Plus, Save } from "lucide-react";
+import { Plus, Save, Trash2 } from "lucide-react";
 import { agentAccent, agentLabel, resolveConfiguredAgentChannel } from "../../app/agents";
 import type { Language } from "../../app/language";
 import { DEFAULT_MODEL_ID } from "../../../../shared/models";
@@ -16,6 +16,7 @@ interface AgentPageProps {
   onAddConfiguredAgent: () => MaybePromise;
   onSelectConfiguredAgent: (agentId: string) => void;
   onUpdateConfiguredAgent: (agentId: string, updater: (agent: ConfiguredAgent) => ConfiguredAgent) => void;
+  onDeleteConfiguredAgent?: (agentId: string) => void;
 }
 
 function configTextFor(language: Language) {
@@ -33,6 +34,7 @@ function configTextFor(language: Language) {
         descriptionField: "描述",
         emptyAgent: "新建 Agent 后可编辑名称、描述、执行配置和标签。",
         newAgent: "新建 Agent",
+        deleteAgent: "删除 Agent",
       }
     : {
         title: "Agent Assembly",
@@ -47,6 +49,7 @@ function configTextFor(language: Language) {
         descriptionField: "Description",
         emptyAgent: "Create an agent to edit its profile, execution config, and tags.",
         newAgent: "New agent",
+        deleteAgent: "Delete agent",
       };
 }
 
@@ -67,6 +70,7 @@ export function AgentPage({
   onAddConfiguredAgent,
   onSelectConfiguredAgent,
   onUpdateConfiguredAgent,
+  onDeleteConfiguredAgent,
 }: AgentPageProps) {
   const configText = configTextFor(language);
   const selectedConfiguredAgent =
@@ -101,9 +105,23 @@ export function AgentPage({
                 <div>
                   <h3>Agents</h3>
                 </div>
-                <button className="icon-btn" type="button" onClick={() => void onAddConfiguredAgent()} aria-label={configText.newAgent}>
-                  <Plus size={14} />
-                </button>
+                <div className="configured-agent-editor-actions">
+                  <button className="icon-btn" type="button" onClick={() => void onAddConfiguredAgent()} aria-label={configText.newAgent}>
+                    <Plus size={14} />
+                  </button>
+                  {onDeleteConfiguredAgent ? (
+                    <button
+                      className="icon-btn danger"
+                      type="button"
+                      aria-label={configText.deleteAgent}
+                      title={configText.deleteAgent}
+                      disabled={!selectedConfiguredAgent || configuredAgents.length === 0}
+                      onClick={() => onDeleteConfiguredAgent(selectedConfiguredAgent!.id)}
+                    >
+                      <Trash2 size={13} />
+                    </button>
+                  ) : null}
+                </div>
               </div>
               <div className="configured-agent-list">
                 {configuredAgents.map((agent) => (
@@ -115,7 +133,6 @@ export function AgentPage({
                   >
                     <span className={`agent-badge mini ${agentAccent(agent.runtimeAgentId)}`}>{agentLabel(agent.runtimeAgentId)}</span>
                     <strong>{agent.name || agent.id}</strong>
-                    <span>{channels.find((channel) => channel.id === agent.channelId)?.label ?? agent.channelId}</span>
                   </button>
                 ))}
               </div>

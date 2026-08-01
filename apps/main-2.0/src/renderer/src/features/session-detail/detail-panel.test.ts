@@ -275,6 +275,7 @@ describe("Session detail trajectory controls", () => {
       canMigrate: false,
       onRename: () => undefined,
       onAddTag: () => undefined,
+      onSelectMultiple: () => undefined,
       onFavorite: () => undefined,
       onHide: () => undefined,
       onResume: () => undefined,
@@ -289,6 +290,7 @@ describe("Session detail trajectory controls", () => {
       onReveal: () => undefined,
     }));
 
+    expect(html).toContain("多选");
     expect(html).not.toContain("删除会话");
   });
 });

@@ -5,6 +5,7 @@ import type { IndexStatus } from "../core/indexer";
 import type { RemoteHealthReport } from "../core/remote-health";
 import type { ResumeRouteResult } from "../core/resume-router";
 import type { TraceEventQueryOptions } from "../core/session-store";
+import type { SessionBulkDeletePreview, SessionBulkDeleteRequest, SessionBulkDeleteResult } from "../core/session-bulk-delete";
 import type { SshConfigHost } from "../core/ssh-config";
 import type {
   EnvironmentUpsertInput,
@@ -102,6 +103,10 @@ const api = {
   setFavorited: (sessionKey: string, favorited: boolean): Promise<void> => ipcRenderer.invoke("favorite:set", sessionKey, favorited),
   setHidden: (sessionKey: string, hidden: boolean): Promise<void> => ipcRenderer.invoke("hide:set", sessionKey, hidden),
   deleteSession: (sessionKey: string): Promise<boolean> => ipcRenderer.invoke("session:delete", sessionKey),
+  previewBulkDelete: (request: SessionBulkDeleteRequest): Promise<SessionBulkDeletePreview> =>
+    ipcRenderer.invoke("session:bulk-delete-preview", request),
+  bulkDeleteSessions: (request: SessionBulkDeleteRequest): Promise<SessionBulkDeleteResult> =>
+    ipcRenderer.invoke("session:bulk-delete", request),
   refreshIndex: (): Promise<IndexStatus> => ipcRenderer.invoke("index:refresh"),
   getIndexStatus: (): Promise<IndexStatus> => ipcRenderer.invoke("index:status"),
   ...createAppUpdateApi(ipcRenderer),

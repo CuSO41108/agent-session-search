@@ -53,7 +53,7 @@ function createClient(overrides: Partial<AppUpdateClient> = {}): AppUpdateClient
     clearInstallStatus: vi.fn(async () => undefined),
     currentVersion: vi.fn(() => "0.1.0"),
     formatUpdateError: vi.fn((error) => String(error ?? "unknown error")),
-    manualInstallCommand: vi.fn((version) => `npm install -g agent-recall-v2-${version}.tgz`),
+    manualInstallCommand: vi.fn(() => "npm install -g https://github.com/zszz3/AgentRecall/releases/download/v2-latest/agent-recall-v2.tgz"),
     parseUpdateManifest: vi.fn((value) => {
       if (!value || typeof value !== "object") throw new Error("Update manifest is missing.");
       return value as AppUpdateManifest;
@@ -341,7 +341,7 @@ describe("AppUpdateService", () => {
       title: "更新失败",
       message: expect.stringContaining("手动安装"),
     }));
-    expect(harness.copyText).toHaveBeenCalledWith("npm install -g agent-recall-v2-0.2.0.tgz");
+    expect(harness.copyText).toHaveBeenCalledWith("npm install -g https://github.com/zszz3/AgentRecall/releases/download/v2-latest/agent-recall-v2.tgz");
     expect(client.clearInstallStatus).toHaveBeenCalledOnce();
   });
 

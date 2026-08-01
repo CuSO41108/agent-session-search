@@ -26,6 +26,13 @@ export interface McpServerDefinition {
   lastTestedAt?: number;
   createdAt: number;
   updatedAt: number;
+  /**
+   * True for app-managed servers that are synthesized from app settings rather
+   * than stored in the user MCP registry (e.g. the session-search MCP that is
+   * registered into Claude Code / Codex configs). Managed servers are read-only
+   * except for enable state and per-tool toggles.
+   */
+  managed?: boolean;
 }
 
 export interface AgentMcpBinding {

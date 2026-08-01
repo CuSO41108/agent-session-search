@@ -2079,6 +2079,28 @@ select:focus-visible {
   color: var(--text-muted);
 }
 
+.bulk-result-actions {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: 8px;
+}
+
+.bulk-result-actions button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 26px;
+  padding: 0 8px;
+  border: 1px solid var(--border-subtle);
+  background: var(--panel-bg);
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.bulk-result-actions button:hover { color: var(--text); }
+.bulk-result-actions .bulk-delete-button { color: var(--danger); }
+
 .selected-path {
   max-width: 52%;
   overflow: hidden;
@@ -2151,6 +2173,17 @@ select:focus-visible {
   user-select: none;
   -webkit-user-select: none;
   transition: background 0.12s ease;
+}
+
+.session-row.bulk-selecting {
+  grid-template-columns: 20px minmax(0, 1fr) max-content;
+}
+
+.session-bulk-checkbox {
+  width: 14px;
+  height: 14px;
+  margin: 3px 0 0;
+  accent-color: var(--accent);
 }
 
 .session-row:last-child {
@@ -6114,6 +6147,24 @@ select:focus-visible {
   width: min(380px, calc(100vw - 32px));
   padding: 14px;
 }
+
+.bulk-delete-dialog {
+  width: min(460px, calc(100vw - 32px));
+  padding: 14px;
+}
+
+.bulk-delete-date {
+  display: grid;
+  gap: 8px;
+  margin: 12px 0;
+  color: var(--text);
+  font-size: 12.5px;
+}
+
+.bulk-delete-date input { min-height: 34px; }
+.bulk-delete-date small { color: var(--text-muted); }
+.bulk-delete-summary { display: flex; flex-wrap: wrap; gap: 6px; }
+.bulk-delete-summary span { padding: 4px 7px; border: 1px solid var(--border-subtle); border-radius: 6px; color: var(--text-muted); font-size: 11px; }
 
 .delete-skill-dialog .dialog-title,
 .delete-session-dialog .dialog-title {

@@ -189,7 +189,23 @@ function status(home = homeDir()) {
   }
 }
 
-module.exports = { applyClaudeConfig, applyCodexConfig, removeCodexBlock, run, status };
+// The launch command used when running the packaged MCP server, resolved from
+// the same node selection as `run`. Used by the app to synthesize the built-in
+// session-search server entry in the MCP registry.
+function serverDefinition() {
+  return {
+    id: "agent-recall-session-search",
+    name: "agent-recall-v2",
+    transport: "stdio",
+    command: nodeCommand(),
+    args: [serverScriptPath()],
+    env: {},
+    createdAt: 0,
+    updatedAt: 0,
+  };
+}
+
+module.exports = { applyClaudeConfig, applyCodexConfig, removeCodexBlock, run, serverDefinition, status };
 
 if (require.main === module) {
   const remove = process.argv.includes("uninstall") || process.argv.includes("--remove");

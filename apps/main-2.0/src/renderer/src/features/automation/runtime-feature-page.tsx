@@ -108,6 +108,14 @@ export function RuntimeFeaturePage({
     setAgentStatus("");
   };
 
+  const deleteAgent = (agentId: string): void => {
+    const remaining = editableAgents.filter((agent) => agent.id !== agentId);
+    setEditableAgents(remaining);
+    if (selectedAgentId === agentId) setSelectedAgentId(remaining[0]?.id ?? "");
+    setAgentDirty(true);
+    setAgentStatus("");
+  };
+
   return (
     <div className="automation-page automation-runtime-page" data-page="runtimes" onClick={() => manager.setConfigContextMenu(undefined)}>
       <header className="app-page-head automation-page-head">
@@ -180,6 +188,7 @@ export function RuntimeFeaturePage({
               onAddConfiguredAgent={addAgent}
               onSelectConfiguredAgent={setSelectedAgentId}
               onUpdateConfiguredAgent={updateAgent}
+              onDeleteConfiguredAgent={deleteAgent}
             />
           )}
         </div>

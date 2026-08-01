@@ -1,5 +1,7 @@
 # AgentRecall Install
 
+本文档分为两部分：[安装并使用 v1](#安装并使用给使用者)（稳定版）和 [安装并使用 v2](#安装并使用-v2预览版)（预览版）。两个版本互相独立，可以同时安装并运行。
+
 ## 安装并使用（给使用者）
 
 先确认 Node.js 22.13+ 和 npm 可用，然后直接安装 GitHub 最新 Release：
@@ -163,6 +165,93 @@ npm uninstall -g agent-recall
 ```bash
 git clone https://github.com/zszz3/AgentRecall.git
 ```
+
+---
+
+## 安装并使用 v2（预览版）
+
+v2 在会话管理之外增加了 Runtime、Agent、Chat、Workflow、Eval、MCP、目录记忆和 Skill 库。它使用独立的命令、应用数据、数据库、MCP 标识和更新缓存，可以与 v1 同时安装并运行，但当前不会读取或导入 v1 数据。
+
+### 安装与启动
+
+先确认 Node.js 22.13+ 和 npm 可用，然后安装最新的 v2 Release：
+
+```bash
+npm install -g https://github.com/zszz3/AgentRecall/releases/download/v2-latest/agent-recall-v2.tgz
+agent-recall-v2
+```
+
+`v2-latest` 是始终指向最新 v2 版本的固定链接。GitHub 每个仓库只有一个标记为 Latest 的 Release，该标记由 v1 使用（v1 的自动更新依赖它），因此 v2 使用这个专用链接，而不是 `releases/latest/download/`。
+
+装好后，在任意终端运行 `agent-recall-v2` 即可启动。应用常驻菜单栏或系统托盘，macOS 默认按 **⌥ Option + Space**、Windows 默认按 **Ctrl + Alt + Space** 唤起搜索窗口，可在设置中修改或关闭。
+
+应用会自动准备内置 PostgreSQL 数据服务，不需要另外安装数据库。首次启动时如果需要使用目录记忆，应用会按当前版本下载对应的 OpenViking 运行时。
+
+国内网络访问 npm 较慢时，同样可以只为本次安装使用镜像：
+
+```bash
+npm install -g https://github.com/zszz3/AgentRecall/releases/download/v2-latest/agent-recall-v2.tgz --registry=https://registry.npmmirror.com
+```
+
+Electron 运行时下载慢时，在安装前设置镜像：
+
+```bash
+export ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/
+```
+
+Windows PowerShell 用：
+
+```powershell
+$env:ELECTRON_MIRROR = "https://npmmirror.com/mirrors/electron/"
+```
+
+### 像普通 App 一样打开（macOS）
+
+```bash
+agent-recall-v2 install-app
+```
+
+之后可以从 Launchpad、Spotlight 或 Dock 直接打开 `agent-recall-v2`。该启动器与 v1 的 `AgentRecall.app` 相互独立，两者可以并存。
+
+### 更新到新版本
+
+从终端启动时会自动检查 v2 的 Release，发现新版本会展示新增功能和 Bug 修复并询问是否更新。也可以主动检查或直接更新：
+
+```bash
+agent-recall-v2 --check-update
+agent-recall-v2 --update
+```
+
+App 内可在 **设置 → 关于** 检查并安装更新。更新包会先校验 SHA-256；安装失败时会保留当前可用版本，并通过系统提示框提供复制安装命令和打开 Release 页面两个兜底入口。
+
+手动覆盖安装始终使用同一个稳定链接：
+
+```bash
+npm install -g https://github.com/zszz3/AgentRecall/releases/download/v2-latest/agent-recall-v2.tgz
+```
+
+### 安装指定版本或回滚
+
+使用对应 Release tag 的固定链接，注意 v2 的 tag 带 `v2-` 前缀：
+
+```bash
+npm install -g https://github.com/zszz3/AgentRecall/releases/download/v2-0.2.1/agent-recall-v2.tgz
+```
+
+安装会覆盖当前全局的 v2 版本，不会删除会话数据库、Supabase 配置或用户偏好，也不会影响已安装的 v1。回滚后可用 `agent-recall-v2 --version` 核对版本。
+
+### 卸载
+
+```bash
+agent-recall-v2 uninstall
+npm uninstall -g agent-recall-v2
+```
+
+第一条命令只清理 v2 写入的 Claude statusLine、Skill usage hook、会话同步 Hook、OpenViking 记忆 Hook、MCP 引用、macOS 启动器和集成缓存；它会保留本地会话数据库、Supabase 配置、自动更新偏好及其他用户偏好，也不会动 v1 的任何配置。第二条命令再删除全局安装的程序包。
+
+### 参与 v2 开发
+
+从源码运行 v2 请看 [CONTRIBUTING.md](./CONTRIBUTING.md)。Windows 上首次执行 `npm run setup:v2` 需要以管理员身份运行终端，以便创建内置 PostgreSQL 所需的符号链接；通过 Release 安装则不需要管理员权限。
 
 ---
 

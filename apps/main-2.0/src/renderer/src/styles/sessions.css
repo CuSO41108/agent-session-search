@@ -490,6 +490,28 @@
   color: var(--text-muted);
 }
 
+.bulk-result-actions {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: 8px;
+}
+
+.bulk-result-actions button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 26px;
+  padding: 0 8px;
+  border: 1px solid var(--border-subtle);
+  background: var(--panel-bg);
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.bulk-result-actions button:hover { color: var(--text); }
+.bulk-result-actions .bulk-delete-button { color: var(--danger); }
+
 .selected-path {
   max-width: 52%;
   overflow: hidden;
@@ -562,6 +584,17 @@
   user-select: none;
   -webkit-user-select: none;
   transition: background var(--duration-fast) var(--ease-out);
+}
+
+.session-row.bulk-selecting {
+  grid-template-columns: 20px minmax(0, 1fr) max-content;
+}
+
+.session-bulk-checkbox {
+  width: 14px;
+  height: 14px;
+  margin: 3px 0 0;
+  accent-color: var(--accent);
 }
 
 .session-row:last-child {

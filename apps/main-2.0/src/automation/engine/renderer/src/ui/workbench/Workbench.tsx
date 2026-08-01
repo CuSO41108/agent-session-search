@@ -109,12 +109,14 @@ export function BrowserItem({
   selected,
   title,
   meta,
+  badge,
   status,
   onClick,
 }: {
   selected: boolean;
   title: string;
   meta: string;
+  badge?: string;
   status?: "success" | "danger" | "muted";
   onClick: () => void;
 }) {
@@ -125,7 +127,10 @@ export function BrowserItem({
       onClick={onClick}
     >
       <span className="workbench-browser-item-main">
-        <strong>{title}</strong>
+        <span className="workbench-browser-item-title">
+          <strong>{title}</strong>
+          {badge ? <span className="workbench-browser-badge">{badge}</span> : null}
+        </span>
         <small>{meta}</small>
       </span>
       {status ? (

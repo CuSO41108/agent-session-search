@@ -38,6 +38,9 @@ export type ContentAreaProps = {
   onRename: (session: SessionSearchResult) => void;
   onFavorite: (session: SessionSearchResult) => void;
   onContextMenu: (event: ReactMouseEvent, session: SessionSearchResult) => void;
+  bulkSelectionActive: boolean;
+  bulkSelectedKeys: Set<string>;
+  onToggleBulk: (sessionKey: string) => void;
   hasMoreSessions: boolean;
   onLoadMore: () => void;
   loadMoreCount: number;
@@ -71,6 +74,9 @@ export function ContentArea(props: ContentAreaProps): ReactElement {
     onRename,
     onFavorite,
     onContextMenu,
+    bulkSelectionActive,
+    bulkSelectedKeys,
+    onToggleBulk,
     hasMoreSessions,
     onLoadMore,
     loadMoreCount,
@@ -119,6 +125,9 @@ export function ContentArea(props: ContentAreaProps): ReactElement {
           onRename={onRename}
           onFavorite={onFavorite}
           onContextMenu={onContextMenu}
+          bulkSelectionActive={bulkSelectionActive}
+          bulkSelectedKeys={bulkSelectedKeys}
+          onToggleBulk={onToggleBulk}
         />
         {sessions.length === 0 && !hasMoreSessions ? <div className="empty">{t("No sessions found.", "没有找到会话。")}</div> : null}
         {hasMoreSessions ? (

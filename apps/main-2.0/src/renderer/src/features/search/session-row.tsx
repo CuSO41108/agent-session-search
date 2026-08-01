@@ -48,6 +48,9 @@ export const SessionRow = memo(function SessionRow({
   onRename,
   onFavorite,
   onContextMenu,
+  bulkSelectionActive = false,
+  bulkSelected = false,
+  onToggleBulk,
 }: {
   session: SessionSearchResult;
   sortBy?: SessionSortBy;
@@ -60,6 +63,9 @@ export const SessionRow = memo(function SessionRow({
   onRename: (session: SessionSearchResult) => void;
   onFavorite: (session: SessionSearchResult) => void;
   onContextMenu: (event: ReactMouseEvent, session: SessionSearchResult) => void;
+  bulkSelectionActive?: boolean;
+  bulkSelected?: boolean;
+  onToggleBulk?: (sessionKey: string) => void;
 }): ReactElement {
   const l = (en: string, zh: string) => localize(language, en, zh);
   const matchHits = session.matchHits ?? [];
@@ -73,7 +79,7 @@ export const SessionRow = memo(function SessionRow({
           : null;
   return (
     <article
-      className={`session-row ${selected ? "selected" : ""}`}
+      className={`session-row ${selected ? "selected" : ""} ${bulkSelectionActive ? "bulk-selecting" : ""}`}
       onClick={() => {
         onSelect(session.sessionKey);
         if (matchHits[0]) onOpenMatch(session, matchHits[0]);
@@ -81,6 +87,16 @@ export const SessionRow = memo(function SessionRow({
       }}
       onContextMenu={(event) => onContextMenu(event, session)}
     >
+      {bulkSelectionActive && onToggleBulk ? (
+        <input
+          className="session-bulk-checkbox"
+          type="checkbox"
+          checked={bulkSelected}
+          onChange={() => onToggleBulk(session.sessionKey)}
+          onClick={(event) => event.stopPropagation()}
+          aria-label={l("Select session", "选择会话")}
+        />
+      ) : null}
       <div className="session-main">
         <div className="session-title">
           <button

@@ -69,6 +69,7 @@ import type {
   TokenUsageEvent,
 } from "./types";
 import type { OpenVikingWorkspace } from "./openviking-memory";
+import type { SessionBulkDeleteTarget } from "./session-bulk-delete";
 
 export type {
   ApiProviderKeyTarget,
@@ -226,6 +227,7 @@ export class SessionStore {
       return sourceDeleted || indexDeleted;
     }
     if (target.source === "opencode-cli") throw new Error("Cannot delete shared OpenCode source database.");
+    if (target.source === "codewiz-cli") throw new Error("Cannot delete shared CodeWiz source database.");
     if (target.source === "cursor-agent" && /(^|[\\/])state\.vscdb$/iu.test(target.filePath)) {
       if (!target.sourceAvailable) return this.sessions.deleteSessionRecord(sessionKey);
       throw new Error("Cannot delete shared Cursor source database.");
@@ -237,6 +239,16 @@ export class SessionStore {
   async deleteSessionRecord(sessionKey: string): Promise<boolean> {
     await this.ready;
     return this.sessions.deleteSessionRecord(sessionKey);
+  }
+
+  async getSessionDeletionTargets(sessionKeys: readonly string[]): Promise<SessionBulkDeleteTarget[]> {
+    await this.ready;
+    return this.sessions.getSessionDeletionTargets(sessionKeys);
+  }
+
+  async deleteSessionRecords(sessionKeys: readonly string[]): Promise<string[]> {
+    await this.ready;
+    return this.sessions.deleteSessionRecords(sessionKeys);
   }
 
   async migrateSessionKeyPreservingUserState(

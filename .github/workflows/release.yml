@@ -400,3 +400,54 @@ jobs:
             --output "$verify_directory"
           node apps/main-2.0/scripts/verify-openviking-runtime-assets.mjs "$verify_directory" 0.4.11-r2
           gh release edit "$V2_TAG" --draft=false --latest=false
+
+      # V1's updater hardcodes `releases/latest/download/update.json`, so the
+      # repository-wide "Latest" marker cannot move to V2 without silently breaking
+      # auto-update for every installed V1 client. Keep a rolling `v2-latest`
+      # release instead so V2 has one stable install URL of its own.
+      # Only the package and its checksum are mirrored: the OpenViking runtime is
+      # fetched from `v2-<version>` using the version baked into the tarball, and
+      # `update-v2.json` is only ever read from a versioned tag.
+      - name: Refresh V2 stable install release
+        if: steps.pending.outputs.v2_publish == 'true' && steps.v2_version.outputs.release_required == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          V2_TAG: ${{ steps.v2_version.outputs.tag }}
+          V2_VERSION: ${{ steps.v2_version.outputs.version }}
+          V2_LATEST_TAG: v2-latest
+          MERGED_SHA: ${{ github.sha }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -f -a "$V2_LATEST_TAG" "$MERGED_SHA" -m "agent-recall-v2 stable install pointer (v${V2_VERSION})"
+          git push --force origin "refs/tags/$V2_LATEST_TAG"
+
+          notes_file="$RUNNER_TEMP/agent-recall-v2-latest-note.md"
+          {
+            printf '此 Release 始终指向最新的 agent-recall-v2 版本，当前为 [v%s](https://github.com/%s/releases/tag/%s)。\n\n' \
+              "$V2_VERSION" "$GITHUB_REPOSITORY" "$V2_TAG"
+            printf '```bash\nnpm install -g https://github.com/%s/releases/download/%s/agent-recall-v2.tgz\nagent-recall-v2\n```\n\n' \
+              "$GITHUB_REPOSITORY" "$V2_LATEST_TAG"
+            printf '完整更新说明和 OpenViking 运行时资产请查看对应版本的 Release 页面。\n'
+          } > "$notes_file"
+
+          if gh release view "$V2_LATEST_TAG" >/dev/null 2>&1; then
+            gh release edit "$V2_LATEST_TAG" --title "agent-recall-v2 (latest)" --notes-file "$notes_file" --draft=false --latest=false
+          else
+            gh release create "$V2_LATEST_TAG" --verify-tag --title "agent-recall-v2 (latest)" --notes-file "$notes_file" --latest=false
+          fi
+          gh release upload "$V2_LATEST_TAG" \
+            release/v2/agent-recall-v2.tgz \
+            release/v2/agent-recall-v2.tgz.sha256 \
+            --clobber
+
+          verify_directory="$(mktemp -d)"
+          trap 'rm -rf "$verify_directory"' EXIT
+          gh release download "$V2_LATEST_TAG" \
+            --pattern "agent-recall-v2.tgz" \
+            --pattern "agent-recall-v2.tgz.sha256" \
+            --dir "$verify_directory"
+          node apps/main-2.0/scripts/verify-stable-install-assets.mjs \
+            --stable "$verify_directory" \
+            --release release/v2 \
+            --version "$V2_VERSION"

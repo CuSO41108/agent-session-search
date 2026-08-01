@@ -5,6 +5,10 @@ import * as path from "node:path";
 import { createInMemoryStore } from "./postgres/test-session-store";
 import type { IndexedSession, SessionMessage } from "./types";
 
+const { DatabaseSync } = require("node:sqlite") as {
+  DatabaseSync: new (path: string) => import("node:sqlite").DatabaseSync;
+};
+
 const openStores: Array<ReturnType<typeof createInMemoryStore>> = [];
 
 afterEach(async () => {
@@ -195,6 +199,94 @@ describe("SessionStore PostgreSQL facade", () => {
     await expect(store.getSessionSourceArtifacts(sessionKey)).resolves.toEqual([]);
     await expect(store.deleteSession(sessionKey)).resolves.toBe(true);
     await expect(store.getSession(sessionKey)).resolves.toBeNull();
+  });
+
+  it("reads bulk deletion targets and deletes only explicit session records", async () => {
+    const store = createStore();
+    await store.upsertIndexedSession(indexedSession({ sessionKey: "codex:parent", rawId: "parent" }), messages);
+    await store.upsertIndexedSession(
+      indexedSession({ sessionKey: "codex:child", rawId: "child", isSubagent: true, parentSessionId: "parent" }),
+      messages,
+    );
+    await store.setFavorited("codex:parent", true);
+
+    await expect(store.getSessionDeletionTargets(["codex:child", "missing", "codex:parent"])).resolves.toEqual([
+      expect.objectContaining({ sessionKey: "codex:child", favorited: false, environmentKind: "local" }),
+      expect.objectContaining({
+        sessionKey: "codex:parent",
+        favorited: true,
+        lastActivityAt: Date.parse("2026-07-20T08:00:01.000Z"),
+      }),
+    ]);
+
+    await expect(store.deleteSessionRecords(["codex:parent", "missing"])).resolves.toEqual(["codex:parent"]);
+    await expect(store.getSession("codex:parent")).resolves.toBeNull();
+    await expect(store.getSession("codex:child")).resolves.toMatchObject({ messageCount: messages.length, isSubagent: true });
+  });
+
+  it("deletes only the selected ZCode session from its shared database", async () => {
+    const store = createStore();
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "agent-recall-v2-zcode-delete-"));
+    try {
+      const dbDir = path.join(root, "cli", "db");
+      const dbPath = path.join(dbDir, "db.sqlite");
+      fs.mkdirSync(dbDir, { recursive: true });
+      const db = new DatabaseSync(dbPath);
+      try {
+        db.exec("CREATE TABLE session (id TEXT PRIMARY KEY)");
+        db.prepare("INSERT INTO session (id) VALUES (?), (?)").run("sess-delete", "sess-keep");
+      } finally {
+        db.close();
+      }
+
+      await store.upsertIndexedSession(
+        indexedSession({
+          sessionKey: "zcode:sess-delete",
+          rawId: "sess-delete",
+          source: "zcode-cli",
+          filePath: dbPath,
+        }),
+        messages,
+      );
+
+      await expect(store.deleteSession("zcode:sess-delete")).resolves.toBe(true);
+      expect(fs.existsSync(dbPath)).toBe(true);
+      const remainingDb = new DatabaseSync(dbPath);
+      try {
+        expect(remainingDb.prepare("SELECT id FROM session ORDER BY id").all()).toEqual([{ id: "sess-keep" }]);
+      } finally {
+        remainingDb.close();
+      }
+      await expect(store.getSession("zcode:sess-delete")).resolves.toBeNull();
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses to delete the shared CodeWiz database", async () => {
+    const store = createStore();
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "agent-recall-v2-codewiz-delete-"));
+    try {
+      const dbPath = path.join(root, "codewiz.db");
+      fs.writeFileSync(dbPath, "shared database", "utf8");
+      await store.upsertIndexedSession(
+        indexedSession({
+          sessionKey: "codewiz:sess-keep",
+          rawId: "sess-keep",
+          source: "codewiz-cli",
+          filePath: dbPath,
+        }),
+        messages,
+      );
+
+      await expect(store.deleteSession("codewiz:sess-keep")).rejects.toThrow(
+        "Cannot delete shared CodeWiz source database.",
+      );
+      expect(fs.existsSync(dbPath)).toBe(true);
+      await expect(store.getSession("codewiz:sess-keep")).resolves.not.toBeNull();
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it("rejects Pi source deletion while record-only source pruning keeps the file", async () => {

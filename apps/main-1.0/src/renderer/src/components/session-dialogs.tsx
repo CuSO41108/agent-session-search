@@ -5,6 +5,7 @@ import type { SessionSearchResult } from "../../../core/types";
 import { displayTagName, isBranchTag } from "../session-ui";
 import { localize, type LanguageMode } from "../language";
 import type { DialogState } from "../app-types";
+import type { SessionBulkDeletePreview } from "../../../core/session-bulk-delete";
 
 export function DeleteTagDialog({
   tagName,
@@ -112,6 +113,89 @@ export function DeleteSessionDialog({
       </div>
     </div>
   );
+}
+
+export function BulkDeleteDialog({
+  mode,
+  preview,
+  dateValue,
+  favoriteCount,
+  busy,
+  language,
+  onDateChange,
+  onPreview,
+  onConfirm,
+  onCancel,
+}: {
+  mode: "selection" | "cleanup";
+  preview: SessionBulkDeletePreview | null;
+  dateValue: string;
+  favoriteCount: number;
+  busy: boolean;
+  language: LanguageMode;
+  onDateChange: (value: string) => void;
+  onPreview: () => void;
+  onConfirm: () => void;
+  onCancel: () => void;
+}): ReactElement {
+  const l = (en: string, zh: string) => localize(language, en, zh);
+  const skippedCounts = preview ? countIssueReasons(preview) : [];
+  return (
+    <div className="dialog-backdrop" onMouseDown={onCancel}>
+      <div className="command-dialog bulk-delete-dialog" onMouseDown={(event) => event.stopPropagation()}>
+        <div className="dialog-title">
+          <span>{mode === "cleanup" ? l("Clean Up Sessions", "按日期清理会话") : l("Delete Selected Sessions", "删除所选会话")}</span>
+          <button type="button" className="icon-button" onClick={onCancel} disabled={busy} aria-label={l("Close", "关闭")}><X size={16} /></button>
+        </div>
+        {mode === "cleanup" && !preview ? (
+          <label className="bulk-delete-date">
+            <span>{l("Delete sessions inactive before", "删除此日期前不活跃的会话")}</span>
+            <input type="date" value={dateValue} max={localDateInput(new Date())} onChange={(event) => onDateChange(event.target.value)} />
+            <small>{l("Favorite and live sessions are protected.", "收藏和正在运行的会话会受到保护。")}</small>
+          </label>
+        ) : null}
+        {preview ? (
+          <>
+            <p className="dialog-copy"><strong>{preview.deletableCount}</strong>{l(" sessions will be permanently deleted.", " 个会话将被永久删除。")}</p>
+            <div className="bulk-delete-summary">
+              {preview.sourceCounts.map((item) => <span key={item.source}>{item.source} · {item.count}</span>)}
+            </div>
+            {preview.skipped.length > 0 ? <p className="dialog-copy">{l("Excluded", "已排除")}：{skippedCounts.map(([reason, count]) => `${issueReasonLabel(reason, l)} · ${count}`).join("，")}</p> : null}
+            {mode === "selection" && favoriteCount > 0 ? <p className="dialog-copy danger-copy">{l(`${favoriteCount} favorite sessions are included.`, `其中包含 ${favoriteCount} 个收藏会话。`)}</p> : null}
+            <p className="dialog-copy danger-copy">{l("Original session data may be deleted. This cannot be undone.", "原始会话数据可能被删除，且无法撤销。")}</p>
+          </>
+        ) : null}
+        <div className="dialog-actions">
+          <button type="button" onClick={onCancel} disabled={busy}>{l("Cancel", "取消")}</button>
+          {!preview ? (
+            <button type="button" className="primary-action" onClick={onPreview} disabled={busy || !dateValue}>{busy ? l("Loading...", "正在加载...") : l("Preview", "预览")}</button>
+          ) : (
+            <button type="button" className="danger-action" onClick={onConfirm} disabled={busy || preview.deletableCount === 0}>{busy ? l("Deleting...", "正在删除...") : l("Delete Permanently", "永久删除")}</button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function countIssueReasons(preview: SessionBulkDeletePreview): Array<[string, number]> {
+  const counts = new Map<string, number>();
+  for (const issue of preview.skipped) counts.set(issue.reason, (counts.get(issue.reason) ?? 0) + 1);
+  return [...counts.entries()];
+}
+
+function issueReasonLabel(reason: string, l: (en: string, zh: string) => string): string {
+  const labels: Record<string, [string, string]> = {
+    "not-found": ["Not found", "未找到"], live: ["Live", "正在运行"], favorite: ["Favorite", "收藏"],
+    recent: ["Too recent", "日期范围外"], "read-only": ["Read-only", "只读来源"],
+    "remote-source": ["Remote source", "远程来源"], "shared-database": ["Shared database", "共享数据库"],
+  };
+  const label = labels[reason];
+  return label ? l(label[0], label[1]) : reason;
+}
+
+function localDateInput(date: Date): string {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
 }
 
 export function CommandDialog({

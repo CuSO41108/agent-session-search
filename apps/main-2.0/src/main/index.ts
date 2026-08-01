@@ -147,6 +147,8 @@ import {
   type OpenVikingRuntimeManifest,
 } from "./services/openviking-runtime-service";
 import { NativeAutomationService } from "./services/automation-service";
+import { BuiltinSessionSearchServer } from "../automation/engine/main/mcp-builtin-server";
+import type { McpBuiltinRuntime } from "../automation/engine/main/mcp-builtin-server";
 import { createLocalTextFilePreviewUnderRoots } from "../automation/engine/main/platform/local-file-preview";
 import { ProviderService } from "./services/provider-service";
 import {
@@ -262,6 +264,7 @@ const MCP_SETUP_PATH = path.join(__dirname, "../../bin/setup-mcp.cjs");
 interface McpSetup {
   run(remove: boolean): string[];
   status(): boolean;
+  serverDefinition(): { id: string; name: string; command: string; args: string[]; transport: string; env: Record<string, string>; createdAt: number; updatedAt: number };
 }
 function loadMcpSetup(): McpSetup {
   return requireCjs(MCP_SETUP_PATH) as McpSetup;
@@ -324,6 +327,14 @@ const settingsStore = new Store<AppSettings>({
   defaults: defaultSettings,
 });
 
+// Runtime state (discovered tools, per-tool toggles, last test result) for the
+// built-in session-search MCP server. Kept apart from AppSettings so internal
+// MCP state never leaks into the user-facing settings shape.
+const mcpRuntimeStore = new Store<McpBuiltinRuntime>({
+  name: "mcp-runtime",
+  defaults: { tools: [], disabledTools: [], status: "untested", createdAt: 0, updatedAt: 0 },
+});
+
 type SavedWindowState = {
   width: number;
   height: number;
@@ -383,6 +394,28 @@ function createAutomationService(): NativeAutomationService {
     appDataPath: app.getPath("appData"),
     bundledWorkflowsPath: bundledAutomationWorkflowsPath(),
     workflowMcpServerPath: path.join(app.getAppPath(), "out", "mcp", "workflow-entry.js"),
+    builtinSessionSearch: new BuiltinSessionSearchServer({
+      isEnabled: () => ensureAgentRecallMcpPreference(),
+      setEnabled: async (next) => {
+        const setup = loadMcpSetup();
+        setup.run(!next);
+        settingsStore.set("sessionSearchMcpEnabled", next);
+        return setup.status();
+      },
+      launchConfig: () => {
+        const definition = loadMcpSetup().serverDefinition();
+        return {
+          id: definition.id,
+          name: definition.name,
+          command: definition.command,
+          args: definition.args,
+        };
+      },
+      readRuntime: () => mcpRuntimeStore.store,
+      writeRuntime: (runtime) => {
+        mcpRuntimeStore.store = runtime;
+      },
+    }),
     chooseWorkflowImportFile: chooseWorkflowImportFile,
     chooseWorkflowExportPath: chooseWorkflowExportPath,
     writeWorkflowExportFile: writeWorkflowExportFileAtomically,

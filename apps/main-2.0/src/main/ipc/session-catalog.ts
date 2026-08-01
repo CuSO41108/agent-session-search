@@ -1,5 +1,6 @@
 import type { IpcMain } from "electron";
 import type { TraceEventQueryOptions } from "../../core/session-store";
+import type { SessionBulkDeleteRequest } from "../../core/session-bulk-delete";
 import type {
   ProjectQueryOptions,
   SearchOptions,
@@ -51,6 +52,10 @@ export function registerSessionCatalogIpc(
   ipc.handle("hide:set", (_event, sessionKey: string, hidden: boolean) =>
     service.setHidden(sessionKey, hidden));
   ipc.handle("session:delete", (_event, sessionKey: string) => service.delete(sessionKey));
+  ipc.handle("session:bulk-delete-preview", (_event, request: SessionBulkDeleteRequest) =>
+    service.previewBulkDelete(request));
+  ipc.handle("session:bulk-delete", (_event, request: SessionBulkDeleteRequest) =>
+    service.bulkDeleteSessions(request));
   ipc.handle("index:refresh", () => service.refreshIndex());
   ipc.handle("index:status", () => service.getIndexStatus());
 }

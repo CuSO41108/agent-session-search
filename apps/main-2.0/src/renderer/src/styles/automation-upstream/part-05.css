@@ -2801,4 +2801,40 @@
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 12px;
 }
+
+.workbench-form-note {
+  margin: 0 0 12px;
+  padding: 8px 10px;
+  border: 1px solid color-mix(in srgb, var(--accent) 20%, var(--line));
+  border-radius: 5px;
+  background: var(--accent-tint);
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+.workbench-browser-item-title {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+}
+
+.workbench-browser-item-title strong {
+  flex: 1;
+  min-width: 0;
+}
+
+.workbench-browser-badge {
+  flex: none;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  color: var(--accent);
+  font-size: 9px;
+  font-weight: 600;
+  line-height: 1.5;
+  letter-spacing: 0.3px;
+  text-transform: uppercase;
+}
 }

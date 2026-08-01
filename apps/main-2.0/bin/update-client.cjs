@@ -16,6 +16,13 @@ const TRUSTED_GITHUB_REPOSITORIES = new Set([GITHUB_REPOSITORY.toLowerCase(), "z
 const LATEST_RELEASE_API = `https://api.github.com/repos/${GITHUB_REPOSITORY}/releases?per_page=100`;
 const LATEST_RELEASE_URL = `https://github.com/${GITHUB_REPOSITORY}/releases`;
 const RELEASE_REFS_URL = `https://github.com/${GITHUB_REPOSITORY}.git/info/refs?service=git-upload-pack`;
+// V1's updater hardcodes `releases/latest/download/update.json`, so the
+// repository-wide "Latest" marker cannot move to V2 without silently breaking
+// auto-update for every installed V1 client. V2 therefore keeps its own rolling
+// tag that always carries the newest package; this is the only V2 install URL
+// that stays valid across releases.
+const STABLE_INSTALL_TAG = "v2-latest";
+const LATEST_PACKAGE_URL = `${LATEST_RELEASE_URL}/download/${STABLE_INSTALL_TAG}/agent-recall-v2.tgz`;
 const UPDATE_ASSET_NAME = "update-v2.json";
 const UPDATE_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 const UPDATE_REQUEST_TIMEOUT_MS = 5_000;
@@ -409,18 +416,21 @@ function releaseUrl(version) {
   return `${LATEST_RELEASE_URL}/tag/v2-${version}`;
 }
 
-function manualInstallCommand(version) {
-  parseStableVersion(version);
-  return `npm install -g https://github.com/${GITHUB_REPOSITORY}/releases/download/v2-${version}/agent-recall-v2.tgz`;
+function manualInstallCommand() {
+  return `npm install -g ${LATEST_PACKAGE_URL}`;
 }
 
 function formatManualUpdateFallback(version) {
   if (!version) {
-    return `自动更新未完成。请从 agent-recall-v2 的 Release 页面手动安装：\n${LATEST_RELEASE_URL}`;
+    return [
+      "自动更新未完成。你可以手动覆盖安装最新版本：",
+      manualInstallCommand(),
+      `Release 页面：${LATEST_RELEASE_URL}`,
+    ].join("\n");
   }
   return [
-    "自动更新未完成。你可以手动安装对应的 agent-recall-v2 Release：",
-    manualInstallCommand(version),
+    "自动更新未完成。你可以手动覆盖安装最新版本：",
+    manualInstallCommand(),
     `Release 页面：${releaseUrl(version)}`,
   ].join("\n");
 }
@@ -450,7 +460,7 @@ function showNativeUpdateFailure(errorMessage, options = {}) {
   const platform = options.platform || process.platform;
   const run = options.execFileSyncImpl || execFileSync;
   const spawnImpl = options.spawnImpl || spawn;
-  const command = options.version ? manualInstallCommand(options.version) : "";
+  const command = manualInstallCommand();
   const productReleaseUrl = options.version ? releaseUrl(options.version) : LATEST_RELEASE_URL;
   const environment = {
     ...process.env,
@@ -1224,8 +1234,10 @@ async function writeJsonAtomic(filePath, value) {
 module.exports = {
   DEFAULT_NPM_REGISTRY,
   GITHUB_REPOSITORY,
+  LATEST_PACKAGE_URL,
   LATEST_RELEASE_API,
   LATEST_RELEASE_URL,
+  STABLE_INSTALL_TAG,
   UPDATE_CACHE_TTL_MS,
   UPDATE_REQUEST_TIMEOUT_MS,
   acquireUpdateLock,
