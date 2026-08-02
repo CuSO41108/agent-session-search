@@ -19,6 +19,8 @@ import { fileURLToPath } from "node:url";
 import * as tar from "tar";
 
 import type {
+  OpenVikingRuntimeDiagnostics,
+  OpenVikingRuntimeEvent,
   OpenVikingRuntimeInstallProgress,
   OpenVikingRuntimeStatus,
 } from "../../core/openviking-memory";
@@ -111,6 +113,7 @@ interface RuntimeServiceOptions {
 interface PersistedRuntimeState {
   pid: number;
   port: number;
+  startedAt?: string;
 }
 
 export class OpenVikingRuntimeService {
@@ -130,6 +133,7 @@ export class OpenVikingRuntimeService {
   private readonly killProcess: NonNullable<RuntimeServiceOptions["killProcess"]>;
   private child: RuntimeChild | null = null;
   private transientStatus: OpenVikingRuntimeStatus | null = null;
+  private readonly runtimeEvents: OpenVikingRuntimeEvent[] = [];
 
   constructor(options: RuntimeServiceOptions) {
     this.rootDir = path.resolve(options.rootDir);
@@ -191,6 +195,43 @@ export class OpenVikingRuntimeService {
       state: "stopped",
       version: manifest.version,
       ...(installedBytes === undefined ? {} : { installedBytes }),
+    };
+  }
+
+  async getDiagnostics(): Promise<OpenVikingRuntimeDiagnostics> {
+    const status = await this.getStatus();
+    if (status.state !== "running") {
+      return {
+        status,
+        health: "not-running",
+        events: [...this.runtimeEvents],
+      };
+    }
+    const state = await this.readRuntimeState();
+    if (!state) {
+      return {
+        status,
+        health: "unhealthy",
+        events: [...this.runtimeEvents],
+      };
+    }
+    const startedAtMs = state.startedAt ? Date.parse(state.startedAt) : Number.NaN;
+    const healthStartedAt = Date.now();
+    const rootApiKey = await this.readRootApiKey();
+    const healthy = rootApiKey
+      ? await this.healthProbe(`http://127.0.0.1:${state.port}`, rootApiKey).catch(() => false)
+      : false;
+    return {
+      status,
+      health: healthy ? "healthy" : "unhealthy",
+      pid: state.pid,
+      port: state.port,
+      ...(state.startedAt ? { startedAt: state.startedAt } : {}),
+      ...(Number.isFinite(startedAtMs)
+        ? { uptimeSeconds: Math.max(0, Math.floor((Date.now() - startedAtMs) / 1_000)) }
+        : {}),
+      healthLatencyMs: Math.max(0, Date.now() - healthStartedAt),
+      events: [...this.runtimeEvents],
     };
   }
 
@@ -326,6 +367,8 @@ export class OpenVikingRuntimeService {
       this.transientStatus = null;
       throw new Error("OpenViking runtime did not report a process ID.");
     }
+    const startedAt = new Date().toISOString();
+    this.recordRuntimeEvent("info", "start", `Starting OpenViking on port ${port}.`);
     let stderrTail = "";
     child.stderr?.setEncoding("utf8");
     child.stderr?.on("data", (chunk: string | Buffer) => {
@@ -347,9 +390,19 @@ export class OpenVikingRuntimeService {
       };
       child.once("exit", exitListener);
     });
-    const runtimeStateWrite = this.writePrivateJson(this.runtimeStatePath(), { pid: child.pid, port });
-    child.once("exit", () => {
+    const runtimeStateWrite = this.writePrivateJson(this.runtimeStatePath(), {
+      pid: child.pid,
+      port,
+      startedAt,
+    });
+    child.once("exit", (code, signal) => {
       if (this.child === child) this.child = null;
+      const reason = signal ? `signal ${signal}` : `exit code ${code ?? "unknown"}`;
+      this.recordRuntimeEvent(
+        code === 0 && !signal ? "info" : "warning",
+        "exit",
+        `OpenViking exited with ${reason}.`,
+      );
       void runtimeStateWrite.then(
         () => rm(this.runtimeStatePath(), { force: true }),
         () => undefined,
@@ -364,12 +417,14 @@ export class OpenVikingRuntimeService {
       if (startupError) throw startupError;
       if (exitListener) child.removeListener("exit", exitListener);
       this.transientStatus = null;
+      this.recordRuntimeEvent("info", "ready", `OpenViking is ready on port ${port}.`);
       return this.getStatus();
     } catch (error) {
       if (child.exitCode === null) child.kill();
       await rm(this.runtimeStatePath(), { force: true });
       this.child = null;
       this.transientStatus = null;
+      this.recordRuntimeEvent("error", "error", "OpenViking failed to start.");
       const detail = error instanceof Error ? error.message : String(error);
       throw new Error(`OpenViking runtime failed to start: ${detail}`, { cause: error });
     }
@@ -395,6 +450,8 @@ export class OpenVikingRuntimeService {
   async stop(): Promise<OpenVikingRuntimeStatus> {
     const state = await this.readRuntimeState();
     const child = this.child;
+    const wasRunning = child?.exitCode === null || Boolean(state);
+    if (wasRunning) this.recordRuntimeEvent("info", "stop", "Stopping OpenViking.");
     if (child?.exitCode === null) {
       await stopRuntimeChild(child);
       this.child = null;
@@ -404,7 +461,9 @@ export class OpenVikingRuntimeService {
     }
     await rm(this.runtimeStatePath(), { force: true });
     this.transientStatus = null;
-    return this.getStatus();
+    const status = await this.getStatus();
+    if (wasRunning) this.recordRuntimeEvent("info", "stop", "OpenViking stopped.");
+    return status;
   }
 
   async clearData(): Promise<void> {
@@ -446,6 +505,21 @@ export class OpenVikingRuntimeService {
       throw new Error("OpenViking runtime checksum is invalid.");
     }
     assertSafeArchiveEntry(manifest.executablePath);
+  }
+
+  private recordRuntimeEvent(
+    level: OpenVikingRuntimeEvent["level"],
+    type: OpenVikingRuntimeEvent["type"],
+    message: string,
+  ): void {
+    this.runtimeEvents.unshift({
+      id: randomUUID(),
+      level,
+      type,
+      message,
+      createdAt: new Date().toISOString(),
+    });
+    if (this.runtimeEvents.length > 50) this.runtimeEvents.length = 50;
   }
 
   private async readActiveManifest(): Promise<OpenVikingRuntimeManifest | null> {

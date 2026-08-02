@@ -1,9 +1,11 @@
 import type { AppSettings } from "../../core/platform";
 import type {
+  OpenVikingDiagnosticsSnapshot,
   OpenVikingMemoryItem,
   OpenVikingMemorySnapshot,
   OpenVikingModelStatus,
   OpenVikingRuntimeInstallProgress,
+  OpenVikingRuntimeDiagnostics,
   OpenVikingRuntimeStatus,
   OpenVikingWorkspace,
 } from "../../core/openviking-memory";
@@ -23,6 +25,7 @@ import type {
 
 interface RuntimePort {
   getStatus(): Promise<OpenVikingRuntimeStatus>;
+  getDiagnostics(): Promise<OpenVikingRuntimeDiagnostics>;
   install(
     manifest: OpenVikingRuntimeManifest,
     onProgress?: (progress: OpenVikingRuntimeInstallProgress) => void,
@@ -70,6 +73,25 @@ export class OpenVikingControlService implements OpenVikingMemoryIpcService {
       this.options.memory.listWorkspaces(),
     ]);
     return { runtime, model, workspaces };
+  }
+
+  async diagnostics(): Promise<OpenVikingDiagnosticsSnapshot> {
+    this.requireEnabled();
+    const [runtime, model, workspaces] = await Promise.all([
+      this.options.runtime.getDiagnostics(),
+      this.options.model.getStatus(),
+      this.options.memory.listWorkspaces(),
+    ]);
+    const tasks = await this.options.memory.listImportTaskDiagnostics(
+      runtime.status.state === "running",
+    );
+    return {
+      capturedAt: new Date().toISOString(),
+      runtime,
+      model,
+      workspaces,
+      tasks,
+    };
   }
 
   async chooseDirectory(): Promise<OpenVikingDirectoryPreview | null> {
@@ -341,6 +363,24 @@ export class OpenVikingControlService implements OpenVikingMemoryIpcService {
     const status = await this.options.runtime.start(await this.options.serverConfig());
     await this.notifyStateChanged();
     return status;
+  }
+
+  restartRuntime(): Promise<OpenVikingRuntimeStatus> {
+    this.requireEnabled();
+    if (this.runtimeStart) return this.runtimeStart;
+    const restarting = this.performRuntimeRestart()
+      .finally(() => {
+        if (this.runtimeStart === restarting) {
+          this.runtimeStart = null;
+        }
+      });
+    this.runtimeStart = restarting;
+    return restarting;
+  }
+
+  private async performRuntimeRestart(): Promise<OpenVikingRuntimeStatus> {
+    await this.options.runtime.stop();
+    return this.performRuntimeStart();
   }
 
   async stopRuntime(): Promise<OpenVikingRuntimeStatus> {

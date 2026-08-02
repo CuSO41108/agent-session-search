@@ -207,7 +207,7 @@ describe("OpenVikingRuntimeService", () => {
 
   it("installs, starts and stops an app-owned loopback runtime", async () => {
     const root = await temporaryRoot();
-    const { service, child, spawnCalls, healthCheck } = runtimeHarness(root);
+    const { service, child, spawnCalls, healthCheck, healthProbe } = runtimeHarness(root);
 
     await expect(service.getStatus()).resolves.toMatchObject({ state: "not-installed" });
     await service.install(manifest());
@@ -276,10 +276,37 @@ describe("OpenVikingRuntimeService", () => {
       baseUrl: "http://127.0.0.1:21933",
       rootApiKey: config.server.root_api_key,
     });
+    const runtimeState = JSON.parse(await readFile(path.join(root, "runtime-state.json"), "utf8"));
+    expect(runtimeState).toMatchObject({
+      pid: 4242,
+      port: 21933,
+      startedAt: expect.stringMatching(/^2026-|^20\d{2}-/),
+    });
+    await expect(service.getDiagnostics()).resolves.toMatchObject({
+      status: { state: "running", version: "0.4.11", port: 21933 },
+      health: "healthy",
+      pid: 4242,
+      port: 21933,
+      startedAt: runtimeState.startedAt,
+      uptimeSeconds: expect.any(Number),
+      healthLatencyMs: expect.any(Number),
+      events: expect.arrayContaining([
+        expect.objectContaining({ type: "start" }),
+        expect.objectContaining({ type: "ready" }),
+      ]),
+    });
+    expect(healthProbe).toHaveBeenCalledWith("http://127.0.0.1:21933", config.server.root_api_key);
 
     await service.stop();
     expect(child.killed).toBe(true);
     await expect(service.getStatus()).resolves.toMatchObject({ state: "stopped" });
+    await expect(service.getDiagnostics()).resolves.toMatchObject({
+      health: "not-running",
+      events: expect.arrayContaining([
+        expect.objectContaining({ type: "stop", message: "OpenViking stopped." }),
+        expect.objectContaining({ type: "exit" }),
+      ]),
+    });
   });
 
   it("clears OpenViking data without removing installed components", async () => {

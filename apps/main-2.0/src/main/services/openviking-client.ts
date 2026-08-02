@@ -43,6 +43,7 @@ export interface OpenVikingClientPort {
     keepRecentCount?: number,
   ): Promise<OpenVikingTaskRef>;
   getTask(auth: OpenVikingWorkspaceAuth, taskId: string): Promise<JsonObject | null>;
+  getTaskIfRunning?(auth: OpenVikingWorkspaceAuth, taskId: string): Promise<JsonObject | null>;
   searchMemories(
     auth: OpenVikingWorkspaceAuth,
     query: string,
@@ -182,6 +183,10 @@ export class OpenVikingGateway implements OpenVikingClientPort {
 
   async getTask(auth: OpenVikingWorkspaceAuth, taskId: string): Promise<JsonObject | null> {
     return this.normalize(() => this.workspaceClient(auth).getTask(taskId));
+  }
+
+  getTaskIfRunning(auth: OpenVikingWorkspaceAuth, taskId: string): Promise<JsonObject | null> {
+    return this.getTask(auth, taskId);
   }
 
   async searchMemories(

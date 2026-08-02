@@ -37,6 +37,11 @@ function harness(
   }];
   const runtime = {
     getStatus: vi.fn(async (): Promise<OpenVikingRuntimeStatus> => ({ state: "not-installed" })),
+    getDiagnostics: vi.fn(async () => ({
+      status: { state: "stopped" as const, version: "0.4.11" },
+      health: "not-running" as const,
+      events: [],
+    })),
     install: vi.fn(async () => ({ state: "stopped" as const, version: "0.4.11" })),
     start: vi.fn(async () => ({ state: "running" as const, version: "0.4.11", port: 21933 })),
     startFromPersistedConfig: vi.fn(async () => ({
@@ -86,6 +91,7 @@ function harness(
     deleteMemory: vi.fn(),
     stopManaging: vi.fn(),
     deleteWorkspace: vi.fn(),
+    listImportTaskDiagnostics: vi.fn(async () => []),
   } as unknown as OpenVikingMemoryService;
   const service = new OpenVikingControlService({
     runtime,
@@ -149,6 +155,31 @@ describe("OpenVikingControlService", () => {
         }),
       },
     }));
+  });
+
+  it("returns one sanitized diagnostics snapshot without starting a stopped runtime", async () => {
+    const { service, runtime, memory } = harness();
+
+    await expect(service.diagnostics()).resolves.toMatchObject({
+      runtime: { health: "not-running", status: { state: "stopped" } },
+      model: { installed: true },
+      workspaces: [{ id: "workspace-1" }],
+      tasks: [],
+    });
+
+    expect(runtime.start).not.toHaveBeenCalled();
+    expect(memory.listImportTaskDiagnostics).toHaveBeenCalledWith(false);
+  });
+
+  it("restarts the runtime through one serialized stop and start lifecycle", async () => {
+    const { service, runtime } = harness();
+
+    await service.restartRuntime();
+
+    expect(runtime.stop).toHaveBeenCalledOnce();
+    expect(runtime.start).toHaveBeenCalledOnce();
+    expect(runtime.stop.mock.invocationCallOrder[0])
+      .toBeLessThan(runtime.start.mock.invocationCallOrder[0]);
   });
 
   it("previews the chosen directory and waits for session selection after adding it", async () => {
