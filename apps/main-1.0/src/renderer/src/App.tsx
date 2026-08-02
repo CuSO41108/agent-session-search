@@ -95,6 +95,7 @@ import type {
 } from "./app-types";
 import { ApiConfigDialog } from "./features/providers/api-config-dialog";
 import { DetailPanel } from "./features/session-detail/detail-panel";
+import { useSessionFamily, type FamilySessionOpenResult } from "./features/session-detail/use-session-family";
 import { SessionMigrationDialog, SessionMigrationLaunchFailedDialog } from "./components/session-migration-dialog";
 import { BulkDeleteDialog, CommandDialog, DeleteSessionDialog, DeleteTagDialog } from "./components/session-dialogs";
 import { SkillsDialog } from "./features/skills/skills-dialog";
@@ -356,7 +357,7 @@ export function App(): ReactElement {
   const [savedSearchesOpen, setSavedSearchesOpen] = useState(false);
   const [savedSearches, setSavedSearches] = useState<SavedSearch[]>([]);
   const [groupMode, setGroupMode] = useState<GroupMode>("flat");
-  const [sessionFamily, setSessionFamily] = useState<SessionFamily>(EMPTY_SESSION_FAMILY);
+  const [sessionFamilyRefreshVersion, setSessionFamilyRefreshVersion] = useState(0);
   const [rulesSnapshot, setRulesSnapshot] = useState<RulesSyncSnapshot | null>(null);
   const [memoriesSnapshot, setMemoriesSnapshot] = useState<MemoriesSyncSnapshot | null>(null);
   const [apiConfigOpen, setApiConfigOpen] = useState(false);
@@ -845,20 +846,6 @@ export function App(): ReactElement {
     if (savedSearchesOpen) loadSavedSearches();
   }, [savedSearchesOpen, loadSavedSearches]);
 
-  useEffect(() => {
-    if (!detail) {
-      setSessionFamily(EMPTY_SESSION_FAMILY);
-      return;
-    }
-    let cancelled = false;
-    void window.sessionSearch.getSessionFamily(detail.sessionKey).catch(() => EMPTY_SESSION_FAMILY).then((family) => {
-      if (!cancelled) setSessionFamily(family);
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [detail?.sessionKey]);
-
   const applyQueryBuilder = useCallback((state: QueryBuilderState) => {
     setSource(state.source ?? "all");
     setTag(state.tag);
@@ -1021,6 +1008,7 @@ export function App(): ReactElement {
       setIndexStatus((current) => coalesceIndexStatusForRender(current, nextStatus));
       setRefreshFeedback((current) => reduceIndexFeedback(current, { type: "index-status", status: nextStatus }));
       if (!nextStatus.running) {
+        setSessionFamilyRefreshVersion((current) => current + 1);
         void load();
         void loadSidebarMetadata();
         void loadStats();
@@ -1045,6 +1033,7 @@ export function App(): ReactElement {
     });
     const offOpenSession = window.sessionSearch.onOpenSession((sessionKey) => setSelectedKey(sessionKey));
     const offEnvironments = window.sessionSearch.onEnvironmentsUpdated((nextEnvironments) => {
+      setSessionFamilyRefreshVersion((current) => current + 1);
       setEnvironments(nextEnvironments);
       setEnvironmentId((current) =>
         current !== "all" && !nextEnvironments.some((environment) => environment.id === current) ? "all" : current,
@@ -1999,11 +1988,36 @@ export function App(): ReactElement {
   );
   const handleRowRename = useCallback((session: SessionSearchResult) => rowHandlersRef.current.beginRename(session), []);
   const handleRowFavorite = useCallback((session: SessionSearchResult) => void rowHandlersRef.current.toggleFavorite(session), []);
-  const openFamilySession = useCallback((sessionKey: string) => {
-    void window.sessionSearch.getSession(sessionKey).then((session) => {
-      if (session) void rowHandlersRef.current.openDetail(session);
-    });
-  }, []);
+  const openFamilySessionAction = useCallback(async (sessionKey: string): Promise<FamilySessionOpenResult> => {
+    try {
+      const session = await window.sessionSearch.getSession(sessionKey);
+      if (!session) {
+        setActionStatus({
+          kind: "error",
+          message: t(
+            "This related session is no longer available. The subagent list has been refreshed.",
+            "关联会话已不存在，Subagent 列表已刷新。",
+          ),
+        });
+        return "missing";
+      }
+      await rowHandlersRef.current.openDetail(session);
+      return "opened";
+    } catch (error) {
+      setActionStatus({ kind: "error", message: error instanceof Error ? error.message : String(error) });
+      return "failed";
+    }
+  }, [t]);
+  const {
+    family: sessionFamily,
+    loadFailed: sessionFamilyLoadFailed,
+    retry: retrySessionFamily,
+    open: openFamilySession,
+  } = useSessionFamily({
+    sessionKey: detail?.sessionKey ?? null,
+    refreshVersion: sessionFamilyRefreshVersion,
+    onOpen: openFamilySessionAction,
+  });
   const handleRowContextMenu = useCallback((event: ReactMouseEvent, session: SessionSearchResult) => {
     event.preventDefault();
     setSelectedKey(session.sessionKey);
@@ -2216,6 +2230,8 @@ export function App(): ReactElement {
           onClose={closeDetail}
           sessionFamily={sessionFamily}
           onOpenFamilySession={openFamilySession}
+          sessionFamilyLoadFailed={sessionFamilyLoadFailed}
+          onRetrySessionFamily={retrySessionFamily}
           onShowMore={() => void loadMoreMessages()}
           onRename={() => beginRename(detail)}
           onAddTag={() => beginAddTag(detail)}
