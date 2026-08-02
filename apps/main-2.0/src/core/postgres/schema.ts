@@ -485,6 +485,7 @@ export const POSTGRES_MIGRATIONS: readonly PostgresMigration[] = [{
         args jsonb NOT NULL,
         url text,
         env jsonb NOT NULL,
+        headers jsonb NOT NULL DEFAULT '{}'::jsonb,
         enabled boolean NOT NULL DEFAULT true,
         disabled_tools jsonb NOT NULL DEFAULT '[]'::jsonb,
         status text NOT NULL DEFAULT 'untested',
@@ -1279,6 +1280,15 @@ export const POSTGRES_MIGRATIONS: readonly PostgresMigration[] = [{
 
       ALTER TABLE agent_recall.token_events
         ADD COLUMN IF NOT EXISTS source_turn_id text;
+    `,
+  ],
+}, {
+  version: 24,
+  name: "store HTTP header references for MCP servers",
+  statements: [
+    `
+      ALTER TABLE agent_recall.mcp_servers
+        ADD COLUMN IF NOT EXISTS headers jsonb NOT NULL DEFAULT '{}'::jsonb;
     `,
   ],
 }];

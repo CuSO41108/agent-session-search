@@ -14,6 +14,12 @@ export interface McpServerDefinition {
   args: string[];
   url?: string;
   env: Record<string, string>;
+  /**
+   * HTTP request headers sent to `http` transport servers. Values are host
+   * environment variable names resolved at launch time, mirroring `env`, so
+   * secrets such as Authorization tokens are never stored in the database.
+   */
+  headers?: Record<string, string>;
   enabled: boolean;
   tools: McpToolDefinition[];
   /**
