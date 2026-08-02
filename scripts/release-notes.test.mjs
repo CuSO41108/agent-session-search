@@ -107,10 +107,12 @@ test("workflows require branch notes and publish accumulated changes every day o
   assert.match(noteWorkflow, /release-notes\.mjs check-range/);
   assert.match(qualityWorkflow, /os:\s*\[ubuntu-latest, macos-latest, windows-latest\]/);
   assert.match(qualityWorkflow, /npm run setup/);
-  assert.match(qualityWorkflow, /- name: Test\s+if: runner\.os != 'Windows'\s+run: npm test/);
-  assert.match(qualityWorkflow, /- name: Test update and install scripts \(Windows\)\s+if: runner\.os == 'Windows'\s+run: npm run test:scripts/);
-  assert.match(qualityWorkflow, /- name: Typecheck\s+run: npm run typecheck/);
-  assert.match(qualityWorkflow, /- name: Build\s+run: npm run build/);
+  assert.match(qualityWorkflow, /- name: Test complete application suites\s+if: runner\.os == 'Linux'\s+run: npm test/);
+  assert.match(qualityWorkflow, /- name: Test platform-specific scripts\s+if: runner\.os != 'Linux'\s+run: npm run test:scripts/);
+  assert.doesNotMatch(qualityWorkflow, /- name: Typecheck\r?\n/u);
+  assert.doesNotMatch(qualityWorkflow, /- name: Build\r?\n/u);
+  assert.match(qualityWorkflow, /- name: Build and smoke-test packaged V1 install/);
+  assert.match(qualityWorkflow, /- name: Build and smoke-test packaged V2 install/);
   assert.match(qualityWorkflow, /run: npm run package:smoke\s/);
   assert.match(qualityWorkflow, /run: npm run package:smoke:v2/);
   assert.match(releaseWorkflow, /schedule:[\s\S]*cron:\s*["']0 2 \* \* \*["']/);
@@ -136,6 +138,7 @@ test("workflows require branch notes and publish accumulated changes every day o
   assert.match(releaseWorkflow, /release-notes\.mjs combine --target v2/);
   assert.doesNotMatch(releaseWorkflow, /release-notes\.mjs dual/);
   assert.match(releaseWorkflow, /cancel-in-progress:\s*false/);
+  assert.match(releaseWorkflow, /openviking-runtime:\s+strategy:\s+fail-fast:\s*false/);
   assert.match(releaseWorkflow, /working-directory: apps\/main-1\.0/);
   assert.match(releaseWorkflow, /working-directory: apps\/main-2\.0/);
   assert.match(releaseWorkflow, /npm test[\s\S]*npm run typecheck[\s\S]*npm run build/);

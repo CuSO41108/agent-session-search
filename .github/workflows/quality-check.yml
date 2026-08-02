@@ -40,22 +40,16 @@ jobs:
       - name: Validate release note
         run: node scripts/release-notes.mjs check-range "origin/${{ github.base_ref }}" HEAD
 
-      - name: Test
-        if: runner.os != 'Windows'
+      - name: Test complete application suites
+        if: runner.os == 'Linux'
         run: npm test
 
-      - name: Test update and install scripts (Windows)
-        if: runner.os == 'Windows'
+      - name: Test platform-specific scripts
+        if: runner.os != 'Linux'
         run: npm run test:scripts
 
-      - name: Typecheck
-        run: npm run typecheck
-
-      - name: Build
-        run: npm run build
-
-      - name: Smoke-test packaged V1 install
+      - name: Build and smoke-test packaged V1 install
         run: npm run package:smoke
 
-      - name: Smoke-test packaged V2 install
+      - name: Build and smoke-test packaged V2 install
         run: npm run package:smoke:v2
