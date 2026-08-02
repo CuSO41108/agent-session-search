@@ -114,10 +114,8 @@ test("workflows require branch notes and publish accumulated changes every day o
   assert.match(qualityWorkflow, /- name: Test platform-specific scripts\s+if: runner\.os != 'Linux'\s+run: npm run test:scripts/);
   assert.doesNotMatch(qualityWorkflow, /- name: Typecheck\r?\n/u);
   assert.doesNotMatch(qualityWorkflow, /- name: Build\r?\n/u);
-  assert.match(qualityWorkflow, /- name: Build and smoke-test packaged V1 install/);
-  assert.match(qualityWorkflow, /- name: Build and smoke-test packaged V2 install/);
-  assert.match(qualityWorkflow, /run: npm run package:smoke\s/);
-  assert.match(qualityWorkflow, /run: npm run package:smoke:v2/);
+  assert.match(qualityWorkflow, /- name: Build and smoke-test packaged applications/);
+  assert.match(qualityWorkflow, /run: npm run package:smoke:all/);
   assert.match(releaseWorkflow, /schedule:[\s\S]*cron:\s*["']0 2 \* \* \*["']/);
   assert.match(releaseWorkflow, /workflow_dispatch:/);
   assert.doesNotMatch(releaseWorkflow, /^\s{2}push:/m);

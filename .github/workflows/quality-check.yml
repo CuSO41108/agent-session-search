@@ -55,8 +55,5 @@ jobs:
         if: runner.os != 'Linux'
         run: npm run test:scripts
 
-      - name: Build and smoke-test packaged V1 install
-        run: npm run package:smoke
-
-      - name: Build and smoke-test packaged V2 install
-        run: npm run package:smoke:v2
+      - name: Build and smoke-test packaged applications
+        run: npm run package:smoke:all
