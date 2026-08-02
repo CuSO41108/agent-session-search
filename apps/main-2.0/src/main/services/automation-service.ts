@@ -17,7 +17,7 @@ import {
 } from "../../automation/engine/main/bridges/mcp-bridge";
 import { McpRegistryStore } from "../../automation/engine/main/mcp-registry-store";
 import { McpAgentManagementService } from "../../automation/engine/main/mcp/agent-management-service";
-import type { BuiltinSessionSearchServer } from "../../automation/engine/main/mcp-builtin-server";
+import { BuiltinWorkflowMcpServer, type BuiltinSessionSearchServer, type ManagedMcp, type McpBuiltinRuntime } from "../../automation/engine/main/mcp-builtin-server";
 import { EvaluationStore } from "../../automation/engine/main/evaluation-store";
 import { ConfiguredAgentExecutionService } from "../../automation/engine/main/platform/configured-agent-execution-service";
 import {
@@ -55,6 +55,12 @@ export interface AutomationServiceOptions {
   bundledWorkflowsPath: string;
   workflowMcpServerPath: string;
   builtinSessionSearch?: BuiltinSessionSearchServer;
+  workflowMcp?: {
+    isEnabled(): boolean;
+    setEnabled(next: boolean): Promise<boolean>;
+    readRuntime(): McpBuiltinRuntime | undefined;
+    writeRuntime(runtime: McpBuiltinRuntime): void;
+  };
   chooseWorkflowImportFile?: () => Promise<WorkflowPortableFileSelection | undefined>;
   chooseWorkflowExportPath?: (defaultFileName: string) => Promise<string | undefined>;
   writeWorkflowExportFile?: (filePath: string, content: string) => Promise<void>;
@@ -298,11 +304,43 @@ export class NativeAutomationService {
         throw new Error("Workflow export writer is unavailable.");
       }),
     });
+    const workflowBuiltin = options.workflowMcp
+      ? new BuiltinWorkflowMcpServer({
+          isEnabled: () => options.workflowMcp!.isEnabled(),
+          setEnabled: async (next) => {
+            const codexAgents = this.hubInstance.snapshot().configuredAgents.filter(
+              (agent) => agent.runtimeAgentId === "codex",
+            );
+            for (const agent of codexAgents) {
+              if (next) {
+                await this.agentsInstance.install({ agentId: agent.id, catalogId: "workflow" });
+              } else {
+                await this.agentsInstance.uninstall({ agentId: agent.id, catalogId: "workflow" });
+              }
+            }
+            return options.workflowMcp!.setEnabled(next);
+          },
+          launchConfig: () => ({
+            id: "agent-recall-workflow",
+            name: "AgentRecall Workflow",
+            command: "node",
+            args: [options.workflowMcpServerPath],
+          }),
+          testEnv: () => ({
+            AGENT_RECALL_WORKFLOW_MCP_BRIDGE: this.bridge?.discoveryPath ?? this.paths.discoveryPath,
+            ...(this.bridge?.token ? { AGENT_RECALL_WORKFLOW_MCP_TOKEN: this.bridge.token } : {}),
+          }),
+          hubBindable: false,
+          readRuntime: () => options.workflowMcp!.readRuntime(),
+          writeRuntime: (runtime) => options.workflowMcp!.writeRuntime(runtime),
+        })
+      : undefined;
     this.mcp = new McpAutomationModule({
       registry: this.registryInstance,
       agents: this.agentsInstance,
       runtime: this.hubInstance,
-      ...(options.builtinSessionSearch ? { builtin: options.builtinSessionSearch } : {}),
+      builtins: [options.builtinSessionSearch, workflowBuiltin]
+        .filter((item): item is NonNullable<typeof item> => Boolean(item)) as ManagedMcp[],
     });
     this.currentSnapshot = this.hubInstance.snapshot();
     this.unsubscribeHub = this.hubInstance.onChange((change) => this.handleHubChange(change));

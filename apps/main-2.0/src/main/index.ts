@@ -342,6 +342,12 @@ const mcpRuntimeStore = new Store<McpBuiltinRuntime>({
   defaults: { tools: [], disabledTools: [], status: "untested", createdAt: 0, updatedAt: 0 },
 });
 
+// Same runtime cache for the built-in workflow MCP server.
+const workflowMcpRuntimeStore = new Store<McpBuiltinRuntime>({
+  name: "workflow-mcp-runtime",
+  defaults: { tools: [], disabledTools: [], status: "untested", createdAt: 0, updatedAt: 0 },
+});
+
 type SavedWindowState = {
   width: number;
   height: number;
@@ -423,6 +429,17 @@ function createAutomationService(): NativeAutomationService {
         mcpRuntimeStore.store = runtime;
       },
     }),
+    workflowMcp: {
+      isEnabled: () => getSettings().workflowMcpEnabled,
+      setEnabled: async (next) => {
+        settingsStore.set("workflowMcpEnabled", next);
+        return next;
+      },
+      readRuntime: () => workflowMcpRuntimeStore.store,
+      writeRuntime: (runtime) => {
+        workflowMcpRuntimeStore.store = runtime;
+      },
+    },
     chooseWorkflowImportFile: chooseWorkflowImportFile,
     chooseWorkflowExportPath: chooseWorkflowExportPath,
     writeWorkflowExportFile: writeWorkflowExportFileAtomically,
@@ -2358,6 +2375,17 @@ function registerIpc(): void {
     setup.run(!enabled);
     settingsStore.set("sessionSearchMcpEnabled", enabled);
     return setup.status();
+  });
+  ipcMain.handle("mcp-workflow:status", () => getSettings().workflowMcpEnabled);
+  ipcMain.handle("mcp-workflow:set-enabled", async (_event, enabled: boolean) => {
+    if (automationService) {
+      // setWorkflowEnabled flips the settings flag AND bulk-registers codex
+      // agents through the built-in workflow server's toggle.
+      await automationService.mcp.setWorkflowEnabled(enabled).catch(() => undefined);
+    } else {
+      settingsStore.set("workflowMcpEnabled", enabled);
+    }
+    return getSettings().workflowMcpEnabled;
   });
   ipcMain.handle("ssh-config:list-hosts", () => readUserSshConfig());
   ipcMain.handle("wsl:list-distributions", () => listWslDistributions());

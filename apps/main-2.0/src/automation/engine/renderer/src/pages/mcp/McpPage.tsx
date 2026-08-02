@@ -245,8 +245,8 @@ export function McpPage({
                   {draft.managed ? (
                     <p className="workbench-form-note">
                       {zh
-                        ? "内置 Server，启动命令由「设置 → 会话检索 MCP」统一管理，此处只读。"
-                        : "Built-in server; its launch command is managed by Settings → Session search MCP and is read-only here."}
+                        ? "内置 Server，启动命令由 App 统一管理，此处只读。"
+                        : "Built-in server; its launch command is managed by the app and is read-only here."}
                     </p>
                   ) : null}
                   <div className="workbench-form-grid">
