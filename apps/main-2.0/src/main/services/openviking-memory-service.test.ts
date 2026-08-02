@@ -1143,7 +1143,7 @@ describe("OpenViking directory identity", () => {
 });
 
 describe("OpenVikingWorkspaceCredentialStore", () => {
-  it("persists workspace keys in an app-owned mode-0600 file", async () => {
+  it("serializes concurrent workspace key updates in its app-owned mode-0600 file", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "agent-recall-openviking-keys-"));
     tempRoots.push(root);
     await mkdir(root, { recursive: true });
@@ -1154,11 +1154,21 @@ describe("OpenVikingWorkspaceCredentialStore", () => {
       apiKey: "secret-key",
     };
 
-    await credentials.set("workspace-1", auth);
-    await expect(new OpenVikingWorkspaceCredentialStore(root).get("workspace-1")).resolves.toEqual(auth);
+    await Promise.all(Array.from({ length: 20 }, (_, index) => credentials.set(
+      `workspace-${index}`,
+      { ...auth, userId: `workspace_${index}`, apiKey: `secret-key-${index}` },
+    )));
+    const persisted = new OpenVikingWorkspaceCredentialStore(root);
+    await Promise.all(Array.from({ length: 20 }, (_, index) =>
+      expect(persisted.get(`workspace-${index}`)).resolves.toEqual({
+        ...auth,
+        userId: `workspace_${index}`,
+        apiKey: `secret-key-${index}`,
+      })));
     expect(await readFile(path.join(root, "workspace-credentials.json"), "utf8")).toContain("secret-key");
 
-    await credentials.delete("workspace-1");
-    await expect(credentials.get("workspace-1")).resolves.toBeNull();
+    await credentials.delete("workspace-0");
+    await expect(credentials.get("workspace-0")).resolves.toBeNull();
+    await expect(credentials.get("workspace-19")).resolves.toMatchObject({ apiKey: "secret-key-19" });
   });
 });

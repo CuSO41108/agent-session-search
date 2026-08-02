@@ -21,6 +21,7 @@ import type {
   OpenVikingMemorySnapshot,
   OpenVikingWorkspace,
 } from "../../../../core/openviking-memory";
+import { isOpenVikingMemoryTransient } from "../../../../core/openviking-memory-lifecycle";
 import type {
   OpenVikingDirectoryPreview,
   OpenVikingImportSessionPreview,
@@ -98,13 +99,7 @@ export function OpenVikingMemoryPage({
     void refresh().catch((cause) => setError(errorMessage(cause)));
   }, [enabled, refresh]);
 
-  const transient = Boolean(
-    action === "import"
-    || snapshot?.runtime.state === "installing"
-    || snapshot?.runtime.state === "starting"
-    || snapshot?.workspaces.some((workspace) =>
-      ["idle", "queued", "running"].includes(workspace.importState)),
-  );
+  const transient = isOpenVikingMemoryTransient(snapshot, action === "import");
 
   useEffect(() => {
     if (!enabled || !transient) return;
@@ -248,10 +243,19 @@ export function OpenVikingMemoryPage({
     setImportPickerWorkspace(null);
     browseRequestVersion.current += 1;
     setBrowseLoading(false);
+    setAction("import");
     setError(null);
     void window.sessionSearch.importOpenVikingWorkspace(target.id, selectedKeys)
       .catch((cause) => setError(errorMessage(cause)))
-      .finally(() => void refresh().catch((cause) => setError(errorMessage(cause))));
+      .finally(async () => {
+        try {
+          await refresh();
+        } catch (cause) {
+          setError(errorMessage(cause));
+        } finally {
+          setAction(null);
+        }
+      });
     void refresh().catch((cause) => setError(errorMessage(cause)));
   };
 

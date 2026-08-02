@@ -103,6 +103,7 @@ interface RuntimeServiceOptions {
     },
   ) => RuntimeChild;
   healthCheck?: (baseUrl: string, rootApiKey: string) => Promise<void>;
+  healthProbe?: (baseUrl: string, rootApiKey: string) => Promise<boolean>;
   isProcessAlive?: (pid: number) => boolean;
   killProcess?: (pid: number) => void;
 }
@@ -124,6 +125,7 @@ export class OpenVikingRuntimeService {
   private readonly allocatePort: NonNullable<RuntimeServiceOptions["allocatePort"]>;
   private readonly spawnProcess: NonNullable<RuntimeServiceOptions["spawnProcess"]>;
   private readonly healthCheck: NonNullable<RuntimeServiceOptions["healthCheck"]>;
+  private readonly healthProbe: NonNullable<RuntimeServiceOptions["healthProbe"]>;
   private readonly isProcessAlive: NonNullable<RuntimeServiceOptions["isProcessAlive"]>;
   private readonly killProcess: NonNullable<RuntimeServiceOptions["killProcess"]>;
   private child: RuntimeChild | null = null;
@@ -142,6 +144,7 @@ export class OpenVikingRuntimeService {
     this.spawnProcess = options.spawnProcess ?? ((command, args, spawnOptions) =>
       spawn(command, [...args], spawnOptions) as ChildProcess);
     this.healthCheck = options.healthCheck ?? waitForHealthyServer;
+    this.healthProbe = options.healthProbe ?? probeOwnedServer;
     this.isProcessAlive = options.isProcessAlive ?? processIsAlive;
     this.killProcess = options.killProcess ?? ((pid) => process.kill(pid, "SIGTERM"));
   }
@@ -174,7 +177,7 @@ export class OpenVikingRuntimeService {
     }
     const persisted = await this.readRuntimeState();
     if (persisted) {
-      if (this.isProcessAlive(persisted.pid)) {
+      if (await this.isPersistedRuntimeHealthy(persisted)) {
         return {
           state: "running",
           version: manifest.version,
@@ -395,7 +398,7 @@ export class OpenVikingRuntimeService {
     if (child?.exitCode === null) {
       await stopRuntimeChild(child);
       this.child = null;
-    } else if (state && this.isProcessAlive(state.pid)) {
+    } else if (state && await this.isPersistedRuntimeHealthy(state)) {
       this.killProcess(state.pid);
       await waitForProcessExit(state.pid, this.isProcessAlive);
     }
@@ -456,18 +459,31 @@ export class OpenVikingRuntimeService {
   }
 
   private async loadOrCreateRootApiKey(): Promise<string> {
+    const current = await this.readRootApiKey();
+    if (current) return current;
     const keyPath = this.resolveOwnedPath("root-api-key");
-    try {
-      const current = (await readFile(keyPath, "utf8")).trim();
-      if (/^[a-f0-9]{64}$/u.test(current)) return current;
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-    }
     const key = randomBytes(32).toString("hex");
     await mkdir(path.dirname(keyPath), { recursive: true });
     await writeFile(keyPath, `${key}\n`, { encoding: "utf8", mode: 0o600 });
     await chmod(keyPath, 0o600);
     return key;
+  }
+
+  private async readRootApiKey(): Promise<string | null> {
+    try {
+      const current = (await readFile(this.resolveOwnedPath("root-api-key"), "utf8")).trim();
+      return /^[a-f0-9]{64}$/u.test(current) ? current : null;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+      throw error;
+    }
+  }
+
+  private async isPersistedRuntimeHealthy(state: PersistedRuntimeState): Promise<boolean> {
+    if (!this.isProcessAlive(state.pid)) return false;
+    const rootApiKey = await this.readRootApiKey();
+    if (!rootApiKey) return false;
+    return this.healthProbe(`http://127.0.0.1:${state.port}`, rootApiKey).catch(() => false);
   }
 
   private async writePrivateJson(filePath: string, value: unknown): Promise<void> {
@@ -619,6 +635,18 @@ async function waitForHealthyServer(baseUrl: string, rootApiKey: string): Promis
     await new Promise((resolve) => setTimeout(resolve, 200));
   }
   throw new Error("OpenViking health endpoint did not become ready.", { cause: lastError });
+}
+
+async function probeOwnedServer(baseUrl: string, rootApiKey: string): Promise<boolean> {
+  try {
+    const response = await fetch(`${baseUrl}/api/v1/admin/accounts`, {
+      headers: { "x-api-key": rootApiKey },
+      signal: AbortSignal.timeout(1_000),
+    });
+    return response.ok;
+  } catch {
+    return false;
+  }
 }
 
 function processIsAlive(pid: number): boolean {
