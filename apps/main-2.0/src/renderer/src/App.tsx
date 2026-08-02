@@ -364,6 +364,7 @@ export function App(): ReactElement {
     return () => { cancelled = true; };
   }, [appSettings?.evalEnabled, skills.snapshot]);
   const [settingsFeedback, setSettingsFeedback] = useState<SettingsFeedback>(null);
+  const [sessionFamilyRefreshVersion, setSessionFamilyRefreshVersion] = useState(0);
   const [environmentHealthReports, setEnvironmentHealthReports] = useState<Record<string, RemoteHealthReport>>({});
   const [diagnosingEnvironmentId, setDiagnosingEnvironmentId] = useState<string | null>(null);
   const [sessionHookStatus, setSessionHookStatus] = useState<SessionSyncHookStatus | null>(null);
@@ -511,6 +512,7 @@ export function App(): ReactElement {
       setIndexStatus(nextStatus);
       setRefreshFeedback((current) => reduceIndexFeedback(current, { type: "index-status", status: nextStatus }));
       if (!nextStatus.running) {
+        setSessionFamilyRefreshVersion((current) => current + 1);
         if (activePage === "sessions") void load();
         void loadSidebarMetadata();
         void loadStats();
@@ -529,6 +531,7 @@ export function App(): ReactElement {
     const offAppUpdate = window.sessionSearch.onAppUpdateStatus(setAppUpdateStatus);
     const offAppUpdateProgress = window.sessionSearch.onAppUpdateProgress(setAppUpdateProgress);
     const offEnvironments = window.sessionSearch.onEnvironmentsUpdated((nextEnvironments) => {
+      setSessionFamilyRefreshVersion((current) => current + 1);
       setEnvironments(nextEnvironments);
       if (activePage === "sessions") void load();
     });
@@ -1669,15 +1672,29 @@ export function App(): ReactElement {
         revealLabel={FILE_MANAGER_LABEL}
         showItermAction={IS_MAC}
         summarizing={summarizing}
+        familyRefreshVersion={sessionFamilyRefreshVersion}
         actions={{
           loadTurn: (session, turnId) =>
             window.sessionSearch.getSessionTurn(session.sessionKey, turnId),
-          openFamilySession: (sessionKey) => {
-            void window.sessionSearch.getSession(sessionKey)
-              .then((session) => {
-                if (session) void openDetail(session);
-              })
-              .catch(reportSessionDetailError);
+          openFamilySession: async (sessionKey) => {
+            try {
+              const session = await window.sessionSearch.getSession(sessionKey);
+              if (!session) {
+                setActionStatus({
+                  kind: "error",
+                  message: t(
+                    "This related session is no longer available. The subagent list has been refreshed.",
+                    "关联会话已不存在，Subagent 列表已刷新。",
+                  ),
+                });
+                return "missing";
+              }
+              await openDetail(session);
+              return "opened";
+            } catch (error) {
+              reportSessionDetailError(error);
+              return "failed";
+            }
           },
           closeLocal: closeDetail,
           closeRemote: closeRemoteDetail,
