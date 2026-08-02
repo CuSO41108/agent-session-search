@@ -246,6 +246,7 @@ export function registerAutomationIpc({
   };
 
   ipc.handle(AUTOMATION_CHANNELS.health, () => service.health());
+  ipc.handle(AUTOMATION_CHANNELS.workflowSidebar, () => service.workflowSidebar());
   prepared(AUTOMATION_CHANNELS.snapshot, () => service.snapshot());
   ready(AUTOMATION_CHANNELS.runtimeSaveChannels, (value: unknown) =>
     service.runtime.saveModelChannels(
