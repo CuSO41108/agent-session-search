@@ -16,6 +16,13 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
+    env:
+      ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
+      npm_config_audit: "false"
+      npm_config_cache: ${{ github.workspace }}/.ci-npm-cache
+      npm_config_fund: "false"
+      npm_config_prefer_offline: "true"
+      AGENT_RECALL_TEST_NPM_CACHE: ${{ github.workspace }}/.ci-npm-cache
     steps:
       - name: Check out repository
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
