@@ -60,6 +60,7 @@ function setup(pickDirectory?: (defaultPath?: string) => Promise<string | undefi
     requirePrepared: vi.fn(async () => undefined),
     requireReady: vi.fn(async () => undefined),
     health: vi.fn(() => ({ state: "ready" })),
+    workflowSidebar: vi.fn(async () => ({ workflows: [{ workflowId: "workflow-1" }] })),
     snapshot: vi.fn(() => ({ workDir: "/repo" })),
     subscribe: vi.fn(() => () => undefined),
     subscribeChanges: vi.fn(() => () => undefined),
@@ -106,6 +107,18 @@ describe("registerAutomationIpc", () => {
     await expect(invoke(AUTOMATION_CHANNELS.snapshot)).resolves.toEqual({ workDir: "/repo" });
 
     expect(service.requirePrepared).toHaveBeenCalledOnce();
+    expect(service.requireReady).not.toHaveBeenCalled();
+  });
+
+  it("loads Workflow sidebar records without waiting for full state preparation", async () => {
+    const { invoke, service } = setup();
+
+    await expect(invoke(AUTOMATION_CHANNELS.workflowSidebar)).resolves.toEqual({
+      workflows: [{ workflowId: "workflow-1" }],
+    });
+
+    expect(service.workflowSidebar).toHaveBeenCalledOnce();
+    expect(service.requirePrepared).not.toHaveBeenCalled();
     expect(service.requireReady).not.toHaveBeenCalled();
   });
 

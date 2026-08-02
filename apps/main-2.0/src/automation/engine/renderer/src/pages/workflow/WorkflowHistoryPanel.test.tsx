@@ -1,14 +1,12 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, test } from "vitest";
-import type { WorkflowDraftState } from "../../../../shared/types";
+import type { WorkflowSidebarItem } from "../../../../shared/types";
 import { WorkflowHistoryPanel } from "./WorkflowHistoryPanel";
 
-function workflow(workflowId: string, sourceType: "official" | "user"): WorkflowDraftState {
+function workflow(workflowId: string, sourceType: "official" | "user"): WorkflowSidebarItem {
   return {
-    workflowId, sourceType, topologyLocked: sourceType === "official", title: workflowId, status: "draft", revision: 1,
-    configuredAgentId: "agent", modelId: "model", reviewerConfiguredAgentId: "agent", reviewerModelId: "model", objective: "Objective",
-    definition: { workflowId, graphVersion: 1, objective: "Objective", nodes: [], edges: [] }, messages: [], reply: "", error: undefined,
-    runProgress: [], runContextDocument: "", contextDocument: "", runIds: [], createdAt: 1, updatedAt: 1,
+    workflowId, sourceType, title: workflowId, status: "draft", revision: 1,
+    objective: "Objective", nodeCount: 2, createdAt: 1, updatedAt: 1,
   };
 }
 
@@ -38,5 +36,13 @@ describe("WorkflowHistoryPanel portable actions", () => {
     expect(html).toContain("Rename workflow");
     expect(html).not.toContain("Clone to my workflows");
     expect(html).toContain("待配置");
+  });
+
+  test("keeps summaries visible while workflow details are loading", () => {
+    const html = renderToStaticMarkup(<WorkflowHistoryPanel {...common} detailsLoading detailsAvailable={false} />);
+    expect(html).toContain("official");
+    expect(html).toContain("2 nodes");
+    expect(html).toContain("Loading workflow details");
+    expect(html).toContain("disabled");
   });
 });

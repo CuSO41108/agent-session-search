@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, test } from "vitest";
 import { validateWorkflowV2Definition } from "../../shared/workflow-v2/validation";
-import { loadBundledWorkflows } from "./bundled-workflows";
+import { loadBundledWorkflows, loadBundledWorkflowSummaries } from "./bundled-workflows";
 
 describe("loadBundledWorkflows", () => {
   test("loads a workflow and injects the template asset into the render node", async () => {
@@ -45,6 +45,40 @@ describe("loadBundledWorkflows", () => {
 
   test("returns empty for a missing root", async () => {
     expect(await loadBundledWorkflows(path.join(os.tmpdir(), "does-not-exist-xyz"))).toEqual([]);
+    expect(await loadBundledWorkflowSummaries(path.join(os.tmpdir(), "does-not-exist-xyz"))).toEqual([]);
+  });
+
+  test("loads sidebar metadata without expanding bundled assets", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "bundled-wf-summary-"));
+    const dir = path.join(root, "summary");
+    await mkdir(dir, { recursive: true });
+    await writeFile(
+      path.join(dir, "workflow.json"),
+      JSON.stringify({
+        id: "bundled-summary",
+        title: "Summary",
+        objective: "Show first",
+        assets: { __LARGE_ASSET__: "missing-large-asset.md" },
+        definition: {
+          workflowId: "bundled-summary",
+          graphVersion: 1,
+          objective: "Show first",
+          nodes: [
+            { id: "one", kind: "prompt", title: "One", execModel: "llm", executionMode: "one-shot", prompt: "__LARGE_ASSET__", outputFields: [] },
+            { id: "two", kind: "prompt", title: "Two", execModel: "llm", executionMode: "one-shot", prompt: "Done", outputFields: [] },
+          ],
+          edges: [],
+        },
+      }),
+      "utf8",
+    );
+
+    await expect(loadBundledWorkflowSummaries(root)).resolves.toEqual([{
+      workflowId: "bundled-summary",
+      title: "Summary",
+      objective: "Show first",
+      nodeCount: 2,
+    }]);
   });
 
   test("loads the code change review workflow from source and packaged assets", async () => {
