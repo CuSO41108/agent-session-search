@@ -6,6 +6,7 @@ import {
   readFile,
   realpath,
   rename,
+  rm,
   stat,
   writeFile,
 } from "node:fs/promises";
@@ -907,25 +908,37 @@ function importedTurnCheckpointKey(sourceTurnId: string, fingerprint: string): s
 
 export class OpenVikingWorkspaceCredentialStore implements OpenVikingCredentialStorePort {
   private readonly filePath: string;
+  private updateQueue: Promise<void> = Promise.resolve();
 
   constructor(rootDir: string) {
     this.filePath = path.join(path.resolve(rootDir), "workspace-credentials.json");
   }
 
   async get(workspaceId: string): Promise<OpenVikingWorkspaceAuth | null> {
+    await this.updateQueue;
     return (await this.read())[workspaceId] ?? null;
   }
 
-  async set(workspaceId: string, auth: OpenVikingWorkspaceAuth): Promise<void> {
-    const current = await this.read();
-    current[workspaceId] = auth;
-    await this.write(current);
+  set(workspaceId: string, auth: OpenVikingWorkspaceAuth): Promise<void> {
+    return this.enqueueUpdate(async () => {
+      const current = await this.read();
+      current[workspaceId] = auth;
+      await this.write(current);
+    });
   }
 
-  async delete(workspaceId: string): Promise<void> {
-    const current = await this.read();
-    delete current[workspaceId];
-    await this.write(current);
+  delete(workspaceId: string): Promise<void> {
+    return this.enqueueUpdate(async () => {
+      const current = await this.read();
+      delete current[workspaceId];
+      await this.write(current);
+    });
+  }
+
+  private enqueueUpdate(update: () => Promise<void>): Promise<void> {
+    const pending = this.updateQueue.then(update);
+    this.updateQueue = pending.catch(() => undefined);
+    return pending;
   }
 
   private async read(): Promise<Record<string, OpenVikingWorkspaceAuth>> {
@@ -939,13 +952,17 @@ export class OpenVikingWorkspaceCredentialStore implements OpenVikingCredentialS
 
   private async write(value: Record<string, OpenVikingWorkspaceAuth>): Promise<void> {
     await mkdir(path.dirname(this.filePath), { recursive: true });
-    const temporary = `${this.filePath}.${process.pid}.tmp`;
-    await writeFile(temporary, `${JSON.stringify(value, null, 2)}\n`, {
-      encoding: "utf8",
-      mode: 0o600,
-    });
-    await chmod(temporary, 0o600);
-    await rename(temporary, this.filePath);
+    const temporary = `${this.filePath}.${process.pid}.${randomUUID()}.tmp`;
+    try {
+      await writeFile(temporary, `${JSON.stringify(value, null, 2)}\n`, {
+        encoding: "utf8",
+        mode: 0o600,
+      });
+      await chmod(temporary, 0o600);
+      await rename(temporary, this.filePath);
+    } finally {
+      await rm(temporary, { force: true });
+    }
     await chmod(this.filePath, 0o600);
   }
 }
