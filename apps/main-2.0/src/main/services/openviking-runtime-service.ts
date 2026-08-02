@@ -344,12 +344,16 @@ export class OpenVikingRuntimeService {
       };
       child.once("exit", exitListener);
     });
+    const runtimeStateWrite = this.writePrivateJson(this.runtimeStatePath(), { pid: child.pid, port });
     child.once("exit", () => {
       if (this.child === child) this.child = null;
-      void rm(this.runtimeStatePath(), { force: true });
+      void runtimeStateWrite.then(
+        () => rm(this.runtimeStatePath(), { force: true }),
+        () => undefined,
+      );
     });
     try {
-      await this.writePrivateJson(this.runtimeStatePath(), { pid: child.pid, port });
+      await runtimeStateWrite;
       const startupError = await Promise.race([
         this.healthCheck(`http://127.0.0.1:${port}`, rootApiKey).then(() => null),
         exited,

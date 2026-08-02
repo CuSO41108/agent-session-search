@@ -346,6 +346,67 @@ describe("OpenVikingControlService", () => {
     expect(runtime.stop).toHaveBeenCalledOnce();
   });
 
+  it("waits for an in-flight memory read before deleting a workspace", async () => {
+    const { service, runtime, memory } = harness();
+    let finishSearch: (items: never[]) => void = () => undefined;
+    const searchPending = new Promise<never[]>((resolve) => {
+      finishSearch = resolve;
+    });
+    vi.mocked(memory.searchMemories).mockImplementation(async () => searchPending);
+    vi.mocked(runtime.getStatus).mockResolvedValue({
+      state: "running",
+      version: "0.4.11",
+      port: 21933,
+    });
+    vi.mocked(memory.listWorkspaces).mockResolvedValue([]);
+
+    const searching = service.search("workspace-1", "", 200);
+    await vi.waitFor(() => expect(memory.searchMemories).toHaveBeenCalledOnce());
+    const deleting = service.deleteWorkspace("workspace-1");
+    await vi.waitFor(() => expect(memory.pauseImport).toHaveBeenCalledOnce());
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+    try {
+      expect(runtime.stop).not.toHaveBeenCalled();
+    } finally {
+      finishSearch([]);
+      await searching;
+      await deleting;
+    }
+    expect(runtime.stop).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not start a new memory read after workspace deletion begins", async () => {
+    const { service, memory } = harness();
+    let finishPause: (job: Awaited<ReturnType<OpenVikingMemoryService["pauseImport"]>>) => void =
+      () => undefined;
+    const pausePending = new Promise<Awaited<ReturnType<OpenVikingMemoryService["pauseImport"]>>>(
+      (resolve) => {
+        finishPause = resolve;
+      },
+    );
+    vi.mocked(memory.pauseImport).mockImplementation(async () => pausePending);
+
+    const deleting = service.deleteWorkspace("workspace-1");
+    await vi.waitFor(() => expect(memory.pauseImport).toHaveBeenCalledOnce());
+
+    try {
+      await expect(service.search("workspace-1", "", 200)).rejects.toThrow("paused");
+    } finally {
+      finishPause({
+        workspaceId: "workspace-1",
+        state: "paused",
+        importedTurns: 0,
+        totalTurns: 0,
+        cursorSessionKey: null,
+        lastError: null,
+        updatedAt: "2026-07-31T00:00:00.000Z",
+      });
+      await deleting;
+    }
+    expect(memory.searchMemories).not.toHaveBeenCalled();
+  });
+
   it("does not start a new memory read after pausing begins", async () => {
     const { service, memory } = harness();
     let finishPause: (job: Awaited<ReturnType<OpenVikingMemoryService["pauseImport"]>>) => void =
