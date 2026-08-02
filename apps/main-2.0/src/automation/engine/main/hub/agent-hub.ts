@@ -887,7 +887,9 @@ export class AgentHub {
 
   private boundMcpServersForAgent(configuredAgentId: string): BoundMcpServer[] {
     const bindings = this.configuredAgents.get(configuredAgentId)?.mcpBindings ?? [];
-    const servers = new Map(this.mcpServers.filter((server) => server.enabled).map((server) => [server.id, server]));
+    const servers = new Map(
+      this.mcpServers.filter((server) => server.enabled && (server.hubBindable ?? true)).map((server) => [server.id, server]),
+    );
     return bindings.flatMap((binding) => {
       const server = servers.get(binding.serverId);
       return server ? [{ server, toolAllowlist: [...binding.toolAllowlist] }] : [];

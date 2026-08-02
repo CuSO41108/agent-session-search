@@ -33,6 +33,12 @@ export interface McpServerDefinition {
    * except for enable state and per-tool toggles.
    */
   managed?: boolean;
+  /**
+   * False hides this managed server from per-Agent hub bindings. Set when a
+   * server's launch config requires literal env values that do not fit the
+   * registry env model (values are resolved as host environment variable names).
+   */
+  hubBindable?: boolean;
 }
 
 export interface AgentMcpBinding {
