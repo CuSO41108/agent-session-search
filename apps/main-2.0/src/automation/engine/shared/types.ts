@@ -116,6 +116,7 @@ export interface AgentModelOption {
 export interface ModelCatalogRefreshResult {
   channelId: string;
   source: "codex_cli" | "openai_models";
+  providerLabel: string;
   discoveredCount: number;
   snapshot: AppSnapshot;
 }
