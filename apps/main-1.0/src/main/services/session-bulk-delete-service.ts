@@ -7,6 +7,7 @@ import type {
   SessionBulkDeleteTarget,
 } from "../../core/session-bulk-delete";
 import { deleteLocalSessionSources } from "../../core/session-source-delete";
+import { sessionSourceDescriptor } from "../../core/session-sources";
 import type { SessionEnvironment, SessionSource } from "../../core/types";
 import { deleteWslSessionSources } from "../../core/wsl-session-actions";
 import { deleteZcodeSessions } from "../../core/zcode-session-writer";
@@ -23,6 +24,7 @@ export class SessionBulkDeleteService {
 
   async delete(request: SessionBulkDeleteRequest): Promise<SessionBulkDeleteResult> {
     const { preview, targets } = this.preflight(request);
+    if (targets.length === 0) return { ...preview, deletedSessionKeys: [], failed: [] };
     const failed: SessionBulkDeleteIssue[] = [];
     const successfulKeys = new Set<string>();
     const environments = new Map(this.store.listEnvironments().map((environment) => [environment.id, environment]));
@@ -36,10 +38,11 @@ export class SessionBulkDeleteService {
       }
     }
 
-    const deletedSessionKeys = targets
+    const successfulSessionKeys = targets
       .map((target) => target.sessionKey)
       .filter((sessionKey) => successfulKeys.has(sessionKey));
-    this.store.deleteSessionRecords(deletedSessionKeys);
+    if (successfulSessionKeys.length === 0) return { ...preview, deletedSessionKeys: [], failed };
+    const deletedSessionKeys = this.store.deleteSessionRecords(successfulSessionKeys, false);
     return { ...preview, deletedSessionKeys, failed };
   }
 
@@ -73,11 +76,15 @@ function buildPreflight(
   const liveKeys = new Set(request.liveSessionKeys);
   const families = groupBy(rows, (row) => row.cascadeRootSessionKey);
   const skipped: SessionBulkDeleteIssue[] = [];
-  const acceptedFamilies: SessionBulkDeleteTarget[][] = [];
+  const candidateFamilies: SessionBulkDeleteTarget[][] = [];
+  const blockedSessionKeys = new Set<string>();
   const rootKeys = [...sessionKeys];
+  const rootKeySet = new Set(rootKeys);
   if (request.includeOrphanedSubagents) {
     for (const rootKey of families.keys()) {
-      if (!rootKeys.includes(rootKey)) rootKeys.push(rootKey);
+      if (rootKeySet.has(rootKey)) continue;
+      rootKeySet.add(rootKey);
+      rootKeys.push(rootKey);
     }
   }
   let matchedCount = 0;
@@ -92,16 +99,25 @@ function buildPreflight(
       const issue = classifyTarget(target, request, liveKeys);
       return issue ? [issue] : [];
     });
-    if (issues.length > 0) skipped.push(...issues);
-    else acceptedFamilies.push(family);
+    if (issues.length > 0) {
+      skipped.push(...issues);
+      for (const target of family) blockedSessionKeys.add(target.sessionKey);
+    } else {
+      candidateFamilies.push(family);
+    }
   }
+  const acceptedFamilies = candidateFamilies.filter(
+    (family) => !family.some((target) => blockedSessionKeys.has(target.sessionKey)),
+  );
   const targets = dedupeAcceptedFamilies(acceptedFamilies);
+  const expandedCount = new Set(rows.map((row) => row.sessionKey)).size;
   const sourceCounts = [...countSources(targets).entries()].map(([source, count]) => ({ source, count }));
   return {
     targets,
     preview: {
       requestedCount: rootKeys.length,
       matchedCount,
+      expandedCount,
       deletableCount: targets.length,
       sourceCounts,
       skipped: dedupeIssues(skipped),
@@ -114,7 +130,20 @@ function classifyTarget(
   request: SessionBulkDeleteRequest,
   liveKeys: Set<string>,
 ): SessionBulkDeleteIssue | null {
-  if (liveKeys.has(target.sessionKey)) return issueFor(target.sessionKey, "live", "Live sessions cannot be deleted.");
+  const liveFamily = sessionSourceDescriptor(target.source).liveFamily;
+  const familyKey = liveFamily === null ? null : `${liveFamily}:${target.rawId}`;
+  const scopedFamilyKey = familyKey === null ? null : `${target.environmentId}\0${familyKey}`;
+  const ancestorIsLive = liveFamily !== null && target.ancestorRawIds.some((rawId) =>
+    liveKeys.has(`${liveFamily}:${rawId}`)
+    || liveKeys.has(`${target.environmentId}\0${liveFamily}:${rawId}`));
+  if (
+    liveKeys.has(target.sessionKey)
+    || (familyKey !== null && liveKeys.has(familyKey))
+    || (scopedFamilyKey !== null && liveKeys.has(scopedFamilyKey))
+    || ancestorIsLive
+    || (liveFamily !== null && liveKeys.has(`${target.environmentId}\0${liveFamily}:*`))
+    || (liveFamily !== null && target.environmentKind === "local" && liveKeys.has(`${liveFamily}:*`))
+  ) return issueFor(target.sessionKey, "live", "Live sessions cannot be deleted.");
   if ((request.protectFavorites || request.inactiveBefore !== undefined) && target.favorited) {
     return issueFor(target.sessionKey, "favorite", "Favorite session was protected.");
   }
@@ -148,7 +177,8 @@ async function deleteTargetFamily(
   environments: Map<string, SessionEnvironment>,
 ): Promise<void> {
   const cascadeRoot = targets.find((target) => target.sessionKey === target.cascadeRootSessionKey);
-  if (!cascadeRoot?.sourceAvailable) return;
+  if (!cascadeRoot) throw new Error("Session deletion family is missing its cascade root.");
+  if (!cascadeRoot.sourceAvailable && !cascadeRoot.orphanedParentSessionId) return;
   const availableTargets = targets.filter((target) => target.sourceAvailable);
   if (availableTargets.length === 0) return;
   if (availableTargets[0].source === "zcode-cli") {
@@ -160,6 +190,7 @@ async function deleteTargetFamily(
   if (availableTargets[0].environmentKind === "wsl") {
     const environment = environments.get(availableTargets[0].environmentId);
     if (!environment) throw new Error("WSL environment was not found.");
+    if (!environment.enabled) throw new Error("WSL environment is disabled.");
     await deleteWslSessionSources(environment, availableTargets);
     return;
   }

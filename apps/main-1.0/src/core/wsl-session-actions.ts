@@ -32,11 +32,30 @@ export async function deleteWslSessionSources(
 ): Promise<void> {
   if (environment.kind !== "wsl") throw new Error("WSL session deletion requires a WSL environment.");
   const deletionPaths = sessionSourceDeletionPaths(targets, path.posix);
-  const allPaths = [...deletionPaths.files, ...deletionPaths.directories, ...deletionPaths.emptyDirectories];
+  const allPaths = [
+    ...deletionPaths.files,
+    ...deletionPaths.directories,
+    ...deletionPaths.emptyDirectories,
+    ...deletionPaths.requiredAbsentFiles,
+  ];
   if (allPaths.some((filePath) => !filePath.startsWith("/"))) throw new Error("WSL session path must be absolute.");
   if (deletionPaths.files.length === 0) return;
 
-  const commands = [`rm -f -- ${deletionPaths.files.map(posixShellQuote).join(" ")}`];
+  const commands = [
+    ...deletionPaths.requiredAbsentFiles.map((filePath) => {
+      const quoted = posixShellQuote(filePath);
+      return `if [ -e ${quoted} ] || [ -L ${quoted} ]; then exit 1; fi`;
+    }),
+    ...deletionPaths.files.map((filePath) => {
+      const quoted = posixShellQuote(filePath);
+      return `if [ -d ${quoted} ] && [ ! -L ${quoted} ]; then exit 1; fi`;
+    }),
+    ...[...deletionPaths.directories, ...deletionPaths.emptyDirectories].map((directoryPath) => {
+      const quoted = posixShellQuote(directoryPath);
+      return `if { [ -e ${quoted} ] || [ -L ${quoted} ]; } && { [ ! -d ${quoted} ] || [ -L ${quoted} ]; }; then exit 1; fi`;
+    }),
+    `rm -f -- ${deletionPaths.files.map(posixShellQuote).join(" ")}`,
+  ];
   if (deletionPaths.directories.length > 0) {
     commands.push(`rm -rf -- ${deletionPaths.directories.map(posixShellQuote).join(" ")}`);
   }

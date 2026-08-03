@@ -75,7 +75,7 @@ describe("session bulk delete UI", () => {
       dateValue: "",
       favoriteCount: 1,
       preview: {
-        requestedCount: 3, matchedCount: 3, deletableCount: 1,
+        requestedCount: 3, matchedCount: 3, expandedCount: 3, deletableCount: 1,
         sourceCounts: [{ source: "codex-cli", count: 1 }],
         skipped: [{ sessionKey: "live", reason: "live", message: "Live" }],
       },
@@ -99,6 +99,8 @@ describe("session bulk delete UI", () => {
     const onConfirm = vi.fn();
     await act(async () => root.render(createElement(DeleteSessionDialog, {
       session,
+      cascadeCount: 1,
+      blockedMessage: null,
       language: "zh",
       deleting: false,
       onConfirm,
@@ -125,6 +127,7 @@ describe("session bulk delete UI", () => {
     await act(async () => root.render(createElement(DeleteSessionDialog, {
       session,
       cascadeCount: 3,
+      blockedMessage: "关联会话正在运行，请先停止后再删除整棵会话树。",
       language: "zh",
       deleting: false,
       onConfirm: vi.fn(),
@@ -132,12 +135,43 @@ describe("session bulk delete UI", () => {
     })));
 
     expect(container.textContent).toContain("2 个关联 Subagent 会话也会被永久删除");
+    expect(container.textContent).toContain("关联会话正在运行");
+    const confirmButton = buttonByText(container, "永久删除");
+    const confirmationInput = container.querySelector(".delete-confirmation-field input") as HTMLInputElement;
+    await act(async () => {
+      const setNativeValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+      setNativeValue?.call(confirmationInput, "确认删除");
+      confirmationInput.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText", data: "确认删除" }));
+    });
+    expect(confirmButton.disabled).toBe(true);
+
+    await act(async () => root.render(createElement(DeleteSessionDialog, {
+      session,
+      cascadeCount: null,
+      blockedMessage: null,
+      language: "zh",
+      deleting: false,
+      onConfirm: vi.fn(),
+      onCancel: vi.fn(),
+    })));
+    expect(buttonByText(container, "永久删除").disabled).toBe(true);
+
+    await act(async () => root.render(createElement(DeleteSessionDialog, {
+      session,
+      cascadeCount: 1,
+      blockedMessage: null,
+      language: "zh",
+      deleting: false,
+      onConfirm: vi.fn(),
+      onCancel: vi.fn(),
+    })));
+    expect(buttonByText(container, "永久删除").disabled).toBe(false);
   });
 
   it("shows an empty orphan cleanup result without enabling deletion", async () => {
     await act(async () => root.render(createElement(BulkDeleteDialog, {
       mode: "orphans",
-      preview: { requestedCount: 0, matchedCount: 0, deletableCount: 0, sourceCounts: [], skipped: [] },
+      preview: { requestedCount: 0, matchedCount: 0, expandedCount: 0, deletableCount: 0, sourceCounts: [], skipped: [] },
       dateValue: "",
       favoriteCount: 0,
       busy: false,

@@ -215,7 +215,7 @@ describe("SessionStore PostgreSQL facade", () => {
       fs.writeFileSync(filePath, "fixture", "utf8");
     }
     await store.upsertIndexedSession(indexedSession({
-      sessionKey: "claude:parent", rawId: "parent", source: "claude-cli", filePath: parentFile,
+      sessionKey: "claude:parent", rawId: "parent", source: "claude-app", filePath: parentFile,
     }), messages);
     await store.upsertIndexedSession(indexedSession({
       sessionKey: "claude:child", rawId: "child", source: "claude-cli", filePath: childFile,
@@ -223,6 +223,7 @@ describe("SessionStore PostgreSQL facade", () => {
     }), messages);
 
     try {
+      await expect(store.getSessionDeletionTargets([], true)).resolves.toEqual([]);
       await expect(store.deleteSession("claude:parent")).resolves.toBe(true);
       await expect(store.getSession("claude:parent")).resolves.toBeNull();
       await expect(store.getSession("claude:child")).resolves.toBeNull();
@@ -242,12 +243,29 @@ describe("SessionStore PostgreSQL facade", () => {
     await store.upsertIndexedSession(indexedSession({
       sessionKey: "codex:grandchild", rawId: "grandchild", isSubagent: true, parentSessionId: "child",
     }), messages);
+    await store.upsertIndexedSession(indexedSession({
+      sessionKey: "codex:sibling", rawId: "sibling", isSubagent: true, parentSessionId: "parent",
+    }), messages);
 
     await expect(store.deleteSessionRecord("codex:parent")).resolves.toBe(true);
-    await expect(store.getSessionDeletionTargets([], true)).resolves.toEqual([
-      expect.objectContaining({ cascadeRootSessionKey: "codex:child", sessionKey: "codex:child" }),
-      expect.objectContaining({ cascadeRootSessionKey: "codex:child", sessionKey: "codex:grandchild" }),
-    ]);
+    const orphanTargets = await store.getSessionDeletionTargets([], true);
+    expect(new Set(orphanTargets.map((target) => target.sessionKey))).toEqual(new Set([
+      "codex:child",
+      "codex:grandchild",
+      "codex:sibling",
+    ]));
+    expect(new Set(orphanTargets.map((target) => target.cascadeRootSessionKey))).toEqual(new Set(["codex:child"]));
+    expect(new Set(orphanTargets.map((target) => target.orphanedParentSessionId))).toEqual(new Set(["parent"]));
+    const explicitOrphanTargets = await store.getSessionDeletionTargets(["codex:child", "codex:sibling"], true);
+    expect(new Set(explicitOrphanTargets.map((target) => target.cascadeRootSessionKey))).toEqual(new Set([
+      "codex:child",
+      "codex:sibling",
+    ]));
+    for (const rootKey of ["codex:child", "codex:sibling"]) {
+      expect(new Set(
+        explicitOrphanTargets.filter((target) => target.cascadeRootSessionKey === rootKey).map((target) => target.sessionKey),
+      )).toEqual(new Set(["codex:child", "codex:grandchild", "codex:sibling"]));
+    }
     await store.upsertIndexedSession(indexedSession({
       sessionKey: "codex:cycle-a", rawId: "cycle-a", isSubagent: true, parentSessionId: "cycle-b",
     }), messages);
@@ -269,6 +287,10 @@ describe("SessionStore PostgreSQL facade", () => {
     );
     await store.setFavorited("codex:parent", true);
 
+    await expect(store.getSessionDeletionTargets(["codex:child"])).resolves.toEqual([
+      expect.objectContaining({ sessionKey: "codex:child", ancestorRawIds: ["parent"] }),
+    ]);
+
     await expect(store.getSessionDeletionTargets(["codex:child", "missing", "codex:parent"])).resolves.toEqual([
       expect.objectContaining({
         cascadeRootSessionKey: "codex:child",
@@ -288,6 +310,18 @@ describe("SessionStore PostgreSQL facade", () => {
     await expect(store.deleteSessionRecords(["codex:parent", "missing"])).resolves.toEqual(["codex:parent", "codex:child"]);
     await expect(store.getSession("codex:parent")).resolves.toBeNull();
     await expect(store.getSession("codex:child")).resolves.toBeNull();
+  });
+
+  it("can delete an already-expanded record set without capturing later descendants", async () => {
+    const store = createStore();
+    await store.upsertIndexedSession(indexedSession({ sessionKey: "codex:parent", rawId: "parent" }), messages);
+    await store.upsertIndexedSession(
+      indexedSession({ sessionKey: "codex:child", rawId: "child", isSubagent: true, parentSessionId: "parent" }),
+      messages,
+    );
+
+    await expect(store.deleteSessionRecords(["codex:parent"], false)).resolves.toEqual(["codex:parent"]);
+    await expect(store.getSession("codex:child")).resolves.not.toBeNull();
   });
 
   it("deletes a selected ZCode session tree from its shared database", async () => {

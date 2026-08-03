@@ -21,7 +21,7 @@ import type { InstalledSkill } from "../../core/skill-manager";
 import type { OpenVikingMemorySnapshot } from "../../core/openviking-memory";
 import type { RemoteHealthReport } from "../../core/remote-health";
 import type { SessionSyncHookStatus } from "../../core/session-sync-queue";
-import type { SessionBulkDeletePreview, SessionBulkDeleteRequest } from "../../core/session-bulk-delete";
+import { liveSessionDeleteKey, type SessionBulkDeletePreview, type SessionBulkDeleteRequest } from "../../core/session-bulk-delete";
 import type { TeamChatRoomSummary } from "../../shared/team-chat";
 import { OPTIONAL_SESSION_SOURCE_DESCRIPTORS } from "../../core/session-sources";
 import type {
@@ -319,6 +319,7 @@ export function App(): ReactElement {
   const [deleteTagName, setDeleteTagName] = useState<string | null>(null);
   const [deleteSessionCandidate, setDeleteSessionCandidate] = useState<SessionSearchResult | null>(null);
   const [deleteSessionCascadeCount, setDeleteSessionCascadeCount] = useState<number | null>(null);
+  const [deleteSessionBlockedMessage, setDeleteSessionBlockedMessage] = useState<string | null>(null);
   const deleteSessionPreviewId = useRef(0);
   const [deletingSession, setDeletingSession] = useState(false);
   const [bulkSelectedKeys, setBulkSelectedKeys] = useState<Set<string>>(() => new Set());
@@ -807,18 +808,33 @@ export function App(): ReactElement {
     setContextMenu(null);
     setDeleteSessionCandidate(session);
     setDeleteSessionCascadeCount(null);
+    setDeleteSessionBlockedMessage(null);
     const previewId = ++deleteSessionPreviewId.current;
-    void window.sessionSearch.previewBulkDelete({
-      sessionKeys: [session.sessionKey],
-      liveSessionKeys: [],
-      protectFavorites: false,
-    }).then((preview) => {
-      if (deleteSessionPreviewId.current === previewId) setDeleteSessionCascadeCount(preview.deletableCount);
-    }).catch(() => undefined);
+    void freshLiveKeysForBulkDelete()
+      .then((liveSessionKeys) => window.sessionSearch.previewBulkDelete({
+        sessionKeys: [session.sessionKey],
+        liveSessionKeys,
+        protectFavorites: false,
+      }))
+      .then((preview) => {
+        if (deleteSessionPreviewId.current !== previewId) return;
+        setDeleteSessionCascadeCount(preview.expandedCount);
+        if (preview.skipped.some((issue) => issue.reason === "live")) {
+          setDeleteSessionBlockedMessage(t(
+            "A related session is currently live. Stop it before deleting this session tree.",
+            "关联会话正在运行，请先停止后再删除整棵会话树。",
+          ));
+        }
+      })
+      .catch((error) => {
+        if (deleteSessionPreviewId.current === previewId) {
+          setDeleteSessionBlockedMessage(error instanceof Error ? error.message : String(error));
+        }
+      });
   }
 
   async function confirmDeleteSession(): Promise<void> {
-    if (!deleteSessionCandidate || deletingSession) return;
+    if (!deleteSessionCandidate || deletingSession || deleteSessionCascadeCount === null || deleteSessionBlockedMessage) return;
     const session = deleteSessionCandidate;
     setDeletingSession(true);
     setActionStatus({ kind: "running", message: t("Deleting session...", "正在删除会话...") });
@@ -826,6 +842,7 @@ export function App(): ReactElement {
       const removed = await window.sessionSearch.deleteSession(session.sessionKey);
       setDeleteSessionCandidate(null);
       setDeleteSessionCascadeCount(null);
+      setDeleteSessionBlockedMessage(null);
       if (removed) {
         if (detail?.sessionKey === session.sessionKey) closeDetail();
         setSelectedKey((current) => (current === session.sessionKey ? null : current));
@@ -844,7 +861,17 @@ export function App(): ReactElement {
         await load();
       }
     } catch (error) {
-      setActionStatus({ kind: "error", message: error instanceof Error ? error.message : String(error) });
+      const rawMessage = error instanceof Error ? error.message : String(error);
+      const message = rawMessage === "A related session is currently live. Stop it before deleting this session tree."
+        ? t(rawMessage, "关联会话正在运行，请先停止后再删除整棵会话树。")
+        : rawMessage === "Live session detection failed. Deletion is disabled."
+        ? t(rawMessage, "Live 会话检测失败，删除操作已禁用。")
+        : rawMessage;
+      if (
+        rawMessage === "A related session is currently live. Stop it before deleting this session tree."
+        || rawMessage === "Live session detection failed. Deletion is disabled."
+      ) setDeleteSessionBlockedMessage(message);
+      setActionStatus({ kind: "error", message });
     } finally {
       setDeletingSession(false);
     }
@@ -892,9 +919,9 @@ export function App(): ReactElement {
   }
 
   async function freshLiveKeysForBulkDelete(): Promise<string[]> {
-    const snapshot = await window.sessionSearch.getLiveSessions();
-    if (snapshot.error) throw new Error(t("Live session detection failed. Bulk deletion is disabled.", "Live 会话检测失败，批量删除已禁用。"));
-    return snapshot.sessions.map((session) => `${session.family}:${session.rawId}`);
+    const snapshot = await window.sessionSearch.getLiveSessions(true);
+    if (snapshot.error) throw new Error(t("Live session detection failed. Deletion is disabled.", "Live 会话检测失败，删除操作已禁用。"));
+    return snapshot.sessions.map(liveSessionDeleteKey);
   }
 
   async function previewSelectedSessions(): Promise<void> {
@@ -970,8 +997,7 @@ export function App(): ReactElement {
     setBulkDeleteBusy(true);
     setActionStatus({ kind: "running", message: t("Deleting sessions...", "正在批量删除会话...") });
     try {
-      const request = { ...bulkDeleteDialog.request, liveSessionKeys: await freshLiveKeysForBulkDelete() };
-      const result = await window.sessionSearch.bulkDeleteSessions(request);
+      const result = await window.sessionSearch.bulkDeleteSessions(bulkDeleteDialog.request);
       if (detail && result.deletedSessionKeys.includes(detail.sessionKey)) closeDetail();
       setBulkSelectedKeys((current) => {
         const next = new Set(current);
@@ -1887,14 +1913,17 @@ export function App(): ReactElement {
         <DeleteSessionDialog
           session={deleteSessionCandidate}
           cascadeCount={deleteSessionCascadeCount}
+          blockedMessage={deleteSessionBlockedMessage}
           language={language}
           deleting={deletingSession}
           onConfirm={() => void confirmDeleteSession()}
           onCancel={() => {
             if (!deletingSession) {
+              deleteSessionPreviewId.current += 1;
               setDeleteSessionCandidate(null);
               closeDetail();
               setDeleteSessionCascadeCount(null);
+              setDeleteSessionBlockedMessage(null);
             }
           }}
         />

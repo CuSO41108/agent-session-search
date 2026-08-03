@@ -125,4 +125,42 @@ describe("ZCode session writer", () => {
       fs.rmSync(root, { recursive: true, force: true });
     }
   });
+
+  it("rolls back the main database when the task index deletion fails", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "agent-recall-zcode-delete-rollback-"));
+    const dbPath = databasePath(root);
+    createFixture(dbPath);
+    const taskIndexPath = createTaskIndexFixture(root);
+    const taskIndex = new DatabaseSync(taskIndexPath);
+    try {
+      taskIndex.exec(`
+        PRAGMA journal_mode = WAL;
+        CREATE TRIGGER reject_task_delete
+        BEFORE DELETE ON tasks
+        BEGIN
+          SELECT RAISE(ABORT, 'task deletion rejected');
+        END;
+      `);
+    } finally {
+      taskIndex.close();
+    }
+
+    try {
+      expect(() => deleteZcodeSession(dbPath, "sess-delete")).toThrow("task deletion rejected");
+      const mainDatabase = new DatabaseSync(dbPath);
+      try {
+        expect(mainDatabase.prepare("SELECT id FROM session WHERE id = ?").get("sess-delete")).toEqual({ id: "sess-delete" });
+      } finally {
+        mainDatabase.close();
+      }
+      const remainingTaskIndex = new DatabaseSync(taskIndexPath);
+      try {
+        expect(remainingTaskIndex.prepare("SELECT task_id FROM tasks WHERE task_id = ?").get("sess-delete")).toEqual({ task_id: "sess-delete" });
+      } finally {
+        remainingTaskIndex.close();
+      }
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
 });

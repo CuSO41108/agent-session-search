@@ -231,22 +231,22 @@ export class SessionStore {
         }
       }
       for (const [filePath, rawIds] of idsByFilePath) deleteZcodeSessions(filePath, rawIds);
-      return (await this.sessions.deleteSessionRecords(targets.map((item) => item.sessionKey))).includes(sessionKey);
+      return (await this.sessions.deleteSessionRecords(targets.map((item) => item.sessionKey), false)).includes(sessionKey);
     }
     if (target.source === "hermes") {
       if (target.sourceAvailable) deleteHermesSession(target.filePath, target.rawId);
-      return (await this.sessions.deleteSessionRecords(targets.map((item) => item.sessionKey))).includes(sessionKey);
+      return (await this.sessions.deleteSessionRecords(targets.map((item) => item.sessionKey), false)).includes(sessionKey);
     }
     if (target.source === "opencode-cli") throw new Error("Cannot delete shared OpenCode source database.");
     if (target.source === "codewiz-cli") throw new Error("Cannot delete shared CodeWiz source database.");
     if (target.source === "cursor-agent" && /(^|[\\/])state\.vscdb$/iu.test(target.filePath)) {
       if (!target.sourceAvailable) {
-        return (await this.sessions.deleteSessionRecords(targets.map((item) => item.sessionKey))).includes(sessionKey);
+        return (await this.sessions.deleteSessionRecords(targets.map((item) => item.sessionKey), false)).includes(sessionKey);
       }
       throw new Error("Cannot delete shared Cursor source database.");
     }
     if (target.sourceAvailable) deleteLocalSessionSources(targets.filter((item) => item.sourceAvailable));
-    return (await this.sessions.deleteSessionRecords(targets.map((item) => item.sessionKey))).includes(sessionKey);
+    return (await this.sessions.deleteSessionRecords(targets.map((item) => item.sessionKey), false)).includes(sessionKey);
   }
 
   async deleteSessionRecord(sessionKey: string): Promise<boolean> {
@@ -262,9 +262,9 @@ export class SessionStore {
     return this.sessions.getSessionDeletionTargets(sessionKeys, includeOrphanedSubagents);
   }
 
-  async deleteSessionRecords(sessionKeys: readonly string[]): Promise<string[]> {
+  async deleteSessionRecords(sessionKeys: readonly string[], expandDescendants = true): Promise<string[]> {
     await this.ready;
-    return this.sessions.deleteSessionRecords(sessionKeys);
+    return this.sessions.deleteSessionRecords(sessionKeys, expandDescendants);
   }
 
   async migrateSessionKeyPreservingUserState(

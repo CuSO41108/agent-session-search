@@ -39,6 +39,7 @@ import type { SessionStoreDatabase } from "./database";
 import { EnvironmentStore, localEnvironment } from "./environments";
 import { deleteHermesSession } from "../hermes-session-writer";
 import { deleteLocalSessionSources } from "../session-source-delete";
+import { SESSION_SOURCE_DESCRIPTORS, sessionSourceDescriptor } from "../session-sources";
 import { deleteZcodeSessions } from "../zcode-session-writer";
 import type { SessionBulkDeleteTarget } from "../session-bulk-delete";
 
@@ -127,6 +128,8 @@ interface SessionDeletionRelationRow {
 interface SessionDeletionPair {
   cascadeRootSessionKey: string;
   sessionKey: string;
+  orphanedParentSessionId: string | null;
+  ancestorRawIds: string[];
 }
 
 type ProjectAggregateRow = {
@@ -663,15 +666,15 @@ export class SessionsStore {
         }
       }
       for (const [filePath, rawIds] of idsByFilePath) deleteZcodeSessions(filePath, rawIds);
-      return this.deleteSessionRecords(targets.map((target) => target.sessionKey)).includes(sessionKey);
+      return this.deleteSessionRecords(targets.map((target) => target.sessionKey), false).includes(sessionKey);
     }
     if (row.source === "hermes") {
       if (row.sourceAvailable) deleteHermesSession(row.filePath, row.rawId);
-      return this.deleteSessionRecords(targets.map((target) => target.sessionKey)).includes(sessionKey);
+      return this.deleteSessionRecords(targets.map((target) => target.sessionKey), false).includes(sessionKey);
     }
     if (row.source === "cursor-agent" && /(^|[\\/])state\.vscdb$/i.test(row.filePath)) {
       if (!row.sourceAvailable) {
-        return this.deleteSessionRecords(targets.map((target) => target.sessionKey)).includes(sessionKey);
+        return this.deleteSessionRecords(targets.map((target) => target.sessionKey), false).includes(sessionKey);
       }
       throw new Error("Cannot delete shared Cursor source database.");
     }
@@ -679,7 +682,7 @@ export class SessionsStore {
     if (row.source === "codewiz-cli") throw new Error("Cannot delete shared CodeWiz source database.");
 
     if (row.sourceAvailable) deleteLocalSessionSources(targets.filter((target) => target.sourceAvailable));
-    return this.deleteSessionRecords(targets.map((target) => target.sessionKey)).includes(sessionKey);
+    return this.deleteSessionRecords(targets.map((target) => target.sessionKey), false).includes(sessionKey);
   }
 
   deleteSessionRecord(sessionKey: string): boolean {
@@ -701,10 +704,7 @@ export class SessionsStore {
   ): SessionBulkDeleteTarget[] {
     const uniqueKeys = [...new Set(sessionKeys.filter(Boolean))];
     if (uniqueKeys.length === 0 && !includeOrphanedSubagents) return [];
-    const relations = this.db.prepare(`
-      SELECT session_key, raw_id, source, environment_id, is_subagent, parent_session_id
-      FROM sessions
-    `).all() as unknown as SessionDeletionRelationRow[];
+    const relations = readSessionDeletionRelations(this.db, uniqueKeys, includeOrphanedSubagents);
     const deletionPairs = collectSessionDeletionPairs(relations, uniqueKeys, includeOrphanedSubagents);
     const targetKeys = [...new Set(deletionPairs.map((pair) => pair.sessionKey))];
     if (targetKeys.length === 0) return [];
@@ -723,12 +723,14 @@ export class SessionsStore {
       const row = byKey.get(pair.sessionKey);
       return row ? [{
         cascadeRootSessionKey: pair.cascadeRootSessionKey,
+        orphanedParentSessionId: pair.orphanedParentSessionId,
         sessionKey: row.session_key,
         rawId: row.raw_id,
         source: row.source,
         filePath: row.file_path,
         isSubagent: row.is_subagent === 1,
         parentSessionId: row.parent_session_id,
+        ancestorRawIds: pair.ancestorRawIds,
         sourceAvailable: row.source_available === 1,
         favorited: row.favorited === 1,
         lastActivityAt: row.last_activity_at,
@@ -738,15 +740,21 @@ export class SessionsStore {
     });
   }
 
-  deleteSessionRecords(sessionKeys: readonly string[]): string[] {
+  deleteSessionRecords(sessionKeys: readonly string[], expandDescendants = true): string[] {
     const uniqueKeys = [...new Set(sessionKeys.filter(Boolean))];
     if (uniqueKeys.length === 0) return [];
     let expandedKeys: string[] = [];
     const deleted: string[] = [];
     this.transaction(() => {
-      expandedKeys = [...new Set(
-        this.getSessionDeletionTargets(uniqueKeys).map((target) => target.sessionKey),
-      )];
+      expandedKeys = expandDescendants
+        ? [...new Set(
+            collectSessionDeletionPairs(
+              readSessionDeletionRelations(this.db, uniqueKeys, false),
+              uniqueKeys,
+              false,
+            ).map((target) => target.sessionKey),
+          )]
+        : uniqueKeys;
       if (expandedKeys.length === 0) return;
       for (const keys of chunks(expandedKeys, 500)) {
         const existing = this.db.prepare(
@@ -2503,12 +2511,16 @@ function collectSessionDeletionPairs(
 ): SessionDeletionPair[] {
   const rowsBySessionKey = new Map(rows.map((row) => [row.session_key, row]));
   const rawIdsByScope = new Map<string, Set<string>>();
+  const rowsByScopeAndRawId = new Map<string, Map<string, SessionDeletionRelationRow>>();
   const childrenByScopeAndParent = new Map<string, Map<string, SessionDeletionRelationRow[]>>();
   for (const row of rows) {
     const scope = sessionDeletionScope(row);
     const rawIds = rawIdsByScope.get(scope) ?? new Set<string>();
     rawIds.add(row.raw_id);
     rawIdsByScope.set(scope, rawIds);
+    const rowsByRawId = rowsByScopeAndRawId.get(scope) ?? new Map<string, SessionDeletionRelationRow>();
+    if (!rowsByRawId.has(row.raw_id)) rowsByRawId.set(row.raw_id, row);
+    rowsByScopeAndRawId.set(scope, rowsByRawId);
     if (!row.parent_session_id) continue;
     const childrenByParent = childrenByScopeAndParent.get(scope) ?? new Map<string, SessionDeletionRelationRow[]>();
     const children = childrenByParent.get(row.parent_session_id) ?? [];
@@ -2517,44 +2529,147 @@ function collectSessionDeletionPairs(
     childrenByScopeAndParent.set(scope, childrenByParent);
   }
 
-  const rootRows: SessionDeletionRelationRow[] = [];
-  const rootKeys = new Set<string>();
-  for (const sessionKey of requestedSessionKeys) {
-    const row = rowsBySessionKey.get(sessionKey);
-    if (!row || rootKeys.has(row.session_key)) continue;
-    rootRows.push(row);
-    rootKeys.add(row.session_key);
-  }
+  const orphanGroups = new Map<string, {
+    parentSessionId: string;
+    rows: SessionDeletionRelationRow[];
+  }>();
+  const orphanGroupBySessionKey = new Map<string, {
+    parentSessionId: string;
+    rows: SessionDeletionRelationRow[];
+  }>();
   if (includeOrphanedSubagents) {
     const orphanRows = rows
       .filter((row) => row.is_subagent === 1 && Boolean(row.parent_session_id))
       .filter((row) => !rawIdsByScope.get(sessionDeletionScope(row))?.has(row.parent_session_id!))
       .sort((left, right) => left.session_key.localeCompare(right.session_key));
     for (const row of orphanRows) {
-      if (rootKeys.has(row.session_key)) continue;
-      rootRows.push(row);
-      rootKeys.add(row.session_key);
+      const parentSessionId = row.parent_session_id!;
+      const groupKey = `${sessionDeletionScope(row)}\0${parentSessionId}`;
+      const group = orphanGroups.get(groupKey) ?? { parentSessionId, rows: [] };
+      group.rows.push(row);
+      orphanGroups.set(groupKey, group);
+      orphanGroupBySessionKey.set(row.session_key, group);
+    }
+  }
+
+  const roots: Array<{
+    root: SessionDeletionRelationRow;
+    seeds: SessionDeletionRelationRow[];
+    orphanedParentSessionId: string | null;
+  }> = [];
+  const explicitRootKeys = new Set<string>();
+  const explicitOrphanGroups = new Set<{ parentSessionId: string; rows: SessionDeletionRelationRow[] }>();
+  for (const sessionKey of requestedSessionKeys) {
+    const row = rowsBySessionKey.get(sessionKey);
+    if (!row || explicitRootKeys.has(row.session_key)) continue;
+    explicitRootKeys.add(row.session_key);
+    const orphanGroup = orphanGroupBySessionKey.get(row.session_key);
+    if (orphanGroup) {
+      roots.push({
+        root: row,
+        seeds: [row, ...orphanGroup.rows.filter((candidate) => candidate.session_key !== row.session_key)],
+        orphanedParentSessionId: orphanGroup.parentSessionId,
+      });
+      explicitOrphanGroups.add(orphanGroup);
+    } else {
+      roots.push({ root: row, seeds: [row], orphanedParentSessionId: null });
+    }
+  }
+  if (includeOrphanedSubagents) {
+    for (const group of [...orphanGroups.values()].sort((left, right) =>
+      left.rows[0].session_key.localeCompare(right.rows[0].session_key))) {
+      if (explicitOrphanGroups.has(group)) continue;
+      const root = group.rows[0];
+      roots.push({ root, seeds: [root, ...group.rows.filter((row) => row !== root)], orphanedParentSessionId: group.parentSessionId });
     }
   }
 
   const result: SessionDeletionPair[] = [];
-  for (const root of rootRows) {
-    const queue = [root];
+  for (const { root, seeds, orphanedParentSessionId } of roots) {
+    const ancestorRawIds: string[] = [];
+    const visitedAncestorIds = new Set<string>();
+    let ancestorRawId = root.parent_session_id;
+    while (ancestorRawId && !visitedAncestorIds.has(ancestorRawId)) {
+      visitedAncestorIds.add(ancestorRawId);
+      ancestorRawIds.push(ancestorRawId);
+      ancestorRawId = rowsByScopeAndRawId
+        .get(sessionDeletionScope(root))
+        ?.get(ancestorRawId)
+        ?.parent_session_id ?? null;
+    }
+    const queue = [...seeds];
     const visited = new Set<string>();
     for (let index = 0; index < queue.length; index += 1) {
       const row = queue[index];
       if (visited.has(row.session_key)) continue;
       visited.add(row.session_key);
-      result.push({ cascadeRootSessionKey: root.session_key, sessionKey: row.session_key });
+      result.push({
+        cascadeRootSessionKey: root.session_key,
+        sessionKey: row.session_key,
+        orphanedParentSessionId,
+        ancestorRawIds,
+      });
       const children = childrenByScopeAndParent.get(sessionDeletionScope(row))?.get(row.raw_id) ?? [];
-      queue.push(...children);
+      for (const child of children) queue.push(child);
     }
   }
   return result;
 }
 
+function readSessionDeletionRelations(
+  db: SessionStoreDatabase,
+  requestedSessionKeys: readonly string[],
+  includeOrphanedSubagents: boolean,
+): SessionDeletionRelationRow[] {
+  if (includeOrphanedSubagents) {
+    return db.prepare(`
+      SELECT session_key, raw_id, source, environment_id, is_subagent, parent_session_id
+      FROM sessions
+    `).all() as unknown as SessionDeletionRelationRow[];
+  }
+
+  const scopes = new Map<string, { sources: SessionSource[]; environmentId: string }>();
+  for (const keys of chunks(requestedSessionKeys, 500)) {
+    const rows = db.prepare(`
+      SELECT DISTINCT source, environment_id
+      FROM sessions
+      WHERE session_key IN (${keys.map(() => "?").join(", ")})
+    `).all(...keys) as unknown as Array<{ source: SessionSource; environment_id: string }>;
+    for (const row of rows) {
+      const scope = sessionDeletionScope(row);
+      if (!scopes.has(scope)) {
+        scopes.set(scope, {
+          sources: sessionDeletionFamilySources(row.source),
+          environmentId: row.environment_id,
+        });
+      }
+    }
+  }
+  const relations = new Map<string, SessionDeletionRelationRow>();
+  for (const scopeGroup of chunks([...scopes.values()], 200)) {
+    const where = scopeGroup
+      .map((scope) => `(environment_id = ? AND source IN (${scope.sources.map(() => "?").join(", ")}))`)
+      .join(" OR ");
+    const values = scopeGroup.flatMap((scope) => [scope.environmentId, ...scope.sources]);
+    const rows = db.prepare(`
+      SELECT session_key, raw_id, source, environment_id, is_subagent, parent_session_id
+      FROM sessions
+      WHERE ${where}
+    `).all(...values) as unknown as SessionDeletionRelationRow[];
+    for (const row of rows) relations.set(row.session_key, row);
+  }
+  return [...relations.values()];
+}
+
 function sessionDeletionScope(row: Pick<SessionDeletionRelationRow, "source" | "environment_id">): string {
-  return `${row.source}\0${row.environment_id}`;
+  return `${sessionSourceDescriptor(row.source).family}\0${row.environment_id}`;
+}
+
+function sessionDeletionFamilySources(source: SessionSource): SessionSource[] {
+  const family = sessionSourceDescriptor(source).family;
+  return SESSION_SOURCE_DESCRIPTORS
+    .filter((descriptor) => descriptor.family === family)
+    .map((descriptor) => descriptor.id);
 }
 
 function chunks<T>(values: readonly T[], size: number): T[][] {

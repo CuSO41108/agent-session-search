@@ -48,6 +48,7 @@ export function DeleteTagDialog({
 export function DeleteSessionDialog({
   session,
   cascadeCount,
+  blockedMessage,
   language,
   deleting,
   onConfirm,
@@ -55,6 +56,7 @@ export function DeleteSessionDialog({
 }: {
   session: SessionSearchResult;
   cascadeCount: number | null;
+  blockedMessage: string | null;
   language: LanguageMode;
   deleting: boolean;
   onConfirm: () => void;
@@ -84,6 +86,7 @@ export function DeleteSessionDialog({
             )}
           </p>
         ) : null}
+        {blockedMessage ? <p className="dialog-copy danger-copy">{blockedMessage}</p> : null}
         <p className="dialog-copy danger-copy">
           {session.sourceAvailable === false
             ? l(
@@ -125,7 +128,12 @@ export function DeleteSessionDialog({
           <button type="button" onClick={onCancel} disabled={deleting}>
             {l("Cancel", "取消")}
           </button>
-          <button type="button" className="danger-action" onClick={onConfirm} disabled={deleting || !canConfirm}>
+          <button
+            type="button"
+            className="danger-action"
+            onClick={onConfirm}
+            disabled={deleting || !canConfirm || cascadeCount === null || Boolean(blockedMessage)}
+          >
             {deleting
               ? l("Deleting...", "正在删除...")
               : session.sourceAvailable === false

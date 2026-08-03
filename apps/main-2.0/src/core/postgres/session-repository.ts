@@ -13,6 +13,7 @@ import type {
   TokenUsageEvent,
 } from "../types";
 import type { SessionBulkDeleteTarget } from "../session-bulk-delete";
+import { SESSION_SOURCE_DESCRIPTORS, sessionSourceDescriptor } from "../session-sources";
 import {
   materializeSessionAttachment,
   MAX_SESSION_ATTACHMENT_BYTES,
@@ -52,12 +53,16 @@ function collectSessionDeletionPairs(
 ): SessionDeletionPair[] {
   const rowsBySessionKey = new Map(rows.map((row) => [row.session_key, row]));
   const rawIdsByScope = new Map<string, Set<string>>();
+  const rowsByScopeAndRawId = new Map<string, Map<string, SessionDeletionRelationRow>>();
   const childrenByScopeAndParent = new Map<string, Map<string, SessionDeletionRelationRow[]>>();
   for (const row of rows) {
     const scope = sessionDeletionScope(row);
     const rawIds = rawIdsByScope.get(scope) ?? new Set<string>();
     rawIds.add(row.raw_id);
     rawIdsByScope.set(scope, rawIds);
+    const rowsByRawId = rowsByScopeAndRawId.get(scope) ?? new Map<string, SessionDeletionRelationRow>();
+    if (!rowsByRawId.has(row.raw_id)) rowsByRawId.set(row.raw_id, row);
+    rowsByScopeAndRawId.set(scope, rowsByRawId);
     if (!row.parent_session_id) continue;
     const childrenByParent = childrenByScopeAndParent.get(scope) ?? new Map<string, SessionDeletionRelationRow[]>();
     const children = childrenByParent.get(row.parent_session_id) ?? [];
@@ -66,49 +71,149 @@ function collectSessionDeletionPairs(
     childrenByScopeAndParent.set(scope, childrenByParent);
   }
 
-  const rootRows: SessionDeletionRelationRow[] = [];
-  const rootKeys = new Set<string>();
-  for (const sessionKey of requestedSessionKeys) {
-    const row = rowsBySessionKey.get(sessionKey);
-    if (!row || rootKeys.has(row.session_key)) continue;
-    rootRows.push(row);
-    rootKeys.add(row.session_key);
-  }
+  const orphanGroups = new Map<string, {
+    parentSessionId: string;
+    rows: SessionDeletionRelationRow[];
+  }>();
+  const orphanGroupBySessionKey = new Map<string, {
+    parentSessionId: string;
+    rows: SessionDeletionRelationRow[];
+  }>();
   if (includeOrphanedSubagents) {
     const orphanRows = rows
       .filter((row) => row.is_subagent && Boolean(row.parent_session_id))
       .filter((row) => !rawIdsByScope.get(sessionDeletionScope(row))?.has(row.parent_session_id!))
       .sort((left, right) => left.session_key.localeCompare(right.session_key));
     for (const row of orphanRows) {
-      if (rootKeys.has(row.session_key)) continue;
-      rootRows.push(row);
-      rootKeys.add(row.session_key);
+      const parentSessionId = row.parent_session_id!;
+      const groupKey = `${sessionDeletionScope(row)}\0${parentSessionId}`;
+      const group = orphanGroups.get(groupKey) ?? { parentSessionId, rows: [] };
+      group.rows.push(row);
+      orphanGroups.set(groupKey, group);
+      orphanGroupBySessionKey.set(row.session_key, group);
+    }
+  }
+
+  const roots: Array<{
+    root: SessionDeletionRelationRow;
+    seeds: SessionDeletionRelationRow[];
+    orphanedParentSessionId: string | null;
+  }> = [];
+  const explicitRootKeys = new Set<string>();
+  const explicitOrphanGroups = new Set<{ parentSessionId: string; rows: SessionDeletionRelationRow[] }>();
+  for (const sessionKey of requestedSessionKeys) {
+    const row = rowsBySessionKey.get(sessionKey);
+    if (!row || explicitRootKeys.has(row.session_key)) continue;
+    explicitRootKeys.add(row.session_key);
+    const orphanGroup = orphanGroupBySessionKey.get(row.session_key);
+    if (orphanGroup) {
+      roots.push({
+        root: row,
+        seeds: [row, ...orphanGroup.rows.filter((candidate) => candidate.session_key !== row.session_key)],
+        orphanedParentSessionId: orphanGroup.parentSessionId,
+      });
+      explicitOrphanGroups.add(orphanGroup);
+    } else {
+      roots.push({ root: row, seeds: [row], orphanedParentSessionId: null });
+    }
+  }
+  if (includeOrphanedSubagents) {
+    for (const group of [...orphanGroups.values()].sort((left, right) =>
+      left.rows[0].session_key.localeCompare(right.rows[0].session_key))) {
+      if (explicitOrphanGroups.has(group)) continue;
+      const root = group.rows[0];
+      roots.push({ root, seeds: [root, ...group.rows.filter((row) => row !== root)], orphanedParentSessionId: group.parentSessionId });
     }
   }
 
   const result: SessionDeletionPair[] = [];
-  for (const root of rootRows) {
-    const queue = [root];
+  for (const { root, seeds, orphanedParentSessionId } of roots) {
+    const ancestorRawIds: string[] = [];
+    const visitedAncestorIds = new Set<string>();
+    let ancestorRawId = root.parent_session_id;
+    while (ancestorRawId && !visitedAncestorIds.has(ancestorRawId)) {
+      visitedAncestorIds.add(ancestorRawId);
+      ancestorRawIds.push(ancestorRawId);
+      ancestorRawId = rowsByScopeAndRawId
+        .get(sessionDeletionScope(root))
+        ?.get(ancestorRawId)
+        ?.parent_session_id ?? null;
+    }
+    const queue = [...seeds];
     const visited = new Set<string>();
     for (let index = 0; index < queue.length; index += 1) {
       const row = queue[index];
       if (visited.has(row.session_key)) continue;
       visited.add(row.session_key);
-      result.push({ cascadeRootSessionKey: root.session_key, sessionKey: row.session_key });
+      result.push({
+        cascadeRootSessionKey: root.session_key,
+        sessionKey: row.session_key,
+        orphanedParentSessionId,
+        ancestorRawIds,
+      });
       const children = childrenByScopeAndParent.get(sessionDeletionScope(row))?.get(row.raw_id) ?? [];
-      queue.push(...children);
+      for (const child of children) queue.push(child);
     }
   }
   return result;
 }
 
 function sessionDeletionScope(row: Pick<SessionDeletionRelationRow, "source" | "environment_id">): string {
-  return `${row.source}\0${row.environment_id}`;
+  return `${sessionSourceDescriptor(row.source).family}\0${row.environment_id}`;
 }
 
 interface SessionDeletionPair {
   cascadeRootSessionKey: string;
   sessionKey: string;
+  orphanedParentSessionId: string | null;
+  ancestorRawIds: string[];
+}
+
+async function readSessionDeletionRelations(
+  queryable: PostgresQueryable,
+  requestedSessionKeys: readonly string[],
+  includeOrphanedSubagents: boolean,
+): Promise<SessionDeletionRelationRow[]> {
+  if (includeOrphanedSubagents) {
+    const result = await queryable.query<SessionDeletionRelationRow>(`
+      select session_key, raw_id, source, environment_id, is_subagent, parent_session_id
+      from agent_recall.sessions
+    `);
+    return result.rows;
+  }
+  const requestedResult = await queryable.query<Pick<SessionDeletionRelationRow, "source" | "environment_id">>(`
+    select distinct source, environment_id
+    from agent_recall.sessions
+    where session_key = any($1::text[])
+  `, [requestedSessionKeys]);
+  const scopePairs = new Map<string, { source: SessionSource; environmentId: string }>();
+  for (const requested of requestedResult.rows) {
+    for (const source of sessionDeletionFamilySources(requested.source)) {
+      const key = `${source}\0${requested.environment_id}`;
+      scopePairs.set(key, { source, environmentId: requested.environment_id });
+    }
+  }
+  if (scopePairs.size === 0) return [];
+  const scopes = [...scopePairs.values()];
+  const result = await queryable.query<SessionDeletionRelationRow>(`
+    with requested_scopes(environment_id, source) as (
+      select * from unnest($1::text[], $2::text[])
+    )
+    select sessions.session_key, sessions.raw_id, sessions.source, sessions.environment_id,
+      sessions.is_subagent, sessions.parent_session_id
+    from agent_recall.sessions sessions
+    join requested_scopes
+      on requested_scopes.source = sessions.source
+      and requested_scopes.environment_id = sessions.environment_id
+  `, [scopes.map((scope) => scope.environmentId), scopes.map((scope) => scope.source)]);
+  return result.rows;
+}
+
+function sessionDeletionFamilySources(source: SessionSource): SessionSource[] {
+  const family = sessionSourceDescriptor(source).family;
+  return SESSION_SOURCE_DESCRIPTORS
+    .filter((descriptor) => descriptor.family === family)
+    .map((descriptor) => descriptor.id);
 }
 
 function branchTagName(branch: string | null | undefined): string | null {
@@ -1405,12 +1510,9 @@ export class PostgresSessionRepository {
   ): Promise<SessionBulkDeleteTarget[]> {
     const uniqueKeys = [...new Set(sessionKeys.filter(Boolean))];
     if (uniqueKeys.length === 0 && !includeOrphanedSubagents) return [];
-    const relationResult = await this.database.query<SessionDeletionRelationRow>(`
-      select session_key, raw_id, source, environment_id, is_subagent, parent_session_id
-      from agent_recall.sessions
-    `);
+    const relations = await readSessionDeletionRelations(this.database, uniqueKeys, includeOrphanedSubagents);
     const deletionPairs = collectSessionDeletionPairs(
-      relationResult.rows,
+      relations,
       uniqueKeys,
       includeOrphanedSubagents,
     );
@@ -1442,12 +1544,14 @@ export class PostgresSessionRepository {
       const row = byKey.get(pair.sessionKey);
       return row ? [{
         cascadeRootSessionKey: pair.cascadeRootSessionKey,
+        orphanedParentSessionId: pair.orphanedParentSessionId,
         sessionKey: row.session_key,
         rawId: row.raw_id,
         source: row.source,
         filePath: row.file_path,
         isSubagent: Boolean(row.is_subagent),
         parentSessionId: row.parent_session_id,
+        ancestorRawIds: pair.ancestorRawIds,
         sourceAvailable: Boolean(row.source_available),
         favorited: Boolean(row.favorited),
         lastActivityAt: timeValue(row.last_activity_at) ?? 0,
@@ -1457,18 +1561,19 @@ export class PostgresSessionRepository {
     });
   }
 
-  async deleteSessionRecords(sessionKeys: readonly string[]): Promise<string[]> {
+  async deleteSessionRecords(sessionKeys: readonly string[], expandDescendants = true): Promise<string[]> {
     const uniqueKeys = [...new Set(sessionKeys.filter(Boolean))];
     if (uniqueKeys.length === 0) return [];
     let expandedKeys: string[] = [];
     const deleted = await this.database.transaction(async (client) => {
-      const relationResult = await client.query<SessionDeletionRelationRow>(`
-        select session_key, raw_id, source, environment_id, is_subagent, parent_session_id
-        from agent_recall.sessions
-      `);
-      expandedKeys = [...new Set(
-        collectSessionDeletionPairs(relationResult.rows, uniqueKeys, false).map((pair) => pair.sessionKey),
-      )];
+      if (expandDescendants) {
+        const relations = await readSessionDeletionRelations(client, uniqueKeys, false);
+        expandedKeys = [...new Set(
+          collectSessionDeletionPairs(relations, uniqueKeys, false).map((pair) => pair.sessionKey),
+        )];
+      } else {
+        expandedKeys = uniqueKeys;
+      }
       if (expandedKeys.length === 0) return [];
       const result = await client.query<{ session_key: string }>(
         "delete from agent_recall.sessions where session_key = any($1::text[]) returning session_key",

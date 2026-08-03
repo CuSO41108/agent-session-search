@@ -4,22 +4,23 @@ import * as path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import type { SessionBulkDeleteTarget } from "../../core/session-bulk-delete";
 import type { SessionStore } from "../../core/session-store";
-import type { SessionSource } from "../../core/types";
+import type { SessionEnvironment, SessionSource } from "../../core/types";
 import { SessionBulkDeleteService } from "./session-bulk-delete-service";
 
 function target(sessionKey: string, overrides: Partial<SessionBulkDeleteTarget> = {}): SessionBulkDeleteTarget {
   return {
-    sessionKey, cascadeRootSessionKey: sessionKey, rawId: sessionKey,
+    sessionKey, cascadeRootSessionKey: sessionKey, orphanedParentSessionId: null, rawId: sessionKey,
     source: "codex-cli", filePath: "missing.jsonl", isSubagent: false, parentSessionId: null,
+    ancestorRawIds: [],
     sourceAvailable: false, favorited: false, lastActivityAt: 100,
     environmentId: "local", environmentKind: "local", ...overrides,
   };
 }
 
-function createStore(targets: SessionBulkDeleteTarget[]) {
+function createStore(targets: SessionBulkDeleteTarget[], environments: SessionEnvironment[] = []) {
   return {
     getSessionDeletionTargets: vi.fn(() => targets),
-    listEnvironments: vi.fn(() => []),
+    listEnvironments: vi.fn(() => environments),
     deleteSessionRecords: vi.fn((keys: readonly string[]) => [...keys]),
   } as unknown as SessionStore;
 }
@@ -84,13 +85,14 @@ describe("SessionBulkDeleteService", () => {
     expect(service.preview({ sessionKeys: ["parent"], liveSessionKeys: [] })).toMatchObject({
       requestedCount: 1,
       matchedCount: 1,
+      expandedCount: 2,
       deletableCount: 2,
     });
     await expect(service.delete({ sessionKeys: ["parent"], liveSessionKeys: [] })).resolves.toMatchObject({
       deletedSessionKeys: ["parent", "child"],
       failed: [],
     });
-    expect(store.deleteSessionRecords).toHaveBeenCalledWith(["parent", "child"]);
+    expect(store.deleteSessionRecords).toHaveBeenCalledWith(["parent", "child"], false);
   });
 
   it("keeps the whole tree when a descendant is live", () => {
@@ -104,7 +106,106 @@ describe("SessionBulkDeleteService", () => {
     });
 
     expect(preview.deletableCount).toBe(0);
+    expect(preview.expandedCount).toBe(2);
     expect(preview.skipped).toMatchObject([{ sessionKey: "child", reason: "live" }]);
+  });
+
+  it("does not let an explicitly requested descendant bypass a blocked ancestor tree", () => {
+    const targets = [
+      target("parent"),
+      target("child", { cascadeRootSessionKey: "parent", isSubagent: true, parentSessionId: "parent" }),
+      target("child", { isSubagent: true, parentSessionId: "parent" }),
+    ];
+    const preview = new SessionBulkDeleteService(createStore(targets)).preview({
+      sessionKeys: ["parent", "child"],
+      liveSessionKeys: ["parent"],
+    });
+
+    expect(preview.deletableCount).toBe(0);
+    expect(preview.skipped).toMatchObject([{ sessionKey: "parent", reason: "live" }]);
+  });
+
+  it("keeps a directly requested subtree when one of its ancestors is live", () => {
+    const preview = new SessionBulkDeleteService(createStore([target("child", {
+      rawId: "child",
+      isSubagent: true,
+      parentSessionId: "parent",
+      ancestorRawIds: ["parent"],
+    })])).preview({
+      sessionKeys: ["child"],
+      liveSessionKeys: ["codex:parent"],
+    });
+
+    expect(preview.deletableCount).toBe(0);
+    expect(preview.skipped).toMatchObject([{ sessionKey: "child", reason: "live" }]);
+  });
+
+  it("matches live WSL sessions by source family and raw id", () => {
+    const remoteKey = "wsl:ubuntu:codex-cli:remote-live";
+    const preview = new SessionBulkDeleteService(createStore([target(remoteKey, {
+      rawId: "remote-live",
+      environmentId: "ubuntu",
+      environmentKind: "wsl",
+    })])).preview({
+      sessionKeys: [remoteKey],
+      liveSessionKeys: ["codex:remote-live"],
+    });
+
+    expect(preview.deletableCount).toBe(0);
+    expect(preview.skipped).toMatchObject([{ sessionKey: remoteKey, reason: "live" }]);
+  });
+
+  it("blocks a source family when a running process cannot be mapped to one session", () => {
+    const preview = new SessionBulkDeleteService(createStore([target("claude:closed", {
+      rawId: "closed",
+      source: "claude-cli",
+    })])).preview({
+      sessionKeys: ["claude:closed"],
+      liveSessionKeys: ["claude:*"],
+    });
+
+    expect(preview.deletableCount).toBe(0);
+    expect(preview.skipped).toMatchObject([{ sessionKey: "claude:closed", reason: "live" }]);
+  });
+
+  it("scopes unresolved remote process guards to their environment", () => {
+    const remoteKey = "wsl:ubuntu:claude-cli:closed";
+    const service = new SessionBulkDeleteService(createStore([target(remoteKey, {
+      rawId: "closed",
+      source: "claude-cli",
+      environmentId: "ubuntu",
+      environmentKind: "wsl",
+    })]));
+
+    expect(service.preview({
+      sessionKeys: [remoteKey],
+      liveSessionKeys: ["debian\0claude:*"],
+    }).deletableCount).toBe(1);
+    expect(service.preview({
+      sessionKeys: [remoteKey],
+      liveSessionKeys: ["ubuntu\0claude:*"],
+    }).deletableCount).toBe(0);
+  });
+
+  it("refuses WSL deletion when the environment is disabled and therefore was not scanned", async () => {
+    const remoteKey = "wsl:ubuntu:claude-cli:closed";
+    const store = createStore([target(remoteKey, {
+      rawId: "closed",
+      source: "claude-cli",
+      filePath: "/home/me/.claude/projects/repo/closed.jsonl",
+      sourceAvailable: true,
+      environmentId: "ubuntu",
+      environmentKind: "wsl",
+    })], [{ id: "ubuntu", kind: "wsl", enabled: false } as SessionEnvironment]);
+
+    await expect(new SessionBulkDeleteService(store).delete({
+      sessionKeys: [remoteKey],
+      liveSessionKeys: [],
+    })).resolves.toMatchObject({
+      deletedSessionKeys: [],
+      failed: [{ sessionKey: remoteKey, reason: "delete-failed", message: "WSL environment is disabled." }],
+    });
+    expect(store.deleteSessionRecords).not.toHaveBeenCalled();
   });
 
   it("keeps source files untouched when the cascade root is cache-only", async () => {
@@ -125,6 +226,44 @@ describe("SessionBulkDeleteService", () => {
         liveSessionKeys: [],
       })).resolves.toMatchObject({ deletedSessionKeys: ["parent", "child"], failed: [] });
       expect(fs.existsSync(root)).toBe(true);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("cleans available sibling artifacts when an orphan family root is cache-only", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "agent-recall-cached-orphan-delete-"));
+    const sessionDirectory = path.join(root, "missing-parent");
+    const subagentsDirectory = path.join(sessionDirectory, "subagents");
+    const childFile = path.join(subagentsDirectory, "agent-child.jsonl");
+    fs.mkdirSync(subagentsDirectory, { recursive: true });
+    fs.writeFileSync(childFile, "fixture", "utf8");
+    const targets = [
+      target("orphan-root", {
+        cascadeRootSessionKey: "orphan-root",
+        orphanedParentSessionId: "missing-parent",
+        source: "claude-cli",
+        isSubagent: true,
+        parentSessionId: "missing-parent",
+      }),
+      target("orphan-child", {
+        cascadeRootSessionKey: "orphan-root",
+        orphanedParentSessionId: "missing-parent",
+        source: "claude-cli",
+        sourceAvailable: true,
+        filePath: childFile,
+        isSubagent: true,
+        parentSessionId: "missing-parent",
+      }),
+    ];
+
+    try {
+      await expect(new SessionBulkDeleteService(createStore(targets)).delete({
+        sessionKeys: [],
+        liveSessionKeys: [],
+        includeOrphanedSubagents: true,
+      })).resolves.toMatchObject({ deletedSessionKeys: ["orphan-root", "orphan-child"], failed: [] });
+      expect(fs.existsSync(subagentsDirectory)).toBe(false);
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }
@@ -152,7 +291,7 @@ describe("SessionBulkDeleteService", () => {
       expect(result.failed).toMatchObject([{ sessionKey: "directory", reason: "delete-failed" }]);
       expect(store.getSessionDeletionTargets).toHaveBeenCalledTimes(1);
       expect(store.deleteSessionRecords).toHaveBeenCalledTimes(1);
-      expect(store.deleteSessionRecords).toHaveBeenCalledWith(["cached"]);
+      expect(store.deleteSessionRecords).toHaveBeenCalledWith(["cached"], false);
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }

@@ -27,6 +27,9 @@ describe("SessionsStore tree deletion", () => {
       "codex:child",
       "codex:grandchild",
     ]);
+    expect(store.getSessionDeletionTargets(["codex:grandchild"])).toEqual([
+      expect.objectContaining({ sessionKey: "codex:grandchild", ancestorRawIds: ["child", "parent"] }),
+    ]);
     expect(store.deleteSessionRecord("codex:parent")).toBe(true);
     expect(store.getSessionDeletionTargets([], true).map((target) => target.sessionKey)).toEqual([
       "codex:child",
@@ -42,6 +45,42 @@ describe("SessionsStore tree deletion", () => {
     ]);
   });
 
+  it("groups sibling orphans from one missing parent into one deletion family", () => {
+    const { database, store } = createStore();
+    insertSession(database, { sessionKey: "claude:child-a", rawId: "child-a", source: "claude-cli", parentSessionId: "missing-parent" });
+    insertSession(database, { sessionKey: "claude:child-b", rawId: "child-b", source: "claude-cli", parentSessionId: "missing-parent" });
+    insertSession(database, { sessionKey: "claude:grandchild", rawId: "grandchild", source: "claude-cli", parentSessionId: "child-a" });
+
+    const targets = store.getSessionDeletionTargets([], true);
+    expect(new Set(targets.map((target) => target.sessionKey))).toEqual(new Set([
+      "claude:child-a",
+      "claude:child-b",
+      "claude:grandchild",
+    ]));
+    expect(new Set(targets.map((target) => target.cascadeRootSessionKey))).toEqual(new Set(["claude:child-a"]));
+    expect(new Set(targets.map((target) => target.orphanedParentSessionId))).toEqual(new Set(["missing-parent"]));
+
+    const explicitTargets = store.getSessionDeletionTargets(["claude:child-a", "claude:child-b"], true);
+    expect(new Set(explicitTargets.map((target) => target.cascadeRootSessionKey))).toEqual(new Set([
+      "claude:child-a",
+      "claude:child-b",
+    ]));
+    for (const rootKey of ["claude:child-a", "claude:child-b"]) {
+      expect(new Set(
+        explicitTargets.filter((target) => target.cascadeRootSessionKey === rootKey).map((target) => target.sessionKey),
+      )).toEqual(new Set(["claude:child-a", "claude:child-b", "claude:grandchild"]));
+    }
+  });
+
+  it("can delete an already-expanded record set without capturing later descendants", () => {
+    const { database, store } = createStore();
+    insertSession(database, { sessionKey: "codex:parent", rawId: "parent" });
+    insertSession(database, { sessionKey: "codex:child", rawId: "child", parentSessionId: "parent" });
+
+    expect(store.deleteSessionRecords(["codex:parent"], false)).toEqual(["codex:parent"]);
+    expect(store.getSessionDeletionTargets(["codex:child"]).map((target) => target.sessionKey)).toEqual(["codex:child"]);
+  });
+
   it("deletes Claude source artifacts before removing the full indexed tree", () => {
     const { database, store } = createStore();
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "agent-recall-v1-tree-delete-"));
@@ -52,7 +91,7 @@ describe("SessionsStore tree deletion", () => {
     fs.mkdirSync(subagentsDirectory, { recursive: true });
     for (const filePath of [parentFile, childFile, childMetadata]) fs.writeFileSync(filePath, "fixture", "utf8");
     insertSession(database, {
-      sessionKey: "claude:parent", rawId: "parent", source: "claude-cli", filePath: parentFile,
+      sessionKey: "claude:parent", rawId: "parent", source: "claude-app", filePath: parentFile,
     });
     insertSession(database, {
       sessionKey: "claude:child", rawId: "child", source: "claude-cli", filePath: childFile,
@@ -60,6 +99,7 @@ describe("SessionsStore tree deletion", () => {
     });
 
     try {
+      expect(store.getSessionDeletionTargets([], true)).toEqual([]);
       expect(store.deleteSession("claude:parent")).toBe(true);
       expect(database.prepare("SELECT session_key FROM sessions").all()).toEqual([]);
       expect(fs.existsSync(parentFile)).toBe(false);

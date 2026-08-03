@@ -70,7 +70,7 @@ const api = {
     ipcRenderer.invoke("session:turns", sessionKey),
   getSessionTurn: (sessionKey: string, turnId: string): Promise<SessionTurnDetail | null> =>
     ipcRenderer.invoke("session:turn", sessionKey, turnId),
-  getLiveSessions: (): Promise<LiveSessionSnapshot> => ipcRenderer.invoke("sessions:live"),
+  getLiveSessions: (fresh = false): Promise<LiveSessionSnapshot> => ipcRenderer.invoke("sessions:live", fresh),
   summarizeSession: (sessionKey: string): Promise<SessionSearchResult | null> =>
     ipcRenderer.invoke("session:summarize", sessionKey),
   summarizeMissingSessions: (): Promise<{ processed: number; failed: number; total: number }> =>

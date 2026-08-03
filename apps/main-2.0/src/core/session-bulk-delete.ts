@@ -1,4 +1,4 @@
-import type { EnvironmentKind, SessionSource } from "./types";
+import type { EnvironmentKind, LiveSession, SessionSource } from "./types";
 
 export type SessionBulkDeleteSkipReason =
   | "not-found"
@@ -20,11 +20,13 @@ export interface SessionBulkDeleteRequest {
 export interface SessionBulkDeleteTarget {
   sessionKey: string;
   cascadeRootSessionKey: string;
+  orphanedParentSessionId: string | null;
   rawId: string;
   source: SessionSource;
   filePath: string;
   isSubagent: boolean;
   parentSessionId: string | null;
+  ancestorRawIds: string[];
   sourceAvailable: boolean;
   favorited: boolean;
   lastActivityAt: number;
@@ -41,6 +43,7 @@ export interface SessionBulkDeleteIssue {
 export interface SessionBulkDeletePreview {
   requestedCount: number;
   matchedCount: number;
+  expandedCount: number;
   deletableCount: number;
   sourceCounts: Array<{ source: SessionSource; count: number }>;
   skipped: SessionBulkDeleteIssue[];
@@ -49,4 +52,9 @@ export interface SessionBulkDeletePreview {
 export interface SessionBulkDeleteResult extends SessionBulkDeletePreview {
   deletedSessionKeys: string[];
   failed: SessionBulkDeleteIssue[];
+}
+
+export function liveSessionDeleteKey(session: Pick<LiveSession, "family" | "rawId" | "environmentId">): string {
+  const familyKey = `${session.family}:${session.rawId}`;
+  return session.environmentId ? `${session.environmentId}\0${familyKey}` : familyKey;
 }
