@@ -2070,7 +2070,8 @@ select:focus-visible {
   align-items: center;
   justify-content: space-between;
   min-height: 30px;
-  padding: 0 4px;
+  margin: 8px 0;
+  padding: 0;
   color: var(--text-muted);
   font-size: 12px;
 }

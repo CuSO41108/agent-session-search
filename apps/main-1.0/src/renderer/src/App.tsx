@@ -2246,7 +2246,7 @@ export function App(): ReactElement {
                 <button type="button" onClick={exitBulkSelection} title={t("Exit multi-select", "退出多选")} aria-label={t("Exit multi-select", "退出多选")}><X size={13} /></button>
               ) : null}
               <button type="button" onClick={openDateCleanup}><CalendarDays size={13} />{t("Clean up", "按日期清理")}</button>
-              <button type="button" onClick={() => void openOrphanCleanup()}><Trash2 size={13} />{t("Orphans", "孤儿清理")}</button>
+              <button type="button" onClick={() => void openOrphanCleanup()}><Trash2 size={13} />{t("Leftover Subagent Chats", "清理残留子对话")}</button>
             </div>
             {selected ? <span className="selected-path">{selected.projectPath || selected.rawId}</span> : null}
           </div>
