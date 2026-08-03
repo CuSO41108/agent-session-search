@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { ReactElement } from "react";
 import { X } from "lucide-react";
 import type { SessionSearchResult } from "../../../core/types";
@@ -59,6 +59,8 @@ export function DeleteSessionDialog({
   onCancel: () => void;
 }): ReactElement {
   const l = (en: string, zh: string) => localize(language, en, zh);
+  const [confirmationText, setConfirmationText] = useState("");
+  const canConfirm = confirmationText === "确认删除";
   return (
     <div className="dialog-backdrop" onMouseDown={onCancel}>
       <div className="command-dialog delete-session-dialog" onMouseDown={(event) => event.stopPropagation()}>
@@ -93,6 +95,17 @@ export function DeleteSessionDialog({
                 "这会删除 Codex 或 Claude Code 的原始会话文件，并从本应用移除，无法撤销。",
               )}
         </p>
+        <label className="delete-confirmation-field">
+          <span>{l('Type "确认删除" to continue', '请输入“确认删除”以继续')}</span>
+          <input
+            type="text"
+            value={confirmationText}
+            placeholder="确认删除"
+            onChange={(event) => setConfirmationText(event.target.value)}
+            disabled={deleting}
+            autoComplete="off"
+          />
+        </label>
         {session.sourceAvailable === false ? null : (
           <div className="delete-session-path" title={session.filePath}>
             {session.filePath}
@@ -102,7 +115,7 @@ export function DeleteSessionDialog({
           <button type="button" onClick={onCancel} disabled={deleting}>
             {l("Cancel", "取消")}
           </button>
-          <button type="button" className="danger-action" onClick={onConfirm} disabled={deleting}>
+          <button type="button" className="danger-action" onClick={onConfirm} disabled={deleting || !canConfirm}>
             {deleting
               ? l("Deleting...", "正在删除...")
               : session.sourceAvailable === false
@@ -139,6 +152,11 @@ export function BulkDeleteDialog({
   onCancel: () => void;
 }): ReactElement {
   const l = (en: string, zh: string) => localize(language, en, zh);
+  const [confirmationText, setConfirmationText] = useState("");
+  const canConfirm = confirmationText === "确认删除";
+  useEffect(() => {
+    if (!preview) setConfirmationText("");
+  }, [preview]);
   const skippedCounts = preview ? countIssueReasons(preview) : [];
   return (
     <div className="dialog-backdrop" onMouseDown={onCancel}>
@@ -163,6 +181,17 @@ export function BulkDeleteDialog({
             {preview.skipped.length > 0 ? <p className="dialog-copy">{l("Excluded", "已排除")}：{skippedCounts.map(([reason, count]) => `${issueReasonLabel(reason, l)} · ${count}`).join("，")}</p> : null}
             {mode === "selection" && favoriteCount > 0 ? <p className="dialog-copy danger-copy">{l(`${favoriteCount} favorite sessions are included.`, `其中包含 ${favoriteCount} 个收藏会话。`)}</p> : null}
             <p className="dialog-copy danger-copy">{l("Original session data may be deleted. This cannot be undone.", "原始会话数据可能被删除，且无法撤销。")}</p>
+            <label className="delete-confirmation-field">
+              <span>{l('Type "确认删除" to continue', '请输入“确认删除”以继续')}</span>
+              <input
+                type="text"
+                value={confirmationText}
+                placeholder="确认删除"
+                onChange={(event) => setConfirmationText(event.target.value)}
+                disabled={busy}
+                autoComplete="off"
+              />
+            </label>
           </>
         ) : null}
         <div className="dialog-actions">
@@ -170,7 +199,7 @@ export function BulkDeleteDialog({
           {!preview ? (
             <button type="button" className="primary-action" onClick={onPreview} disabled={busy || !dateValue}>{busy ? l("Loading...", "正在加载...") : l("Preview", "预览")}</button>
           ) : (
-            <button type="button" className="danger-action" onClick={onConfirm} disabled={busy || preview.deletableCount === 0}>{busy ? l("Deleting...", "正在删除...") : l("Delete Permanently", "永久删除")}</button>
+            <button type="button" className="danger-action" onClick={onConfirm} disabled={busy || preview.deletableCount === 0 || !canConfirm}>{busy ? l("Deleting...", "正在删除...") : l("Delete Permanently", "永久删除")}</button>
           )}
         </div>
       </div>

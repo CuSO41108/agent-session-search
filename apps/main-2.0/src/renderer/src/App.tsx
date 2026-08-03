@@ -1856,7 +1856,10 @@ export function App(): ReactElement {
           deleting={deletingSession}
           onConfirm={() => void confirmDeleteSession()}
           onCancel={() => {
-            if (!deletingSession) setDeleteSessionCandidate(null);
+            if (!deletingSession) {
+              setDeleteSessionCandidate(null);
+              closeDetail();
+            }
           }}
         />
       ) : null}
