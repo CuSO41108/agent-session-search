@@ -85,6 +85,12 @@ describe("session delete dialogs", () => {
       onConfirm: vi.fn(),
       onCancel: vi.fn(),
     })));
-    expect(container.textContent).toContain("未发现可清理的孤儿 Subagent 会话");
+    expect(container.textContent).toContain("清理残留子对话");
+    expect(container.textContent).toContain("未发现主对话已不存在的残留子对话");
+    expect(container.textContent).not.toContain("孤儿");
+    expect(container.textContent).not.toContain("原始会话数据可能被删除");
+    expect(container.querySelector(".delete-confirmation-field")).toBeNull();
+    expect([...container.querySelectorAll("button")].some((button) => button.textContent?.includes("永久删除"))).toBe(false);
+    expect([...container.querySelectorAll("button")].some((button) => button.textContent?.includes("关闭"))).toBe(true);
   });
 });

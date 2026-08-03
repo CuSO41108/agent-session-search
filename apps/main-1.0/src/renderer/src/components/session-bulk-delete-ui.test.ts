@@ -168,7 +168,8 @@ describe("session bulk delete UI", () => {
     expect(buttonByText(container, "永久删除").disabled).toBe(false);
   });
 
-  it("shows an empty orphan cleanup result without enabling deletion", async () => {
+  it("shows an empty orphan cleanup result without deletion controls", async () => {
+    const onCancel = vi.fn();
     await act(async () => root.render(createElement(BulkDeleteDialog, {
       mode: "orphans",
       preview: { requestedCount: 0, matchedCount: 0, expandedCount: 0, deletableCount: 0, sourceCounts: [], skipped: [] },
@@ -179,11 +180,17 @@ describe("session bulk delete UI", () => {
       onDateChange: vi.fn(),
       onPreview: vi.fn(),
       onConfirm: vi.fn(),
-      onCancel: vi.fn(),
+      onCancel,
     })));
 
-    expect(container.textContent).toContain("未发现可清理的孤儿 Subagent 会话");
-    expect(buttonByText(container, "永久删除").disabled).toBe(true);
+    expect(container.textContent).toContain("清理残留子对话");
+    expect(container.textContent).toContain("未发现主对话已不存在的残留子对话");
+    expect(container.textContent).not.toContain("孤儿");
+    expect(container.textContent).not.toContain("原始会话数据可能被删除");
+    expect(container.querySelector(".delete-confirmation-field")).toBeNull();
+    expect([...container.querySelectorAll("button")].some((button) => button.textContent?.includes("永久删除"))).toBe(false);
+    await act(async () => buttonByText(container, "关闭").click());
+    expect(onCancel).toHaveBeenCalledTimes(1);
   });
 });
 

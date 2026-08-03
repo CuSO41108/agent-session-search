@@ -175,6 +175,7 @@ export function BulkDeleteDialog({
   useEffect(() => {
     if (!preview) setConfirmationText("");
   }, [preview]);
+  const hasDeletableSessions = (preview?.deletableCount ?? 0) > 0;
   const skippedCounts = preview ? countIssueReasons(preview) : [];
   return (
     <div className="dialog-backdrop" onMouseDown={onCancel}>
@@ -183,7 +184,7 @@ export function BulkDeleteDialog({
           <span>{mode === "cleanup"
             ? l("Clean Up Sessions", "按日期清理会话")
             : mode === "orphans"
-            ? l("Clean Up Orphaned Subagents", "清理孤儿 Subagent")
+            ? l("Clean Up Leftover Subagent Chats", "清理残留子对话")
             : l("Delete Selected Sessions", "删除所选会话")}</span>
           <button type="button" className="icon-button" onClick={onCancel} disabled={busy} aria-label={l("Close", "关闭")}><X size={16} /></button>
         </div>
@@ -195,41 +196,47 @@ export function BulkDeleteDialog({
           </label>
         ) : null}
         {mode === "orphans" && !preview ? (
-          <p className="dialog-copy">{l("Scanning for orphaned subagent sessions...", "正在扫描孤儿 Subagent 会话...")}</p>
+          <p className="dialog-copy">{l("Looking for leftover subagent chats whose parent chat no longer exists...", "正在查找主对话已不存在的残留子对话...")}</p>
         ) : null}
         {preview ? (
           <>
             <p className="dialog-copy">{mode === "orphans" && preview.deletableCount === 0
-              ? l("No deletable orphaned subagent sessions were found.", "未发现可清理的孤儿 Subagent 会话。")
-              : <><strong>{preview.deletableCount}</strong>{l(" sessions will be permanently deleted.", " 个会话将被永久删除。")}</>}</p>
+              ? l("No leftover subagent chats without a parent chat were found.", "未发现主对话已不存在的残留子对话。")
+              : <><strong>{preview.deletableCount}</strong>{mode === "orphans"
+                ? l(" leftover subagent chats without a parent chat will be permanently deleted.", " 个主对话已不存在的残留子对话将被永久删除。")
+                : l(" sessions will be permanently deleted.", " 个会话将被永久删除。")}</>}</p>
             <div className="bulk-delete-summary">
               {preview.sourceCounts.map((item) => <span key={item.source}>{item.source} · {item.count}</span>)}
             </div>
             {preview.skipped.length > 0 ? <p className="dialog-copy">{l("Excluded", "已排除")}：{skippedCounts.map(([reason, count]) => `${issueReasonLabel(reason, l)} · ${count}`).join("，")}</p> : null}
             {mode === "selection" && favoriteCount > 0 ? <p className="dialog-copy danger-copy">{l(`${favoriteCount} favorite sessions are included.`, `其中包含 ${favoriteCount} 个收藏会话。`)}</p> : null}
-            <p className="dialog-copy danger-copy">{l("Original session data may be deleted. This cannot be undone.", "原始会话数据可能被删除，且无法撤销。")}</p>
-            <label className="delete-confirmation-field">
-              <span>{l('Type "确认删除" to continue', '请输入“确认删除”以继续')}</span>
-              <input
-                type="text"
-                value={confirmationText}
-                placeholder="确认删除"
-                onChange={(event) => setConfirmationText(event.target.value)}
-                disabled={busy}
-                autoComplete="off"
-              />
-            </label>
+            {hasDeletableSessions ? (
+              <>
+                <p className="dialog-copy danger-copy">{l("Original session data may be deleted. This cannot be undone.", "原始会话数据可能被删除，且无法撤销。")}</p>
+                <label className="delete-confirmation-field">
+                  <span>{l('Type "确认删除" to continue', '请输入“确认删除”以继续')}</span>
+                  <input
+                    type="text"
+                    value={confirmationText}
+                    placeholder="确认删除"
+                    onChange={(event) => setConfirmationText(event.target.value)}
+                    disabled={busy}
+                    autoComplete="off"
+                  />
+                </label>
+              </>
+            ) : null}
           </>
         ) : null}
         <div className="dialog-actions">
-          <button type="button" onClick={onCancel} disabled={busy}>{l("Cancel", "取消")}</button>
+          <button type="button" onClick={onCancel} disabled={busy}>{preview && !hasDeletableSessions ? l("Close", "关闭") : l("Cancel", "取消")}</button>
           {!preview ? (
             mode === "cleanup"
               ? <button type="button" className="primary-action" onClick={onPreview} disabled={busy || !dateValue}>{busy ? l("Loading...", "正在加载...") : l("Preview", "预览")}</button>
               : <button type="button" className="primary-action" disabled>{l("Scanning...", "正在扫描...")}</button>
-          ) : (
-            <button type="button" className="danger-action" onClick={onConfirm} disabled={busy || preview.deletableCount === 0 || !canConfirm}>{busy ? l("Deleting...", "正在删除...") : l("Delete Permanently", "永久删除")}</button>
-          )}
+          ) : hasDeletableSessions
+            ? <button type="button" className="danger-action" onClick={onConfirm} disabled={busy || !canConfirm}>{busy ? l("Deleting...", "正在删除...") : l("Delete Permanently", "永久删除")}</button>
+            : null}
         </div>
       </div>
     </div>
