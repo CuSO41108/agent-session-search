@@ -10,7 +10,9 @@ export async function discoverMcpTools(
 ): Promise<McpToolDefinition[]> {
   const client = new Client({ name: "agent-recall-v2", version: "0.1.0" });
   const transport = server.transport === "http"
-    ? new StreamableHTTPClientTransport(new URL(required(server.url, "HTTP URL")))
+    ? new StreamableHTTPClientTransport(new URL(required(server.url, "HTTP URL")), {
+        requestInit: { headers: resolvedHeaders(server) },
+      })
     : new StdioClientTransport({
         command: required(server.command, "command"),
         args: server.args,
@@ -32,6 +34,15 @@ export async function discoverMcpTools(
 function required(value: string | undefined, label: string): string {
   if (!value?.trim()) throw new Error(`MCP ${label} is required`);
   return value.trim();
+}
+
+// Header values reference host environment variable names, mirroring `env`.
+function resolvedHeaders(server: McpServerDefinition): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(server.headers ?? {})
+      .filter(([name, hostName]) => name.trim() && hostName.trim())
+      .map(([name, hostName]) => [name, process.env[hostName] ?? ""]),
+  );
 }
 
 async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {

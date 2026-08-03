@@ -187,6 +187,7 @@ const mcpServerSchema = z.object({
   args: z.array(z.string().max(8_192)).max(200),
   url: z.string().trim().max(8_192).optional(),
   env: z.record(z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/), z.string().max(512)),
+  headers: z.record(z.string().max(512), z.string().max(512)).optional(),
   enabled: z.boolean(),
   tools: z.array(mcpToolSchema).max(5_000),
   disabledTools: z.array(z.string().max(8_192)).max(5_000).optional(),

@@ -100,6 +100,37 @@ describe("registerAutomationIpc", () => {
     expect([...handlers.keys()].every((channel) => channel.startsWith("automation:"))).toBe(true);
   });
 
+  it("keeps HTTP header references through the IPC schema for save and test", async () => {
+    const { invoke, registry } = setup();
+    const server: McpServerDefinition = {
+      id: "remote-http",
+      name: "Remote HTTP",
+      transport: "http",
+      args: [],
+      url: "https://example.test/mcp",
+      env: {},
+      headers: { Authorization: "HOST_HTTP_TOKEN" },
+      enabled: true,
+      tools: [],
+      disabledTools: [],
+      status: "untested",
+      createdAt: 1,
+      updatedAt: 1,
+    };
+
+    await invoke(AUTOMATION_CHANNELS.mcpSave, server);
+    expect(registry.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({ headers: { Authorization: "HOST_HTTP_TOKEN" } }),
+    );
+
+    await invoke(AUTOMATION_CHANNELS.mcpTest, server);
+    expect(registry.recordTest).toHaveBeenCalledWith(
+      expect.objectContaining({ headers: { Authorization: "HOST_HTTP_TOKEN" } }),
+      [],
+      undefined,
+    );
+  });
+
   it("validates portable Workflow identifiers and mapping payloads", async () => {
     const { invoke, service } = setup();
     const portable = service.portableWorkflows;
