@@ -171,6 +171,8 @@ export function DetailPanel({
   backdropClassName = "",
   sessionFamily,
   onOpenFamilySession,
+  sessionFamilyLoadFailed = false,
+  onRetrySessionFamily,
 }: {
   session: SessionSearchResult;
   turns: SessionTurnSummary[] | null;
@@ -218,6 +220,8 @@ export function DetailPanel({
   backdropClassName?: string;
   sessionFamily: SessionFamily;
   onOpenFamilySession?: (sessionKey: string) => void;
+  sessionFamilyLoadFailed?: boolean;
+  onRetrySessionFamily?: () => void;
 }): ReactElement {
   const context = matchedContextMessages;
   const actionRunning = actionStatus?.kind === "running";
@@ -724,6 +728,8 @@ export function DetailPanel({
               family={sessionFamily}
               language={language}
               onOpen={onOpenFamilySession}
+              loadFailed={sessionFamilyLoadFailed}
+              onRetry={onRetrySessionFamily}
             />
           ) : null}
         </div>
