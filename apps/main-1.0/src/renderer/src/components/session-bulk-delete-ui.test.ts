@@ -5,7 +5,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SessionSearchResult } from "../../../core/types";
 import { SessionRow } from "../features/search/session-row";
-import { BulkDeleteDialog } from "./session-dialogs";
+import { BulkDeleteDialog, DeleteSessionDialog } from "./session-dialogs";
 
 const session: SessionSearchResult = {
   sessionKey: "codex:session-a", rawId: "session-a", source: "codex-cli",
@@ -82,7 +82,42 @@ describe("session bulk delete UI", () => {
     })));
     expect(container.textContent).toContain("其中包含 1 个收藏会话");
     expect(container.textContent).toContain("正在运行 · 1");
-    await act(async () => buttonByText(container, "永久删除").click());
+    const confirmButton = buttonByText(container, "永久删除");
+    expect(confirmButton.disabled).toBe(true);
+    const confirmationInput = container.querySelector(".delete-confirmation-field input") as HTMLInputElement;
+    await act(async () => {
+      const setNativeValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+      setNativeValue?.call(confirmationInput, "确认删除");
+      confirmationInput.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText", data: "确认删除" }));
+    });
+    expect(confirmButton.disabled).toBe(false);
+    await act(async () => confirmButton.click());
+    expect(onConfirm).toHaveBeenCalledTimes(1);
+  });
+
+  it("requires the exact confirmation phrase for a single session", async () => {
+    const onConfirm = vi.fn();
+    await act(async () => root.render(createElement(DeleteSessionDialog, {
+      session,
+      language: "zh",
+      deleting: false,
+      onConfirm,
+      onCancel: vi.fn(),
+    })));
+
+    const confirmButton = buttonByText(container, "永久删除");
+    expect(confirmButton.disabled).toBe(true);
+    await act(async () => confirmButton.click());
+    expect(onConfirm).not.toHaveBeenCalled();
+
+    const confirmationInput = container.querySelector(".delete-confirmation-field input") as HTMLInputElement;
+    await act(async () => {
+      const setNativeValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+      setNativeValue?.call(confirmationInput, "确认删除");
+      confirmationInput.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText", data: "确认删除" }));
+    });
+    expect(confirmButton.disabled).toBe(false);
+    await act(async () => confirmButton.click());
     expect(onConfirm).toHaveBeenCalledTimes(1);
   });
 });
