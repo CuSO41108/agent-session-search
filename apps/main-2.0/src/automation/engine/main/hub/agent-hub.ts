@@ -786,6 +786,9 @@ export class AgentHub {
     return {
       channelId,
       source: discovered.source,
+      providerLabel: discovered.source === "codex_cli"
+        ? "Codex CLI"
+        : channel.providerName?.trim() || channel.modelProvider?.trim() || channel.label,
       discoveredCount: discovered.models.length,
       snapshot: this.snapshot(),
     };
