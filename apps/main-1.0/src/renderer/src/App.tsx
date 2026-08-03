@@ -328,11 +328,13 @@ export function App(): ReactElement {
   const [migrationProgress, setMigrationProgress] = useState<SessionMigrationProgress | null>(null);
   const [deleteTagName, setDeleteTagName] = useState<string | null>(null);
   const [deleteSessionCandidate, setDeleteSessionCandidate] = useState<SessionSearchResult | null>(null);
+  const [deleteSessionCascadeCount, setDeleteSessionCascadeCount] = useState<number | null>(null);
+  const deleteSessionPreviewId = useRef(0);
   const [deletingSession, setDeletingSession] = useState(false);
   const [bulkSelectedKeys, setBulkSelectedKeys] = useState<Set<string>>(() => new Set());
   const [bulkSelectionActive, setBulkSelectionActive] = useState(false);
   const [bulkDeleteDialog, setBulkDeleteDialog] = useState<{
-    mode: "selection" | "cleanup";
+    mode: "selection" | "cleanup" | "orphans";
     dateValue: string;
     request: SessionBulkDeleteRequest | null;
     preview: SessionBulkDeletePreview | null;
@@ -1422,6 +1424,15 @@ export function App(): ReactElement {
   function requestDeleteSession(session: SessionSearchResult): void {
     setContextMenu(null);
     setDeleteSessionCandidate(session);
+    setDeleteSessionCascadeCount(null);
+    const previewId = ++deleteSessionPreviewId.current;
+    void window.sessionSearch.previewBulkDelete({
+      sessionKeys: [session.sessionKey],
+      liveSessionKeys: [],
+      protectFavorites: false,
+    }).then((preview) => {
+      if (deleteSessionPreviewId.current === previewId) setDeleteSessionCascadeCount(preview.deletableCount);
+    }).catch(() => undefined);
   }
 
   async function confirmDeleteSession(): Promise<void> {
@@ -1432,6 +1443,7 @@ export function App(): ReactElement {
     try {
       const removed = await window.sessionSearch.deleteSession(session.sessionKey);
       setDeleteSessionCandidate(null);
+      setDeleteSessionCascadeCount(null);
       if (removed) {
         if (detail?.sessionKey === session.sessionKey) closeDetail();
         setSelectedKey((current) => (current === session.sessionKey ? null : current));
@@ -1533,6 +1545,27 @@ export function App(): ReactElement {
     const date = new Date();
     date.setDate(date.getDate() - 30);
     setBulkDeleteDialog({ mode: "cleanup", dateValue: formatDateInput(date), request: null, preview: null, favoriteCount: 0 });
+  }
+
+  async function openOrphanCleanup(): Promise<void> {
+    if (bulkDeleteBusy) return;
+    setBulkDeleteDialog({ mode: "orphans", dateValue: "", request: null, preview: null, favoriteCount: 0 });
+    setBulkDeleteBusy(true);
+    try {
+      const request: SessionBulkDeleteRequest = {
+        sessionKeys: [],
+        liveSessionKeys: await freshLiveKeysForBulkDelete(),
+        includeOrphanedSubagents: true,
+        protectFavorites: false,
+      };
+      const preview = await window.sessionSearch.previewBulkDelete(request);
+      setBulkDeleteDialog((current) => current?.mode === "orphans" ? { ...current, request, preview } : current);
+    } catch (error) {
+      setBulkDeleteDialog(null);
+      setActionStatus({ kind: "error", message: error instanceof Error ? error.message : String(error) });
+    } finally {
+      setBulkDeleteBusy(false);
+    }
   }
 
   async function previewDateCleanup(): Promise<void> {
@@ -2188,6 +2221,7 @@ export function App(): ReactElement {
                 <button type="button" onClick={exitBulkSelection} title={t("Exit multi-select", "退出多选")} aria-label={t("Exit multi-select", "退出多选")}><X size={13} /></button>
               ) : null}
               <button type="button" onClick={openDateCleanup}><CalendarDays size={13} />{t("Clean up", "按日期清理")}</button>
+              <button type="button" onClick={() => void openOrphanCleanup()}><Trash2 size={13} />{t("Orphans", "孤儿清理")}</button>
             </div>
             {selected ? <span className="selected-path">{selected.projectPath || selected.rawId}</span> : null}
           </div>
@@ -2426,6 +2460,7 @@ export function App(): ReactElement {
       {deleteSessionCandidate ? (
         <DeleteSessionDialog
           session={deleteSessionCandidate}
+          cascadeCount={deleteSessionCascadeCount}
           language={language}
           deleting={deletingSession}
           onConfirm={() => void confirmDeleteSession()}
@@ -2433,6 +2468,7 @@ export function App(): ReactElement {
             if (!deletingSession) {
               setDeleteSessionCandidate(null);
               closeDetail();
+              setDeleteSessionCascadeCount(null);
             }
           }}
         />

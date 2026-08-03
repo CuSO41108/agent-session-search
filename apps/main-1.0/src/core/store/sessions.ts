@@ -1,4 +1,3 @@
-import * as fs from "node:fs";
 import type { SQLInputValue } from "node:sqlite";
 import {
   materializeSessionAttachment,
@@ -39,7 +38,8 @@ import type {
 import type { SessionStoreDatabase } from "./database";
 import { EnvironmentStore, localEnvironment } from "./environments";
 import { deleteHermesSession } from "../hermes-session-writer";
-import { deleteZcodeSession } from "../zcode-session-writer";
+import { deleteLocalSessionSources } from "../session-source-delete";
+import { deleteZcodeSessions } from "../zcode-session-writer";
 import type { SessionBulkDeleteTarget } from "../session-bulk-delete";
 
 const LIVE_SESSION_KEY_SQL = `
@@ -113,6 +113,20 @@ interface SessionRow {
   content_indexed_mtime_ms: number;
   content_indexed_size: number;
   codex_history_mode: string | null;
+}
+
+interface SessionDeletionRelationRow {
+  session_key: string;
+  raw_id: string;
+  source: SessionSource;
+  environment_id: string;
+  is_subagent: 0 | 1;
+  parent_session_id: string | null;
+}
+
+interface SessionDeletionPair {
+  cascadeRootSessionKey: string;
+  sessionKey: string;
 }
 
 type ProjectAggregateRow = {
@@ -633,40 +647,39 @@ export class SessionsStore {
   }
 
   deleteSession(sessionKey: string): boolean {
-    const row = this.db.prepare("SELECT source, raw_id, file_path, source_available FROM sessions WHERE session_key = ?").get(sessionKey) as
-      | { source: SessionSource; raw_id: string; file_path: string; source_available: 0 | 1 }
-      | undefined;
+    const targets = this.getSessionDeletionTargets([sessionKey]);
+    const row = targets.find((target) => target.sessionKey === sessionKey);
     if (!row) return false;
     if (row.source === "pi-cli") {
       throw new Error("Pi session source files are read-only.");
     }
     if (row.source === "zcode-cli") {
-      const sourceDeleted = deleteZcodeSession(row.file_path, row.raw_id);
-      const indexDeleted = this.deleteSessionRecord(sessionKey);
-      return sourceDeleted || indexDeleted;
+      const idsByFilePath = new Map<string, string[]>();
+      if (row.sourceAvailable) {
+        for (const target of targets.filter((target) => target.sourceAvailable)) {
+          const rawIds = idsByFilePath.get(target.filePath) ?? [];
+          rawIds.push(target.rawId);
+          idsByFilePath.set(target.filePath, rawIds);
+        }
+      }
+      for (const [filePath, rawIds] of idsByFilePath) deleteZcodeSessions(filePath, rawIds);
+      return this.deleteSessionRecords(targets.map((target) => target.sessionKey)).includes(sessionKey);
     }
     if (row.source === "hermes") {
-      if (row.source_available === 0) return this.deleteSessionRecord(sessionKey);
-      const sourceDeleted = deleteHermesSession(row.file_path, row.raw_id);
-      const indexDeleted = this.deleteSessionRecord(sessionKey);
-      return sourceDeleted || indexDeleted;
+      if (row.sourceAvailable) deleteHermesSession(row.filePath, row.rawId);
+      return this.deleteSessionRecords(targets.map((target) => target.sessionKey)).includes(sessionKey);
     }
-    if (row.source === "cursor-agent" && /(^|[\\/])state\.vscdb$/i.test(row.file_path)) {
-      if (row.source_available === 0) return this.deleteSessionRecord(sessionKey);
+    if (row.source === "cursor-agent" && /(^|[\\/])state\.vscdb$/i.test(row.filePath)) {
+      if (!row.sourceAvailable) {
+        return this.deleteSessionRecords(targets.map((target) => target.sessionKey)).includes(sessionKey);
+      }
       throw new Error("Cannot delete shared Cursor source database.");
     }
+    if (row.source === "opencode-cli") throw new Error("Cannot delete shared OpenCode source database.");
+    if (row.source === "codewiz-cli") throw new Error("Cannot delete shared CodeWiz source database.");
 
-    let deleted = false;
-    this.transaction(() => {
-      if (row.source === "opencode-cli") throw new Error("Cannot delete shared OpenCode source database.");
-      if (row.source === "codewiz-cli") throw new Error("Cannot delete shared CodeWiz source database.");
-      this.deleteSessionSourceFile(row.file_path);
-      this.db.prepare("DELETE FROM session_fts WHERE session_key = ?").run(sessionKey);
-      this.db.prepare("DELETE FROM sessions WHERE session_key = ?").run(sessionKey);
-      this.deleteUnusedTags();
-      deleted = true;
-    });
-    return deleted;
+    if (row.sourceAvailable) deleteLocalSessionSources(targets.filter((target) => target.sourceAvailable));
+    return this.deleteSessionRecords(targets.map((target) => target.sessionKey)).includes(sessionKey);
   }
 
   deleteSessionRecord(sessionKey: string): boolean {
@@ -682,10 +695,21 @@ export class SessionsStore {
     return deleted;
   }
 
-  getSessionDeletionTargets(sessionKeys: readonly string[]): SessionBulkDeleteTarget[] {
+  getSessionDeletionTargets(
+    sessionKeys: readonly string[],
+    includeOrphanedSubagents = false,
+  ): SessionBulkDeleteTarget[] {
     const uniqueKeys = [...new Set(sessionKeys.filter(Boolean))];
+    if (uniqueKeys.length === 0 && !includeOrphanedSubagents) return [];
+    const relations = this.db.prepare(`
+      SELECT session_key, raw_id, source, environment_id, is_subagent, parent_session_id
+      FROM sessions
+    `).all() as unknown as SessionDeletionRelationRow[];
+    const deletionPairs = collectSessionDeletionPairs(relations, uniqueKeys, includeOrphanedSubagents);
+    const targetKeys = [...new Set(deletionPairs.map((pair) => pair.sessionKey))];
+    if (targetKeys.length === 0) return [];
     const rows: Array<SessionRow & { environment_kind: SessionEnvironment["kind"] }> = [];
-    for (const keys of chunks(uniqueKeys, 500)) {
+    for (const keys of chunks(targetKeys, 500)) {
       rows.push(...this.db.prepare(`
         SELECT sessions.*, environments.kind AS environment_kind,
           ${sessionActivitySql("sessions")} AS last_activity_at
@@ -695,13 +719,16 @@ export class SessionsStore {
       `).all(...keys) as unknown as Array<SessionRow & { environment_kind: SessionEnvironment["kind"] }>);
     }
     const byKey = new Map(rows.map((row) => [row.session_key, row]));
-    return uniqueKeys.flatMap((sessionKey) => {
-      const row = byKey.get(sessionKey);
+    return deletionPairs.flatMap((pair) => {
+      const row = byKey.get(pair.sessionKey);
       return row ? [{
+        cascadeRootSessionKey: pair.cascadeRootSessionKey,
         sessionKey: row.session_key,
         rawId: row.raw_id,
         source: row.source,
         filePath: row.file_path,
+        isSubagent: row.is_subagent === 1,
+        parentSessionId: row.parent_session_id,
         sourceAvailable: row.source_available === 1,
         favorited: row.favorited === 1,
         lastActivityAt: row.last_activity_at,
@@ -714,9 +741,14 @@ export class SessionsStore {
   deleteSessionRecords(sessionKeys: readonly string[]): string[] {
     const uniqueKeys = [...new Set(sessionKeys.filter(Boolean))];
     if (uniqueKeys.length === 0) return [];
+    let expandedKeys: string[] = [];
     const deleted: string[] = [];
     this.transaction(() => {
-      for (const keys of chunks(uniqueKeys, 500)) {
+      expandedKeys = [...new Set(
+        this.getSessionDeletionTargets(uniqueKeys).map((target) => target.sessionKey),
+      )];
+      if (expandedKeys.length === 0) return;
+      for (const keys of chunks(expandedKeys, 500)) {
         const existing = this.db.prepare(
           `SELECT session_key FROM sessions WHERE session_key IN (${keys.map(() => "?").join(", ")})`,
         ).all(...keys) as unknown as Array<{ session_key: string }>;
@@ -727,7 +759,7 @@ export class SessionsStore {
       this.deleteUnusedTags();
     });
     const deletedSet = new Set(deleted);
-    return uniqueKeys.filter((sessionKey) => deletedSet.has(sessionKey));
+    return expandedKeys.filter((sessionKey) => deletedSet.has(sessionKey));
   }
 
   migrateSessionKeyPreservingUserState(legacyKey: string, targetKey: string): boolean {
@@ -1540,19 +1572,6 @@ export class SessionsStore {
         "INSERT INTO session_fts (session_key, title, first_question, content_text, project_path) VALUES (?, ?, ?, ?, ?)",
       )
       .run(sessionKey, title, row.first_question, ftsContent, row.project_path);
-  }
-
-  private deleteSessionSourceFile(filePath: string): void {
-    const normalized = filePath.trim();
-    if (!normalized) throw new Error("Session source file path is missing.");
-    try {
-      const stat = fs.lstatSync(normalized);
-      if (stat.isDirectory()) throw new Error("Refusing to delete a directory as a session file.");
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
-      throw error;
-    }
-    fs.rmSync(normalized, { force: true });
   }
 
   private deleteUnusedTag(tagName: string): void {
@@ -2475,6 +2494,67 @@ function sessionActivitySql(sessionTable: string): string {
       0
     )
   `;
+}
+
+function collectSessionDeletionPairs(
+  rows: readonly SessionDeletionRelationRow[],
+  requestedSessionKeys: readonly string[],
+  includeOrphanedSubagents: boolean,
+): SessionDeletionPair[] {
+  const rowsBySessionKey = new Map(rows.map((row) => [row.session_key, row]));
+  const rawIdsByScope = new Map<string, Set<string>>();
+  const childrenByScopeAndParent = new Map<string, Map<string, SessionDeletionRelationRow[]>>();
+  for (const row of rows) {
+    const scope = sessionDeletionScope(row);
+    const rawIds = rawIdsByScope.get(scope) ?? new Set<string>();
+    rawIds.add(row.raw_id);
+    rawIdsByScope.set(scope, rawIds);
+    if (!row.parent_session_id) continue;
+    const childrenByParent = childrenByScopeAndParent.get(scope) ?? new Map<string, SessionDeletionRelationRow[]>();
+    const children = childrenByParent.get(row.parent_session_id) ?? [];
+    children.push(row);
+    childrenByParent.set(row.parent_session_id, children);
+    childrenByScopeAndParent.set(scope, childrenByParent);
+  }
+
+  const rootRows: SessionDeletionRelationRow[] = [];
+  const rootKeys = new Set<string>();
+  for (const sessionKey of requestedSessionKeys) {
+    const row = rowsBySessionKey.get(sessionKey);
+    if (!row || rootKeys.has(row.session_key)) continue;
+    rootRows.push(row);
+    rootKeys.add(row.session_key);
+  }
+  if (includeOrphanedSubagents) {
+    const orphanRows = rows
+      .filter((row) => row.is_subagent === 1 && Boolean(row.parent_session_id))
+      .filter((row) => !rawIdsByScope.get(sessionDeletionScope(row))?.has(row.parent_session_id!))
+      .sort((left, right) => left.session_key.localeCompare(right.session_key));
+    for (const row of orphanRows) {
+      if (rootKeys.has(row.session_key)) continue;
+      rootRows.push(row);
+      rootKeys.add(row.session_key);
+    }
+  }
+
+  const result: SessionDeletionPair[] = [];
+  for (const root of rootRows) {
+    const queue = [root];
+    const visited = new Set<string>();
+    for (let index = 0; index < queue.length; index += 1) {
+      const row = queue[index];
+      if (visited.has(row.session_key)) continue;
+      visited.add(row.session_key);
+      result.push({ cascadeRootSessionKey: root.session_key, sessionKey: row.session_key });
+      const children = childrenByScopeAndParent.get(sessionDeletionScope(row))?.get(row.raw_id) ?? [];
+      queue.push(...children);
+    }
+  }
+  return result;
+}
+
+function sessionDeletionScope(row: Pick<SessionDeletionRelationRow, "source" | "environment_id">): string {
+  return `${row.source}\0${row.environment_id}`;
 }
 
 function chunks<T>(values: readonly T[], size: number): T[][] {

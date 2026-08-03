@@ -1,4 +1,3 @@
-import * as fs from "node:fs";
 import type { SessionStore } from "../../core/session-store";
 import type {
   SessionBulkDeleteIssue,
@@ -7,8 +6,9 @@ import type {
   SessionBulkDeleteResult,
   SessionBulkDeleteTarget,
 } from "../../core/session-bulk-delete";
+import { deleteLocalSessionSources } from "../../core/session-source-delete";
 import type { SessionEnvironment, SessionSource } from "../../core/types";
-import { deleteWslSessionFiles } from "../../core/wsl-session-actions";
+import { deleteWslSessionSources } from "../../core/wsl-session-actions";
 import { deleteZcodeSessions } from "../../core/zcode-session-writer";
 
 const SHARED_DATABASE_SOURCES = new Set<SessionSource>(["hermes", "opencode-cli", "codewiz-cli"]);
@@ -27,19 +27,14 @@ export class SessionBulkDeleteService {
     const successfulKeys = new Set<string>();
     const environments = new Map((await this.store.listEnvironments()).map((environment) => [environment.id, environment]));
 
-    for (const target of targets.filter((item) => !item.sourceAvailable)) successfulKeys.add(target.sessionKey);
-    await deleteZcodeGroups(targets.filter((item) => item.sourceAvailable && item.source === "zcode-cli"), successfulKeys, failed);
-    await deleteWslGroups(
-      targets.filter((item) => item.sourceAvailable && item.environmentKind === "wsl"),
-      environments,
-      successfulKeys,
-      failed,
-    );
-    deleteLocalFileGroups(
-      targets.filter((item) => item.sourceAvailable && item.environmentKind === "local" && item.source !== "zcode-cli"),
-      successfulKeys,
-      failed,
-    );
+    for (const family of groupBy(targets, (target) => target.cascadeRootSessionKey).values()) {
+      try {
+        await deleteTargetFamily(family, environments);
+        for (const target of family) successfulKeys.add(target.sessionKey);
+      } catch (error) {
+        addGroupFailure(family, error, failed);
+      }
+    }
 
     const deletedSessionKeys = targets
       .map((target) => target.sessionKey)
@@ -50,7 +45,7 @@ export class SessionBulkDeleteService {
 
   private async preflight(request: SessionBulkDeleteRequest): Promise<{ preview: SessionBulkDeletePreview; targets: SessionBulkDeleteTarget[] }> {
     const sessionKeys = normalizeRequest(request);
-    const rows = await this.store.getSessionDeletionTargets(sessionKeys);
+    const rows = await this.store.getSessionDeletionTargets(sessionKeys, request.includeOrphanedSubagents === true);
     return buildPreflight(request, sessionKeys, rows);
   }
 }
@@ -58,6 +53,9 @@ export class SessionBulkDeleteService {
 function normalizeRequest(request: SessionBulkDeleteRequest): string[] {
   if (!request || !Array.isArray(request.sessionKeys) || !Array.isArray(request.liveSessionKeys)) {
     throw new Error("The bulk deletion request is invalid.");
+  }
+  if (request.includeOrphanedSubagents !== undefined && typeof request.includeOrphanedSubagents !== "boolean") {
+    throw new Error("The orphan cleanup option is invalid.");
   }
   const keys = [...new Set(request.sessionKeys.map((key) => key.trim()).filter(Boolean))];
   if (keys.length > 100_000) throw new Error("Too many sessions were selected.");
@@ -73,19 +71,41 @@ function buildPreflight(
   rows: SessionBulkDeleteTarget[],
 ): { preview: SessionBulkDeletePreview; targets: SessionBulkDeleteTarget[] } {
   const liveKeys = new Set(request.liveSessionKeys);
-  const byKey = new Map(rows.map((row) => [row.sessionKey, row]));
+  const families = groupBy(rows, (row) => row.cascadeRootSessionKey);
   const skipped: SessionBulkDeleteIssue[] = [];
-  const targets: SessionBulkDeleteTarget[] = [];
-  for (const sessionKey of sessionKeys) {
-    const target = byKey.get(sessionKey);
-    const issue = target ? classifyTarget(target, request, liveKeys) : issueFor(sessionKey, "not-found", "Session was not found.");
-    if (issue) skipped.push(issue);
-    else if (target) targets.push(target);
+  const acceptedFamilies: SessionBulkDeleteTarget[][] = [];
+  const rootKeys = [...sessionKeys];
+  if (request.includeOrphanedSubagents) {
+    for (const rootKey of families.keys()) {
+      if (!rootKeys.includes(rootKey)) rootKeys.push(rootKey);
+    }
   }
+  let matchedCount = 0;
+  for (const rootKey of rootKeys) {
+    const family = families.get(rootKey);
+    if (!family) {
+      skipped.push(issueFor(rootKey, "not-found", "Session was not found."));
+      continue;
+    }
+    matchedCount += 1;
+    const issues = family.flatMap((target) => {
+      const issue = classifyTarget(target, request, liveKeys);
+      return issue ? [issue] : [];
+    });
+    if (issues.length > 0) skipped.push(...issues);
+    else acceptedFamilies.push(family);
+  }
+  const targets = dedupeAcceptedFamilies(acceptedFamilies);
   const sourceCounts = [...countSources(targets).entries()].map(([source, count]) => ({ source, count }));
   return {
     targets,
-    preview: { requestedCount: sessionKeys.length, matchedCount: rows.length, deletableCount: targets.length, sourceCounts, skipped },
+    preview: {
+      requestedCount: rootKeys.length,
+      matchedCount,
+      deletableCount: targets.length,
+      sourceCounts,
+      skipped: dedupeIssues(skipped),
+    },
   };
 }
 
@@ -123,56 +143,50 @@ function countSources(targets: SessionBulkDeleteTarget[]): Map<SessionSource, nu
   return counts;
 }
 
-async function deleteZcodeGroups(targets: SessionBulkDeleteTarget[], successful: Set<string>, failed: SessionBulkDeleteIssue[]): Promise<void> {
-  for (const group of groupBy(targets, (target) => target.filePath).values()) {
-    try {
-      deleteZcodeSessions(group[0].filePath, group.map((target) => target.rawId));
-      for (const target of group) successful.add(target.sessionKey);
-    } catch (error) {
-      addGroupFailure(group, error, failed);
-    }
-  }
-}
-
-async function deleteWslGroups(
+async function deleteTargetFamily(
   targets: SessionBulkDeleteTarget[],
   environments: Map<string, SessionEnvironment>,
-  successful: Set<string>,
-  failed: SessionBulkDeleteIssue[],
 ): Promise<void> {
-  for (const [environmentId, group] of groupBy(targets, (target) => target.environmentId)) {
-    try {
-      const environment = environments.get(environmentId);
-      if (!environment) throw new Error("WSL environment was not found.");
-      await deleteWslSessionFiles(environment, group.map((target) => target.filePath));
-      for (const target of group) successful.add(target.sessionKey);
-    } catch (error) {
-      addGroupFailure(group, error, failed);
+  const cascadeRoot = targets.find((target) => target.sessionKey === target.cascadeRootSessionKey);
+  if (!cascadeRoot?.sourceAvailable) return;
+  const availableTargets = targets.filter((target) => target.sourceAvailable);
+  if (availableTargets.length === 0) return;
+  if (availableTargets[0].source === "zcode-cli") {
+    for (const group of groupBy(availableTargets, (target) => target.filePath).values()) {
+      deleteZcodeSessions(group[0].filePath, group.map((target) => target.rawId));
     }
+    return;
   }
+  if (availableTargets[0].environmentKind === "wsl") {
+    const environment = environments.get(availableTargets[0].environmentId);
+    if (!environment) throw new Error("WSL environment was not found.");
+    await deleteWslSessionSources(environment, availableTargets);
+    return;
+  }
+  deleteLocalSessionSources(availableTargets);
 }
 
-function deleteLocalFileGroups(targets: SessionBulkDeleteTarget[], successful: Set<string>, failed: SessionBulkDeleteIssue[]): void {
-  for (const group of groupBy(targets, (target) => target.filePath).values()) {
-    try {
-      deleteLocalFile(group[0].filePath);
-      for (const target of group) successful.add(target.sessionKey);
-    } catch (error) {
-      addGroupFailure(group, error, failed);
+function dedupeAcceptedFamilies(families: SessionBulkDeleteTarget[][]): SessionBulkDeleteTarget[] {
+  const result: SessionBulkDeleteTarget[] = [];
+  const seen = new Set<string>();
+  for (const family of [...families].sort((left, right) => right.length - left.length)) {
+    for (const target of family) {
+      if (seen.has(target.sessionKey)) continue;
+      seen.add(target.sessionKey);
+      result.push(target);
     }
   }
+  return result;
 }
 
-function deleteLocalFile(filePath: string): void {
-  const normalized = filePath.trim();
-  if (!normalized) throw new Error("Session source file path is missing.");
-  try {
-    if (fs.lstatSync(normalized).isDirectory()) throw new Error("Refusing to delete a directory as a session file.");
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
-    throw error;
-  }
-  fs.rmSync(normalized, { force: true });
+function dedupeIssues(issues: SessionBulkDeleteIssue[]): SessionBulkDeleteIssue[] {
+  const seen = new Set<string>();
+  return issues.filter((issue) => {
+    const key = `${issue.sessionKey}\0${issue.reason}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 function addGroupFailure(group: SessionBulkDeleteTarget[], error: unknown, failed: SessionBulkDeleteIssue[]): void {

@@ -120,6 +120,37 @@ describe("session bulk delete UI", () => {
     await act(async () => confirmButton.click());
     expect(onConfirm).toHaveBeenCalledTimes(1);
   });
+
+  it("warns when one delete cascades to subagents", async () => {
+    await act(async () => root.render(createElement(DeleteSessionDialog, {
+      session,
+      cascadeCount: 3,
+      language: "zh",
+      deleting: false,
+      onConfirm: vi.fn(),
+      onCancel: vi.fn(),
+    })));
+
+    expect(container.textContent).toContain("2 个关联 Subagent 会话也会被永久删除");
+  });
+
+  it("shows an empty orphan cleanup result without enabling deletion", async () => {
+    await act(async () => root.render(createElement(BulkDeleteDialog, {
+      mode: "orphans",
+      preview: { requestedCount: 0, matchedCount: 0, deletableCount: 0, sourceCounts: [], skipped: [] },
+      dateValue: "",
+      favoriteCount: 0,
+      busy: false,
+      language: "zh",
+      onDateChange: vi.fn(),
+      onPreview: vi.fn(),
+      onConfirm: vi.fn(),
+      onCancel: vi.fn(),
+    })));
+
+    expect(container.textContent).toContain("未发现可清理的孤儿 Subagent 会话");
+    expect(buttonByText(container, "永久删除").disabled).toBe(true);
+  });
 });
 
 function buttonByText(container: HTMLElement, text: string): HTMLButtonElement {

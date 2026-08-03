@@ -43,11 +43,28 @@ function createFixture(dbPath: string): void {
   }
 }
 
+function createTaskIndexFixture(root: string): string {
+  const taskIndexDirectory = path.join(root, "v2");
+  fs.mkdirSync(taskIndexDirectory, { recursive: true });
+  const taskIndexPath = path.join(taskIndexDirectory, "tasks-index.sqlite");
+  const db = new DatabaseSync(taskIndexPath);
+  try {
+    db.exec("CREATE TABLE tasks (task_id TEXT PRIMARY KEY, title TEXT)");
+    db.prepare("INSERT INTO tasks (task_id, title) VALUES (?, ?), (?, ?)").run(
+      "sess-delete", "Delete me", "sess-keep", "Keep me",
+    );
+  } finally {
+    db.close();
+  }
+  return taskIndexPath;
+}
+
 describe("ZCode session writer", () => {
   it("deletes one session and all supported related records without touching other sessions", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "agent-recall-zcode-delete-"));
     const dbPath = databasePath(root);
     createFixture(dbPath);
+    const taskIndexPath = createTaskIndexFixture(root);
 
     expect(deleteZcodeSession(dbPath, "sess-delete")).toBe(true);
 
@@ -64,6 +81,12 @@ describe("ZCode session writer", () => {
       expect(db.prepare("SELECT COUNT(*) AS count FROM input_history WHERE session_id = ?").get("sess-keep")).toEqual({ count: 1 });
     } finally {
       db.close();
+    }
+    const taskIndex = new DatabaseSync(taskIndexPath);
+    try {
+      expect(taskIndex.prepare("SELECT task_id FROM tasks ORDER BY task_id").all()).toEqual([{ task_id: "sess-keep" }]);
+    } finally {
+      taskIndex.close();
       fs.rmSync(root, { recursive: true, force: true });
     }
   });
@@ -82,6 +105,7 @@ describe("ZCode session writer", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "agent-recall-zcode-delete-many-"));
     const dbPath = databasePath(root);
     createFixture(dbPath);
+    const taskIndexPath = createTaskIndexFixture(root);
 
     expect(deleteZcodeSessions(dbPath, ["sess-delete", "sess-keep", "sess-delete"])).toEqual(["sess-delete", "sess-keep"]);
 
@@ -92,6 +116,12 @@ describe("ZCode session writer", () => {
       expect(db.prepare("SELECT session_id FROM part").all()).toEqual([]);
     } finally {
       db.close();
+    }
+    const taskIndex = new DatabaseSync(taskIndexPath);
+    try {
+      expect(taskIndex.prepare("SELECT task_id FROM tasks").all()).toEqual([]);
+    } finally {
+      taskIndex.close();
       fs.rmSync(root, { recursive: true, force: true });
     }
   });

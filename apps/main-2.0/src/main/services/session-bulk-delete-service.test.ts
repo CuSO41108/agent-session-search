@@ -9,7 +9,8 @@ import { SessionBulkDeleteService } from "./session-bulk-delete-service";
 
 function target(sessionKey: string, overrides: Partial<SessionBulkDeleteTarget> = {}): SessionBulkDeleteTarget {
   return {
-    sessionKey, rawId: sessionKey, source: "codex-cli", filePath: "missing.jsonl",
+    sessionKey, cascadeRootSessionKey: sessionKey, rawId: sessionKey,
+    source: "codex-cli", filePath: "missing.jsonl", isSubagent: false, parentSessionId: null,
     sourceAvailable: false, favorited: false, lastActivityAt: 100,
     environmentId: "local", environmentKind: "local", ...overrides,
   };
@@ -65,6 +66,80 @@ describe("SessionBulkDeleteService", () => {
     });
     expect(preview.deletableCount).toBe(1);
     expect(preview.skipped).toEqual([]);
+  });
+
+  it("previews and deletes an entire descendant tree as one unit", async () => {
+    const targets = [
+      target("parent"),
+      target("child", {
+        cascadeRootSessionKey: "parent",
+        rawId: "child",
+        isSubagent: true,
+        parentSessionId: "parent",
+      }),
+    ];
+    const store = createStore(targets);
+    const service = new SessionBulkDeleteService(store);
+
+    await expect(service.preview({ sessionKeys: ["parent"], liveSessionKeys: [] })).resolves.toMatchObject({
+      requestedCount: 1,
+      matchedCount: 1,
+      deletableCount: 2,
+    });
+    await expect(service.delete({ sessionKeys: ["parent"], liveSessionKeys: [] })).resolves.toMatchObject({
+      deletedSessionKeys: ["parent", "child"],
+      failed: [],
+    });
+    expect(store.deleteSessionRecords).toHaveBeenCalledWith(["parent", "child"]);
+  });
+
+  it("keeps the whole tree when a descendant is live", async () => {
+    const targets = [
+      target("parent"),
+      target("child", { cascadeRootSessionKey: "parent", isSubagent: true, parentSessionId: "parent" }),
+    ];
+    const preview = await new SessionBulkDeleteService(createStore(targets)).preview({
+      sessionKeys: ["parent"],
+      liveSessionKeys: ["child"],
+    });
+
+    expect(preview.deletableCount).toBe(0);
+    expect(preview.skipped).toMatchObject([{ sessionKey: "child", reason: "live" }]);
+  });
+
+  it("keeps source files untouched when the cascade root is cache-only", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "agent-recall-cached-tree-delete-"));
+    const targets = [
+      target("parent"),
+      target("child", {
+        cascadeRootSessionKey: "parent",
+        sourceAvailable: true,
+        filePath: root,
+        isSubagent: true,
+        parentSessionId: "parent",
+      }),
+    ];
+    try {
+      await expect(new SessionBulkDeleteService(createStore(targets)).delete({
+        sessionKeys: ["parent"],
+        liveSessionKeys: [],
+      })).resolves.toMatchObject({ deletedSessionKeys: ["parent", "child"], failed: [] });
+      expect(fs.existsSync(root)).toBe(true);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("requests orphaned subagent trees without explicit session keys", async () => {
+    const orphan = target("orphan", { isSubagent: true, parentSessionId: "missing" });
+    const store = createStore([orphan]);
+
+    await expect(new SessionBulkDeleteService(store).preview({
+      sessionKeys: [],
+      liveSessionKeys: [],
+      includeOrphanedSubagents: true,
+    })).resolves.toMatchObject({ requestedCount: 1, matchedCount: 1, deletableCount: 1 });
+    expect(store.getSessionDeletionTargets).toHaveBeenCalledWith([], true);
   });
 
   it("keeps failures retryable and deletes successful indexes in one batch", async () => {

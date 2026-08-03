@@ -45,7 +45,6 @@ export interface SessionCatalogServiceDependencies {
   refreshIndex(): Promise<IndexStatus>;
   getIndexStatus(): IndexStatus;
   setCustomTitle(sessionKey: string, title: string | null): Promise<void>;
-  deleteWslSession(environment: SessionEnvironment, filePath: string): Promise<void>;
 }
 
 /**
@@ -189,20 +188,20 @@ export class SessionCatalogService {
       throw new Error("Cannot delete sessions stored on SSH remote environments.");
     }
     if (session?.environmentKind === "ssh") {
-      return this.dependencies.store.deleteSessionRecord(sessionKey);
+      return (await this.dependencies.store.deleteSessionRecords([sessionKey])).includes(sessionKey);
     }
     if (!session || session.environmentKind !== "wsl") {
       return this.dependencies.store.deleteSession(sessionKey);
     }
     if (isSharedSessionSourceDatabase(session)) {
       if (session.sourceAvailable === false) {
-        return this.dependencies.store.deleteSessionRecord(sessionKey);
+        return (await this.dependencies.store.deleteSessionRecords([sessionKey])).includes(sessionKey);
       }
       throw new Error("Cannot delete shared source databases on WSL by removing the database file.");
     }
-    const environment = await this.dependencies.requireWslEnvironment(session);
-    await this.dependencies.deleteWslSession(environment, session.filePath);
-    return this.dependencies.store.deleteSessionRecord(sessionKey);
+    const result = await this.bulkDelete.delete({ sessionKeys: [sessionKey], liveSessionKeys: [] });
+    if (result.failed[0]) throw new Error(result.failed[0].message);
+    return result.deletedSessionKeys.includes(sessionKey);
   }
 
   previewBulkDelete(request: SessionBulkDeleteRequest): Promise<SessionBulkDeletePreview> {

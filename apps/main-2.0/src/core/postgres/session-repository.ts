@@ -36,6 +36,81 @@ import {
   type SessionRow,
 } from "./session-records";
 
+interface SessionDeletionRelationRow extends Record<string, unknown> {
+  session_key: string;
+  raw_id: string;
+  source: SessionSource;
+  environment_id: string;
+  is_subagent: boolean;
+  parent_session_id: string | null;
+}
+
+function collectSessionDeletionPairs(
+  rows: readonly SessionDeletionRelationRow[],
+  requestedSessionKeys: readonly string[],
+  includeOrphanedSubagents: boolean,
+): SessionDeletionPair[] {
+  const rowsBySessionKey = new Map(rows.map((row) => [row.session_key, row]));
+  const rawIdsByScope = new Map<string, Set<string>>();
+  const childrenByScopeAndParent = new Map<string, Map<string, SessionDeletionRelationRow[]>>();
+  for (const row of rows) {
+    const scope = sessionDeletionScope(row);
+    const rawIds = rawIdsByScope.get(scope) ?? new Set<string>();
+    rawIds.add(row.raw_id);
+    rawIdsByScope.set(scope, rawIds);
+    if (!row.parent_session_id) continue;
+    const childrenByParent = childrenByScopeAndParent.get(scope) ?? new Map<string, SessionDeletionRelationRow[]>();
+    const children = childrenByParent.get(row.parent_session_id) ?? [];
+    children.push(row);
+    childrenByParent.set(row.parent_session_id, children);
+    childrenByScopeAndParent.set(scope, childrenByParent);
+  }
+
+  const rootRows: SessionDeletionRelationRow[] = [];
+  const rootKeys = new Set<string>();
+  for (const sessionKey of requestedSessionKeys) {
+    const row = rowsBySessionKey.get(sessionKey);
+    if (!row || rootKeys.has(row.session_key)) continue;
+    rootRows.push(row);
+    rootKeys.add(row.session_key);
+  }
+  if (includeOrphanedSubagents) {
+    const orphanRows = rows
+      .filter((row) => row.is_subagent && Boolean(row.parent_session_id))
+      .filter((row) => !rawIdsByScope.get(sessionDeletionScope(row))?.has(row.parent_session_id!))
+      .sort((left, right) => left.session_key.localeCompare(right.session_key));
+    for (const row of orphanRows) {
+      if (rootKeys.has(row.session_key)) continue;
+      rootRows.push(row);
+      rootKeys.add(row.session_key);
+    }
+  }
+
+  const result: SessionDeletionPair[] = [];
+  for (const root of rootRows) {
+    const queue = [root];
+    const visited = new Set<string>();
+    for (let index = 0; index < queue.length; index += 1) {
+      const row = queue[index];
+      if (visited.has(row.session_key)) continue;
+      visited.add(row.session_key);
+      result.push({ cascadeRootSessionKey: root.session_key, sessionKey: row.session_key });
+      const children = childrenByScopeAndParent.get(sessionDeletionScope(row))?.get(row.raw_id) ?? [];
+      queue.push(...children);
+    }
+  }
+  return result;
+}
+
+function sessionDeletionScope(row: Pick<SessionDeletionRelationRow, "source" | "environment_id">): string {
+  return `${row.source}\0${row.environment_id}`;
+}
+
+interface SessionDeletionPair {
+  cascadeRootSessionKey: string;
+  sessionKey: string;
+}
+
 function branchTagName(branch: string | null | undefined): string | null {
   const normalized = branch?.trim();
   return normalized ? `branch:${normalized}` : null;
@@ -1324,14 +1399,30 @@ export class PostgresSessionRepository {
     });
   }
 
-  async getSessionDeletionTargets(sessionKeys: readonly string[]): Promise<SessionBulkDeleteTarget[]> {
+  async getSessionDeletionTargets(
+    sessionKeys: readonly string[],
+    includeOrphanedSubagents = false,
+  ): Promise<SessionBulkDeleteTarget[]> {
     const uniqueKeys = [...new Set(sessionKeys.filter(Boolean))];
-    if (uniqueKeys.length === 0) return [];
+    if (uniqueKeys.length === 0 && !includeOrphanedSubagents) return [];
+    const relationResult = await this.database.query<SessionDeletionRelationRow>(`
+      select session_key, raw_id, source, environment_id, is_subagent, parent_session_id
+      from agent_recall.sessions
+    `);
+    const deletionPairs = collectSessionDeletionPairs(
+      relationResult.rows,
+      uniqueKeys,
+      includeOrphanedSubagents,
+    );
+    const targetKeys = [...new Set(deletionPairs.map((pair) => pair.sessionKey))];
+    if (targetKeys.length === 0) return [];
     const result = await this.database.query<{
       session_key: string;
       raw_id: string;
       source: SessionSource;
       file_path: string;
+      is_subagent: boolean;
+      parent_session_id: string | null;
       source_available: boolean;
       favorited: boolean;
       last_activity_at: Date | string;
@@ -1339,20 +1430,24 @@ export class PostgresSessionRepository {
       environment_kind: SessionBulkDeleteTarget["environmentKind"];
     }>(`
       select sessions.session_key, sessions.raw_id, sessions.source, sessions.file_path,
+        sessions.is_subagent, sessions.parent_session_id,
         sessions.source_available, sessions.favorited, ${SESSION_ACTIVITY_SQL} as last_activity_at,
         sessions.environment_id, environments.kind as environment_kind
       from agent_recall.sessions sessions
       join agent_recall.environments environments on environments.id = sessions.environment_id
       where sessions.session_key = any($1::text[])
-    `, [uniqueKeys]);
+    `, [targetKeys]);
     const byKey = new Map(result.rows.map((row) => [row.session_key, row]));
-    return uniqueKeys.flatMap((sessionKey) => {
-      const row = byKey.get(sessionKey);
+    return deletionPairs.flatMap((pair) => {
+      const row = byKey.get(pair.sessionKey);
       return row ? [{
+        cascadeRootSessionKey: pair.cascadeRootSessionKey,
         sessionKey: row.session_key,
         rawId: row.raw_id,
         source: row.source,
         filePath: row.file_path,
+        isSubagent: Boolean(row.is_subagent),
+        parentSessionId: row.parent_session_id,
         sourceAvailable: Boolean(row.source_available),
         favorited: Boolean(row.favorited),
         lastActivityAt: timeValue(row.last_activity_at) ?? 0,
@@ -1365,10 +1460,19 @@ export class PostgresSessionRepository {
   async deleteSessionRecords(sessionKeys: readonly string[]): Promise<string[]> {
     const uniqueKeys = [...new Set(sessionKeys.filter(Boolean))];
     if (uniqueKeys.length === 0) return [];
+    let expandedKeys: string[] = [];
     const deleted = await this.database.transaction(async (client) => {
+      const relationResult = await client.query<SessionDeletionRelationRow>(`
+        select session_key, raw_id, source, environment_id, is_subagent, parent_session_id
+        from agent_recall.sessions
+      `);
+      expandedKeys = [...new Set(
+        collectSessionDeletionPairs(relationResult.rows, uniqueKeys, false).map((pair) => pair.sessionKey),
+      )];
+      if (expandedKeys.length === 0) return [];
       const result = await client.query<{ session_key: string }>(
         "delete from agent_recall.sessions where session_key = any($1::text[]) returning session_key",
-        [uniqueKeys],
+        [expandedKeys],
       );
       await client.query(`
         delete from agent_recall.tags
@@ -1379,7 +1483,7 @@ export class PostgresSessionRepository {
       return result.rows.map((row) => row.session_key);
     });
     const deletedSet = new Set(deleted);
-    return uniqueKeys.filter((sessionKey) => deletedSet.has(sessionKey));
+    return expandedKeys.filter((sessionKey) => deletedSet.has(sessionKey));
   }
 
   async migrateSessionKeyPreservingUserState(
@@ -1675,28 +1779,6 @@ export class PostgresSessionRepository {
         )
       `);
     });
-  }
-
-  async getSessionDeletionTarget(
-    sessionKey: string,
-  ): Promise<{ source: SessionSource; rawId: string; filePath: string; sourceAvailable: boolean } | null> {
-    const result = await this.database.query<{
-      source: SessionSource;
-      raw_id: string;
-      file_path: string;
-      source_available: boolean;
-    }>(
-      "select source, raw_id, file_path, source_available from agent_recall.sessions where session_key = $1",
-      [sessionKey],
-    );
-    return result.rows[0]
-      ? {
-          source: result.rows[0].source,
-          rawId: result.rows[0].raw_id,
-          filePath: result.rows[0].file_path,
-          sourceAvailable: result.rows[0].source_available,
-        }
-      : null;
   }
 
   private async addTagWithClient(

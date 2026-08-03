@@ -51,6 +51,7 @@ function createService(current: SessionSearchResult) {
     getSession: vi.fn(async () => current),
     deleteSession: vi.fn(async () => true),
     deleteSessionRecord: vi.fn(async () => true),
+    deleteSessionRecords: vi.fn(async (keys: readonly string[]) => [...keys]),
   };
   const service = new SessionCatalogService({
     store: store as unknown as SessionStore,
@@ -64,7 +65,8 @@ describe("SessionCatalogService deletion policy", () => {
 
     await expect(service.delete("cursor:remote:cached")).resolves.toBe(true);
 
-    expect(store.deleteSessionRecord).toHaveBeenCalledWith("cursor:remote:cached");
+    expect(store.deleteSessionRecords).toHaveBeenCalledWith(["cursor:remote:cached"]);
+    expect(store.deleteSessionRecord).not.toHaveBeenCalled();
     expect(store.deleteSession).not.toHaveBeenCalled();
   });
 
@@ -95,7 +97,6 @@ describe("SessionCatalogService deletion policy", () => {
   });
 
   it("refuses to delete a shared Hermes database file on WSL", async () => {
-    const deleteWslSession = vi.fn(async () => undefined);
     const store = {
       getSession: vi.fn(async () => session({
         sessionKey: "hermes:wsl",
@@ -108,17 +109,16 @@ describe("SessionCatalogService deletion policy", () => {
       })),
       deleteSession: vi.fn(async () => true),
       deleteSessionRecord: vi.fn(async () => true),
+      deleteSessionRecords: vi.fn(async (keys: readonly string[]) => [...keys]),
     };
     const service = new SessionCatalogService({
       store: store as unknown as SessionStore,
       requireWslEnvironment: vi.fn(async () => ({ id: "ubuntu", kind: "wsl", label: "WSL" })),
-      deleteWslSession,
     } as unknown as SessionCatalogServiceDependencies);
 
     await expect(service.delete("hermes:wsl")).rejects.toThrow(
       "Cannot delete shared source databases on WSL by removing the database file.",
     );
-    expect(deleteWslSession).not.toHaveBeenCalled();
     expect(store.deleteSession).not.toHaveBeenCalled();
     expect(store.deleteSessionRecord).not.toHaveBeenCalled();
   });

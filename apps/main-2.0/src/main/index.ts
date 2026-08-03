@@ -95,7 +95,6 @@ import { SessionStore } from "../core/session-store";
 import { buildCombinedSupabaseSetupSql, supabaseSqlEditorUrl } from "../core/supabase-setup";
 import { readUserSshConfig } from "../core/ssh-config";
 import { listWslDistributions } from "../core/wsl";
-import { deleteWslSessionFile } from "../core/wsl-session-actions";
 import { AUTO_INDEX_REFRESH_INTERVAL_MS, INITIAL_INDEX_DELAY_MS } from "../core/refresh-policy";
 import { globalShortcutLabel, normalizeGlobalShortcut } from "../core/shortcuts";
 import { remoteSessionKey } from "../core/session-environment";
@@ -2198,7 +2197,6 @@ function registerIpc(): void {
           error,
         ),
       }),
-    deleteWslSession: deleteWslSessionFile,
   }));
   ipcMain.handle("attachment:preview", async (_event, sessionKey: string, attachmentId: string) => {
     const attachment = await store.getAttachmentFile(sessionKey, attachmentId);

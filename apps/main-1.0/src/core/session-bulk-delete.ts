@@ -14,13 +14,17 @@ export interface SessionBulkDeleteRequest {
   liveSessionKeys: string[];
   inactiveBefore?: number;
   protectFavorites?: boolean;
+  includeOrphanedSubagents?: boolean;
 }
 
 export interface SessionBulkDeleteTarget {
   sessionKey: string;
+  cascadeRootSessionKey: string;
   rawId: string;
   source: SessionSource;
   filePath: string;
+  isSubagent: boolean;
+  parentSessionId: string | null;
   sourceAvailable: boolean;
   favorited: boolean;
   lastActivityAt: number;

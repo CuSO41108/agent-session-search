@@ -91,7 +91,6 @@ import { SessionStore, type TraceEventQueryOptions } from "../core/session-store
 import { buildCombinedSupabaseSetupSql, supabaseSqlEditorUrl } from "../core/supabase-setup";
 import { buildSshArgs, readUserSshConfig } from "../core/ssh-config";
 import { listWslDistributions } from "../core/wsl";
-import { deleteWslSessionFile } from "../core/wsl-session-actions";
 import { SessionBulkDeleteService } from "./services/session-bulk-delete-service";
 import type { SessionBulkDeleteRequest } from "../core/session-bulk-delete";
 import { AUTO_INDEX_REFRESH_INTERVAL_MS, INITIAL_INDEX_DELAY_MS } from "../core/refresh-policy";
@@ -1989,11 +1988,12 @@ function registerIpc(): void {
     }
     if (!session || session.environmentKind !== "wsl") return store.deleteSession(sessionKey);
     if (isSharedSessionSourceDatabase(session)) {
-      if (session.sourceAvailable === false) return store.deleteSessionRecord(sessionKey);
+      if (session.sourceAvailable === false) return store.deleteSessionRecords([sessionKey]).includes(sessionKey);
       throw new Error("Cannot delete shared source databases on WSL by removing the database file.");
     }
-    await deleteWslSessionFile(requireWslEnvironment(session), session.filePath);
-    return store.deleteSessionRecord(sessionKey);
+    const result = await sessionBulkDeleteService.delete({ sessionKeys: [sessionKey], liveSessionKeys: [] });
+    if (result.failed[0]) throw new Error(result.failed[0].message);
+    return result.deletedSessionKeys.includes(sessionKey);
   });
   ipcMain.handle("index:refresh", () => runIndexSync());
   ipcMain.handle("index:status", () => indexStatus);
