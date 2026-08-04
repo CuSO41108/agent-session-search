@@ -1113,8 +1113,8 @@ export class SupabaseRemoteSessionClient {
 
   private async deleteStorageObject(key: string): Promise<void> {
     const response = await this.storageRequest(key, { method: "DELETE" });
-    if (response.status === 404) return;
     const body = await readResponseBody(response);
+    if (isMissingStorageObjectError(response.status, body)) return;
     if (!response.ok) throw new Error(supabaseErrorMessage(response.status, body));
   }
 
@@ -1507,6 +1507,18 @@ function isMissingTableError(status: number, body: unknown): boolean {
     code === "PGRST205" ||
     (typeof message === "string" && /table|relation/i.test(message) && /not found|does not exist/i.test(message))
   );
+}
+
+function isMissingStorageObjectError(status: number, body: unknown): boolean {
+  if (status === 404) return true;
+  if (!body || typeof body !== "object") return false;
+  const error = body as { statusCode?: unknown; error?: unknown; message?: unknown };
+  const responseStatus = typeof error.statusCode === "string"
+    ? Number.parseInt(error.statusCode, 10)
+    : error.statusCode;
+  return responseStatus === 404
+    || (typeof error.error === "string" && error.error.toLowerCase() === "not_found")
+    || (typeof error.message === "string" && /^object not found\.?$/i.test(error.message.trim()));
 }
 
 function isMissingSchemaColumnError(body: unknown): boolean {
