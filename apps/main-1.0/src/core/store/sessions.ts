@@ -167,6 +167,37 @@ interface TraceEventRow {
   attributes_json: string | null;
 }
 
+const SESSION_FTS_CONTENT_CHUNK_CHARS = 256 * 1024;
+
+function sessionFtsContentChunks(messages: readonly Pick<SessionMessage, "content">[]): string[] {
+  const chunks: string[] = [];
+  let pieces: string[] = [];
+  let pieceLength = 0;
+  const flush = (): void => {
+    chunks.push(pieces.join(""));
+    pieces = [];
+    pieceLength = 0;
+  };
+  const append = (content: string): void => {
+    let offset = 0;
+    while (offset < content.length) {
+      const remaining = SESSION_FTS_CONTENT_CHUNK_CHARS - pieceLength;
+      const nextOffset = Math.min(content.length, offset + remaining);
+      pieces.push(content.slice(offset, nextOffset));
+      pieceLength += nextOffset - offset;
+      offset = nextOffset;
+      if (pieceLength >= SESSION_FTS_CONTENT_CHUNK_CHARS) flush();
+    }
+  };
+
+  for (const [index, message] of messages.entries()) {
+    if (index > 0) append("\n\n");
+    append(message.content);
+  }
+  if (pieceLength > 0 || chunks.length === 0) flush();
+  return chunks;
+}
+
 function parseTraceAttributes(value: string | null): Record<string, unknown> | undefined {
   if (!value) return undefined;
   try {
@@ -212,6 +243,9 @@ export class SessionsStore {
   ): void {
     const normalizedTokenEvents = tokenEvents.map(normalizeTokenEvent).filter((event) => event.totalTokens > 0 && event.dedupeKey);
     const tokenUsage = normalizedTokenEvents.length > 0 ? tokenUsageFromEvents(normalizedTokenEvents) : normalizeTokenUsage(session.tokenUsage);
+    const sourceRecordIdByMessageIndex = new Map(
+      codexIncrementalState?.messageProvenance.map((entry) => [entry.messageIndex, entry.sourceRecordId]) ?? [],
+    );
     const indexedAt = Date.now();
     const environmentId = session.environmentId ?? "local";
     const storageEnvironmentId = session.storageEnvironmentId ?? environmentId;
@@ -277,8 +311,8 @@ export class SessionsStore {
           tokenUsage.reasoningOutputTokens,
           tokenUsage.totalTokens,
           indexedAt,
-          session.fileMtimeMs,
-          session.fileSize,
+          0,
+          0,
           session.isSubagent ? 1 : 0,
           session.parentSessionId ?? null,
           codexIncrementalState?.historyMode ?? null,
@@ -289,7 +323,6 @@ export class SessionsStore {
       this.db.prepare("DELETE FROM message_events WHERE session_key = ?").run(session.sessionKey);
       this.db.prepare("DELETE FROM token_events WHERE session_key = ?").run(session.sessionKey);
       this.db.prepare("DELETE FROM trace_events WHERE session_key = ?").run(session.sessionKey);
-      this.db.prepare("DELETE FROM session_fts WHERE session_key = ?").run(session.sessionKey);
 
       const insertMessage = this.db.prepare(
         `INSERT INTO messages (
@@ -297,8 +330,7 @@ export class SessionsStore {
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       );
       for (const message of messages) {
-        const sourceRecordId = codexIncrementalState?.messageProvenance
-          .find((entry) => entry.messageIndex === message.index)?.sourceRecordId ?? null;
+        const sourceRecordId = sourceRecordIdByMessageIndex.get(message.index) ?? null;
         insertMessage.run(
           session.sessionKey,
           message.index,
@@ -406,9 +438,14 @@ export class SessionsStore {
         );
       }
 
-      this.refreshFtsForSession(session.sessionKey, messages);
       this.replaceBranchTag(session.sessionKey, session.gitBranch);
     });
+    this.refreshFtsForSession(session.sessionKey, messages);
+    this.db.prepare(`
+      UPDATE sessions
+      SET content_indexed_mtime_ms = ?, content_indexed_size = ?
+      WHERE session_key = ?
+    `).run(session.fileMtimeMs, session.fileSize, session.sessionKey);
   }
 
   isIndexedSessionFresh(session: IndexedSession): boolean {
@@ -417,7 +454,8 @@ export class SessionsStore {
       .prepare(
         `
         SELECT raw_id, source, environment_id, storage_environment_id, project_path, file_path, original_title, first_question,
-          timestamp, file_mtime_ms, file_size, pr_url, pr_number, is_subagent, parent_session_id
+          timestamp, file_mtime_ms, file_size, pr_url, pr_number, is_subagent, parent_session_id,
+          content_indexed_mtime_ms, content_indexed_size
         FROM sessions
         WHERE session_key = ?
       `,
@@ -440,6 +478,8 @@ export class SessionsStore {
         | "pr_number"
         | "is_subagent"
         | "parent_session_id"
+        | "content_indexed_mtime_ms"
+        | "content_indexed_size"
       >
       | undefined;
     if (!row) return false;
@@ -459,6 +499,8 @@ export class SessionsStore {
       (row.pr_number ?? null) === (session.prNumber ?? null)
       && row.is_subagent === (session.isSubagent ? 1 : 0)
       && (row.parent_session_id ?? null) === (session.parentSessionId ?? null)
+      && row.content_indexed_mtime_ms === session.fileMtimeMs
+      && row.content_indexed_size === session.fileSize
     );
   }
 
@@ -1564,22 +1606,56 @@ export class SessionsStore {
   private refreshFtsForSession(sessionKey: string, indexedMessages?: SessionMessage[]): void {
     const row = this.db.prepare("SELECT * FROM sessions WHERE session_key = ?").get(sessionKey) as SessionRow | undefined;
     if (!row) return;
-    const messages =
-      indexedMessages ??
-      (this.db
-        .prepare("SELECT content FROM messages WHERE session_key = ? ORDER BY message_index")
-        .all(sessionKey) as Array<{ content: string }>);
-    const contentText = messages.map((message) => message.content).join("\n\n");
     const title = row.custom_title || row.original_title || row.first_question || "Untitled Session";
-    // Prepend the AI summary so its normalized wording is searchable alongside the raw transcript.
     const summary = row.ai_summary?.trim();
-    const ftsContent = summary ? `${summary}\n\n${contentText}` : contentText;
+    const searchableTitle = summary ? `${title}\n\n${summary}` : title;
+    if (indexedMessages === undefined) {
+      const existing = this.db
+        .prepare(`
+          SELECT rowid, length(content_text) AS content_length
+          FROM session_fts
+          WHERE session_key = ?
+          ORDER BY CASE WHEN content_text = '' THEN 0 ELSE 1 END, rowid
+          LIMIT 1
+        `)
+        .get(sessionKey) as { rowid: number; content_length: number } | undefined;
+      if (existing && existing.content_length <= SESSION_FTS_CONTENT_CHUNK_CHARS) {
+        this.db.prepare(`
+          UPDATE session_fts
+          SET title = ?, first_question = ?, project_path = ?
+          WHERE rowid = ?
+        `).run(searchableTitle, row.first_question, row.project_path, existing.rowid);
+        return;
+      }
+      if (existing) {
+        this.db.prepare("DELETE FROM session_fts WHERE session_key = ? AND content_text = ''").run(sessionKey);
+        this.db.prepare(`
+          UPDATE session_fts
+          SET title = '', first_question = '', project_path = ''
+          WHERE session_key = ?
+        `).run(sessionKey);
+        this.db.prepare(
+          "INSERT INTO session_fts (session_key, title, first_question, content_text, project_path) VALUES (?, ?, ?, '', ?)",
+        ).run(sessionKey, searchableTitle, row.first_question, row.project_path);
+        return;
+      }
+    }
+    const messages = indexedMessages ?? (this.db
+      .prepare("SELECT content FROM messages WHERE session_key = ? ORDER BY message_index")
+      .all(sessionKey) as Array<{ content: string }>);
     this.db.prepare("DELETE FROM session_fts WHERE session_key = ?").run(sessionKey);
-    this.db
-      .prepare(
-        "INSERT INTO session_fts (session_key, title, first_question, content_text, project_path) VALUES (?, ?, ?, ?, ?)",
-      )
-      .run(sessionKey, title, row.first_question, ftsContent, row.project_path);
+    const insert = this.db.prepare(
+      "INSERT INTO session_fts (session_key, title, first_question, content_text, project_path) VALUES (?, ?, ?, ?, ?)",
+    );
+    for (const [index, content] of sessionFtsContentChunks(messages).entries()) {
+      insert.run(
+        sessionKey,
+        index === 0 ? searchableTitle : "",
+        index === 0 ? row.first_question : "",
+        content,
+        index === 0 ? row.project_path : "",
+      );
+    }
   }
 
   private deleteUnusedTag(tagName: string): void {
@@ -2014,18 +2090,16 @@ export class SessionsStore {
   }
 
   private searchFts(query: string): Map<string, string | null> {
-    const expression = buildFtsQuery(query);
-    if (!expression) return new Map();
+    const expressions = buildFtsQueries(query);
+    if (expressions.length === 0) return new Map();
     try {
       const rows = this.db
         .prepare(
-          `
-          SELECT session_key
-          FROM session_fts
-          WHERE session_fts MATCH ?
-        `,
+          expressions
+            .map(() => "SELECT session_key FROM session_fts WHERE session_fts MATCH ?")
+            .join("\nINTERSECT\n"),
         )
-        .all(expression) as Array<{ session_key: string }>;
+        .all(...expressions) as Array<{ session_key: string }>;
       return new Map(rows.map((row) => [row.session_key, null]));
     } catch {
       return new Map();
@@ -2427,13 +2501,12 @@ function formatTrendBucketLabel(timestamp: number, granularity: SessionStatsTren
   return `${month}-${day}`;
 }
 
-function buildFtsQuery(query: string): string {
-  const tokens = query.match(/[\p{L}\p{N}_]+/gu) ?? [];
+function buildFtsQueries(query: string): string[] {
+  const tokens = [...new Set(query.match(/[\p{L}\p{N}_]+/gu) ?? [])];
   return tokens
     .map((token) => token.replace(/"/g, ""))
     .filter(Boolean)
-    .map((token) => `"${token.replace(/"/g, "\"\"")}"`)
-    .join(" ");
+    .map((token) => `"${token.replace(/"/g, "\"\"")}"`);
 }
 
 function searchTerms(query: string): string[] {

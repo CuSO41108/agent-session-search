@@ -1566,11 +1566,11 @@ function createCodexScanAccumulator(base?: { offset: number; loaded: LoadedSessi
   } : undefined);
   const messageProvenance = new Map<SessionMessage, string | null>();
   const provenanceMessages = new Map<string, SessionMessage>();
+  const sourceRecordIdByMessageIndex = new Map(
+    base?.loaded.codexIncrementalState?.messageProvenance.map((entry) => [entry.messageIndex, entry.sourceRecordId]) ?? [],
+  );
   for (const message of allMessages) {
-    const sourceRecordId =
-      base?.loaded.codexIncrementalState?.messageProvenance.find(
-        (entry) => entry.messageIndex === message.index,
-      )?.sourceRecordId ?? null;
+    const sourceRecordId = sourceRecordIdByMessageIndex.get(message.index) ?? null;
     messageProvenance.set(message, sourceRecordId);
     if (sourceRecordId) provenanceMessages.set(sourceRecordId, message);
   }

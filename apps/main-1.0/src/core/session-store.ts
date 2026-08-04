@@ -85,9 +85,16 @@ export class SessionStore {
   private readonly savedSearches: SavedSearchStore;
   private readonly historyStore: SearchHistoryStore;
 
-  constructor(dbPathOrInstance: string | SessionStoreDatabase) {
+  constructor(
+    dbPathOrInstance: string | SessionStoreDatabase,
+    options: { initializeSchema?: boolean } = {},
+  ) {
     this.db = typeof dbPathOrInstance === "string" ? new DatabaseSync(dbPathOrInstance) : dbPathOrInstance;
-    migrateSessionStore(this.db);
+    if (options.initializeSchema === false) {
+      this.db.exec("PRAGMA foreign_keys = ON");
+      this.db.exec("PRAGMA busy_timeout = 5000");
+    }
+    else migrateSessionStore(this.db);
     this.environments = new EnvironmentStore(this.db);
     this.metadata = new MetadataStore(this.db);
     const attachmentCacheRoot = typeof dbPathOrInstance === "string"

@@ -60,4 +60,27 @@ describe("remote live session deletion guards", () => {
 
     expect(maximumActive).toBe(3);
   });
+
+  it("does not unlock saved SSH passwords during passive detection", async () => {
+    let called = false;
+
+    await expect(loadRemoteLiveSessions([
+      { ...sshEnvironment(1), authMode: "password" },
+    ], async () => {
+      called = true;
+      return "";
+    })).resolves.toEqual([]);
+
+    expect(called).toBe(false);
+  });
+
+  it("includes password-authenticated SSH when a fresh safety check requires it", async () => {
+    await expect(loadRemoteLiveSessions([
+      { ...sshEnvironment(1), authMode: "password" },
+    ], async () => '{"family":"codex","rawId":"remote-codex","pid":42}', {
+      includePasswordAuthenticated: true,
+    })).resolves.toEqual([
+      { family: "codex", rawId: "remote-codex", pid: 42, environmentId: "ssh-1" },
+    ]);
+  });
 });

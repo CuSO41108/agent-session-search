@@ -77,7 +77,7 @@ import { coalesceIndexStatusForRender } from "./index-status";
 import { reduceIndexFeedback } from "./index-status-feedback";
 import { readInitialTheme, THEME_STORAGE_KEY, type ThemeMode } from "./theme";
 import { loadSkillsPanelData } from "./skills-load";
-import { createLatestTaskQueue } from "./latest-task-queue";
+import { createLatestTaskQueue, type LatestTaskQueue } from "./latest-task-queue";
 import type {
   ActionStatus,
   ContextMenuState,
@@ -157,6 +157,7 @@ const OPTIONAL_SOURCE_SETTINGS = OPTIONAL_SESSION_SOURCE_DESCRIPTORS.map((descri
   pendingKey: descriptor.pendingKey,
   filter: descriptor.id,
 }));
+const OPTIONAL_SOURCE_REFRESH_SETTLE_MS = 120;
 
 function emptyPendingPersonalSources(): Record<PendingSourceKey, boolean> {
   return Object.fromEntries(
@@ -394,6 +395,12 @@ export function App(): ReactElement {
   const detailLoadSeqRef = useRef(0);
   const appSettingsRef = useRef<AppSettings | null>(null);
   const settingsUpdateQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const optionalSourceRefreshGenerationRef = useRef(0);
+  const optionalSourceIndexRefreshKeysRef = useRef(new Set<PendingSourceKey>());
+  const [optionalSourceRefreshQueue] = useState(() =>
+    createLatestTaskQueue<void>({ settleMs: OPTIONAL_SOURCE_REFRESH_SETTLE_MS }));
+  const favoriteSaveQueuesRef = useRef(new Map<string, LatestTaskQueue<void>>());
+  const favoriteSaveVersionsRef = useRef(new Map<string, number>());
   const searchRef = useRef<HTMLInputElement>(null);
   const environmentIdRef = useRef(environmentId);
   const projectPathRef = useRef(projectPath);
@@ -1474,9 +1481,44 @@ export function App(): ReactElement {
     await refreshAfterAction({ metadata: true });
   }
 
+  function applyFavoriteState(sessionKey: string, favorited: boolean): void {
+    setResults((current) => current
+      .map((session) => session.sessionKey === sessionKey ? { ...session, favorited } : session)
+      .filter((session) => visibility !== "favorites" || session.favorited));
+    setDetail((current) => current?.sessionKey === sessionKey ? { ...current, favorited } : current);
+    setContextMenu((current) => current?.session.sessionKey === sessionKey
+      ? { ...current, session: { ...current.session, favorited } }
+      : current);
+  }
+
   async function toggleFavorite(session: SessionSearchResult): Promise<void> {
-    await window.sessionSearch.setFavorited(session.sessionKey, !session.favorited);
-    await refreshAfterAction();
+    const nextFavorited = !session.favorited;
+    const version = (favoriteSaveVersionsRef.current.get(session.sessionKey) ?? 0) + 1;
+    favoriteSaveVersionsRef.current.set(session.sessionKey, version);
+    applyFavoriteState(session.sessionKey, nextFavorited);
+    let queue = favoriteSaveQueuesRef.current.get(session.sessionKey);
+    if (!queue) {
+      queue = createLatestTaskQueue<void>();
+      favoriteSaveQueuesRef.current.set(session.sessionKey, queue);
+    }
+    try {
+      await queue.request(() => window.sessionSearch.setFavorited(session.sessionKey, nextFavorited));
+      if (favoriteSaveVersionsRef.current.get(session.sessionKey) === version) {
+        await refreshAfterAction();
+      }
+    } catch (error) {
+      if (favoriteSaveVersionsRef.current.get(session.sessionKey) === version) {
+        const fresh = await window.sessionSearch.getSession(session.sessionKey).catch(() => null);
+        if (fresh) applyFavoriteState(session.sessionKey, fresh.favorited);
+        await refreshAfterAction().catch(() => undefined);
+        setActionStatus({ kind: "error", message: error instanceof Error ? error.message : String(error) });
+      }
+    } finally {
+      if (favoriteSaveVersionsRef.current.get(session.sessionKey) === version) {
+        favoriteSaveVersionsRef.current.delete(session.sessionKey);
+        favoriteSaveQueuesRef.current.delete(session.sessionKey);
+      }
+    }
   }
 
   async function summarizeDetail(session: SessionSearchResult): Promise<void> {
@@ -1937,6 +1979,37 @@ export function App(): ReactElement {
     }
   }
 
+  function scheduleOptionalSourceRefresh(): void {
+    optionalSourceRefreshGenerationRef.current += 1;
+    setSettingsFeedback({ kind: "success", message: t("Loading sessions in the background...", "正在后台加载会话...") });
+    void optionalSourceRefreshQueue.request(async () => {
+      const generation = optionalSourceRefreshGenerationRef.current;
+      const shouldRefreshIndex = optionalSourceIndexRefreshKeysRef.current.size > 0;
+      optionalSourceIndexRefreshKeysRef.current.clear();
+      try {
+        if (shouldRefreshIndex) {
+          const status = await window.sessionSearch.refreshIndex();
+          if (status.error) throw new Error(status.error);
+        } else {
+          await window.sessionSearch.settleDisabledSources();
+        }
+        await refreshAfterAction({ metadata: true, stats: true });
+        if (optionalSourceRefreshGenerationRef.current !== generation) return;
+        setPendingPersonalSources(emptyPendingPersonalSources());
+        const message = t("Sources ready.", "来源已就绪。");
+        setSettingsFeedback({ kind: "success", message });
+        window.setTimeout(() => {
+          setSettingsFeedback((current) =>
+            current?.kind === "success" && current.message === message ? null : current);
+        }, 1600);
+      } catch (error) {
+        if (optionalSourceRefreshGenerationRef.current !== generation) return;
+        setPendingPersonalSources(emptyPendingPersonalSources());
+        setSettingsFeedback({ kind: "error", message: error instanceof Error ? error.message : String(error) });
+      }
+    }).catch(() => undefined);
+  }
+
   function updateSettings(next: AppSettingsUpdate): Promise<void> {
     const request = settingsUpdateQueueRef.current.then(() => performSettingsUpdate(next));
     settingsUpdateQueueRef.current = request.catch(() => undefined);
@@ -1946,7 +2019,6 @@ export function App(): ReactElement {
   async function performSettingsUpdate(next: AppSettingsUpdate): Promise<void> {
     const currentSettings = appSettingsRef.current;
     const changedSources = OPTIONAL_SOURCE_SETTINGS.filter((item) => item.key in next && next[item.key] !== currentSettings?.[item.key]);
-    const newlyEnabledSources = changedSources.filter((item) => next[item.key] === true);
     const quotaVisibilityChanged =
       ("hideCodexQuota" in next && next.hideCodexQuota !== currentSettings?.hideCodexQuota) ||
       ("hideClaudeQuota" in next && next.hideClaudeQuota !== currentSettings?.hideClaudeQuota);
@@ -1965,44 +2037,18 @@ export function App(): ReactElement {
       }
       if (quotaVisibilityChanged) void loadQuotas();
 
-      if (newlyEnabledSources.length > 0) {
-        // Keep the toggle responsive: scan optional sources in the background
-        // and only reveal their sidebar filters once that scan finishes.
+      if (changedSources.length > 0) {
         setPendingPersonalSources((current) => {
           const pending = { ...current };
-          for (const item of newlyEnabledSources) pending[item.pendingKey] = true;
+          for (const item of changedSources) pending[item.pendingKey] = nextSettings[item.key];
           return pending;
         });
-        setSettingsFeedback({ kind: "success", message: t("Loading sessions in the background...", "正在后台加载会话...") });
-        void window.sessionSearch
-          .refreshIndex()
-          .then(async () => {
-            setPendingPersonalSources((current) => {
-              const pending = { ...current };
-              for (const item of newlyEnabledSources) pending[item.pendingKey] = false;
-              return pending;
-            });
-            await refreshAfterAction({ metadata: true, stats: true });
-            setSettingsFeedback({ kind: "success", message: t("Sources ready.", "来源已就绪。") });
-            window.setTimeout(() => {
-              setSettingsFeedback((current) => (current?.kind === "success" ? null : current));
-            }, 1600);
-          })
-          .catch((error) => {
-            setPendingPersonalSources((current) => {
-              const pending = { ...current };
-              for (const item of newlyEnabledSources) pending[item.pendingKey] = false;
-              return pending;
-            });
-            setSettingsFeedback({ kind: "error", message: error instanceof Error ? error.message : String(error) });
-          });
+        for (const item of changedSources) {
+          if (nextSettings[item.key]) optionalSourceIndexRefreshKeysRef.current.add(item.pendingKey);
+          else optionalSourceIndexRefreshKeysRef.current.delete(item.pendingKey);
+        }
+        scheduleOptionalSourceRefresh();
         return;
-      }
-
-      if (changedSources.length > 0) {
-        void refreshAfterAction({ metadata: true, stats: true }).catch((error) => {
-          setSettingsFeedback({ kind: "error", message: error instanceof Error ? error.message : String(error) });
-        });
       }
       setSettingsFeedback({ kind: "success", message: t("Settings saved.", "设置已保存。") });
       window.setTimeout(() => {
@@ -2499,13 +2545,7 @@ export function App(): ReactElement {
           onRename={() => beginRename(contextMenu.session)}
           onAddTag={() => beginAddTag(contextMenu.session)}
           onSelectMultiple={() => beginBulkSelection(contextMenu.session.sessionKey)}
-          onFavorite={() =>
-            void runAction(
-              contextMenu.session.favorited ? t("Removing favorite", "正在取消收藏") : t("Adding favorite", "正在加入收藏"),
-              () => window.sessionSearch.setFavorited(contextMenu.session.sessionKey, !contextMenu.session.favorited),
-              contextMenu.session.favorited ? t("Removed from favorites.", "已取消收藏。") : t("Added to favorites.", "已加入收藏。"),
-            )
-          }
+          onFavorite={() => void toggleFavorite(contextMenu.session)}
           onHide={() =>
             void runAction(
               t("Updating visibility", "正在更新可见性"),

@@ -1572,6 +1572,7 @@ const loadCachedLiveSessionSnapshot = createCachedLiveSessionSnapshotLoader({
           (environment, remoteCommand) => environment.kind === "wsl"
             ? runRemoteCommand(environment, remoteCommand, { maxBuffer: 512 * 1024, timeout: 10_000 })
             : sshCommandService.run(environment, remoteCommand, { maxBuffer: 512 * 1024, timeout: 10_000 }),
+          { includePasswordAuthenticated: options?.fresh === true },
         ))
         .then((sessions) => ({ sessions, error: null as string | null }))
         .catch((error) => ({

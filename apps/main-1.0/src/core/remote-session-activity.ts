@@ -285,12 +285,20 @@ const REMOTE_CODEX_ACTIVITY_COMMAND =
 type RemoteCommandRunner = (environment: SessionEnvironment, remoteCommand: string) => Promise<string>;
 const REMOTE_LIVE_SESSION_CONCURRENCY = 3;
 
+export interface RemoteLiveSessionOptions {
+  includePasswordAuthenticated?: boolean;
+}
+
 export async function loadRemoteLiveSessions(
   environments: readonly SessionEnvironment[],
   runRemoteCommand: RemoteCommandRunner,
+  options: RemoteLiveSessionOptions = {},
 ): Promise<LiveSession[]> {
   const candidates = environments
-    .filter((environment) => (environment.kind === "ssh" || environment.kind === "wsl") && environment.enabled);
+    .filter((environment) =>
+      (environment.kind === "ssh" || environment.kind === "wsl")
+      && environment.enabled
+      && (environment.authMode !== "password" || options.includePasswordAuthenticated === true));
   const outputs: LiveSession[][] = Array.from({ length: candidates.length }, () => []);
   let cursor = 0;
   let wslFailure: Error | null = null;

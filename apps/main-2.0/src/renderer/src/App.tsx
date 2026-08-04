@@ -49,6 +49,7 @@ import { LANGUAGE_STORAGE_KEY, localize, readInitialLanguage, type LanguageMode 
 import { readInitialTheme, THEME_STORAGE_KEY, type ThemeMode } from "./theme";
 import { coalesceIndexStatusForRender } from "./index-status";
 import { reduceIndexFeedback } from "./index-status-feedback";
+import { createLatestTaskQueue } from "./latest-task-queue";
 import type {
   ActionStatus,
   ContextMenuState,
@@ -139,6 +140,7 @@ const OPTIONAL_SOURCE_SETTINGS = OPTIONAL_SESSION_SOURCE_DESCRIPTORS.map((descri
   pendingKey: descriptor.pendingKey,
   filter: descriptor.id,
 }));
+const OPTIONAL_SOURCE_REFRESH_SETTLE_MS = 120;
 
 function emptyPendingPersonalSources(): Record<PendingSourceKey, boolean> {
   return Object.fromEntries(
@@ -404,6 +406,10 @@ export function App(): ReactElement {
   const metadataLoadSeqRef = useRef(0);
   const appSettingsRef = useRef<AppSettings | null>(null);
   const settingsUpdateQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const optionalSourceRefreshGenerationRef = useRef(0);
+  const optionalSourceIndexRefreshKeysRef = useRef(new Set<PendingSourceKey>());
+  const [optionalSourceRefreshQueue] = useState(() =>
+    createLatestTaskQueue<void>({ settleMs: OPTIONAL_SOURCE_REFRESH_SETTLE_MS }));
   const t = useCallback((en: string, zh: string) => localize(language, en, zh), [language]);
   appSettingsRef.current = appSettings;
   migrationDialogRef.current = migrationDialog;
@@ -1297,6 +1303,35 @@ export function App(): ReactElement {
     }
   }
 
+  function scheduleOptionalSourceRefresh(): void {
+    optionalSourceRefreshGenerationRef.current += 1;
+    setSettingsFeedback({ kind: "success", message: t("Loading sessions in the background...", "正在后台加载会话...") });
+    void optionalSourceRefreshQueue.request(async () => {
+      const generation = optionalSourceRefreshGenerationRef.current;
+      const shouldRefreshIndex = optionalSourceIndexRefreshKeysRef.current.size > 0;
+      optionalSourceIndexRefreshKeysRef.current.clear();
+      try {
+        if (shouldRefreshIndex) {
+          const status = await window.sessionSearch.refreshIndex();
+          if (status.error) throw new Error(status.error);
+        }
+        await Promise.all([load(), loadSidebarMetadata(), loadStats()]);
+        if (optionalSourceRefreshGenerationRef.current !== generation) return;
+        setPendingPersonalSources(emptyPendingPersonalSources());
+        const message = t("Sources ready.", "来源已就绪。");
+        setSettingsFeedback({ kind: "success", message });
+        window.setTimeout(() => {
+          setSettingsFeedback((current) =>
+            current?.kind === "success" && current.message === message ? null : current);
+        }, 1600);
+      } catch (error) {
+        if (optionalSourceRefreshGenerationRef.current !== generation) return;
+        setPendingPersonalSources(emptyPendingPersonalSources());
+        setSettingsFeedback({ kind: "error", message: error instanceof Error ? error.message : String(error) });
+      }
+    }).catch(() => undefined);
+  }
+
   function updateSettings(next: AppSettingsUpdate): Promise<void> {
     const request = settingsUpdateQueueRef.current.then(() => performSettingsUpdate(next));
     settingsUpdateQueueRef.current = request.catch(() => undefined);
@@ -1306,7 +1341,6 @@ export function App(): ReactElement {
   async function performSettingsUpdate(next: AppSettingsUpdate): Promise<void> {
     const currentSettings = appSettingsRef.current;
     const changedSources = OPTIONAL_SOURCE_SETTINGS.filter((item) => item.key in next && next[item.key] !== currentSettings?.[item.key]);
-    const newlyEnabledSources = changedSources.filter((item) => next[item.key] === true);
     const quotaVisibilityChanged =
       ("hideCodexQuota" in next && next.hideCodexQuota !== currentSettings?.hideCodexQuota) ||
       ("hideClaudeQuota" in next && next.hideClaudeQuota !== currentSettings?.hideClaudeQuota);
@@ -1325,44 +1359,18 @@ export function App(): ReactElement {
       }
       if (quotaVisibilityChanged) void loadQuotas();
 
-      if (newlyEnabledSources.length > 0) {
-        // Keep the toggle responsive: scan optional sources in the background
-        // and only reveal their sidebar filters once that scan finishes.
+      if (changedSources.length > 0) {
         setPendingPersonalSources((current) => {
           const pending = { ...current };
-          for (const item of newlyEnabledSources) pending[item.pendingKey] = true;
+          for (const item of changedSources) pending[item.pendingKey] = nextSettings[item.key];
           return pending;
         });
-        setSettingsFeedback({ kind: "success", message: t("Loading sessions in the background...", "正在后台加载会话...") });
-        void window.sessionSearch
-          .refreshIndex()
-          .then(async () => {
-            setPendingPersonalSources((current) => {
-              const pending = { ...current };
-              for (const item of newlyEnabledSources) pending[item.pendingKey] = false;
-              return pending;
-            });
-            await Promise.all([load(), loadSidebarMetadata(), loadStats()]);
-            setSettingsFeedback({ kind: "success", message: t("Sources ready.", "来源已就绪。") });
-            window.setTimeout(() => {
-              setSettingsFeedback((current) => (current?.kind === "success" ? null : current));
-            }, 1600);
-          })
-          .catch((error) => {
-            setPendingPersonalSources((current) => {
-              const pending = { ...current };
-              for (const item of newlyEnabledSources) pending[item.pendingKey] = false;
-              return pending;
-            });
-            setSettingsFeedback({ kind: "error", message: error instanceof Error ? error.message : String(error) });
-          });
+        for (const item of changedSources) {
+          if (nextSettings[item.key]) optionalSourceIndexRefreshKeysRef.current.add(item.pendingKey);
+          else optionalSourceIndexRefreshKeysRef.current.delete(item.pendingKey);
+        }
+        scheduleOptionalSourceRefresh();
         return;
-      }
-
-      if (changedSources.length > 0) {
-        void Promise.all([load(), loadSidebarMetadata(), loadStats()]).catch((error) => {
-          setSettingsFeedback({ kind: "error", message: error instanceof Error ? error.message : String(error) });
-        });
       }
       setSettingsFeedback({ kind: "success", message: t("Settings saved.", "设置已保存。") });
       window.setTimeout(() => {

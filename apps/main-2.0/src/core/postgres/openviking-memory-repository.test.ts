@@ -143,12 +143,20 @@ describe("PostgresOpenVikingMemoryRepository", () => {
     });
     const payload = {
       context: [],
-      primary: [{
-        sourceTurnId: "codex:session-1:0",
-        fingerprint: "turn-hash",
-        user: "question",
-        assistant: "answer",
-      }],
+      primary: [
+        {
+          sourceTurnId: "codex:session-1:0",
+          fingerprint: "turn-hash",
+          user: "question",
+          assistant: "answer",
+        },
+        {
+          sourceTurnId: "codex:session-1:1",
+          fingerprint: "turn-hash-2",
+          user: "question 2",
+          assistant: "answer 2",
+        },
+      ],
     };
     const [task] = await repository.syncImportTasks("workspace-1", [{
       id: "task-1",
@@ -179,6 +187,12 @@ describe("PostgresOpenVikingMemoryRepository", () => {
       "codex:session-1:0",
       "turn-hash",
     )).resolves.toBe(true);
+    await expect(repository.hasImportedTurn(
+      "workspace-1",
+      "codex:session-1:1",
+      "turn-hash-2",
+    )).resolves.toBe(true);
+    await expect(repository.countImportedTurns("workspace-1")).resolves.toBe(2);
     await expect(repository.listImportTasks("workspace-1")).resolves.toEqual([
       expect.objectContaining({
         id: "task-1",
