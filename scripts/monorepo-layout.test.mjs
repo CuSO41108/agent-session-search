@@ -42,5 +42,7 @@ test("hydrates and validates the Electron runtime after installing app dependenc
   const setupScript = await readFile("scripts/setup-app.mjs", "utf8");
   assert.match(setupScript, /restoreEmbeddedPostgresNativeLinks/);
   assert.match(setupScript, /path\.join\(normalizedDirectory, "node_modules", "electron", "cli\.js"\)/);
-  assert.match(setupScript, /runCommand\(process\.execPath, \[electronCli, "--version"\]/);
+  assert.match(setupScript, /process\.platform === "linux"/);
+  assert.match(setupScript, /\[electronCli, "--no-sandbox", "--version"\]/);
+  assert.match(setupScript, /runCommand\(process\.execPath, electronArguments/);
 });

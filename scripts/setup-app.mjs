@@ -44,7 +44,10 @@ async function setupApplication() {
   }
 
   const electronCli = path.join(normalizedDirectory, "node_modules", "electron", "cli.js");
-  await runCommand(process.execPath, [electronCli, "--version"], {
+  const electronArguments = process.platform === "linux"
+    ? [electronCli, "--no-sandbox", "--version"]
+    : [electronCli, "--version"];
+  await runCommand(process.execPath, electronArguments, {
     label: "Electron runtime validation",
     shell: false,
     env: process.env,
