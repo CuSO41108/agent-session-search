@@ -146,6 +146,74 @@ describe("deriveSessionTimeline", () => {
     }]);
   });
 
+  it("preserves Agent message direction and turn-trigger metadata in collaboration spans", () => {
+    const loaded = loadCodexSessionRows("/tmp/codex-agent-message.jsonl", [
+      {
+        type: "session_meta",
+        timestamp: "2026-08-03T03:00:00.000Z",
+        payload: { id: "codex-agent-message", cwd: "/repo", agent_path: "/root" },
+      },
+      {
+        type: "response_item",
+        timestamp: "2026-08-03T03:00:00.050Z",
+        payload: {
+          type: "message",
+          role: "user",
+          content: [{ type: "input_text", text: "delegate the task" }],
+        },
+      },
+      {
+        type: "inter_agent_communication_metadata",
+        timestamp: "2026-08-03T03:00:00.100Z",
+        payload: { trigger_turn: false },
+      },
+      {
+        type: "response_item",
+        timestamp: "2026-08-03T03:00:00.150Z",
+        payload: {
+          type: "agent_message",
+          author: "/root/worker",
+          recipient: "/root",
+          content: [{
+            type: "input_text",
+            text: "Message Type: FINAL_ANSWER\nTask name: /root\nSender: /root/worker\nPayload:\nDone",
+          }],
+        },
+      },
+    ]);
+
+    const timeline = deriveSessionTimeline({
+      sessionKey: "codex:codex-agent-message",
+      messages: loaded?.messages ?? [],
+      traceEvents: loaded?.traceEvents ?? [],
+    });
+
+    expect(timeline.turns[0].spans).toMatchObject([{
+      name: "Agent message",
+      output: {
+        message: {
+          type: "agent_message",
+          author: "/root/worker",
+          recipient: "/root",
+          content: [{ type: "input_text" }],
+        },
+        direction: "incoming",
+        triggerTurn: false,
+        messageType: "final_answer",
+      },
+      attributes: {
+        eventType: "codex.collaboration.message",
+        collaboration: {
+          author: "/root/worker",
+          recipient: "/root",
+          direction: "incoming",
+          triggerTurn: false,
+          messageType: "final_answer",
+        },
+      },
+    }]);
+  });
+
   it("projects plain-text function outputs as text instead of a value wrapper", () => {
     const timeline = deriveSessionTimeline({
       sessionKey: "codex:plain-tool-output",

@@ -198,6 +198,126 @@ describe("Codex session loading", () => {
     ).toMatchObject({ isSubagent: false, parentSessionId: null });
   });
 
+  it("keeps Codex Agent message metadata and encrypted content together in structured output", () => {
+    const loaded = loadCodexSessionRows("/tmp/codex-agent-messages.jsonl", [
+      {
+        type: "session_meta",
+        timestamp: "2026-08-04T03:00:00Z",
+        payload: { id: "child", cwd: "/repo", agent_path: "/root/worker", thread_source: "subagent", parent_thread_id: "parent" },
+      },
+      { type: "inter_agent_communication_metadata", timestamp: "2026-08-04T03:00:01Z", payload: { trigger_turn: true } },
+      {
+        type: "response_item",
+        timestamp: "2026-08-04T03:00:01Z",
+        payload: {
+          type: "agent_message",
+          id: "new-task",
+          author: "/root",
+          recipient: "/root/worker",
+          content: [
+            { type: "input_text", text: "Message Type: NEW_TASK\nTask name: /root/worker\nSender: /root\nPayload:\n" },
+            { type: "encrypted_content", encrypted_content: "must-not-index-encrypted-task" },
+          ],
+          internal_chat_message_metadata_passthrough: { turn_id: "turn-1" },
+        },
+      },
+      { type: "inter_agent_communication_metadata", timestamp: "2026-08-04T03:00:02Z", payload: { trigger_turn: false } },
+      {
+        type: "response_item",
+        timestamp: "2026-08-04T03:00:02Z",
+        payload: {
+          type: "agent_message",
+          id: "outgoing-message",
+          author: "/root/worker",
+          recipient: "/root",
+          content: [{ type: "input_text", text: "Message Type: FINAL_ANSWER\nTask name: /root\nSender: /root/worker\nPayload:\n检查完成" }],
+          internal_chat_message_metadata_passthrough: { turn_id: "turn-1" },
+        },
+      },
+    ]);
+
+    const messages = loaded?.traceEvents?.filter((event) => event.eventType === "codex.collaboration.message") ?? [];
+    expect(messages).toHaveLength(2);
+    expect(messages[0]).toMatchObject({
+      title: "Agent message",
+      sourceTurnId: "turn-1",
+      attributes: {
+        collaboration: {
+          author: "/root",
+          recipient: "/root/worker",
+          direction: "incoming",
+          triggerTurn: true,
+          messageType: "new_task",
+        },
+      },
+    });
+    expect(messages[1]).toMatchObject({
+      attributes: {
+        collaboration: {
+          direction: "outgoing",
+          triggerTurn: false,
+          messageType: "final_answer",
+        },
+      },
+    });
+    expect(JSON.parse(messages[0]?.detail ?? "")).toMatchObject({
+      direction: "incoming",
+      triggerTurn: true,
+      messageType: "new_task",
+      message: {
+        type: "agent_message",
+        author: "/root",
+        recipient: "/root/worker",
+        content: [
+          { type: "input_text" },
+          { type: "encrypted_content", encrypted_content: "must-not-index-encrypted-task" },
+        ],
+      },
+    });
+    expect(JSON.parse(messages[1]?.detail ?? "")).toMatchObject({
+      direction: "outgoing",
+      triggerTurn: false,
+      messageType: "final_answer",
+    });
+  });
+
+  it("keeps pending inter-agent metadata across incremental Codex reads", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "session-search-codex-agent-message-"));
+    const filePath = path.join(root, "sessions", "2026", "08", "04", "rollout.jsonl");
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.writeFileSync(filePath, [
+      JSON.stringify({ type: "session_meta", timestamp: "2026-08-04T03:00:00Z", payload: { id: "parent", cwd: "/repo" } }),
+      JSON.stringify({ type: "inter_agent_communication_metadata", timestamp: "2026-08-04T03:00:01Z", payload: { trigger_turn: false } }),
+      "",
+    ].join("\n"));
+
+    try {
+      const initial = loadCodexSessionFile(filePath);
+      if (!initial) throw new Error("expected initial Codex session");
+      const offset = fs.statSync(filePath).size;
+      fs.appendFileSync(filePath, `${JSON.stringify({
+        type: "response_item",
+        timestamp: "2026-08-04T03:00:02Z",
+        payload: {
+          type: "agent_message",
+          id: "child-result",
+          author: "/root/worker",
+          recipient: "/root",
+          content: [{ type: "input_text", text: "Message Type: FINAL_ANSWER\nTask name: /root\nSender: /root/worker\nPayload:\nDone" }],
+        },
+      })}\n`);
+
+      const incremental = [...loadCodexSessionsIterator(root, undefined, {
+        incrementalCodexSessions: new Map([[filePath, { offset, loaded: initial }]]),
+      })][0];
+      expect(incremental?.traceEvents?.find((event) => event.eventType === "codex.collaboration.message")).toMatchObject({
+        attributes: { collaboration: { direction: "incoming", triggerTurn: false, messageType: "final_answer" } },
+      });
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("skips unchanged source files before parsing JSONL", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "session-search-codex-skip-"));
     const filePath = path.join(root, "sessions", "2026", "06", "26", "rollout.jsonl");
@@ -1640,7 +1760,14 @@ describe("Codex session loading", () => {
     ]));
     expect(serialized).toContain("Review complete");
     expect(serialized).toContain("permissionProfile");
-    expect(serialized).not.toMatch(/must-not-index/);
+    expect(serialized).toContain("must-not-index-agent-message");
+    expect(serialized).not.toContain("must-not-index-raw-reasoning");
+    expect(serialized).not.toContain("must-not-index-encrypted-reasoning");
+    expect(serialized).not.toContain("must-not-index-legacy-raw");
+    expect(serialized).not.toContain("must-not-index-item-raw");
+    expect(serialized).not.toContain("must-not-index-collab-prompt");
+    expect(serialized).not.toContain("must-not-index-goal-private-state");
+    expect(serialized).not.toContain("must-not-index-world-state");
   });
 
   it("caps large Codex trace details during loading", () => {
