@@ -271,6 +271,9 @@ function spanPayload(value: unknown, fallback: string): Record<string, unknown> 
   if (value && typeof value === "object" && !Array.isArray(value)) {
     return value as Record<string, unknown>;
   }
+  if (typeof value === "string") {
+    return value ? { text: value } : fallback ? { text: fallback } : null;
+  }
   if (value !== null && value !== undefined) return { value };
   return fallback ? { text: fallback } : null;
 }

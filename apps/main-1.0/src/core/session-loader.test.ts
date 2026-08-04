@@ -18,6 +18,49 @@ import {
 import { TRACE_DETAIL_PREVIEW_MAX_CHARS } from "./trace-detail";
 
 describe("Codex session loading", () => {
+  it("decodes structured collaboration function outputs", () => {
+    const loaded = loadCodexSessionRows("/tmp/codex-list-agents.jsonl", [
+      {
+        type: "session_meta",
+        timestamp: "2026-08-03T02:59:18.000Z",
+        payload: { id: "codex-list-agents", cwd: "/repo" },
+      },
+      {
+        type: "response_item",
+        timestamp: "2026-08-03T02:59:18.100Z",
+        payload: {
+          type: "function_call",
+          name: "list_agents",
+          namespace: "collaboration",
+          call_id: "call-list-agents",
+          arguments: "{}",
+        },
+      },
+      {
+        type: "response_item",
+        timestamp: "2026-08-03T02:59:18.200Z",
+        payload: {
+          type: "function_call_output",
+          call_id: "call-list-agents",
+          output: JSON.stringify({
+            agents: [
+              { agent_name: "/root", agent_status: "running", last_task_message: "Main thread" },
+              { agent_name: "/root/list_home_dir", agent_status: "running", last_task_message: null },
+            ],
+          }),
+        },
+      },
+    ]);
+
+    expect(loaded?.traceEvents).toHaveLength(1);
+    expect(loaded?.traceEvents?.[0].attributes?.output).toEqual({
+      agents: [
+        { agent_name: "/root", agent_status: "running", last_task_message: "Main thread" },
+        { agent_name: "/root/list_home_dir", agent_status: "running", last_task_message: null },
+      ],
+    });
+  });
+
   it("preserves Codex message phases and normalizes turn lifecycle metadata", () => {
     const rows = [
       {

@@ -495,7 +495,7 @@ function extractCodexResponseTrace(
   ) {
     const output = payloadType === "tool_search_output"
       ? { status: unknownField(payload, "status"), tools: unknownField(payload, "tools") }
-      : unknownField(payload, "output");
+      : parseMaybeJson(unknownField(payload, "output"));
     const safeOutput = sanitizeCodexTraceValue(output);
     const eventType =
       payloadType === "function_call_output" ? "codex.function_call"

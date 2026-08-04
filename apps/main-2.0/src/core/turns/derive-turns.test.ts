@@ -86,6 +86,109 @@ const tokenEvents: TokenUsageEvent[] = [
 ];
 
 describe("deriveSessionTimeline", () => {
+  it("projects structured collaboration outputs without a value wrapper", () => {
+    const loaded = loadCodexSessionRows("/tmp/codex-list-agents.jsonl", [
+      {
+        type: "session_meta",
+        timestamp: "2026-08-03T02:59:18.000Z",
+        payload: { id: "codex-list-agents", cwd: "/repo" },
+      },
+      {
+        type: "response_item",
+        timestamp: "2026-08-03T02:59:18.050Z",
+        payload: {
+          type: "message",
+          role: "user",
+          content: [{ type: "input_text", text: "list agents" }],
+        },
+      },
+      {
+        type: "response_item",
+        timestamp: "2026-08-03T02:59:18.100Z",
+        payload: {
+          type: "function_call",
+          name: "list_agents",
+          namespace: "collaboration",
+          call_id: "call-list-agents",
+          arguments: "{}",
+        },
+      },
+      {
+        type: "response_item",
+        timestamp: "2026-08-03T02:59:18.200Z",
+        payload: {
+          type: "function_call_output",
+          call_id: "call-list-agents",
+          output: JSON.stringify({
+            agents: [
+              { agent_name: "/root", agent_status: "running", last_task_message: "Main thread" },
+              { agent_name: "/root/list_home_dir", agent_status: "running", last_task_message: null },
+            ],
+          }),
+        },
+      },
+    ]);
+
+    const timeline = deriveSessionTimeline({
+      sessionKey: "codex:codex-list-agents",
+      messages: loaded?.messages ?? [],
+      traceEvents: loaded?.traceEvents ?? [],
+    });
+
+    expect(timeline.turns[0].spans).toMatchObject([{
+      name: "collaboration.list_agents",
+      output: {
+        agents: [
+          { agent_name: "/root", agent_status: "running", last_task_message: "Main thread" },
+          { agent_name: "/root/list_home_dir", agent_status: "running", last_task_message: null },
+        ],
+      },
+    }]);
+  });
+
+  it("projects plain-text function outputs as text instead of a value wrapper", () => {
+    const timeline = deriveSessionTimeline({
+      sessionKey: "codex:plain-tool-output",
+      messages: [{
+        role: "user",
+        content: "run it",
+        timestamp: "2026-08-03T03:00:00.000Z",
+        index: 0,
+      }],
+      traceEvents: [
+        {
+          index: 0,
+          kind: "tool_call",
+          source: "codex",
+          title: "collaboration.wait_agent",
+          detail: "",
+          timestamp: "2026-08-03T03:00:00.100Z",
+          callId: "call-wait-agent",
+          eventType: "codex.function_call",
+          status: "running",
+          attributes: { input: { timeout_ms: 30_000 } },
+        },
+        {
+          index: 1,
+          kind: "tool_result",
+          source: "codex",
+          title: "tool output",
+          detail: "Wait timed out.",
+          timestamp: "2026-08-03T03:00:30.100Z",
+          callId: "call-wait-agent",
+          eventType: "codex.function_call",
+          status: "completed",
+          attributes: { output: "Wait timed out." },
+        },
+      ],
+    });
+
+    expect(timeline.turns[0].spans).toMatchObject([{
+      name: "collaboration.wait_agent",
+      output: { text: "Wait timed out." },
+    }]);
+  });
+
   it("groups by Codex source turn id and projects lifecycle without creating spans", () => {
     const sourceMessages: SessionMessage[] = [
       {
