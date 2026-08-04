@@ -859,7 +859,7 @@ export class CodexRolloutAccumulator {
     },
   ) {
     this.currentHistoryMode = state?.historyMode ?? "legacy";
-    this.currentAgentPath = state?.agentPath ?? "/root";
+    this.currentAgentPath = state?.agentPath !== undefined ? state.agentPath : "/root";
     this.pendingInterAgentCommunication = state?.pendingInterAgentCommunication ?? null;
     for (const turnId of state?.activeTurnIds ?? []) {
       if (!turnId) continue;

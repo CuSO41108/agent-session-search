@@ -321,6 +321,119 @@ describe("Codex session loading", () => {
     }
   });
 
+  it("keeps unknown Agent message direction across incremental reads for subagents without agent_path", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "session-search-codex-null-agent-path-"));
+    const filePath = path.join(root, "sessions", "2026", "08", "04", "rollout.jsonl");
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    const agentMessage = {
+      type: "response_item",
+      timestamp: "2026-08-04T03:00:01Z",
+      payload: {
+        type: "agent_message",
+        id: "from-root",
+        author: "/root",
+        recipient: "/root/worker",
+        content: [{ type: "input_text", text: "Message Type: NEW_TASK\nTask name: /root/worker\nSender: /root\nPayload:\nGo" }],
+      },
+    };
+    fs.writeFileSync(filePath, [
+      JSON.stringify({
+        type: "session_meta",
+        timestamp: "2026-08-04T03:00:00Z",
+        payload: { id: "child", cwd: "/repo", thread_source: "subagent", parent_thread_id: "parent" },
+      }),
+      JSON.stringify(agentMessage),
+      "",
+    ].join("\n"));
+
+    try {
+      const initial = loadCodexSessionFile(filePath);
+      if (!initial) throw new Error("expected initial Codex session");
+      expect(initial.session.isSubagent).toBe(true);
+      expect(initial.codexIncrementalState?.agentPath).toBeNull();
+      expect(initial.traceEvents?.find((event) => event.eventType === "codex.collaboration.message")).toMatchObject({
+        attributes: { collaboration: { direction: "unknown", author: "/root", recipient: "/root/worker" } },
+      });
+
+      const offset = fs.statSync(filePath).size;
+      fs.appendFileSync(filePath, `${JSON.stringify({
+        type: "response_item",
+        timestamp: "2026-08-04T03:00:02Z",
+        payload: {
+          type: "agent_message",
+          id: "to-root",
+          author: "/root/worker",
+          recipient: "/root",
+          content: [{ type: "input_text", text: "Message Type: FINAL_ANSWER\nTask name: /root\nSender: /root/worker\nPayload:\nDone" }],
+        },
+      })}\n`);
+
+      const incremental = [...loadCodexSessionsIterator(root, undefined, {
+        incrementalCodexSessions: new Map([[filePath, { offset, loaded: initial }]]),
+      })][0];
+      const messages = incremental?.traceEvents?.filter((event) => event.eventType === "codex.collaboration.message") ?? [];
+      expect(messages).toHaveLength(2);
+      expect(messages[0]).toMatchObject({
+        attributes: { collaboration: { direction: "unknown", author: "/root", recipient: "/root/worker" } },
+      });
+      expect(messages[1]).toMatchObject({
+        attributes: { collaboration: { direction: "unknown", author: "/root/worker", recipient: "/root" } },
+      });
+      expect(incremental?.codexIncrementalState?.agentPath).toBeNull();
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps resolved Agent message direction across incremental reads when subagent has agent_path", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "session-search-codex-agent-path-"));
+    const filePath = path.join(root, "sessions", "2026", "08", "04", "rollout.jsonl");
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.writeFileSync(filePath, [
+      JSON.stringify({
+        type: "session_meta",
+        timestamp: "2026-08-04T03:00:00Z",
+        payload: {
+          id: "child",
+          cwd: "/repo",
+          agent_path: "/root/worker",
+          thread_source: "subagent",
+          parent_thread_id: "parent",
+        },
+      }),
+      "",
+    ].join("\n"));
+
+    try {
+      const initial = loadCodexSessionFile(filePath);
+      if (!initial) throw new Error("expected initial Codex session");
+      expect(initial.codexIncrementalState?.agentPath).toBe("/root/worker");
+
+      const offset = fs.statSync(filePath).size;
+      fs.appendFileSync(filePath, `${JSON.stringify({
+        type: "response_item",
+        timestamp: "2026-08-04T03:00:01Z",
+        payload: {
+          type: "agent_message",
+          id: "from-root",
+          author: "/root",
+          recipient: "/root/worker",
+          content: [{ type: "input_text", text: "Message Type: NEW_TASK\nTask name: /root/worker\nSender: /root\nPayload:\nGo" }],
+        },
+      })}\n`);
+
+      const incremental = [...loadCodexSessionsIterator(root, undefined, {
+        incrementalCodexSessions: new Map([[filePath, { offset, loaded: initial }]]),
+      })][0];
+      expect(incremental?.traceEvents?.find((event) => event.eventType === "codex.collaboration.message")).toMatchObject({
+        attributes: { collaboration: { direction: "incoming", author: "/root", recipient: "/root/worker" } },
+      });
+      expect(incremental?.codexIncrementalState?.agentPath).toBe("/root/worker");
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("skips unchanged source files before parsing JSONL", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "session-search-codex-skip-"));
     const filePath = path.join(root, "sessions", "2026", "06", "26", "rollout.jsonl");

@@ -220,7 +220,7 @@ export interface CodexIncrementalState {
   historyMode: CodexHistoryMode;
   messageProvenance: CodexMessageProvenance[];
   activeTurnIds: string[];
-  agentPath?: string;
+  agentPath?: string | null;
   pendingInterAgentCommunication?: {
     triggerTurn: boolean;
   };

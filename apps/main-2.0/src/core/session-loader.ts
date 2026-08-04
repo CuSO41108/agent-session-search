@@ -1012,7 +1012,7 @@ export function loadCodexSessionRows(
     historyMode: meta.historyMode ?? extracted.historyMode,
     messageProvenance: extracted.messageProvenance,
     activeTurnIds: extracted.activeTurnIds,
-    ...(extracted.agentPath && extracted.agentPath !== "/root" ? { agentPath: extracted.agentPath } : {}),
+    ...(extracted.agentPath === undefined || extracted.agentPath === "/root" ? {} : { agentPath: extracted.agentPath }),
     ...(extracted.pendingInterAgentCommunication
       ? { pendingInterAgentCommunication: extracted.pendingInterAgentCommunication }
       : {}),
@@ -1119,7 +1119,8 @@ function createCodexScanAccumulator(base?: { offset: number; loaded: LoadedSessi
   const rollout = new CodexRolloutAccumulator(base ? {
     historyMode: base.loaded.codexIncrementalState?.historyMode ?? "legacy",
     activeTurnIds: base.loaded.codexIncrementalState?.activeTurnIds ?? [],
-    agentPath: base.loaded.codexIncrementalState?.agentPath,
+    agentPath: base.loaded.codexIncrementalState?.agentPath
+      ?? (base.loaded.session.isSubagent ? null : "/root"),
     pendingInterAgentCommunication: base.loaded.codexIncrementalState?.pendingInterAgentCommunication,
     sourceTurnIds: [
       ...allMessages.map((message) => message.sourceTurnId),
@@ -1314,7 +1315,7 @@ function createCodexScanAccumulator(base?: { offset: number; loaded: LoadedSessi
             sourceRecordId: messageProvenance.get(message) ?? null,
           })),
           activeTurnIds: rollout.getActiveTurnIds(),
-          ...(rollout.agentPath && rollout.agentPath !== "/root" ? { agentPath: rollout.agentPath } : {}),
+          ...(rollout.agentPath === undefined || rollout.agentPath === "/root" ? {} : { agentPath: rollout.agentPath }),
           ...(pendingInterAgentCommunication
             ? { pendingInterAgentCommunication }
             : {}),
