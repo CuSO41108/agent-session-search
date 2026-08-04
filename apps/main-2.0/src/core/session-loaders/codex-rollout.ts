@@ -117,7 +117,7 @@ function collectText(value: unknown): string[] {
     .flatMap(([, nested]) => collectText(nested));
 }
 
-function sanitizeCodexTraceValuePart(value: unknown, key = ""): unknown {
+function sanitizeCodexTraceValuePart(value: unknown, key = "", preserveEncrypted = false): unknown {
   if (typeof value === "string") {
     const normalizedKey = key.toLocaleLowerCase();
     const opaqueField = normalizedKey === "image_url"
@@ -130,25 +130,32 @@ function sanitizeCodexTraceValuePart(value: unknown, key = ""): unknown {
     }
     return truncateTraceDetail(value);
   }
-  if (Array.isArray(value)) return value.map((item) => sanitizeCodexTraceValuePart(item));
+  if (Array.isArray(value)) return value.map((item) => sanitizeCodexTraceValuePart(item, "", preserveEncrypted));
   const object = record(value);
   if (!object) return value;
   return Object.fromEntries(
     Object.entries(object)
-      .filter(([nestedKey]) => !nestedKey.toLocaleLowerCase().includes("encrypted"))
-      .map(([nestedKey, nestedValue]) => [nestedKey, sanitizeCodexTraceValuePart(nestedValue, nestedKey)]),
+      .filter(([nestedKey]) => preserveEncrypted || !nestedKey.toLocaleLowerCase().includes("encrypted"))
+      .map(([nestedKey, nestedValue]) => [
+        nestedKey,
+        sanitizeCodexTraceValuePart(nestedValue, nestedKey, preserveEncrypted),
+      ]),
   );
 }
 
-export function sanitizeCodexTraceValue(value: unknown): unknown {
+function sanitizedCodexTraceValue(value: unknown, preserveEncrypted: boolean): unknown {
   const existing = record(value);
   if (existing && existing.truncated === true && typeof existing.preview === "string") return value;
-  const sanitized = sanitizeCodexTraceValuePart(value);
+  const sanitized = sanitizeCodexTraceValuePart(value, "", preserveEncrypted);
   if (!sanitized || typeof sanitized !== "object") return sanitized;
   const serialized = JSON.stringify(sanitized);
   return serialized.length > 0 && truncateTraceDetail(serialized) !== serialized
     ? { preview: truncateTraceDetail(serialized), truncated: true }
     : sanitized;
+}
+
+export function sanitizeCodexTraceValue(value: unknown): unknown {
+  return sanitizedCodexTraceValue(value, false);
 }
 
 function detailSection(label: string, value: unknown): string {
@@ -305,17 +312,34 @@ function itemToolTrace(
   };
 }
 
-function plaintextAgentMessage(content: unknown): string {
-  if (!Array.isArray(content)) return "";
+type AgentMessageDirection = "incoming" | "outgoing" | "unknown";
+type AgentMessageType = "new_task" | "message" | "final_answer" | "unknown";
+
+function agentMessageType(content: unknown): AgentMessageType {
+  if (!Array.isArray(content)) return "unknown";
   const text: string[] = [];
   for (const value of content) {
     const part = record(value);
     if (!part) continue;
     const type = normalizeItemType(stringValue(part.type));
-    if (type === "encryptedcontent") return "";
     if (type === "inputtext" && typeof part.text === "string") text.push(part.text);
   }
-  return text.join("\n").trim();
+  const joined = text.join("\n").trim();
+  const messageTypeMatch = joined.match(/^Message Type:\s*(NEW_TASK|MESSAGE|FINAL_ANSWER)\b/iu);
+  return messageTypeMatch?.[1]?.toLocaleUpperCase() === "NEW_TASK"
+    ? "new_task"
+    : messageTypeMatch?.[1]?.toLocaleUpperCase() === "MESSAGE"
+      ? "message"
+      : messageTypeMatch?.[1]?.toLocaleUpperCase() === "FINAL_ANSWER"
+        ? "final_answer"
+        : "unknown";
+}
+
+function agentMessageDirection(author: string, recipient: string, agentPath: string | null): AgentMessageDirection {
+  if (!agentPath) return "unknown";
+  if (recipient === agentPath && author !== agentPath) return "incoming";
+  if (author === agentPath && recipient !== agentPath) return "outgoing";
+  return "unknown";
 }
 
 function contextAttributes(value: unknown): Record<string, unknown> {
@@ -428,6 +452,7 @@ function richResponseTrace(
   row: Record<string, unknown>,
   payload: Record<string, unknown>,
   sourceTurnId: string | null,
+  communication: { agentPath: string | null; triggerTurn: boolean | null },
 ): TraceEventDraft | null {
   const type = stringValue(payload.type);
   const responseItemId = stringValue(payload.id);
@@ -452,20 +477,33 @@ function richResponseTrace(
     };
   }
   if (type === "agent_message") {
-    const detail = plaintextAgentMessage(payload.content);
-    if (!detail) return null;
+    const author = stringValue(payload.author);
+    const recipient = stringValue(payload.recipient);
+    if (!payload.content && !author && !recipient) return null;
+    const direction = agentMessageDirection(author, recipient, communication.agentPath);
+    const messageType = agentMessageType(payload.content);
+    const output = sanitizedCodexTraceValue({
+      message: payload,
+      direction,
+      triggerTurn: communication.triggerTurn,
+      messageType,
+    }, true);
     const attributes = {
       codex,
       collaboration: sanitizeCodexTraceValue({
-        author: payload.author,
-        recipient: payload.recipient,
+        author,
+        recipient,
+        direction,
+        triggerTurn: communication.triggerTurn,
+        messageType,
       }),
+      output,
     };
     return {
       kind: "event",
       source: "codex",
       title: "Agent message",
-      detail: truncateTraceDetail(detail),
+      detail: truncateTraceDetail(JSON.stringify(output, null, 2)),
       timestamp: stringValue(row.timestamp),
       callId: null,
       eventType: "codex.collaboration.message",
@@ -812,13 +850,17 @@ export class CodexRolloutAccumulator {
   private currentHistoryMode: CodexHistoryMode;
   private readonly activeTurnIds = new Set<string>();
   private nextLegacyTurnSequence = 1;
+  private currentAgentPath: string | null;
+  private pendingInterAgentCommunication: { triggerTurn: boolean } | null;
 
   constructor(
-    state?: Pick<CodexIncrementalState, "historyMode" | "activeTurnIds"> & {
+    state?: Pick<CodexIncrementalState, "historyMode" | "activeTurnIds" | "agentPath" | "pendingInterAgentCommunication"> & {
       sourceTurnIds?: Iterable<string | null | undefined>;
     },
   ) {
     this.currentHistoryMode = state?.historyMode ?? "legacy";
+    this.currentAgentPath = state?.agentPath !== undefined ? state.agentPath : "/root";
+    this.pendingInterAgentCommunication = state?.pendingInterAgentCommunication ?? null;
     for (const turnId of state?.activeTurnIds ?? []) {
       if (!turnId) continue;
       this.activeTurnIds.add(turnId);
@@ -833,6 +875,14 @@ export class CodexRolloutAccumulator {
 
   getActiveTurnIds(): string[] {
     return [...this.activeTurnIds];
+  }
+
+  get agentPath(): string | null {
+    return this.currentAgentPath;
+  }
+
+  getPendingInterAgentCommunication(): { triggerTurn: boolean } | null {
+    return this.pendingInterAgentCommunication ? { ...this.pendingInterAgentCommunication } : null;
   }
 
   discardActiveTurnIds(turnIds: Iterable<string>): void {
@@ -859,8 +909,26 @@ export class CodexRolloutAccumulator {
 
     if (row.type === "session_meta") {
       this.currentHistoryMode = historyMode(payload.history_mode);
+      const source = record(payload.source);
+      const subagent = record(source?.subagent);
+      const threadSpawn = record(subagent?.thread_spawn);
+      const agentPath = stringValue(payload.agent_path) || stringValue(threadSpawn?.agent_path);
+      const parentThreadId = stringValue(payload.parent_thread_id) || stringValue(threadSpawn?.parent_thread_id);
+      this.currentAgentPath = agentPath || (!parentThreadId && payload.thread_source !== "subagent" ? "/root" : null);
       return emptyResult();
     }
+
+    if (row.type === "inter_agent_communication_metadata") {
+      this.pendingInterAgentCommunication = typeof payload.trigger_turn === "boolean"
+        ? { triggerTurn: payload.trigger_turn }
+        : null;
+      return emptyResult();
+    }
+
+    const communication = row.type === "response_item" && payload.type === "agent_message"
+      ? this.pendingInterAgentCommunication
+      : null;
+    this.pendingInterAgentCommunication = null;
 
     const uniqueActiveTurnId = this.activeTurnIds.size === 1
       ? this.activeTurnIds.values().next().value as string
@@ -890,7 +958,10 @@ export class CodexRolloutAccumulator {
       const sourceTurnId = message?.sourceTurnId
         ?? stringValue(metadata?.turn_id)
         ?? uniqueActiveTurnId;
-      const richTrace = richResponseTrace(row, payload, sourceTurnId);
+      const richTrace = richResponseTrace(row, payload, sourceTurnId, {
+        agentPath: this.currentAgentPath,
+        triggerTurn: communication?.triggerTurn ?? null,
+      });
       return emptyResult({
         message,
         sourceTurnId,
