@@ -29,6 +29,7 @@ import {
   type CodexRequestExport,
   type CodexRequestFidelity,
 } from "../core/codex-request-export";
+import { extractSessionContextComponents } from "../core/session-context-components";
 import { indexMigratedSessionFile, syncDefaultSessionsInBatches, type IndexStatus } from "../core/indexer";
 import { createIndexRunCoordinator } from "../core/index-run-coordinator";
 import { createIndexProgressPublisher } from "./index-progress";
@@ -1738,6 +1739,22 @@ function registerIpc(): void {
   ipcMain.handle("session:get", (_event, sessionKey: string) => {
     store.markOpened(sessionKey);
     return store.getSession(sessionKey);
+  });
+  ipcMain.handle("session:context-components", async (_event, sessionKey: string) => {
+    const session = store.getSession(sessionKey);
+    if (!session) {
+      return {
+        status: "source_unavailable" as const,
+        source: "codex-cli" as const,
+        format: null,
+        components: [],
+      };
+    }
+    return extractSessionContextComponents({
+      source: session.source,
+      filePath: isLocalSessionEnvironment(session) ? session.filePath : null,
+      sourceAvailable: session.sourceAvailable,
+    });
   });
   ipcMain.handle("session:messages", async (_event, sessionKey: string, offset?: number, limit?: number) => {
     const pageOffset = offset ?? 0;

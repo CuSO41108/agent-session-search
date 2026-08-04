@@ -1,0 +1,346 @@
+import { createReadStream } from "node:fs";
+import * as fs from "node:fs/promises";
+import { createInterface } from "node:readline";
+import { sessionSourceDescriptor } from "./session-sources";
+import type { SessionFormat, SessionSource } from "./types";
+
+export type ContextComponentKind =
+  | "system_instructions"
+  | "developer_instructions"
+  | "tool_inventory"
+  | "skill_listing"
+  | "mcp_instructions"
+  | "deferred_tools"
+  | "agent_listing";
+
+export type ContextComponentFidelity = "full" | "listing";
+
+export interface ContextComponent {
+  kind: ContextComponentKind;
+  title: string;
+  fidelity: ContextComponentFidelity;
+  text?: string;
+  items?: string[];
+  bytes?: number;
+  sourceHint?: string;
+  note?: string;
+}
+
+export type SessionContextComponentsStatus = "ok" | "source_unavailable" | "unsupported";
+
+export interface SessionContextComponents {
+  status: SessionContextComponentsStatus;
+  source: SessionSource;
+  format: SessionFormat | null;
+  components: ContextComponent[];
+}
+
+const CODEX_SOURCES = new Set(["codex-cli", "codex-app", "tcodex-cli"]);
+const CLAUDE_SOURCES = new Set(["claude-cli", "claude-app", "tclaude-cli"]);
+
+const PREVIEW_CHAR_LIMIT = 12_000;
+
+/**
+ * On-demand session-level context metadata extracted from the local source
+ * file. Does not enter the message index or format-adapters path.
+ */
+export async function extractSessionContextComponents(options: {
+  source: SessionSource;
+  filePath: string | null | undefined;
+  sourceAvailable?: boolean;
+}): Promise<SessionContextComponents> {
+  const descriptor = sessionSourceDescriptor(options.source);
+  const format = descriptor.format;
+  const base: SessionContextComponents = {
+    status: "ok",
+    source: options.source,
+    format,
+    components: [],
+  };
+
+  if (!CODEX_SOURCES.has(options.source) && !CLAUDE_SOURCES.has(options.source)) {
+    return { ...base, status: "unsupported", format };
+  }
+
+  if (options.sourceAvailable === false || !options.filePath) {
+    return { ...base, status: "source_unavailable" };
+  }
+
+  try {
+    const stat = await fs.stat(options.filePath);
+    if (!stat.isFile()) return { ...base, status: "source_unavailable" };
+  } catch {
+    return { ...base, status: "source_unavailable" };
+  }
+
+  if (CODEX_SOURCES.has(options.source)) {
+    return {
+      ...base,
+      components: await extractCodexContextComponents(options.filePath),
+    };
+  }
+
+  return {
+    ...base,
+    components: await extractClaudeContextComponents(options.filePath),
+  };
+}
+
+export async function extractCodexContextComponents(filePath: string): Promise<ContextComponent[]> {
+  let sessionMeta: Record<string, unknown> | null = null;
+  const developerTexts: string[] = [];
+  const toolNames = new Set<string>();
+
+  for await (const row of readJsonObjects(filePath)) {
+    const payload = objectField(row, "payload");
+    if (row.type === "session_meta" && payload) {
+      sessionMeta = payload;
+      for (const name of toolNamesFromDynamic(payload.dynamic_tools)) toolNames.add(name);
+      continue;
+    }
+
+    if (row.type !== "response_item" || !payload || payload.type !== "message") continue;
+    const role = typeof payload.role === "string" ? payload.role : "";
+    if (role !== "developer" && role !== "system") continue;
+    const text = messageText(payload.content).trim();
+    if (text) developerTexts.push(text);
+  }
+
+  const components: ContextComponent[] = [];
+  const baseInstructions = baseInstructionsText(sessionMeta?.base_instructions).trim();
+  if (baseInstructions) {
+    components.push({
+      kind: "system_instructions",
+      title: "系统 / 基础指令",
+      fidelity: "full",
+      text: baseInstructions,
+      bytes: Buffer.byteLength(baseInstructions, "utf8"),
+      sourceHint: "session_meta.base_instructions",
+    });
+  }
+
+  if (developerTexts.length > 0) {
+    const joined = developerTexts.map((text, index) =>
+      developerTexts.length === 1 ? text : `—— Developer #${index + 1} ——\n${text}`,
+    ).join("\n\n");
+    components.push({
+      kind: "developer_instructions",
+      title: "Developer 指令（额外指令）",
+      fidelity: "full",
+      text: joined,
+      items: developerTexts.map((_, index) => `Developer #${index + 1}`),
+      bytes: Buffer.byteLength(joined, "utf8"),
+      sourceHint: "response_item role=developer|system",
+      note: "由 harness 注入（Memory、权限、multi-agent 等），不是用户提示词。用户提示词见下方对话中的 User 消息。",
+    });
+  }
+
+  const tools = [...toolNames].sort((a, b) => a.localeCompare(b));
+  if (tools.length > 0) {
+    components.push({
+      kind: "tool_inventory",
+      title: "工具清单",
+      fidelity: "listing",
+      items: tools,
+      sourceHint: "session_meta.dynamic_tools",
+    });
+  }
+
+  return components;
+}
+
+export async function extractClaudeContextComponents(filePath: string): Promise<ContextComponent[]> {
+  const skillContents: string[] = [];
+  const skillNames = new Set<string>();
+  const mcpNames = new Set<string>();
+  const mcpBlocks: string[] = [];
+  const deferredTools = new Set<string>();
+  const agentTypes = new Set<string>();
+  const agentLines: string[] = [];
+
+  for await (const row of readJsonObjects(filePath)) {
+    if (row.type !== "attachment") continue;
+    const attachment = objectField(row, "attachment") ?? row;
+    const type = typeof attachment.type === "string" ? attachment.type : "";
+
+    if (type === "skill_listing") {
+      const content = typeof attachment.content === "string" ? attachment.content.trim() : "";
+      if (content) {
+        skillContents.push(content);
+        for (const name of skillNamesFromListing(content)) skillNames.add(name);
+      }
+      continue;
+    }
+
+    if (type === "mcp_instructions_delta") {
+      for (const name of stringArray(attachment.addedNames)) mcpNames.add(name);
+      for (const block of stringArray(attachment.addedBlocks)) {
+        const trimmed = block.trim();
+        if (trimmed) mcpBlocks.push(trimmed);
+      }
+      continue;
+    }
+
+    if (type === "deferred_tools_delta") {
+      for (const name of stringArray(attachment.addedNames)) deferredTools.add(name);
+      continue;
+    }
+
+    if (type === "agent_listing_delta") {
+      for (const name of stringArray(attachment.addedTypes)) agentTypes.add(name);
+      for (const line of stringArray(attachment.addedLines)) {
+        const trimmed = line.trim();
+        if (trimmed) agentLines.push(trimmed);
+      }
+    }
+  }
+
+  const components: ContextComponent[] = [];
+
+  if (skillContents.length > 0 || skillNames.size > 0) {
+    const text = skillContents.join("\n\n").trim();
+    components.push({
+      kind: "skill_listing",
+      title: "Skills 清单",
+      fidelity: text ? "full" : "listing",
+      ...(text ? { text, bytes: Buffer.byteLength(text, "utf8") } : {}),
+      ...(skillNames.size > 0 ? { items: [...skillNames].sort((a, b) => a.localeCompare(b)) } : {}),
+      sourceHint: "attachment.skill_listing",
+    });
+  }
+
+  if (mcpNames.size > 0 || mcpBlocks.length > 0) {
+    const text = mcpBlocks.join("\n\n").trim();
+    components.push({
+      kind: "mcp_instructions",
+      title: "MCP 说明",
+      fidelity: text ? "full" : "listing",
+      ...(text ? { text, bytes: Buffer.byteLength(text, "utf8") } : {}),
+      ...(mcpNames.size > 0 ? { items: [...mcpNames].sort((a, b) => a.localeCompare(b)) } : {}),
+      sourceHint: "attachment.mcp_instructions_delta",
+    });
+  }
+
+  if (deferredTools.size > 0) {
+    components.push({
+      kind: "deferred_tools",
+      title: "延迟加载工具",
+      fidelity: "listing",
+      items: [...deferredTools].sort((a, b) => a.localeCompare(b)),
+      sourceHint: "attachment.deferred_tools_delta",
+    });
+  }
+
+  if (agentTypes.size > 0 || agentLines.length > 0) {
+    const text = agentLines.join("\n").trim();
+    components.push({
+      kind: "agent_listing",
+      title: "Agent 清单",
+      fidelity: text ? "full" : "listing",
+      ...(text ? { text, bytes: Buffer.byteLength(text, "utf8") } : {}),
+      ...(agentTypes.size > 0 ? { items: [...agentTypes].sort((a, b) => a.localeCompare(b)) } : {}),
+      sourceHint: "attachment.agent_listing_delta",
+    });
+  }
+
+  return components;
+}
+
+export function truncateContextText(text: string, limit = PREVIEW_CHAR_LIMIT): {
+  preview: string;
+  truncated: boolean;
+} {
+  if (text.length <= limit) return { preview: text, truncated: false };
+  return { preview: `${text.slice(0, limit)}\n…`, truncated: true };
+}
+
+function baseInstructionsText(value: unknown): string {
+  if (typeof value === "string") return value;
+  return stringField(isObject(value) ? value : null, "text");
+}
+
+function messageText(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  const parts: string[] = [];
+  for (const item of content) {
+    if (!isObject(item)) continue;
+    if (typeof item.text === "string" && item.text) parts.push(item.text);
+  }
+  return parts.join("\n");
+}
+
+function toolNamesFromDynamic(dynamicTools: unknown): string[] {
+  const names: string[] = [];
+  if (!Array.isArray(dynamicTools)) return names;
+  for (const raw of dynamicTools) {
+    collectDynamicToolNames(raw, names);
+  }
+  return names;
+}
+
+function collectDynamicToolNames(raw: unknown, names: string[]): void {
+  if (!isObject(raw)) return;
+  const functionSpec = objectField(raw, "Function") ?? objectField(raw, "function");
+  if (functionSpec) {
+    const name = stringField(functionSpec, "name");
+    if (name) names.push(name);
+    return;
+  }
+  const namespace = objectField(raw, "Namespace") ?? objectField(raw, "namespace");
+  if (namespace) {
+    const nested = Array.isArray(namespace.tools) ? namespace.tools : [];
+    for (const child of nested) collectDynamicToolNames(child, names);
+    return;
+  }
+  const name = stringField(raw, "name");
+  if (name && ("inputSchema" in raw || "input_schema" in raw)) names.push(name);
+}
+
+function skillNamesFromListing(content: string): string[] {
+  const names = new Set<string>();
+  for (const line of content.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    const match = trimmed.match(/^[-*]\s+`?\/?([A-Za-z0-9][\w.-]*)`?(?:\s*[:：-]|$)/)
+      || trimmed.match(/^`?\/([A-Za-z0-9][\w.-]*)`?(?:\s*[:：-]|$)/);
+    if (match?.[1]) names.add(match[1]);
+  }
+  return [...names];
+}
+
+function stringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((item): item is string => typeof item === "string" && item.trim().length > 0);
+}
+
+async function* readJsonObjects(filePath: string): AsyncGenerator<Record<string, unknown>> {
+  const input = createReadStream(filePath, { encoding: "utf8" });
+  const lines = createInterface({ input, crlfDelay: Infinity });
+  for await (const line of lines) {
+    const parsed = parseObject(line);
+    if (parsed) yield parsed;
+  }
+}
+
+function parseObject(line: string): Record<string, unknown> | null {
+  if (!line.trim()) return null;
+  try {
+    const value = JSON.parse(line);
+    return isObject(value) ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+function objectField(value: unknown, key: string): Record<string, unknown> | null {
+  return isObject(value) && isObject(value[key]) ? value[key] : null;
+}
+
+function stringField(value: Record<string, unknown> | null, key: string): string {
+  const field = value?.[key];
+  return typeof field === "string" ? field : "";
+}
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}

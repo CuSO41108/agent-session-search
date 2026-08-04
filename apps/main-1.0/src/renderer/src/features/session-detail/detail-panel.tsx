@@ -27,6 +27,7 @@ import type { SessionFamily } from "../../../../core/session-family";
 import { canDeleteSessionLocally } from "../../../../core/session-environment";
 import { sessionSourceDescriptor } from "../../../../core/session-sources";
 import { SubagentSessionTree } from "./subagent-session-tree";
+import { SessionContextComponentsPanel } from "./session-context-components-panel";
 
 export type ConversationTimelineItem =
   | { kind: "message"; key: string; timestampMs: number | null; order: number; message: SessionMessage }
@@ -524,6 +525,7 @@ export function DetailPanel({
             <p>{session.aiSummary}</p>
           </div>
         ) : null}
+        <SessionContextComponentsPanel session={session} language={language} />
         <div className="detail-tags">
           {session.tags.map((tagName) => (
             <button key={tagName} className={`chip ${isBranchTag(tagName) ? "branch-tag" : ""}`} onClick={() => onRemoveTag(tagName)} disabled={readOnly}>

@@ -2686,6 +2686,118 @@ select:focus-visible {
   line-height: 1.5;
 }
 
+.detail-context-components {
+  padding: 0 18px 10px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.detail-context-components-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+  padding: 4px 0;
+  border: 0;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+}
+
+.detail-context-components-toggle:hover {
+  color: var(--text);
+}
+
+.detail-context-components-body {
+  display: grid;
+  gap: 10px;
+  margin-top: 8px;
+}
+
+.detail-context-components-empty {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.context-component {
+  padding: 10px 12px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--panel-bg);
+}
+
+.context-component-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.context-component-head strong {
+  font-size: 12px;
+  color: var(--text);
+}
+
+.context-component-fidelity {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.context-component-note {
+  margin: 6px 0 0;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--text-dim);
+}
+
+.context-component-items {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.context-component-items li {
+  padding: 2px 8px;
+  border-radius: var(--radius-sm);
+  background: var(--panel-hover);
+  color: var(--text-dim);
+  font-size: 11px;
+}
+
+.context-component-text {
+  margin-top: 8px;
+}
+
+.context-component-text pre {
+  margin: 0;
+  max-height: 220px;
+  overflow: auto;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  color: var(--text-dim);
+  font-size: 11px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.context-component-expand {
+  margin-top: 6px;
+  border: 0;
+  background: transparent;
+  color: var(--accent);
+  font-size: 12px;
+  cursor: pointer;
+  padding: 0;
+}
+
 .detail-actions button {
   display: inline-flex;
   align-items: center;

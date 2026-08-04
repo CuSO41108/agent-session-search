@@ -1,0 +1,7 @@
+# 会话详情查看上下文构成
+
+<!-- release-target: both -->
+
+## 新增功能
+
+- ✨ 打开 Codex / Claude 会话详情时，可在 AI 摘要下方展开「上下文构成」：Codex 可查看系统基础指令、Developer 额外指令（非用户提示词）和工具清单；Claude 在有记录时可查看 Skills / MCP / 延迟工具 / Agent 等清单。默认折叠，仅展示能从本地会话文件提取到的信息。

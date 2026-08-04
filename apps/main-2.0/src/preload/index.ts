@@ -7,6 +7,7 @@ import type { ResumeRouteResult } from "../core/resume-router";
 import type { TraceEventQueryOptions } from "../core/session-store";
 import type { SessionBulkDeletePreview, SessionBulkDeleteRequest, SessionBulkDeleteResult } from "../core/session-bulk-delete";
 import type { SshConfigHost } from "../core/ssh-config";
+import type { SessionContextComponents } from "../core/session-context-components";
 import type {
   EnvironmentUpsertInput,
   LiveSessionSnapshot,
@@ -55,6 +56,8 @@ const api = {
   searchSessions: (options: SearchOptions): Promise<SessionSearchResult[]> => ipcRenderer.invoke("search:sessions", options),
   searchSessionPage: (options: SearchOptions): Promise<SessionSearchPage> => ipcRenderer.invoke("search:session-page", options),
   getSession: (sessionKey: string): Promise<SessionSearchResult | null> => ipcRenderer.invoke("session:get", sessionKey),
+  getSessionContextComponents: (sessionKey: string): Promise<SessionContextComponents> =>
+    ipcRenderer.invoke("session:context-components", sessionKey),
   getMessages: (sessionKey: string, offset?: number, limit?: number): Promise<SessionMessage[]> =>
     ipcRenderer.invoke("session:messages", sessionKey, offset, limit),
   previewAttachment: (
