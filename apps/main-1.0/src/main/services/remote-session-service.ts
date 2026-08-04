@@ -502,7 +502,6 @@ export class RemoteSessionService {
     if (!this.dependencies.getSettings().remoteSyncEnabled
       || !this.dependencies.getHookSetup().sessionSyncHookStatus().installed) return;
     try {
-      await this.dependencies.ensureSessionDetails(syncSession.sessionKey);
       await this.upload(syncSession.sessionKey);
       this.operations.removeQueueFiles(events.map((event) => event.filePath));
       this.hookLastProcessedAt = this.dependencies.now();

@@ -891,6 +891,7 @@ describe("RemoteSessionService automatic queue lifecycle", () => {
     await harness.service.drainQueue();
 
     expect(harness.removeQueueFiles).toHaveBeenCalledWith([event.filePath]);
+    expect(harness.ensureSessionDetails).toHaveBeenCalledTimes(2);
     expect(harness.ensureSessionDetails).toHaveBeenCalledWith(parent.sessionKey);
     expect(harness.ensureSessionDetails).toHaveBeenCalledWith(child.sessionKey);
     expect(harness.buildRevision).not.toHaveBeenCalled();

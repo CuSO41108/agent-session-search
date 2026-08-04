@@ -59,7 +59,14 @@ export function AutomationProvider({ children }: { children: ReactNode }) {
 
   const loadDetails = useCallback((force: boolean): Promise<AppSnapshot> => {
     if (!force && detailsLoadedRef.current) return Promise.resolve(snapshotRef.current);
-    if (detailsRequestRef.current) return detailsRequestRef.current;
+    if (detailsRequestRef.current) {
+      const currentRequest = detailsRequestRef.current;
+      if (!force) return currentRequest;
+      return currentRequest.then(
+        () => loadDetails(true),
+        () => loadDetails(true),
+      );
+    }
     setLoading(true);
     const request = api.getSnapshot()
       .then((next) => {
@@ -109,7 +116,7 @@ export function AutomationProvider({ children }: { children: ReactNode }) {
       if (store.applyChange(change)) {
         return;
       }
-      resyncInFlightRef.current ??= ensureDetailsLoaded()
+      resyncInFlightRef.current ??= refresh()
         .catch(() => snapshotRef.current)
         .finally(() => {
           resyncInFlightRef.current = undefined;
@@ -133,7 +140,7 @@ export function AutomationProvider({ children }: { children: ReactNode }) {
       unsubscribe();
       unsubscribeChanges();
     };
-  }, [api, ensureDetailsLoaded, setSnapshot, store]);
+  }, [api, ensureDetailsLoaded, refresh, setSnapshot, store]);
 
   const value = useMemo<AutomationContextValue>(() => ({
     api,
