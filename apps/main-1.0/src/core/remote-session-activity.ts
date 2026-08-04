@@ -283,27 +283,39 @@ const REMOTE_CODEX_ACTIVITY_COMMAND =
   `python3 -c 'import base64,zlib; exec(zlib.decompress(base64.b64decode("${remoteScriptPayload}"), -15).decode("utf-8"))'`;
 
 type RemoteCommandRunner = (environment: SessionEnvironment, remoteCommand: string) => Promise<string>;
+const REMOTE_LIVE_SESSION_CONCURRENCY = 3;
 
 export async function loadRemoteLiveSessions(
   environments: readonly SessionEnvironment[],
   runRemoteCommand: RemoteCommandRunner,
 ): Promise<LiveSession[]> {
-  const outputs = await Promise.all(
-    environments
-      .filter((environment) => (environment.kind === "ssh" || environment.kind === "wsl") && environment.enabled)
-      .map(async (environment) => {
+  const candidates = environments
+    .filter((environment) => (environment.kind === "ssh" || environment.kind === "wsl") && environment.enabled);
+  const outputs: LiveSession[][] = Array.from({ length: candidates.length }, () => []);
+  let cursor = 0;
+  let wslFailure: Error | null = null;
+  const workers = Array.from(
+    { length: Math.min(REMOTE_LIVE_SESSION_CONCURRENCY, candidates.length) },
+    async () => {
+      while (true) {
+        const index = cursor;
+        if (index >= candidates.length) return;
+        cursor += 1;
+        const environment = candidates[index];
         try {
           const output = await runRemoteCommand(environment, REMOTE_CODEX_ACTIVITY_COMMAND);
-          return parseRemoteLiveSessions(output, environment.id);
+          outputs[index] = parseRemoteLiveSessions(output, environment.id);
         } catch (error) {
-          if (environment.kind === "wsl") {
+          if (environment.kind === "wsl" && !wslFailure) {
             const detail = error instanceof Error ? error.message : String(error);
-            throw new Error(`Could not inspect live sessions in WSL environment ${environment.label}: ${detail}`);
+            wslFailure = new Error(`Could not inspect live sessions in WSL environment ${environment.label}: ${detail}`);
           }
-          return [];
         }
-      }),
+      }
+    },
   );
+  await Promise.all(workers);
+  if (wslFailure) throw wslFailure;
 
   const sessions: LiveSession[] = [];
   const seen = new Set<string>();

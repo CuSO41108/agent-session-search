@@ -37,3 +37,10 @@ test("installs app dependencies without changing the user's Claude statusline", 
   assert.match(setupScript, /AGENT_RECALL_SKIP_STATUSLINE_INSTALL:\s*"1"/);
   assert.doesNotMatch(setupScript, /--ignore-scripts/);
 });
+
+test("hydrates and validates the Electron runtime after installing app dependencies", async () => {
+  const setupScript = await readFile("scripts/setup-app.mjs", "utf8");
+  assert.match(setupScript, /restoreEmbeddedPostgresNativeLinks/);
+  assert.match(setupScript, /path\.join\(normalizedDirectory, "node_modules", "electron", "cli\.js"\)/);
+  assert.match(setupScript, /runCommand\(process\.execPath, \[electronCli, "--version"\]/);
+});

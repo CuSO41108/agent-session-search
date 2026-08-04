@@ -68,6 +68,25 @@ describe("remote live session detection", () => {
     })).rejects.toThrow("Could not inspect live sessions in WSL environment devbox: python3 is unavailable");
   });
 
+  it("bounds concurrent remote probes", async () => {
+    let active = 0;
+    let maximumActive = 0;
+    const environments = Array.from({ length: 8 }, (_, index) => environment({
+      id: `ssh-${index}`,
+      label: `ssh-${index}`,
+    }));
+
+    await loadRemoteLiveSessions(environments, async () => {
+      active += 1;
+      maximumActive = Math.max(maximumActive, active);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      active -= 1;
+      return "";
+    });
+
+    expect(maximumActive).toBe(3);
+  });
+
   it.skipIf(process.platform === "win32")("detects active Codex and Claude sessions from a synthetic remote process tree", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "agent-recall-remote-live-"));
     const home = path.join(root, "home");

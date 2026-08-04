@@ -36,7 +36,7 @@ const configuredAgents = [
 ];
 
 vi.mock("./features/automation/automation-provider", () => ({
-  useAutomation: () => ({
+  useAutomationDetails: () => ({
     api: { pickDirectory: vi.fn(async () => undefined) },
     snapshot: {
       workDir: "/repo",

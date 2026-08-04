@@ -358,7 +358,7 @@ export function SkillsDialog({
               <option value="usage-asc">{l("Least used", "最少使用")}</option>
             </select>
           </label>
-          <button type="button" className="settings-action-button" onClick={toggleVisibleSelection} disabled={loading || batchBusy || selectableVisibleEntries.length === 0}>
+          <button type="button" className="settings-action-button" onClick={toggleVisibleSelection} disabled={batchBusy || selectableVisibleEntries.length === 0}>
             {allSelectableVisibleSelected ? l("Clear selected", "清空选择") : l("Select visible", "选择当前可见")}
           </button>
           <button type="button" className="settings-action-button" onClick={() => void uploadSelected()} disabled={!syncReady || loading || batchBusy || selectedUploadableSkills.length === 0} title={!syncReady ? syncDisabledTitle(syncSnapshot, language) : l("Upload selected Skills", "上传选中的 Skills")}>

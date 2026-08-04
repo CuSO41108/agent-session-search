@@ -27,6 +27,7 @@ interface AutomationContextValue {
   detailsLoaded: boolean;
   loading: boolean;
   error: string | null;
+  ensureDetailsLoaded: () => Promise<AppSnapshot>;
   refresh: () => Promise<AppSnapshot>;
   store: AutomationStore;
 }
@@ -52,28 +53,45 @@ export function AutomationProvider({ children }: { children: ReactNode }) {
   const [workflowSidebarLoading, setWorkflowSidebarLoading] = useState(true);
   const [detailsLoaded, setDetailsLoaded] = useState(false);
   const detailsLoadedRef = useRef(false);
-  const [loading, setLoading] = useState(true);
+  const detailsRequestRef = useRef<Promise<AppSnapshot> | undefined>(undefined);
+  const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const refresh = useCallback(async (): Promise<AppSnapshot> => {
-    if (!detailsLoadedRef.current) setLoading(true);
-    try {
-      const next = await api.getSnapshot();
-      setSnapshot(next);
-      detailsLoadedRef.current = true;
-      setDetailsLoaded(true);
-      setHealth({ state: "ready" });
-      setError(null);
-      return next;
-    } catch (cause) {
-      const message = cause instanceof Error ? cause.message : String(cause);
-      setHealth({ state: "error", error: message });
-      setError(message);
-      throw cause;
-    } finally {
-      setLoading(false);
-    }
+  const loadDetails = useCallback((force: boolean): Promise<AppSnapshot> => {
+    if (!force && detailsLoadedRef.current) return Promise.resolve(snapshotRef.current);
+    if (detailsRequestRef.current) return detailsRequestRef.current;
+    setLoading(true);
+    const request = api.getSnapshot()
+      .then((next) => {
+        setSnapshot(next);
+        detailsLoadedRef.current = true;
+        setDetailsLoaded(true);
+        setHealth({ state: "ready" });
+        setError(null);
+        return next;
+      })
+      .catch((cause) => {
+        const message = cause instanceof Error ? cause.message : String(cause);
+        setHealth({ state: "error", error: message });
+        setError(message);
+        throw cause;
+      })
+      .finally(() => {
+        detailsRequestRef.current = undefined;
+        setLoading(false);
+      });
+    detailsRequestRef.current = request;
+    return request;
   }, [api, setSnapshot]);
+
+  const ensureDetailsLoaded = useCallback(
+    (): Promise<AppSnapshot> => loadDetails(false),
+    [loadDetails],
+  );
+  const refresh = useCallback(
+    (): Promise<AppSnapshot> => loadDetails(true),
+    [loadDetails],
+  );
 
   useEffect(() => {
     let active = true;
@@ -91,7 +109,7 @@ export function AutomationProvider({ children }: { children: ReactNode }) {
       if (store.applyChange(change)) {
         return;
       }
-      resyncInFlightRef.current ??= refresh()
+      resyncInFlightRef.current ??= ensureDetailsLoaded()
         .catch(() => snapshotRef.current)
         .finally(() => {
           resyncInFlightRef.current = undefined;
@@ -105,12 +123,9 @@ export function AutomationProvider({ children }: { children: ReactNode }) {
         const next = await api.getWorkflowSidebar();
         if (active) setWorkflowSidebar(next);
       } catch {
-        // The full snapshot remains the fallback when the lightweight query fails.
+        if (active) void ensureDetailsLoaded().catch(() => undefined);
       } finally {
-        if (active) {
-          setWorkflowSidebarLoading(false);
-          void refresh().catch(() => undefined);
-        }
+        if (active) setWorkflowSidebarLoading(false);
       }
     })();
     return () => {
@@ -118,7 +133,7 @@ export function AutomationProvider({ children }: { children: ReactNode }) {
       unsubscribe();
       unsubscribeChanges();
     };
-  }, [api, refresh, setSnapshot, store]);
+  }, [api, ensureDetailsLoaded, setSnapshot, store]);
 
   const value = useMemo<AutomationContextValue>(() => ({
     api,
@@ -130,9 +145,10 @@ export function AutomationProvider({ children }: { children: ReactNode }) {
     detailsLoaded,
     loading,
     error,
+    ensureDetailsLoaded,
     refresh,
     store,
-  }), [api, detailsLoaded, error, health, loading, refresh, snapshot, store, setSnapshot, workflowSidebar, workflowSidebarLoading]);
+  }), [api, detailsLoaded, ensureDetailsLoaded, error, health, loading, refresh, snapshot, store, setSnapshot, workflowSidebar, workflowSidebarLoading]);
 
   return <AutomationContext.Provider value={value}>{children}</AutomationContext.Provider>;
 }
@@ -145,5 +161,13 @@ export function useAutomationStoreSnapshot(): AppSnapshot {
 export function useAutomation(): AutomationContextValue {
   const value = useContext(AutomationContext);
   if (!value) throw new Error("useAutomation must be used inside AutomationProvider.");
+  return value;
+}
+
+export function useAutomationDetails(): AutomationContextValue {
+  const value = useAutomation();
+  useEffect(() => {
+    void value.ensureDetailsLoaded().catch(() => undefined);
+  }, [value.ensureDetailsLoaded]);
   return value;
 }

@@ -8,7 +8,7 @@ import type { ConfiguredAgent } from "../../../../automation/contracts";
 import type { LanguageMode } from "../../language";
 import { localize } from "../../language";
 import { AutomationPageState } from "./automation-page-state";
-import { useAutomation } from "./automation-provider";
+import { useAutomationDetails } from "./automation-provider";
 
 const PROVIDER_KEYS_STORAGE_KEY = "agent-recall-automation-provider-keys";
 
@@ -39,7 +39,7 @@ export function RuntimeFeaturePage({
   language: LanguageMode;
   onNavigationGuardChange?: (guard: (() => Promise<boolean>) | null) => void;
 }): ReactElement {
-  const { api, snapshot, setSnapshot, loading, error, refresh } = useAutomation();
+  const { api, snapshot, setSnapshot, loading, error, refresh } = useAutomationDetails();
   const [view, setView] = useState<"channels" | "agents">("channels");
   const [providerKeys, setProviderKeys] = useState<Record<string, string>>(readProviderKeys);
   const [editableAgents, setEditableAgents] = useState<ConfiguredAgent[]>(snapshot.configuredAgents);

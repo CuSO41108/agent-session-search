@@ -6,7 +6,7 @@ import type { AppUpdateProgress, AppUpdateStatus } from "../../../../core/app-up
 import { defaultSettings } from "../../../../core/platform";
 import { SettingsDialog } from "./settings-dialog";
 
-const noop = () => undefined;
+const noop = async () => undefined;
 
 function updateStatus(): AppUpdateStatus {
   return {
@@ -55,8 +55,6 @@ function renderUpdate(progress: AppUpdateProgress): string {
     onSkipAppUpdate: noop,
     onThemeChange: noop,
     onLanguageChange: noop,
-    onDefaultTerminalChange: noop,
-    onGlobalShortcutChange: noop,
     skillHookInstalled: null,
     skillHookBusy: false,
     onSkillHookChange: noop,
@@ -94,8 +92,6 @@ function renderShortcuts(): string {
     onSkipAppUpdate: noop,
     onThemeChange: noop,
     onLanguageChange: noop,
-    onDefaultTerminalChange: noop,
-    onGlobalShortcutChange: noop,
     skillHookInstalled: null,
     skillHookBusy: false,
     onSkillHookChange: noop,
@@ -133,8 +129,6 @@ function renderSessions(): string {
     onSkipAppUpdate: noop,
     onThemeChange: noop,
     onLanguageChange: noop,
-    onDefaultTerminalChange: noop,
-    onGlobalShortcutChange: noop,
     skillHookInstalled: null,
     skillHookBusy: false,
     onSkillHookChange: noop,

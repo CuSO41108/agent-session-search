@@ -28,6 +28,7 @@ export const REMOTE_SESSIONS_IPC = {
   uninstallHooks: defineIpcRequest("remote-session:uninstall-hooks", noInput),
   upload: defineIpcRequest("remote-session:upload", uploadInput),
   list: defineIpcRequest("remote-session:list", optionalQuery),
+  loadSyncSnapshot: defineIpcRequest("remote-session:sync-snapshot", noInput),
   listSyncItems: defineIpcRequest("remote-session:sync-items", noInput),
   getDetail: defineIpcRequest("remote-session:detail", z.tuple([identifier])),
   previewAttachment: defineIpcRequest("remote-session:preview-attachment", attachmentPreviewInput),

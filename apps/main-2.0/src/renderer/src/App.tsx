@@ -47,6 +47,7 @@ import {
 } from "./sidebar-sections";
 import { LANGUAGE_STORAGE_KEY, localize, readInitialLanguage, type LanguageMode } from "./language";
 import { readInitialTheme, THEME_STORAGE_KEY, type ThemeMode } from "./theme";
+import { coalesceIndexStatusForRender } from "./index-status";
 import { reduceIndexFeedback } from "./index-status-feedback";
 import type {
   ActionStatus,
@@ -82,7 +83,7 @@ import { WslEnvironmentDialog } from "./features/settings/wsl-environment-dialog
 import { WorkbenchPage } from "./features/workbench/workbench-page";
 import { useWorkbenchOverview } from "./features/workbench/use-workbench-overview";
 import { useAutomation } from "./features/automation/automation-provider";
-import { selectWorkbenchWorkflows } from "./features/automation/workbench-workflows";
+import { selectWorkbenchWorkflows, selectWorkbenchWorkflowSummaries } from "./features/automation/workbench-workflows";
 import {
   isBranchTag,
   displayTagName,
@@ -189,8 +190,15 @@ export function App(): ReactElement {
     }
   }, [activePage]);
   const workbenchWorkflows = useMemo(
-    () => selectWorkbenchWorkflows(automation.snapshot.workflowStore.workflows, automation.snapshot.workflowStore.runs),
-    [automation.snapshot.workflowStore.runs, automation.snapshot.workflowStore.workflows],
+    () => automation.detailsLoaded
+      ? selectWorkbenchWorkflows(automation.snapshot.workflowStore.workflows, automation.snapshot.workflowStore.runs)
+      : selectWorkbenchWorkflowSummaries(automation.workflowSidebar.workflows),
+    [
+      automation.detailsLoaded,
+      automation.snapshot.workflowStore.runs,
+      automation.snapshot.workflowStore.workflows,
+      automation.workflowSidebar.workflows,
+    ],
   );
   const [workbenchMcpServers, setWorkbenchMcpServers] = useState<McpServerDefinition[] | null>(null);
   const [workbenchChatRooms, setWorkbenchChatRooms] = useState<TeamChatRoomSummary[] | null>(null);
@@ -201,44 +209,59 @@ export function App(): ReactElement {
   useEffect(() => {
     if (activePage !== "workbench") return;
     let active = true;
+    const timers: number[] = [];
     setWorkbenchMcpServers(null);
     setWorkbenchChatRooms(null);
     setWorkbenchMemorySnapshot(null);
     setWorkbenchMemoryLoading(true);
     setWorkbenchSkills(null);
-    void automation.api.listMcpServers()
-      .then((servers) => {
-        if (active) setWorkbenchMcpServers(servers);
-      })
-      .catch(() => {
-        if (active) setWorkbenchMcpServers([]);
+    const tasks: Array<() => Promise<void>> = [
+      async () => {
+        try {
+          const servers = await automation.api.listMcpServers();
+          if (active) setWorkbenchMcpServers(servers);
+        } catch {
+          if (active) setWorkbenchMcpServers([]);
+        }
+      },
+      async () => {
+        try {
+          const rooms = await window.sessionSearch.teamChat.listRooms();
+          if (active) setWorkbenchChatRooms(rooms);
+        } catch {
+          if (active) setWorkbenchChatRooms([]);
+        }
+      },
+      async () => {
+        try {
+          const snapshot = await window.sessionSearch.getOpenVikingMemorySnapshot();
+          if (active) setWorkbenchMemorySnapshot(snapshot);
+        } catch {
+          if (active) setWorkbenchMemorySnapshot(null);
+        } finally {
+          if (active) setWorkbenchMemoryLoading(false);
+        }
+      },
+      async () => {
+        try {
+          const snapshot = await window.sessionSearch.listSkills();
+          if (active) setWorkbenchSkills(snapshot.skills);
+        } catch {
+          if (active) setWorkbenchSkills([]);
+        }
+      },
+    ];
+    const frameId = window.requestAnimationFrame(() => {
+      tasks.forEach((task, index) => {
+        timers.push(window.setTimeout(() => {
+          if (active) void task();
+        }, index * 50));
       });
-    void window.sessionSearch.teamChat.listRooms()
-      .then((rooms) => {
-        if (active) setWorkbenchChatRooms(rooms);
-      })
-      .catch(() => {
-        if (active) setWorkbenchChatRooms([]);
-      });
-    void window.sessionSearch.getOpenVikingMemorySnapshot()
-      .then((snapshot) => {
-        if (active) setWorkbenchMemorySnapshot(snapshot);
-      })
-      .catch(() => {
-        if (active) setWorkbenchMemorySnapshot(null);
-      })
-      .finally(() => {
-        if (active) setWorkbenchMemoryLoading(false);
-      });
-    void window.sessionSearch.listSkills()
-      .then((snapshot) => {
-        if (active) setWorkbenchSkills(snapshot.skills);
-      })
-      .catch(() => {
-        if (active) setWorkbenchSkills([]);
-      });
+    });
     return () => {
       active = false;
+      window.cancelAnimationFrame(frameId);
+      for (const timer of timers) window.clearTimeout(timer);
     };
   }, [activePage, automation.api]);
   const [sidebarSections, setSidebarSections] = useState<SidebarSectionsState>(() => loadInitialSidebarSections());
@@ -315,7 +338,9 @@ export function App(): ReactElement {
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
   const [dialog, setDialog] = useState<DialogState>(null);
   const [migrationDialog, setMigrationDialog] = useState<SessionMigrationDialogState>(null);
+  const migrationDialogRef = useRef<SessionMigrationDialogState>(null);
   const [migrationProgress, setMigrationProgress] = useState<SessionMigrationProgress | null>(null);
+  const [migrationBusy, setMigrationBusy] = useState(false);
   const [deleteTagName, setDeleteTagName] = useState<string | null>(null);
   const [deleteSessionCandidate, setDeleteSessionCandidate] = useState<SessionSearchResult | null>(null);
   const [deleteSessionCascadeCount, setDeleteSessionCascadeCount] = useState<number | null>(null);
@@ -341,6 +366,7 @@ export function App(): ReactElement {
   const [appUpdateProgress, setAppUpdateProgress] = useState<AppUpdateProgress | null>(null);
   const [appUpdateBusy, setAppUpdateBusy] = useState(false);
   const [appUpdateError, setAppUpdateError] = useState<string | null>(null);
+  const indexStatusEventVersionRef = useRef(0);
   const shouldSignalAppUpdate = Boolean(appUpdateStatus?.updateAvailable && !appUpdateStatus.updateSkipped && !appUpdateStatus.promptSnoozed);
   const [sshDialogOpen, setSshDialogOpen] = useState(false);
   const [wslDialogOpen, setWslDialogOpen] = useState(false);
@@ -376,7 +402,24 @@ export function App(): ReactElement {
     emptyPendingPersonalSources,
   );
   const metadataLoadSeqRef = useRef(0);
+  const appSettingsRef = useRef<AppSettings | null>(null);
+  const settingsUpdateQueueRef = useRef<Promise<void>>(Promise.resolve());
   const t = useCallback((en: string, zh: string) => localize(language, en, zh), [language]);
+  appSettingsRef.current = appSettings;
+  migrationDialogRef.current = migrationDialog;
+  const continueRemoteSessionsInBackground = useCallback((): void => {
+    const message = t(
+      "Remote sessions are continuing to load in the background.",
+      "已转到后台，远程会话会继续加载。",
+    );
+    void remoteSessions.ensureLoaded();
+    setRemoteSessionsOpen(false);
+    setActionStatus({ kind: "success", message });
+    window.setTimeout(() => {
+      setActionStatus((current) =>
+        current?.kind === "success" && current.message === message ? null : current);
+    }, 2400);
+  }, [remoteSessions.ensureLoaded, t]);
   const reportSessionDetailError = useCallback((error: unknown): void => {
     setActionStatus({ kind: "error", message: error instanceof Error ? error.message : String(error) });
   }, []);
@@ -430,8 +473,16 @@ export function App(): ReactElement {
   ]);
 
   useEffect(() => {
-    if (remoteSessionsOpen) void remoteSessions.load();
-  }, [remoteSessions.load, remoteSessionsOpen]);
+    if (!remoteSessionsOpen || remoteSessions.cache.initialized) return;
+    let timeoutId: number | null = null;
+    const frameId = window.requestAnimationFrame(() => {
+      timeoutId = window.setTimeout(() => void remoteSessions.ensureLoaded(), 0);
+    });
+    return () => {
+      window.cancelAnimationFrame(frameId);
+      if (timeoutId !== null) window.clearTimeout(timeoutId);
+    };
+  }, [remoteSessions.cache.initialized, remoteSessions.ensureLoaded, remoteSessionsOpen]);
 
   useEffect(() => {
     if (activePage === "skills") skills.ensureLoaded();
@@ -439,8 +490,9 @@ export function App(): ReactElement {
 
   useEffect(() => {
     if (!settingsOpen) return;
+    void automation.ensureDetailsLoaded().catch(() => undefined);
     void window.sessionSearch.getSessionSyncHookStatus().then(setSessionHookStatus).catch(() => setSessionHookStatus(null));
-  }, [settingsOpen]);
+  }, [automation.ensureDetailsLoaded, settingsOpen]);
 
   const toggleSessionSyncHook = useCallback(async (enabled: boolean) => {
     setSessionHookBusy(true);
@@ -511,9 +563,15 @@ export function App(): ReactElement {
   }, []);
 
   useEffect(() => {
-    const offIndex = window.sessionSearch.onIndexStatus((nextStatus) => {
-      setIndexStatus(nextStatus);
+    let active = true;
+    const snapshotEventVersion = indexStatusEventVersionRef.current;
+    const applyIndexStatus = (nextStatus: IndexStatus): void => {
+      setIndexStatus((current) => coalesceIndexStatusForRender(current, nextStatus));
       setRefreshFeedback((current) => reduceIndexFeedback(current, { type: "index-status", status: nextStatus }));
+    };
+    const offIndex = window.sessionSearch.onIndexStatus((nextStatus) => {
+      indexStatusEventVersionRef.current += 1;
+      applyIndexStatus(nextStatus);
       if (!nextStatus.running) {
         setSessionFamilyRefreshVersion((current) => current + 1);
         if (activePage === "sessions") void load();
@@ -522,6 +580,11 @@ export function App(): ReactElement {
         void loadWorkbenchSessions();
       }
     });
+    void window.sessionSearch.getIndexStatus()
+      .then((nextStatus) => {
+        if (active && indexStatusEventVersionRef.current === snapshotEventVersion) applyIndexStatus(nextStatus);
+      })
+      .catch(() => undefined);
     const offFocus = window.sessionSearch.onFocusSearch(() => {
       void navigateToPage("sessions").then((navigated) => {
         if (navigated) window.requestAnimationFrame(() => searchRef.current?.focus());
@@ -539,6 +602,7 @@ export function App(): ReactElement {
       if (activePage === "sessions") void load();
     });
     return () => {
+      active = false;
       offIndex();
       offFocus();
       offOpenSettings();
@@ -587,9 +651,9 @@ export function App(): ReactElement {
       if (event.key === "Escape") {
         if (sshDialogOpen) setSshDialogOpen(false);
         else if (wslDialogOpen) setWslDialogOpen(false);
-        else if (migrationDialog) setMigrationDialog(null);
+        else if (migrationDialog) closeMigrationDialog();
         else if (dialog) setDialog(null);
-        else if (bulkDeleteDialog && !bulkDeleteBusy) setBulkDeleteDialog(null);
+        else if (bulkDeleteDialog) setBulkDeleteDialog(null);
         else if (deleteSessionCandidate && !deletingSession) setDeleteSessionCandidate(null);
         else if (deleteTagName) setDeleteTagName(null);
         else if (contextMenu) setContextMenu(null);
@@ -1051,16 +1115,17 @@ export function App(): ReactElement {
     }
   }
 
-  async function uploadRemoteSession(session: SessionSearchResult): Promise<void> {
-    await runAction(
-      t("Uploading remote session", "正在上传远程会话"),
-      () => window.sessionSearch.uploadRemoteSession(session.sessionKey),
-      (result) => {
-        if (result.status === "skipped") return t("Remote session is already up to date.", "远程会话已是最新。");
-        if (result.status === "updated") return t("Remote session updated.", "远程会话已更新。");
-        return t("Remote session uploaded.", "远程会话已上传。");
-      },
-    );
+  function uploadRemoteSession(session: SessionSearchResult): void {
+    remoteSessions.queueUploads([{
+      itemId: session.sessionKey,
+      sessionKey: session.sessionKey,
+      title: session.displayTitle,
+    }]);
+    const message = t("Session upload started in the background.", "会话已开始在后台上传。");
+    setActionStatus({ kind: "success", message });
+    window.setTimeout(() => {
+      setActionStatus((current) => current?.kind === "success" && current.message === message ? null : current);
+    }, 1800);
   }
 
   async function exportMarkdown(sessionKey: string): Promise<void> {
@@ -1119,9 +1184,15 @@ export function App(): ReactElement {
     });
   }
 
+  function closeMigrationDialog(): void {
+    migrationDialogRef.current = null;
+    setMigrationDialog(null);
+  }
+
   async function runMigration(target: SessionMigrationProgress["target"]): Promise<void> {
     if (!migrationDialog || migrationDialog.kind !== "select") return;
     const session = migrationDialog.session;
+    setMigrationBusy(true);
     setContextMenu(null);
     setMigrationProgress(null);
     setActionStatus({ kind: "running", message: t("Preparing migration...", "正在准备迁移...") });
@@ -1140,14 +1211,20 @@ export function App(): ReactElement {
         `Migrated to ${migrationAgentLabel(result.target)} (${strategyLabel}): ${result.targetSessionId}`,
         `已迁移到 ${migrationAgentLabel(result.target)}（${strategyLabel}）：${result.targetSessionId}`,
       );
-      setActionStatus({ kind: "success", message: result.warning ? `${message}\n${result.warning}` : message });
-      setMigrationDialog(result.launched ? null : { kind: "launch-failed", session, result });
-      window.setTimeout(() => {
-        setActionStatus((current) => (current?.kind === "success" && current.message.startsWith(message) ? null : current));
-      }, 2200);
+      const dialogStillOpen = migrationDialogRef.current?.kind === "select";
+      const backgroundLaunchFailure = !result.launched && !dialogStillOpen;
+      const detail = result.warning || (!result.launched ? result.resumeCommand : "");
+      setActionStatus({ kind: backgroundLaunchFailure ? "error" : "success", message: detail ? `${message}\n${detail}` : message });
+      if (dialogStillOpen) setMigrationDialog(result.launched ? null : { kind: "launch-failed", session, result });
+      if (!backgroundLaunchFailure) {
+        window.setTimeout(() => {
+          setActionStatus((current) => (current?.kind === "success" && current.message.startsWith(message) ? null : current));
+        }, 2200);
+      }
     } catch (error) {
       setActionStatus({ kind: "error", message: error instanceof Error ? error.message : String(error) });
     } finally {
+      setMigrationBusy(false);
       setMigrationProgress(null);
     }
   }
@@ -1181,14 +1258,6 @@ export function App(): ReactElement {
         message: error instanceof Error ? error.message : String(error),
       }));
     }
-  }
-
-  async function updateDefaultTerminal(defaultTerminal: AppSettings["defaultTerminal"]): Promise<void> {
-    await updateSettings({ defaultTerminal });
-  }
-
-  async function updateGlobalShortcut(globalShortcut: AppSettings["globalShortcut"]): Promise<void> {
-    await updateSettings({ globalShortcut });
   }
 
   async function checkAppUpdate(): Promise<void> {
@@ -1228,17 +1297,31 @@ export function App(): ReactElement {
     }
   }
 
-  async function updateSettings(next: AppSettingsUpdate): Promise<void> {
-    const newlyEnabledSources = OPTIONAL_SOURCE_SETTINGS.filter((item) => next[item.key] === true && !appSettings?.[item.key]);
+  function updateSettings(next: AppSettingsUpdate): Promise<void> {
+    const request = settingsUpdateQueueRef.current.then(() => performSettingsUpdate(next));
+    settingsUpdateQueueRef.current = request.catch(() => undefined);
+    return request;
+  }
+
+  async function performSettingsUpdate(next: AppSettingsUpdate): Promise<void> {
+    const currentSettings = appSettingsRef.current;
+    const changedSources = OPTIONAL_SOURCE_SETTINGS.filter((item) => item.key in next && next[item.key] !== currentSettings?.[item.key]);
+    const newlyEnabledSources = changedSources.filter((item) => next[item.key] === true);
     const quotaVisibilityChanged =
-      ("hideCodexQuota" in next && next.hideCodexQuota !== appSettings?.hideCodexQuota) ||
-      ("hideClaudeQuota" in next && next.hideClaudeQuota !== appSettings?.hideClaudeQuota);
+      ("hideCodexQuota" in next && next.hideCodexQuota !== currentSettings?.hideCodexQuota) ||
+      ("hideClaudeQuota" in next && next.hideClaudeQuota !== currentSettings?.hideClaudeQuota);
+    const remoteSyncConfigurationChanged =
+      ("remoteSyncEnabled" in next && next.remoteSyncEnabled !== currentSettings?.remoteSyncEnabled) ||
+      ("remoteSyncSupabaseUrl" in next && next.remoteSyncSupabaseUrl !== currentSettings?.remoteSyncSupabaseUrl) ||
+      ("remoteSyncSupabaseAnonKey" in next && next.remoteSyncSupabaseAnonKey !== currentSettings?.remoteSyncSupabaseAnonKey);
     setSettingsFeedback({ kind: "running", message: t("Saving settings...", "正在保存设置...") });
     try {
       const nextSettings = await window.sessionSearch.setSettings(next);
+      appSettingsRef.current = nextSettings;
       setAppSettings(nextSettings);
+      if (remoteSyncConfigurationChanged) remoteSessions.invalidate();
       if ("remoteSyncEnabled" in next) {
-        setSessionHookStatus(await window.sessionSearch.getSessionSyncHookStatus());
+        void window.sessionSearch.getSessionSyncHookStatus().then(setSessionHookStatus).catch(() => setSessionHookStatus(null));
       }
       if (quotaVisibilityChanged) void loadQuotas();
 
@@ -1276,7 +1359,11 @@ export function App(): ReactElement {
         return;
       }
 
-      await Promise.all([load(), loadSidebarMetadata(), loadStats()]);
+      if (changedSources.length > 0) {
+        void Promise.all([load(), loadSidebarMetadata(), loadStats()]).catch((error) => {
+          setSettingsFeedback({ kind: "error", message: error instanceof Error ? error.message : String(error) });
+        });
+      }
       setSettingsFeedback({ kind: "success", message: t("Settings saved.", "设置已保存。") });
       window.setTimeout(() => {
         setSettingsFeedback((current) => (current?.kind === "success" ? null : current));
@@ -1489,7 +1576,7 @@ export function App(): ReactElement {
                 setActivePage("sessions");
               }}
               workflows={workbenchWorkflows}
-              workflowsLoading={automation.loading}
+              workflowsLoading={automation.detailsLoaded ? automation.loading : automation.workflowSidebarLoading}
               workflowsError={automation.error}
               onOpenWorkflow={(workflowId) => {
                 void automation.api.selectWorkflow(workflowId).then((next) => {
@@ -1504,8 +1591,9 @@ export function App(): ReactElement {
                 }).catch((error) => setActionStatus({ kind: "error", message: error instanceof Error ? error.message : String(error) }));
               }}
               onShowWorkflows={() => void navigateToPage("workflows")}
-              runtimes={automation.snapshot.runtimes}
-              runtimeChannels={automation.snapshot.channels}
+              runtimes={automation.detailsLoaded ? automation.snapshot.runtimes : []}
+              runtimeChannels={automation.detailsLoaded ? automation.snapshot.channels : []}
+              runtimeOverviewAvailable={automation.detailsLoaded}
               mcpServers={workbenchMcpServers}
               chatRooms={workbenchChatRooms}
               memoryEnabled={Boolean(appSettings?.openVikingMemoryEnabled)}
@@ -1708,7 +1796,7 @@ export function App(): ReactElement {
                 settings={appSettings}
                 language={language}
                 feedback={settingsFeedback}
-                onSettingsChange={(next) => void updateSettings(next)}
+          onSettingsChange={updateSettings}
                 onApplyToCodex={(apiConfig) => void applyApiConfigToCodex(apiConfig)}
                 onApplyToClaude={(claudeApiConfig) => void applyApiConfigToClaude(claudeApiConfig)}
               />
@@ -1863,11 +1951,11 @@ export function App(): ReactElement {
           session={migrationDialog.session}
           targets={migrationTargetsForSession(migrationDialog.session, appSettings ?? DEFAULT_MIGRATION_TARGET_SETTINGS)}
           language={language}
-          busy={actionStatus?.kind === "running"}
+          busy={migrationBusy}
           progress={migrationProgress}
           throughTurnIndex={migrationDialog.throughTurnIndex}
           onSelect={(target) => void runMigration(target)}
-          onClose={() => setMigrationDialog(null)}
+          onClose={closeMigrationDialog}
         />
       ) : null}
 
@@ -1876,7 +1964,7 @@ export function App(): ReactElement {
           session={migrationDialog.session}
           result={migrationDialog.result}
           language={language}
-          onClose={() => setMigrationDialog(null)}
+          onClose={closeMigrationDialog}
         />
       ) : null}
 
@@ -1940,7 +2028,7 @@ export function App(): ReactElement {
           onDateChange={(dateValue) => setBulkDeleteDialog((current) => current ? { ...current, dateValue, request: null, preview: null } : current)}
           onPreview={() => void previewDateCleanup()}
           onConfirm={() => void confirmBulkDelete()}
-          onCancel={() => { if (!bulkDeleteBusy) setBulkDeleteDialog(null); }}
+          onCancel={() => setBulkDeleteDialog(null)}
         />
       ) : null}
 
@@ -1949,7 +2037,7 @@ export function App(): ReactElement {
           platform={RUNTIME_PLATFORM}
           initialSection={settingsInitialSection}
           settings={appSettings}
-          runtimeChannels={automation.snapshot.channels}
+          runtimeChannels={automation.detailsLoaded ? automation.snapshot.channels : []}
           appUpdateStatus={appUpdateStatus}
           appUpdateProgress={appUpdateProgress}
           appUpdateBusy={appUpdateBusy}
@@ -1960,14 +2048,12 @@ export function App(): ReactElement {
           theme={theme}
           language={language}
           feedback={settingsFeedback}
-          onSettingsChange={(next) => void updateSettings(next)}
+          onSettingsChange={updateSettings}
           onCheckAppUpdate={() => void checkAppUpdate()}
           onInstallAppUpdate={() => void installAppUpdate()}
           onSkipAppUpdate={(untilNextVersion) => void skipAppUpdate(untilNextVersion)}
           onThemeChange={setTheme}
           onLanguageChange={setLanguage}
-          onDefaultTerminalChange={(terminal) => void updateDefaultTerminal(terminal)}
-          onGlobalShortcutChange={(shortcut) => void updateGlobalShortcut(shortcut)}
           sessionHookStatus={sessionHookStatus}
           sessionHookBusy={sessionHookBusy}
           onSessionHookChange={(enabled) => void toggleSessionSyncHook(enabled)}
@@ -2012,9 +2098,10 @@ export function App(): ReactElement {
         <RemoteSessionsDialog
           cache={remoteSessions.cache}
           language={language}
-          onRefresh={remoteSessions.load}
-          onRemoteSessionUploaded={remoteSessions.recordUpload}
-          onRemoteSessionsDeleted={remoteSessions.recordDeletion}
+          onRefresh={remoteSessions.refresh}
+          onQueueUploads={remoteSessions.queueUploads}
+          onQueueDeletions={remoteSessions.queueDeletions}
+          onContinueInBackground={continueRemoteSessionsInBackground}
           onRestored={(result) => {
             if (!result.launched) setActionStatus({ kind: "error", message: result.warning || result.resumeCommand });
             void Promise.all([load(), loadSidebarMetadata()]);

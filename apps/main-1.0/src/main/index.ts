@@ -15,7 +15,7 @@ import {
   type MenuItemConstructorOptions,
 } from "electron";
 import Store from "electron-store";
-import { cpSync, existsSync } from "node:fs";
+import { existsSync } from "node:fs";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -93,7 +93,12 @@ import { buildSshArgs, readUserSshConfig } from "../core/ssh-config";
 import { listWslDistributions } from "../core/wsl";
 import { SessionBulkDeleteService } from "./services/session-bulk-delete-service";
 import { liveSessionDeleteKey, type SessionBulkDeleteRequest } from "../core/session-bulk-delete";
-import { AUTO_INDEX_REFRESH_INTERVAL_MS, INITIAL_INDEX_DELAY_MS } from "../core/refresh-policy";
+import {
+  AUTO_INDEX_REFRESH_INTERVAL_MS,
+  INITIAL_INDEX_DELAY_MS,
+  INITIAL_PROVIDER_RESTORE_DELAY_MS,
+  INITIAL_SESSION_SYNC_QUEUE_START_DELAY_MS,
+} from "../core/refresh-policy";
 import { globalShortcutLabel, normalizeGlobalShortcut } from "../core/shortcuts";
 import {
   canDeleteSessionLocally,
@@ -114,6 +119,7 @@ import { registerMemoriesIpc, type MemoriesIpcService } from "./ipc/memories";
 import { registerDiscoveryIpc, type DiscoveryIpcService } from "./ipc/discovery";
 import { registerRulesIpc, type RulesIpcService } from "./ipc/rules";
 import { registerSkillsIpc } from "./ipc/skills";
+import { bootstrapApplicationPaths } from "./app-path-bootstrap";
 import {
   AppUpdateService,
   InstalledRuntimeMonitor,
@@ -203,30 +209,19 @@ function ensureAgentRecallMcpPreference(): boolean {
   return setup.status();
 }
 
-function migrateLegacyUserData(): void {
-  const target = app.getPath("userData");
-  if (existsSync(target)) return;
-
-  const parent = path.dirname(target);
-  const legacyNames = [
-    ["Agent", "Session", "Search"].join("-"),
-    ["agent", "session", "search"].join("-"),
-  ];
-  for (const legacyName of legacyNames) {
-    const legacy = path.join(parent, legacyName);
-    if (!existsSync(legacy)) continue;
-    try {
-      cpSync(legacy, target, { recursive: true, errorOnExist: false });
-    } catch (error) {
-      console.warn(`Could not migrate existing user data to ${PRODUCT_NAME}:`, error);
-    }
-    return;
-  }
+if (process.env.AGENT_RECALL_USE_MOCK_KEYCHAIN === "1") {
+  app.commandLine.appendSwitch("use-mock-keychain");
 }
-
 app.setName(PRODUCT_NAME);
 app.setAppUserModelId("dev.zszz3.agent-recall");
-migrateLegacyUserData();
+bootstrapApplicationPaths({
+  app,
+  productName: PRODUCT_NAME,
+  legacyProductNames: [
+    ["Agent", "Session", "Search"].join("-"),
+    ["agent", "session", "search"].join("-"),
+  ],
+});
 
 let mainWindow: BrowserWindow | null = null;
 let quickSearchWindow: BrowserWindow | null = null;
@@ -367,6 +362,7 @@ const skillService = new SkillService({
   getStore: () => store,
   getSettings,
   getHookSetup: loadSkillUsageHookSetup,
+  homeDir: app.getPath("home"),
   copyText: (text) => clipboard.writeText(text),
   revealPath: (targetPath) => revealInFileManager(targetPath),
   now: () => Date.now(),
@@ -2281,13 +2277,20 @@ const applicationReady = hasSingleInstanceLock
       if (!registerAppGlobalShortcut(shortcut)) {
         console.error(`Global shortcut ${globalShortcutLabel(shortcut)} could not be registered.`);
       }
-      ensureRemoteEnvironmentLifecycle().startEnabledEnvironments();
-      void providerService.restoreCodexChatProxy();
-      setTimeout(() => void runIndexSync(), INITIAL_INDEX_DELAY_MS);
+      const initialIndexSettled = new Promise<void>((resolve) => {
+        setTimeout(() => {
+          void runIndexSync().then(() => resolve(), () => resolve());
+        }, INITIAL_INDEX_DELAY_MS);
+      });
       startAutoIndexRefresh();
-      skillService.startUsageRefresh();
-      remoteSessionService.startQueue();
-      appUpdateService.scheduleInitialCheck();
+      void initialIndexSettled.then(() => skillService.startUsageRefresh());
+      setTimeout(() => {
+        void initialIndexSettled.then(() => remoteSessionService.startQueue());
+      }, INITIAL_SESSION_SYNC_QUEUE_START_DELAY_MS);
+      setTimeout(() => {
+        void initialIndexSettled.then(() => providerService.restoreCodexChatProxy());
+      }, INITIAL_PROVIDER_RESTORE_DELAY_MS);
+      void initialIndexSettled.then(() => appUpdateService.scheduleInitialCheck());
     })
   : Promise.resolve();
 

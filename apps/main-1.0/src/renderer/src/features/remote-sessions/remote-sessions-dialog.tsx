@@ -8,13 +8,20 @@ import { formatRelativeTime } from "../../../../core/format-session";
 import { localize, type LanguageMode } from "../../language";
 import { migrationAgentLabel, sourceUiFamily } from "../../session-ui";
 import type { ActionStatus } from "../../app-types";
-import type { RemoteSessionsCache } from "../../remote-sessions-cache";
+import type {
+  RemoteSessionDeleteRequest,
+  RemoteSessionOperationBatch,
+  RemoteSessionTaskState,
+  RemoteSessionUploadRequest,
+  RemoteSessionsCache,
+} from "../../remote-sessions-cache";
 import { SupabaseSetupGuide } from "../../components/supabase-setup-guide";
 
 const RESTORE_TARGETS: MigrationAgent[] = ["claude", "codex", "codebuddy", "codewiz", "cursor"];
 type RemoteSourceFilter = "all" | RemoteSessionAgent;
 type RestoreDestination = "local" | "source";
 const SOURCE_FILTERS: RemoteSourceFilter[] = ["all", ...RESTORE_TARGETS, "hermes"];
+const REMOTE_SESSION_PAGE_SIZE = 50;
 
 export type SessionPrimaryAction = "upload" | "view" | "restore" | "resolve";
 export type SessionCopySummary =
@@ -44,6 +51,14 @@ export function sessionCopySummary(item: SessionSyncItem, side: "local" | "remot
 
 function syncItemTitle(item: SessionSyncItem): string {
   return item.local?.displayTitle || item.remote?.title || "Untitled session";
+}
+
+function taskActive(state: RemoteSessionTaskState | undefined): boolean {
+  return state === "queued" || state === "running";
+}
+
+function taskErrorSummary(error: string | null): string {
+  return (error ?? "Unknown error").split(/\r?\n/, 1)[0].slice(0, 240);
 }
 
 function isCursorFullSessionUpdate(item: SessionSyncItem): boolean {
@@ -83,8 +98,9 @@ export function RemoteSessionsDialog({
   cache,
   language,
   onRefresh,
-  onRemoteSessionUploaded,
-  onRemoteSessionsDeleted,
+  onQueueUploads,
+  onQueueDeletions,
+  onContinueInBackground,
   onClose,
   onRestored,
   onOpenDetail,
@@ -92,14 +108,28 @@ export function RemoteSessionsDialog({
   cache: RemoteSessionsCache;
   language: LanguageMode;
   onRefresh: () => Promise<void>;
-  onRemoteSessionUploaded: (localSessionKey: string, remote: RemoteSessionListItem) => void;
-  onRemoteSessionsDeleted: (remoteIds: string[]) => void;
+  onQueueUploads: (requests: RemoteSessionUploadRequest[]) => void;
+  onQueueDeletions: (requests: RemoteSessionDeleteRequest[]) => void;
+  onContinueInBackground: () => void;
   onClose: () => void;
   onRestored: (result: SessionMigrationResult) => void;
   onOpenDetail: (detail: RemoteSessionDetailSnapshot, query: string) => void;
 }): ReactElement {
   const l = (en: string, zh: string) => localize(language, en, zh);
-  const { status, items, loading, error: cacheError } = cache;
+  const {
+    status,
+    items,
+    initialized,
+    loading,
+    refreshing,
+    error: cacheError,
+    uploadTasks,
+    uploadBatch,
+    deleteTasks,
+    deleteBatch,
+  } = cache;
+  const initialLoading = !initialized || loading;
+  const operationsRunning = uploadBatch?.running === true || deleteBatch?.running === true;
   const [query, setQuery] = useState("");
   const [sourceFilter, setSourceFilter] = useState<RemoteSourceFilter>("all");
   const [feedback, setFeedback] = useState<ActionStatus | null>(null);
@@ -112,8 +142,7 @@ export function RemoteSessionsDialog({
   const [deleteCandidates, setDeleteCandidates] = useState<SessionSyncItem[]>([]);
   const [conflictItem, setConflictItem] = useState<SessionSyncItem | null>(null);
   const [openActionsId, setOpenActionsId] = useState<string | null>(null);
-  const [deleting, setDeleting] = useState(false);
-  const [uploading, setUploading] = useState(false);
+  const [visibleLimit, setVisibleLimit] = useState(REMOTE_SESSION_PAGE_SIZE);
   const selectVisibleRef = useRef<HTMLInputElement>(null);
   const detailRequestSeqRef = useRef(0);
 
@@ -131,11 +160,20 @@ export function RemoteSessionsDialog({
   }, [items, query, sourceFilter]);
   const selectedItems = useMemo(() => items.filter((item) => selectedIds.has(item.id)), [items, selectedIds]);
   const selectedRemoteItems = useMemo(() => selectedItems.filter((item) => item.remote), [selectedItems]);
-  const selectedUploadItems = useMemo(() => selectedItems.filter((item) => item.local && (item.state === "local-only" || item.state === "local-newer")), [selectedItems]);
+  const selectedUploadItems = useMemo(() => selectedItems.filter((item) =>
+    item.local
+    && (item.state === "local-only" || item.state === "local-newer")
+    && !taskActive(uploadTasks[item.local.sessionKey]?.state)), [selectedItems, uploadTasks]);
+  const selectedDeletableItems = useMemo(() => selectedRemoteItems.filter((item) =>
+    item.remote && !taskActive(deleteTasks[item.remote.id]?.state)), [deleteTasks, selectedRemoteItems]);
   const selectedVisibleCount = useMemo(() => filtered.filter((item) => selectedIds.has(item.id)).length, [filtered, selectedIds]);
   const allVisibleSelected = filtered.length > 0 && selectedVisibleCount === filtered.length;
   const someVisibleSelected = selectedVisibleCount > 0 && !allVisibleSelected;
   const visibleFeedback = feedback ?? (cacheError ? { kind: "error" as const, message: cacheError } : null);
+  const filteredRef = useRef(filtered);
+  const filteredChanged = filteredRef.current !== filtered;
+  const effectiveVisibleLimit = filteredChanged ? REMOTE_SESSION_PAGE_SIZE : visibleLimit;
+  const visibleItems = filtered.slice(0, effectiveVisibleLimit);
 
   useEffect(() => {
     return () => {
@@ -155,51 +193,38 @@ export function RemoteSessionsDialog({
     if (selectVisibleRef.current) selectVisibleRef.current.indeterminate = someVisibleSelected;
   }, [someVisibleSelected]);
 
+  useEffect(() => {
+    if (filteredRef.current === filtered) return;
+    filteredRef.current = filtered;
+    setVisibleLimit(REMOTE_SESSION_PAGE_SIZE);
+  }, [filtered]);
+
   async function copySetupSql(): Promise<void> {
     await window.sessionSearch.copyRemoteSessionSetupSql();
   }
 
-  async function uploadSelected(): Promise<void> {
+  function uploadSelected(): void {
     const candidates = selectedUploadItems;
     if (candidates.length === 0) return;
-    setUploading(true);
-    let succeeded = 0;
-    const failures: string[] = [];
-    const failedIds = new Set<string>();
-    try {
-      for (const [index, item] of candidates.entries()) {
-        setFeedback({ kind: "running", message: l(`Uploading ${index + 1}/${candidates.length}...`, `正在上传 ${index + 1}/${candidates.length}...`) });
-        try {
-          const result = await window.sessionSearch.uploadRemoteSession(item.local!.sessionKey);
-          onRemoteSessionUploaded(item.local!.sessionKey, result.remoteSession);
-          succeeded += 1;
-        } catch (error) {
-          failedIds.add(item.id);
-          failures.push(`${syncItemTitle(item)}: ${error instanceof Error ? error.message : String(error)}`);
-        }
-      }
-      setSelectedIds(failedIds);
-      setFeedback(failures.length > 0
-        ? { kind: "error", message: l(`${succeeded} uploaded, ${failures.length} failed. ${failures.slice(0, 2).join(" · ")}`, `已上传 ${succeeded} 个，${failures.length} 个失败。${failures.slice(0, 2).join(" · ")}`) }
-        : { kind: "success", message: l(`${succeeded} sessions uploaded.`, `已上传 ${succeeded} 个会话。`) });
-    } finally {
-      setUploading(false);
-    }
+    onQueueUploads(candidates.map((item) => ({
+      itemId: item.id,
+      sessionKey: item.local!.sessionKey,
+      title: syncItemTitle(item),
+    })));
+    const queuedIds = new Set(candidates.map((item) => item.id));
+    setSelectedIds((current) => new Set([...current].filter((id) => !queuedIds.has(id))));
+    setFeedback(null);
   }
 
-  async function uploadOne(item: SessionSyncItem, force = false): Promise<void> {
+  function uploadOne(item: SessionSyncItem, force = false): void {
     if (!item.local) return;
-    setUploading(true);
-    setFeedback({ kind: "running", message: l("Uploading session…", "正在上传会话…") });
-    try {
-      const result = await window.sessionSearch.uploadRemoteSession(item.local.sessionKey, force);
-      onRemoteSessionUploaded(item.local.sessionKey, result.remoteSession);
-      setFeedback({ kind: "success", message: l("Session uploaded.", "会话已上传。") });
-    } catch (error) {
-      setFeedback({ kind: "error", message: error instanceof Error ? error.message : String(error) });
-    } finally {
-      setUploading(false);
-    }
+    onQueueUploads([{
+      itemId: item.id,
+      sessionKey: item.local.sessionKey,
+      title: syncItemTitle(item),
+      force,
+    }]);
+    setFeedback(null);
   }
 
   async function openDetail(remote: RemoteSessionListItem): Promise<void> {
@@ -287,37 +312,17 @@ export function RemoteSessionsDialog({
     });
   }
 
-  async function confirmDelete(): Promise<void> {
+  function confirmDelete(): void {
     if (deleteCandidates.length === 0) return;
-    setDeleting(true);
-    setFeedback({ kind: "running", message: l(`Deleting ${deleteCandidates.length} remote sessions...`, `正在删除 ${deleteCandidates.length} 个远程会话...`) });
-    try {
-      const result = await window.sessionSearch.deleteRemoteSessions(deleteCandidates.flatMap((item) => item.remote ? [item.remote.id] : []));
-      const removedIds = new Set([...result.deletedIds, ...result.missingIds]);
-      setDeleteCandidates([]);
-      onRemoteSessionsDeleted([...removedIds]);
-      const failedRemoteIds = new Set(result.failures.map((failure) => failure.id));
-      setSelectedIds(new Set(deleteCandidates.flatMap((item) => item.remote && failedRemoteIds.has(item.remote.id) ? [item.id] : [])));
-      if (result.failures.length > 0) {
-        const details = result.failures
-          .slice(0, 3)
-          .map((failure) => `${deleteCandidates.find((item) => item.remote?.id === failure.id)?.remote?.title ?? failure.id}: ${failure.message}`)
-          .join(" · ");
-        setFeedback({
-          kind: "error",
-          message: l(
-            `Deleted ${result.deletedIds.length}; ${result.failures.length} failed. ${details}`,
-            `已删除 ${result.deletedIds.length} 个，${result.failures.length} 个失败。${details}`,
-          ),
-        });
-      } else {
-        setFeedback({ kind: "success", message: l(`Deleted ${removedIds.size} remote sessions.`, `已删除 ${removedIds.size} 个远程会话。`) });
-      }
-    } catch (error) {
-      setFeedback({ kind: "error", message: error instanceof Error ? error.message : String(error) });
-    } finally {
-      setDeleting(false);
-    }
+    onQueueDeletions(deleteCandidates.flatMap((item) => item.remote ? [{
+      itemId: item.id,
+      remoteId: item.remote.id,
+      title: syncItemTitle(item),
+    }] : []));
+    const queuedIds = new Set(deleteCandidates.map((item) => item.id));
+    setSelectedIds((current) => new Set([...current].filter((id) => !queuedIds.has(id))));
+    setDeleteCandidates([]);
+    setFeedback(null);
   }
 
   return (
@@ -348,7 +353,7 @@ export function RemoteSessionsDialog({
               ref={selectVisibleRef}
               type="checkbox"
               checked={allVisibleSelected}
-              disabled={loading || uploading || deleting || filtered.length === 0}
+              disabled={initialLoading || filtered.length === 0}
               onChange={toggleVisible}
               aria-label={l("Select visible remote sessions", "选择当前可见的远程会话")}
             />
@@ -358,20 +363,20 @@ export function RemoteSessionsDialog({
                 : l(`Select current (${filtered.length})`, `选择当前结果（${filtered.length}）`)}
             </span>
           </label>
-          <button type="button" className="remote-local-save" disabled={loading || uploading || deleting || selectedUploadItems.length === 0} onClick={() => void uploadSelected()}>
+          <button type="button" className="remote-local-save" disabled={selectedUploadItems.length === 0} onClick={uploadSelected}>
             <CloudUpload size={14} />
             <span>{l(`Upload to cloud (${selectedUploadItems.length})`, `上传到云端（${selectedUploadItems.length}）`)}</span>
           </button>
-          <button type="button" className="remote-bulk-delete" disabled={loading || uploading || deleting || selectedRemoteItems.length === 0} onClick={() => setDeleteCandidates(selectedRemoteItems)}>
+          <button type="button" className="remote-bulk-delete" disabled={selectedDeletableItems.length === 0} onClick={() => setDeleteCandidates(selectedDeletableItems)}>
             <Trash2 size={14} />
-            <span>{l(`Delete cloud copies (${selectedRemoteItems.length})`, `删除云端副本（${selectedRemoteItems.length}）`)}</span>
+            <span>{l(`Delete cloud copies (${selectedDeletableItems.length})`, `删除云端副本（${selectedDeletableItems.length}）`)}</span>
           </button>
-          <button type="button" className="remote-toolbar-icon" onClick={() => void onRefresh()} disabled={loading || uploading || deleting} title={l("Refresh remote sessions", "刷新远程会话")} aria-label={l("Refresh remote sessions", "刷新远程会话")}>
+          <button type="button" className="remote-toolbar-icon" onClick={() => void onRefresh()} disabled={loading || refreshing || operationsRunning} title={l("Refresh remote sessions", "刷新远程会话")} aria-label={l("Refresh remote sessions", "刷新远程会话")}>
             <RefreshCw size={15} />
           </button>
         </div>
 
-        {!loading && status && status.kind !== "ready" ? (
+        {!initialLoading && status && status.kind !== "ready" ? (
           <SupabaseSetupGuide
             language={language}
             tone={status?.kind === "error" ? "error" : "warning"}
@@ -380,7 +385,7 @@ export function RemoteSessionsDialog({
               ? l("Check the Supabase URL and anon key in Remote sync settings, then refresh.", "请检查远程同步设置中的 Supabase URL 和 anon key，然后刷新。")
               : undefined}
             detail={status.kind === "unconfigured" ? null : status.message}
-            busy={uploading || deleting}
+            busy={operationsRunning}
             showSqlActions={status.remediation === "sql"}
             onCopySql={copySetupSql}
             onOpenSqlEditor={() => window.sessionSearch.openSupabaseSqlEditor("sessions")}
@@ -389,10 +394,26 @@ export function RemoteSessionsDialog({
         ) : null}
 
         {visibleFeedback ? <div className={`settings-feedback inline remote-session-feedback ${visibleFeedback.kind}`}>{visibleFeedback.message}</div> : null}
+        {uploadBatch ? <RemoteOperationStatus kind="upload" batch={uploadBatch} failures={Object.values(uploadTasks).filter((task) => task.state === "failed").map((task) => `${task.title}: ${taskErrorSummary(task.error)}`)} language={language} /> : null}
+        {deleteBatch ? <RemoteOperationStatus kind="delete" batch={deleteBatch} failures={Object.values(deleteTasks).filter((task) => task.state === "failed").map((task) => `${task.title}: ${taskErrorSummary(task.error)}`)} language={language} /> : null}
+        {refreshing ? (
+          <div className="remote-refreshing-status" role="status">
+            <RefreshCw size={14} className="spin" />
+            <span>{l("Refreshing in the background. Showing the previous results.", "正在后台刷新，当前显示上次结果。")}</span>
+          </div>
+        ) : null}
         <div className="remote-session-list">
-          {loading ? <div className="remote-empty">{l("Loading remote sessions...", "正在加载远程会话...")}</div> : null}
-          {!loading && status?.kind === "ready" && filtered.length === 0 ? <div className="remote-empty">{l("No syncable sessions found.", "没有找到可同步的会话。")}</div> : null}
-           {filtered.map((item) => {
+          {initialLoading ? (
+            <div className="remote-empty remote-loading-state">
+              <span role="status">{l("Loading remote sessions...", "正在加载远程会话...")}</span>
+              <span>{l("You can continue using the app while this finishes.", "加载期间可以继续使用应用。")}</span>
+              <button type="button" className="remote-loading-dismiss" onClick={onContinueInBackground}>
+                {l("Continue in background", "转到后台")}
+              </button>
+            </div>
+          ) : null}
+          {initialized && !loading && status?.kind === "ready" && filtered.length === 0 ? <div className="remote-empty">{l("No syncable sessions found.", "没有找到可同步的会话。")}</div> : null}
+           {visibleItems.map((item) => {
              const remote = item.remote;
              const local = item.local;
              const source = remote?.sourceSource ?? local?.source ?? "";
@@ -401,12 +422,16 @@ export function RemoteSessionsDialog({
              const localCopy = sessionCopySummary(item, "local");
              const remoteCopy = sessionCopySummary(item, "remote");
              const primaryAction = primarySessionAction(item);
+             const uploadTask = local ? uploadTasks[local.sessionKey] : undefined;
+             const deleteTask = remote ? deleteTasks[remote.id] : undefined;
+             const uploadBusy = taskActive(uploadTask?.state);
+             const deleteBusy = taskActive(deleteTask?.state);
              const branchLabel = local?.gitBranch
                ? local.gitBranch.startsWith("branch:") ? local.gitBranch : `branch:${local.gitBranch}`
                : null;
              const tags = (local?.tags ?? remote?.tags ?? []).filter((tag) => tag !== branchLabel).slice(0, 5);
              return (
-            <article key={item.id} className={`remote-session-row ${selectedIds.has(item.id) ? "selected" : ""}`}>
+            <article key={item.id} className={`remote-session-row ${selectedIds.has(item.id) ? "selected" : ""} ${uploadBusy || deleteBusy ? "busy" : ""}`}>
               <label className="remote-session-select" title={l("Select session", "选择会话")}>
                 <input type="checkbox" checked={selectedIds.has(item.id)} onChange={() => toggleSession(item.id)} aria-label={l(`Select ${title}`, `选择 ${title}`)} />
               </label>
@@ -423,6 +448,8 @@ export function RemoteSessionsDialog({
                  <div className="remote-session-context">
                    <span>{local?.projectPath || remote?.projectPath || l("No project path", "无项目路径")}</span>
                  </div>
+                 {uploadTask ? <div className={`remote-session-task-status ${uploadTask.state}`}>{uploadTask.state === "queued" ? l("Waiting to upload", "等待上传") : uploadTask.state === "running" ? l("Uploading in background", "正在后台上传") : uploadTask.state === "failed" ? l(`Upload failed: ${taskErrorSummary(uploadTask.error)}`, `上传失败：${taskErrorSummary(uploadTask.error)}`) : l("Uploaded", "已上传")}</div> : null}
+                 {deleteTask ? <div className={`remote-session-task-status ${deleteTask.state}`}>{deleteTask.state === "queued" ? l("Waiting to delete", "等待删除") : deleteTask.state === "running" ? l("Deleting in background", "正在后台删除") : deleteTask.state === "failed" ? l(`Delete failed: ${taskErrorSummary(deleteTask.error)}`, `删除失败：${taskErrorSummary(deleteTask.error)}`) : l("Cloud copy deleted", "云端副本已删除")}</div> : null}
                  <div className="remote-session-comparison">
                    <SessionCopyCard side="local" summary={localCopy} language={language} />
                    <SessionCopyCard side="remote" summary={remoteCopy} language={language} />
@@ -438,34 +465,42 @@ export function RemoteSessionsDialog({
                 ) : null}
                </div>
                <div className={`remote-session-actions ${item.state} ${remote ? "" : "cloud-empty"}`}>
-                 {remote ? <button type="button" className="remote-session-action remote-session-view-action" onClick={() => void openDetail(remote)} disabled={detailLoadingId === remote.id || restoringId === remote.id}>
+                 {remote ? <button type="button" className="remote-session-action remote-session-view-action" onClick={() => void openDetail(remote)} disabled={detailLoadingId === remote.id || restoringId === remote.id || deleteBusy}>
                    <Eye size={14} />
                    <span>{detailLoadingId === remote.id ? l("Loading...", "加载中...") : l("View", "查看")}</span>
                  </button> : null}
-                 {remote && item.state !== "conflict" ? <button type="button" className="remote-session-action primary remote-session-primary-action" onClick={() => setRestoreRequest({ remote, destination: "local" })} disabled={restoringId === remote.id}>
+                 {remote && item.state !== "conflict" ? <button type="button" className="remote-session-action primary remote-session-primary-action" onClick={() => setRestoreRequest({ remote, destination: "local" })} disabled={restoringId === remote.id || uploadBusy || deleteBusy}>
                    <ArrowRightLeft size={14} />
                    <span>{l("Restore", "恢复")}</span>
                  </button> : null}
-                 {primaryAction === "upload" && local ? <button type="button" className="remote-session-action primary remote-session-primary-action" disabled={uploading || deleting} onClick={() => void uploadOne(item)}>
-                   <CloudUpload size={14} />
-                   <span>{remote ? l("Update", "更新") : l("Upload", "上传")}</span>
+                 {primaryAction === "upload" && local ? <button type="button" className="remote-session-action primary remote-session-primary-action" disabled={uploadBusy || deleteBusy} onClick={() => uploadOne(item)}>
+                   {uploadBusy ? <RefreshCw size={14} className="spin" /> : <CloudUpload size={14} />}
+                   <span>{uploadTask?.state === "queued" ? l("Queued", "等待中") : uploadTask?.state === "running" ? l("Uploading", "上传中") : uploadTask?.state === "failed" ? l("Retry", "重试") : remote ? l("Update", "更新") : l("Upload", "上传")}</span>
                  </button> : null}
-                 {primaryAction === "resolve" ? <button type="button" className="remote-session-action primary remote-session-primary-action" disabled={uploading || deleting} onClick={() => setConflictItem(item)}>
+                 {primaryAction === "resolve" ? <button type="button" className="remote-session-action primary remote-session-primary-action" disabled={uploadBusy || deleteBusy} onClick={() => setConflictItem(item)}>
                    <ArrowRightLeft size={14} />
                    <span>{l("Resolve conflict", "处理冲突")}</span>
                  </button> : null}
                  {remote ? <div className="remote-session-more">
-                   <button type="button" className="remote-session-action icon-only subtle" onMouseDown={(event) => event.stopPropagation()} onClick={() => setOpenActionsId((current) => current === item.id ? null : item.id)} aria-label={l("More actions", "更多操作")} title={l("More actions", "更多操作")}>
+                   <button type="button" className="remote-session-action icon-only subtle" disabled={deleteBusy} onMouseDown={(event) => event.stopPropagation()} onClick={() => setOpenActionsId((current) => current === item.id ? null : item.id)} aria-label={l("More actions", "更多操作")} title={l("More actions", "更多操作")}>
                      <MoreHorizontal size={15} />
                    </button>
                    {openActionsId === item.id ? <div className="remote-session-more-menu" onMouseDown={(event) => event.stopPropagation()}>
                      {remote.sourceEnvironmentKind === "ssh" ? <button type="button" onClick={() => setRestoreRequest({ remote, destination: "source" })}><Server size={14} />{l("Restore to source", "恢复到来源")}</button> : null}
-                     <button type="button" className="danger" onClick={() => setDeleteCandidates([item])}><Trash2 size={14} />{l("Delete cloud copy", "删除云端副本")}</button>
+                     <button type="button" className="danger" disabled={uploadBusy || deleteBusy} onClick={() => setDeleteCandidates([item])}><Trash2 size={14} />{l("Delete cloud copy", "删除云端副本")}</button>
                    </div> : null}
                  </div> : null}
                </div>
             </article>
           )})}
+          {!initialLoading && visibleItems.length < filtered.length ? (
+            <div className="remote-session-list-more">
+              <span>{l(`Showing ${visibleItems.length} of ${filtered.length} sessions.`, `当前显示 ${visibleItems.length} / ${filtered.length} 个会话。`)}</span>
+              <button type="button" onClick={() => setVisibleLimit((current) => Math.min(filtered.length, current + REMOTE_SESSION_PAGE_SIZE))}>
+                {l("Show more", "显示更多")}
+              </button>
+            </div>
+          ) : null}
         </div>
 
          {restoreRequest ? (
@@ -478,17 +513,15 @@ export function RemoteSessionsDialog({
             onTargetChange={setRestoreTarget}
             onChooseProject={() => void chooseProject()}
             onConfirm={() => void confirmRestore()}
-            onCancel={() => {
-              if (!restoringId) setRestoreRequest(null);
-            }}
+            onCancel={() => setRestoreRequest(null)}
           />
          ) : null}
          {conflictItem ? (
            <ResolveSessionConflictDialog
              item={conflictItem}
              language={language}
-             busy={uploading || restoringId === conflictItem.remote?.id}
-             onOverwrite={() => { setConflictItem(null); void uploadOne(conflictItem, true); }}
+             busy={Boolean(conflictItem.local && taskActive(uploadTasks[conflictItem.local.sessionKey]?.state)) || restoringId === conflictItem.remote?.id}
+             onOverwrite={() => { setConflictItem(null); uploadOne(conflictItem, true); }}
              onRestore={() => {
                if (conflictItem.remote) setRestoreRequest({ remote: conflictItem.remote, destination: "local" });
                setConflictItem(null);
@@ -500,14 +533,47 @@ export function RemoteSessionsDialog({
           <DeleteRemoteSessionsDialog
             sessions={deleteCandidates.flatMap((item) => item.remote ? [item.remote] : [])}
             language={language}
-            deleting={deleting}
-            onConfirm={() => void confirmDelete()}
-            onCancel={() => {
-              if (!deleting) setDeleteCandidates([]);
-            }}
+            deleting={false}
+            onConfirm={confirmDelete}
+            onCancel={() => setDeleteCandidates([])}
           />
         ) : null}
       </section>
+    </div>
+  );
+}
+
+function RemoteOperationStatus({
+  kind,
+  batch,
+  failures,
+  language,
+}: {
+  kind: "upload" | "delete";
+  batch: RemoteSessionOperationBatch;
+  failures: string[];
+  language: LanguageMode;
+}): ReactElement {
+  const l = (en: string, zh: string) => localize(language, en, zh);
+  const summary = batch.running
+    ? l(
+        `${kind === "upload" ? "Upload" : "Delete"} progress: ${batch.completed}/${batch.total}. You can close this window; the task will continue in the background.`,
+        `${kind === "upload" ? "上传" : "删除"}进度：${batch.completed}/${batch.total}。可以关闭窗口，任务会继续在后台执行。`,
+      )
+    : batch.failed > 0
+      ? l(
+          `${batch.succeeded} succeeded, ${batch.failed} failed. ${failures.slice(0, 2).join(" · ")}`,
+          `${batch.succeeded} 个成功，${batch.failed} 个失败。${failures.slice(0, 2).join(" · ")}`,
+        )
+      : l(
+          `${batch.succeeded} sessions completed successfully.`,
+          `${batch.succeeded} 个会话已${kind === "upload" ? "上传" : "删除"}完成。`,
+        );
+  const tone = batch.running ? "running" : batch.failed > 0 ? "error" : "success";
+  return (
+    <div className={`remote-operation-status ${tone}`} role="status">
+      {batch.running ? <RefreshCw size={14} className="spin" /> : kind === "upload" ? <CloudUpload size={14} /> : <Trash2 size={14} />}
+      <span>{summary}</span>
     </div>
   );
 }
@@ -570,7 +636,7 @@ function ResolveSessionConflictDialog({
       <div className="command-dialog remote-conflict-dialog" onMouseDown={(event) => event.stopPropagation()}>
         <div className="dialog-title">
           <span>{l("Resolve conflict", "处理内容冲突")}</span>
-          <button type="button" className="icon-button" onClick={onCancel} disabled={busy} aria-label={l("Close", "关闭")}><X size={16} /></button>
+          <button type="button" className="icon-button" onClick={onCancel} aria-label={busy ? l("Continue in background", "转到后台") : l("Close", "关闭")}><X size={16} /></button>
         </div>
         <p className="dialog-copy"><strong>{syncItemTitle(item)}</strong></p>
         <p className="dialog-copy">{l("Both local and cloud copies changed after the last sync. Choose which result you want to keep.", "本地与云端在上次同步后都发生了变化，请选择保留方式。")}</p>
@@ -610,7 +676,7 @@ function RemoteRestoreDialog({
       <div className="command-dialog remote-restore-dialog" onMouseDown={(event) => event.stopPropagation()}>
         <div className="dialog-title">
           <span>{l("Restore remote session", "恢复远程会话")}</span>
-          <button type="button" className="icon-button" onClick={onCancel} disabled={restoring} aria-label={l("Close", "关闭")}>
+          <button type="button" className="icon-button" onClick={onCancel} aria-label={restoring ? l("Continue in background", "转到后台") : l("Close", "关闭")}>
             <X size={16} />
           </button>
         </div>
@@ -655,7 +721,7 @@ function RemoteRestoreDialog({
           </div>
         </div>
         <div className="dialog-actions">
-          <button type="button" onClick={onCancel} disabled={restoring}>{l("Cancel", "取消")}</button>
+          <button type="button" onClick={onCancel}>{restoring ? l("Continue in background", "转到后台") : l("Cancel", "取消")}</button>
           <button type="button" className="primary-action" onClick={onConfirm} disabled={restoring}>
             {restoring ? l("Restoring...", "正在恢复...") : l("Restore", "恢复")}
           </button>

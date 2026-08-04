@@ -93,4 +93,26 @@ describe("session delete dialogs", () => {
     expect([...container.querySelectorAll("button")].some((button) => button.textContent?.includes("永久删除"))).toBe(false);
     expect([...container.querySelectorAll("button")].some((button) => button.textContent?.includes("关闭"))).toBe(true);
   });
+
+  it("lets a running bulk deletion continue in the background", async () => {
+    const onCancel = vi.fn();
+    await act(async () => root.render(createElement(BulkDeleteDialog, {
+      mode: "selection",
+      preview: { requestedCount: 2, matchedCount: 2, expandedCount: 2, deletableCount: 2, sourceCounts: [], skipped: [] },
+      dateValue: "",
+      favoriteCount: 0,
+      busy: true,
+      language: "zh",
+      onDateChange: vi.fn(),
+      onPreview: vi.fn(),
+      onConfirm: vi.fn(),
+      onCancel,
+    })));
+
+    const backgroundButton = [...container.querySelectorAll("button")]
+      .find((button) => button.textContent?.includes("转到后台"));
+    expect(backgroundButton?.disabled).toBe(false);
+    await act(async () => backgroundButton?.click());
+    expect(onCancel).toHaveBeenCalledOnce();
+  });
 });

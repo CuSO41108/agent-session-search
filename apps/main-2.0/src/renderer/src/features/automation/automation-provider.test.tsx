@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 
-import { act, type ReactElement } from "react";
+import { act, useEffect, type ReactElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_SNAPSHOT } from "../../../../automation/engine/renderer/src/app/app-state";
@@ -15,8 +15,11 @@ function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void; reje
   return { promise, resolve, reject };
 }
 
-function Observer(): ReactElement {
-  const { snapshot, workflowSidebar, workflowSidebarLoading, detailsLoaded, loading, error } = useAutomation();
+function Observer({ loadDetails = false }: { loadDetails?: boolean }): ReactElement {
+  const { snapshot, workflowSidebar, workflowSidebarLoading, detailsLoaded, loading, error, ensureDetailsLoaded } = useAutomation();
+  useEffect(() => {
+    if (loadDetails) void ensureDetailsLoaded().catch(() => undefined);
+  }, [ensureDetailsLoaded, loadDetails]);
   const visibleWorkflows = detailsLoaded ? snapshot.workflowStore.workflows : workflowSidebar.workflows;
   return (
     <div
@@ -46,7 +49,7 @@ describe("AutomationProvider progressive Workflow loading", () => {
     container.remove();
   });
 
-  it("requests full details only after sidebar summaries settle", async () => {
+  it("keeps full details deferred until a feature requests them", async () => {
     const sidebar = deferred<WorkflowSidebarSnapshot>();
     const snapshot = deferred<AppSnapshot>();
     const api = {
@@ -88,6 +91,13 @@ describe("AutomationProvider progressive Workflow loading", () => {
 
     expect(container.textContent).toContain("Visible first");
     expect(container.firstElementChild?.getAttribute("data-sidebar-loading")).toBe("false");
+    expect(container.firstElementChild?.getAttribute("data-details-loading")).toBe("false");
+    expect(api.getSnapshot).not.toHaveBeenCalled();
+
+    await act(async () => {
+      root.render(<AutomationProvider><Observer loadDetails /></AutomationProvider>);
+    });
+
     expect(container.firstElementChild?.getAttribute("data-details-loading")).toBe("true");
     expect(api.getSnapshot).toHaveBeenCalledOnce();
 
@@ -134,6 +144,9 @@ describe("AutomationProvider progressive Workflow loading", () => {
         }],
       });
       await sidebar.promise;
+    });
+    await act(async () => {
+      root.render(<AutomationProvider><Observer loadDetails /></AutomationProvider>);
     });
     await act(async () => {
       snapshot.reject(new Error("details unavailable"));

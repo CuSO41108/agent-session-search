@@ -3,7 +3,13 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { createRequire } from "node:module";
-import { listSkillUsageSources, loadSkillUsage, usageForSkill } from "./skill-usage";
+import {
+  listSkillUsageSources,
+  listSkillUsageSourcesAsync,
+  loadSkillUsage,
+  readSkillUsageSourceEventsAsync,
+  usageForSkill,
+} from "./skill-usage";
 
 const require = createRequire(import.meta.url);
 const { DatabaseSync } = require("node:sqlite") as {
@@ -14,6 +20,15 @@ function withTempHome(run: (homeDir: string) => void): void {
   const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "agent-recall-skill-usage-"));
   try {
     run(homeDir);
+  } finally {
+    fs.rmSync(homeDir, { recursive: true, force: true });
+  }
+}
+
+async function withTempHomeAsync(run: (homeDir: string) => Promise<void>): Promise<void> {
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "agent-recall-skill-usage-"));
+  try {
+    await run(homeDir);
   } finally {
     fs.rmSync(homeDir, { recursive: true, force: true });
   }
@@ -215,6 +230,22 @@ describe("skill usage", () => {
       .not.toEqual(expect.arrayContaining([expect.objectContaining({ kind: "qoder-session" })]));
     const snapshot = loadSkillUsage({ homeDir, codexSessionsDir: null, includeQoder: true });
     expect(usageForSkill(snapshot, "qoder-review", "qoder")?.count).toBe(1);
+  }));
+
+  it("discovers and reads session usage through the asynchronous refresh path", async () => withTempHomeAsync(async (homeDir) => {
+    const sessionsDir = path.join(homeDir, "codex-fixture", "sessions");
+    const filePath = path.join(sessionsDir, "2026", "08", "rollout.jsonl");
+    writeJsonl(filePath, [
+      codexCall("read_file", { path: "/tmp/.codex/skills/async-review/SKILL.md" }),
+      "not json",
+    ]);
+
+    const sources = await listSkillUsageSourcesAsync({ homeDir, codexSessionsDir: sessionsDir });
+    const source = sources.find((candidate) => candidate.path === filePath);
+    expect(source).toBeDefined();
+    await expect(readSkillUsageSourceEventsAsync(source!)).resolves.toEqual([
+      expect.objectContaining({ agent: "codex", skill: "async-review" }),
+    ]);
   }));
 
   it("parses trusted Hermes, OpenCode, CodeWiz, and ZCode database tool calls", () => withTempHome((homeDir) => {
