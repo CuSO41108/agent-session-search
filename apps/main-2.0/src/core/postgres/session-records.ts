@@ -161,6 +161,18 @@ export function postgresText(value: string): string {
   return value.includes("\u0000") ? value.replaceAll("\u0000", "\u2400") : value;
 }
 
+export function postgresJsonValue<T>(value: T): T {
+  if (typeof value === "string") return postgresText(value) as T;
+  if (Array.isArray(value)) return value.map((item) => postgresJsonValue(item)) as T;
+  if (!value || typeof value !== "object") return value;
+
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) return value;
+  return Object.fromEntries(
+    Object.entries(value).map(([key, nested]) => [postgresText(key), postgresJsonValue(nested)]),
+  ) as T;
+}
+
 export function timeValue(value: unknown): number {
   if (value instanceof Date) return value.getTime();
   if (typeof value === "number") return value;
