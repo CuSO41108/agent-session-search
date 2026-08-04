@@ -1293,6 +1293,20 @@ export const POSTGRES_MIGRATIONS: readonly PostgresMigration[] = [{
   ],
 }, {
   version: 25,
+  name: "bind evaluation experiments to skill versions",
+  statements: [
+    `
+      ALTER TABLE agent_recall.evaluation_experiments
+        ADD COLUMN IF NOT EXISTS skill_name text,
+        ADD COLUMN IF NOT EXISTS skill_hash text;
+
+      CREATE INDEX IF NOT EXISTS evaluation_experiments_skill_idx
+        ON agent_recall.evaluation_experiments (skill_name)
+        WHERE skill_name IS NOT NULL;
+    `,
+  ],
+}, {
+  version: 26,
   name: "reindex sessions after stale Codex turn attribution fix",
   statements: [
     `

@@ -17,6 +17,7 @@ import { useMcpRegistry } from "./useMcpRegistry";
 import { McpAgentBindings } from "./McpAgentBindings";
 import { McpToolPreview } from "./McpToolPreview";
 import { McpJsonImport } from "./McpJsonImport";
+import { McpJsonEdit } from "./McpJsonEdit";
 import { toolCountLabel } from "./mcp-tools";
 import type { ConfiguredAgent } from "../../../../shared/types";
 import type { McpToolDefinition } from "../../../../shared/mcp/types";
@@ -35,6 +36,7 @@ export function McpPage({
   const [view, setView] = useState<"servers" | "agents">("servers");
   const [previewTool, setPreviewTool] = useState<McpToolDefinition>();
   const [importOpen, setImportOpen] = useState(false);
+  const [jsonEditOpen, setJsonEditOpen] = useState(false);
   useEffect(() => {
     const handler = (event: BeforeUnloadEvent) => {
       if (!model.dirty) return;
@@ -181,6 +183,16 @@ export function McpPage({
                         {draft.enabled ? (zh ? "禁用" : "Disable") : (zh ? "启用" : "Enable")}
                       </button>
                     ) : (
+                      <>
+                      <button
+                        className="control-btn compact secondary"
+                        type="button"
+                        disabled={Boolean(model.busy)}
+                        onClick={() => setJsonEditOpen(true)}
+                      >
+                        <FileJson size={13} />
+                        JSON
+                      </button>
                       <button
                         className="control-btn compact danger"
                         type="button"
@@ -199,6 +211,7 @@ export function McpPage({
                         <Trash2 size={13} />
                         {zh ? "删除" : "Delete"}
                       </button>
+                      </>
                     )}
                     <button
                       className="control-btn compact secondary"
@@ -368,12 +381,17 @@ export function McpPage({
                     <button
                       type="button"
                       className="control-btn compact secondary"
-                      onClick={() =>
-                        setReferences({
-                          ...references,
-                          [isHttp ? "Authorization" : "NEW_VARIABLE"]: "",
-                        })
-                      }
+                      onClick={() => {
+                        // Never reuse an existing key: overwriting would wipe a
+                        // reference the user already filled in.
+                        const candidates = isHttp ? ["Authorization", "New-Header"] : ["NEW_VARIABLE"];
+                        let key = candidates.find((name) => !(name in references));
+                        for (let index = 2; !key; index += 1) {
+                          const candidate = `${isHttp ? "New-Header-" : "NEW_VARIABLE_"}${index}`;
+                          if (!(candidate in references)) key = candidate;
+                        }
+                        setReferences({ ...references, [key]: "" });
+                      }}
                     >
                       {isHttp ? "+ Header" : "+ Variable"}
                     </button>
@@ -535,6 +553,15 @@ export function McpPage({
           language={language}
           onClose={() => setImportOpen(false)}
           onImport={model.importServers}
+        />
+      ) : null}
+      {jsonEditOpen && draft && !draft.managed ? (
+        <McpJsonEdit
+          key={draft.id}
+          language={language}
+          server={draft}
+          onClose={() => setJsonEditOpen(false)}
+          onApply={model.update}
         />
       ) : null}
     </section>
