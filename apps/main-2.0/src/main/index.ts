@@ -95,7 +95,6 @@ import { SessionStore } from "../core/session-store";
 import { buildCombinedSupabaseSetupSql, supabaseSqlEditorUrl } from "../core/supabase-setup";
 import { readUserSshConfig } from "../core/ssh-config";
 import { listWslDistributions } from "../core/wsl";
-import { deleteWslSessionFile } from "../core/wsl-session-actions";
 import { AUTO_INDEX_REFRESH_INTERVAL_MS, INITIAL_INDEX_DELAY_MS } from "../core/refresh-policy";
 import { globalShortcutLabel, normalizeGlobalShortcut } from "../core/shortcuts";
 import { remoteSessionKey } from "../core/session-environment";
@@ -556,6 +555,10 @@ const skillService = new SkillService({
   getStore: () => store,
   getSettings,
   getHookSetup: loadSkillUsageHookSetup,
+  getEvaluationService: () => {
+    if (!automationService) throw new Error("Runtime is not ready.");
+    return automationService.evaluations;
+  },
   libraryRoot: path.join(app.getPath("userData"), "skills"),
   skillsShCachePath: path.join(app.getPath("userData"), "cache", "skills-sh.json"),
   homeDir: app.getPath("home"),
@@ -1552,19 +1555,26 @@ function runIndexSync(): Promise<IndexStatus> {
 const loadCachedLocalLiveSessionSnapshot = createCachedLiveSessionSnapshotLoader();
 const loadCachedLiveSessionSnapshot = createCachedLiveSessionSnapshotLoader({
   load: async (options) => {
-    const [snapshot, remoteSessions] = await Promise.all([
+    const [snapshot, remoteSnapshot] = await Promise.all([
       loadCachedLocalLiveSessionSnapshot(options),
       Promise.resolve()
         .then(async () => loadRemoteLiveSessions(
           await store.listEnvironments(),
-          (environment, remoteCommand) => sshCommandService.run(environment, remoteCommand, {
-            maxBuffer: 512 * 1024,
-            timeout: 10_000,
-          }),
+          (environment, remoteCommand) => environment.kind === "wsl"
+            ? runRemoteCommand(environment, remoteCommand, { maxBuffer: 512 * 1024, timeout: 10_000 })
+            : sshCommandService.run(environment, remoteCommand, { maxBuffer: 512 * 1024, timeout: 10_000 }),
         ))
-        .catch(() => []),
+        .then((sessions) => ({ sessions, error: null as string | null }))
+        .catch((error) => ({
+          sessions: [],
+          error: error instanceof Error ? error.message : String(error),
+        })),
     ]);
-    return { ...snapshot, sessions: [...snapshot.sessions, ...remoteSessions] };
+    return {
+      ...snapshot,
+      sessions: [...snapshot.sessions, ...remoteSnapshot.sessions],
+      ...(snapshot.error || remoteSnapshot.error ? { error: snapshot.error ?? remoteSnapshot.error ?? undefined } : {}),
+    };
   },
 });
 
@@ -2164,7 +2174,8 @@ function registerIpc(): void {
       fetchRemoteSessionMessagePage(environment, session, offset, limit, {
         ...(environment.kind === "ssh" ? { runSsh: runSshSessionCommand } : {}),
       }),
-    loadLiveSessions: () => loadCachedLiveSessionSnapshot({
+    loadLiveSessions: (fresh = false) => loadCachedLiveSessionSnapshot({
+      fresh,
       includeTrae: getSettings().includeTrae,
       includeQoder: getSettings().includeQoder,
       includeOpenClaw: getSettings().includeOpenClaw,
@@ -2198,7 +2209,6 @@ function registerIpc(): void {
           error,
         ),
       }),
-    deleteWslSession: deleteWslSessionFile,
   }));
   ipcMain.handle("attachment:preview", async (_event, sessionKey: string, attachmentId: string) => {
     const attachment = await store.getAttachmentFile(sessionKey, attachmentId);

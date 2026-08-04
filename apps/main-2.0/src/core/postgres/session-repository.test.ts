@@ -404,7 +404,17 @@ describe("PostgresSessionRepository", () => {
       index === 1 ? { ...message, content: "The cache\u0000key is stale." } : message
     ));
     const tracesWithNul = traces.map((event, index) => (
-      index === 1 ? { ...event, detail: "login\u0000test failed" } : event
+      index === 1 ? {
+        ...event,
+        detail: "login\u0000test failed",
+        attributes: {
+          output: {
+            text: "W\u0000s\u0000l",
+            values: ["keep 中文 😀", "nested\u0000value"],
+            "nul\u0000key": "key value",
+          },
+        },
+      } : event
     ));
 
     await repository.upsertIndexedSession(session(), messagesWithNul, tokens, tracesWithNul);
@@ -414,7 +424,34 @@ describe("PostgresSessionRepository", () => {
     ]);
     await expect(turnsRepository.getTraceEvents("codex:session-a")).resolves.toEqual([
       tracesWithNul[0],
-      { ...tracesWithNul[1], detail: "login\u2400test failed" },
+      {
+        ...tracesWithNul[1],
+        detail: "login\u2400test failed",
+        attributes: {
+          output: {
+            text: "W\u2400s\u2400l",
+            values: ["keep 中文 😀", "nested\u2400value"],
+            "nul\u2400key": "key value",
+          },
+        },
+      },
+    ]);
+
+    const spans = await database.query<{ output: unknown; attributes: unknown }>(`
+      select output, attributes
+      from agent_recall.trace_spans
+      where turn_id in (
+        select id from agent_recall.session_turns where session_key = 'codex:session-a'
+      )
+    `);
+    expect(spans.rows).toEqual([
+      expect.objectContaining({
+        output: {
+          text: "W\u2400s\u2400l",
+          values: ["keep 中文 😀", "nested\u2400value"],
+          "nul\u2400key": "key value",
+        },
+      }),
     ]);
   });
 
