@@ -109,24 +109,38 @@ export async function extractCodexContextComponents(filePath: string): Promise<C
   const developerTexts: string[] = [];
   const toolNames = new Set<string>();
   let developerChars = 0;
+  let toolsFromDynamic = false;
+  let toolsFromCalls = false;
 
   for await (const row of readJsonObjects(filePath, isCodexContextLine)) {
     const payload = objectField(row, "payload");
     if (row.type === "session_meta" && payload) {
       sessionMeta = payload;
-      for (const name of toolNamesFromDynamic(payload.dynamic_tools)) toolNames.add(name);
+      const dynamicNames = toolNamesFromDynamic(payload.dynamic_tools);
+      if (dynamicNames.length > 0) toolsFromDynamic = true;
+      for (const name of dynamicNames) toolNames.add(name);
       continue;
     }
 
+    if ((row.type === "response_item" || row.type === "event_msg") && payload) {
+      const callName = toolNameFromCallPayload(payload);
+      if (callName) {
+        toolsFromCalls = true;
+        toolNames.add(callName);
+        continue;
+      }
+    }
+
     if (row.type !== "response_item" || !payload || payload.type !== "message") continue;
+    // Keep scanning for tool calls after the developer budget is full — modern
+    // Codex rollouts often omit session_meta.dynamic_tools entirely.
+    if (developerChars >= CODEX_DEVELOPER_CHAR_BUDGET) continue;
     const role = typeof payload.role === "string" ? payload.role : "";
     if (role !== "developer" && role !== "system") continue;
     const text = messageText(payload.content).trim();
     if (!text) continue;
     developerTexts.push(text);
     developerChars += text.length;
-    // session_meta + tools are usually on the first line; stop once developer budget is full.
-    if (sessionMeta && developerChars >= CODEX_DEVELOPER_CHAR_BUDGET) break;
   }
 
   const components: ContextComponent[] = [];
@@ -166,12 +180,20 @@ export async function extractCodexContextComponents(filePath: string): Promise<C
 
   const tools = [...toolNames].sort((a, b) => a.localeCompare(b));
   if (tools.length > 0) {
+    const sourceHint = toolsFromDynamic && toolsFromCalls
+      ? "session_meta.dynamic_tools + tool calls"
+      : toolsFromDynamic
+        ? "session_meta.dynamic_tools"
+        : "response_item/event_msg tool calls";
     components.push({
       kind: "tool_inventory",
       title: "工具清单",
       fidelity: "listing",
       items: tools,
-      sourceHint: "session_meta.dynamic_tools",
+      sourceHint,
+      ...(!toolsFromDynamic && toolsFromCalls
+        ? { note: "由本会话中实际出现的 tool call 反推；未调用过的工具不会出现在此清单。" }
+        : {}),
     });
   }
 
@@ -298,7 +320,10 @@ function isCodexContextLine(line: string): boolean {
   // Cheap reject before JSON.parse — most rollout lines are tool/assistant noise.
   return line.includes("session_meta")
     || line.includes("\"developer\"")
-    || line.includes("\"system\"");
+    || line.includes("\"system\"")
+    || line.includes("function_call")
+    || line.includes("custom_tool_call")
+    || line.includes("mcp_tool_call");
 }
 
 function isClaudeContextLine(line: string): boolean {
@@ -334,6 +359,24 @@ function toolNamesFromDynamic(dynamicTools: unknown): string[] {
     collectDynamicToolNames(raw, names);
   }
   return names;
+}
+
+/** Infer tool names from response_item payloads when dynamic_tools is absent. */
+function toolNameFromCallPayload(payload: Record<string, unknown>): string | null {
+  const type = typeof payload.type === "string" ? payload.type : "";
+  if (type === "function_call" || type === "custom_tool_call" || type === "tool_call") {
+    const name = stringField(payload, "name").trim();
+    return name || null;
+  }
+  if (type === "mcp_tool_call" || type === "mcp_tool_call_end") {
+    const invocation = objectField(payload, "invocation");
+    if (!invocation) return null;
+    const server = stringField(invocation, "server").trim();
+    const tool = stringField(invocation, "tool").trim();
+    if (server && tool) return `${server}/${tool}`;
+    return tool || server || null;
+  }
+  return null;
 }
 
 function collectDynamicToolNames(raw: unknown, names: string[]): void {

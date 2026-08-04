@@ -83,6 +83,105 @@ describe("session context components", () => {
     expect(components[1]?.note).toMatch(/不是用户提示词/);
     expect(components[1]?.text).not.toContain("What is the status?");
     expect(components[2]?.items).toEqual(["lookup"]);
+    expect(components[2]?.sourceHint).toBe("session_meta.dynamic_tools");
+  });
+
+  it("infers Codex tool inventory from tool calls when dynamic_tools is absent", async () => {
+    const root = temporaryDirectory();
+    const filePath = path.join(root, "rollout-no-dynamic-tools.jsonl");
+    writeJsonLines(filePath, [
+      {
+        type: "session_meta",
+        payload: {
+          base_instructions: "You are Codex.",
+        },
+      },
+      {
+        type: "response_item",
+        payload: {
+          type: "message",
+          role: "developer",
+          content: [{ type: "input_text", text: "Keep answers short." }],
+        },
+      },
+      {
+        type: "response_item",
+        payload: {
+          type: "custom_tool_call",
+          name: "exec",
+          call_id: "call_1",
+          status: "completed",
+        },
+      },
+      {
+        type: "response_item",
+        payload: {
+          type: "function_call",
+          name: "wait",
+          call_id: "call_2",
+          arguments: "{}",
+        },
+      },
+      {
+        type: "event_msg",
+        payload: {
+          type: "mcp_tool_call_end",
+          call_id: "mcp_1",
+          invocation: { server: "mem0", tool: "search_memories", arguments: {} },
+        },
+      },
+      {
+        type: "response_item",
+        payload: {
+          type: "custom_tool_call",
+          name: "exec",
+          call_id: "call_3",
+          status: "completed",
+        },
+      },
+    ]);
+
+    const components = await extractCodexContextComponents(filePath);
+    expect(components.map((item) => item.kind)).toEqual([
+      "system_instructions",
+      "developer_instructions",
+      "tool_inventory",
+    ]);
+    const tools = components.find((item) => item.kind === "tool_inventory");
+    expect(tools?.items).toEqual(["exec", "mem0/search_memories", "wait"]);
+    expect(tools?.sourceHint).toBe("response_item/event_msg tool calls");
+    expect(tools?.note).toMatch(/tool call 反推/);
+  });
+
+  it("still collects later Codex tool calls after developer text budget is full", async () => {
+    const root = temporaryDirectory();
+    const filePath = path.join(root, "rollout-tools-after-budget.jsonl");
+    const huge = "D".repeat(48_000);
+    writeJsonLines(filePath, [
+      {
+        type: "session_meta",
+        payload: { base_instructions: "Keep it short." },
+      },
+      {
+        type: "response_item",
+        payload: {
+          type: "message",
+          role: "developer",
+          content: [{ type: "input_text", text: huge }],
+        },
+      },
+      {
+        type: "response_item",
+        payload: {
+          type: "custom_tool_call",
+          name: "exec",
+          call_id: "call_late",
+        },
+      },
+    ]);
+
+    const components = await extractCodexContextComponents(filePath);
+    expect(components.find((item) => item.kind === "tool_inventory")?.items).toEqual(["exec"]);
   });
 
   it("extracts Claude attachment listings without fabricating system prompts", async () => {
