@@ -39,6 +39,18 @@ const CODEX_SOURCES = new Set(["codex-cli", "codex-app", "tcodex-cli"]);
 const CLAUDE_SOURCES = new Set(["claude-cli", "claude-app", "tclaude-cli"]);
 
 const PREVIEW_CHAR_LIMIT = 12_000;
+/** Cap payload text so React/IPC never materialize multi‑MB strings. */
+const COMPONENT_TEXT_CHAR_LIMIT = 48_000;
+/** After session_meta, stop once developer text is capped (late reinjections are truncated). */
+const CODEX_DEVELOPER_CHAR_BUDGET = COMPONENT_TEXT_CHAR_LIMIT;
+
+type CacheEntry = {
+  mtimeMs: number;
+  size: number;
+  result: SessionContextComponents;
+};
+
+const extractCache = new Map<string, CacheEntry>();
 
 /**
  * On-demand session-level context metadata extracted from the local source
@@ -66,32 +78,39 @@ export async function extractSessionContextComponents(options: {
     return { ...base, status: "source_unavailable" };
   }
 
+  let stat: { mtimeMs: number; size: number; isFile(): boolean };
   try {
-    const stat = await fs.stat(options.filePath);
+    stat = await fs.stat(options.filePath);
     if (!stat.isFile()) return { ...base, status: "source_unavailable" };
   } catch {
     return { ...base, status: "source_unavailable" };
   }
 
-  if (CODEX_SOURCES.has(options.source)) {
-    return {
-      ...base,
-      components: await extractCodexContextComponents(options.filePath),
-    };
+  const cacheKey = `${options.source}\0${options.filePath}`;
+  const cached = extractCache.get(cacheKey);
+  if (cached && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) {
+    return cached.result;
   }
 
-  return {
-    ...base,
-    components: await extractClaudeContextComponents(options.filePath),
-  };
+  try {
+    const components = CODEX_SOURCES.has(options.source)
+      ? await extractCodexContextComponents(options.filePath)
+      : await extractClaudeContextComponents(options.filePath);
+    const result = { ...base, components };
+    extractCache.set(cacheKey, { mtimeMs: stat.mtimeMs, size: stat.size, result });
+    return result;
+  } catch {
+    return { ...base, status: "source_unavailable" };
+  }
 }
 
 export async function extractCodexContextComponents(filePath: string): Promise<ContextComponent[]> {
   let sessionMeta: Record<string, unknown> | null = null;
   const developerTexts: string[] = [];
   const toolNames = new Set<string>();
+  let developerChars = 0;
 
-  for await (const row of readJsonObjects(filePath)) {
+  for await (const row of readJsonObjects(filePath, isCodexContextLine)) {
     const payload = objectField(row, "payload");
     if (row.type === "session_meta" && payload) {
       sessionMeta = payload;
@@ -103,35 +122,45 @@ export async function extractCodexContextComponents(filePath: string): Promise<C
     const role = typeof payload.role === "string" ? payload.role : "";
     if (role !== "developer" && role !== "system") continue;
     const text = messageText(payload.content).trim();
-    if (text) developerTexts.push(text);
+    if (!text) continue;
+    developerTexts.push(text);
+    developerChars += text.length;
+    // session_meta + tools are usually on the first line; stop once developer budget is full.
+    if (sessionMeta && developerChars >= CODEX_DEVELOPER_CHAR_BUDGET) break;
   }
 
   const components: ContextComponent[] = [];
-  const baseInstructions = baseInstructionsText(sessionMeta?.base_instructions).trim();
-  if (baseInstructions) {
+  const baseInstructions = clampComponentText(baseInstructionsText(sessionMeta?.base_instructions).trim());
+  if (baseInstructions.text) {
     components.push({
       kind: "system_instructions",
       title: "系统 / 基础指令",
       fidelity: "full",
-      text: baseInstructions,
-      bytes: Buffer.byteLength(baseInstructions, "utf8"),
+      text: baseInstructions.text,
+      bytes: Buffer.byteLength(baseInstructions.text, "utf8"),
       sourceHint: "session_meta.base_instructions",
+      ...(baseInstructions.truncated
+        ? { note: `全文过长，已截断至约 ${COMPONENT_TEXT_CHAR_LIMIT} 字符。` }
+        : {}),
     });
   }
 
   if (developerTexts.length > 0) {
-    const joined = developerTexts.map((text, index) =>
+    const joinedRaw = developerTexts.map((text, index) =>
       developerTexts.length === 1 ? text : `—— Developer #${index + 1} ——\n${text}`,
     ).join("\n\n");
+    const joined = clampComponentText(joinedRaw);
     components.push({
       kind: "developer_instructions",
       title: "Developer 指令（额外指令）",
       fidelity: "full",
-      text: joined,
+      text: joined.text,
       items: developerTexts.map((_, index) => `Developer #${index + 1}`),
-      bytes: Buffer.byteLength(joined, "utf8"),
+      bytes: Buffer.byteLength(joined.text, "utf8"),
       sourceHint: "response_item role=developer|system",
-      note: "由 harness 注入（Memory、权限、multi-agent 等），不是用户提示词。用户提示词见下方对话中的 User 消息。",
+      note: joined.truncated
+        ? "由 harness 注入（Memory、权限、multi-agent 等），不是用户提示词。用户提示词见下方对话中的 User 消息。全文过长，已截断。"
+        : "由 harness 注入（Memory、权限、multi-agent 等），不是用户提示词。用户提示词见下方对话中的 User 消息。",
     });
   }
 
@@ -158,7 +187,7 @@ export async function extractClaudeContextComponents(filePath: string): Promise<
   const agentTypes = new Set<string>();
   const agentLines: string[] = [];
 
-  for await (const row of readJsonObjects(filePath)) {
+  for await (const row of readJsonObjects(filePath, isClaudeContextLine)) {
     if (row.type !== "attachment") continue;
     const attachment = objectField(row, "attachment") ?? row;
     const type = typeof attachment.type === "string" ? attachment.type : "";
@@ -198,26 +227,28 @@ export async function extractClaudeContextComponents(filePath: string): Promise<
   const components: ContextComponent[] = [];
 
   if (skillContents.length > 0 || skillNames.size > 0) {
-    const text = skillContents.join("\n\n").trim();
+    const clamped = clampComponentText(skillContents.join("\n\n").trim());
     components.push({
       kind: "skill_listing",
       title: "Skills 清单",
-      fidelity: text ? "full" : "listing",
-      ...(text ? { text, bytes: Buffer.byteLength(text, "utf8") } : {}),
+      fidelity: clamped.text ? "full" : "listing",
+      ...(clamped.text ? { text: clamped.text, bytes: Buffer.byteLength(clamped.text, "utf8") } : {}),
       ...(skillNames.size > 0 ? { items: [...skillNames].sort((a, b) => a.localeCompare(b)) } : {}),
       sourceHint: "attachment.skill_listing",
+      ...(clamped.truncated ? { note: `全文过长，已截断至约 ${COMPONENT_TEXT_CHAR_LIMIT} 字符。` } : {}),
     });
   }
 
   if (mcpNames.size > 0 || mcpBlocks.length > 0) {
-    const text = mcpBlocks.join("\n\n").trim();
+    const clamped = clampComponentText(mcpBlocks.join("\n\n").trim());
     components.push({
       kind: "mcp_instructions",
       title: "MCP 说明",
-      fidelity: text ? "full" : "listing",
-      ...(text ? { text, bytes: Buffer.byteLength(text, "utf8") } : {}),
+      fidelity: clamped.text ? "full" : "listing",
+      ...(clamped.text ? { text: clamped.text, bytes: Buffer.byteLength(clamped.text, "utf8") } : {}),
       ...(mcpNames.size > 0 ? { items: [...mcpNames].sort((a, b) => a.localeCompare(b)) } : {}),
       sourceHint: "attachment.mcp_instructions_delta",
+      ...(clamped.truncated ? { note: `全文过长，已截断至约 ${COMPONENT_TEXT_CHAR_LIMIT} 字符。` } : {}),
     });
   }
 
@@ -232,14 +263,15 @@ export async function extractClaudeContextComponents(filePath: string): Promise<
   }
 
   if (agentTypes.size > 0 || agentLines.length > 0) {
-    const text = agentLines.join("\n").trim();
+    const clamped = clampComponentText(agentLines.join("\n").trim());
     components.push({
       kind: "agent_listing",
       title: "Agent 清单",
-      fidelity: text ? "full" : "listing",
-      ...(text ? { text, bytes: Buffer.byteLength(text, "utf8") } : {}),
+      fidelity: clamped.text ? "full" : "listing",
+      ...(clamped.text ? { text: clamped.text, bytes: Buffer.byteLength(clamped.text, "utf8") } : {}),
       ...(agentTypes.size > 0 ? { items: [...agentTypes].sort((a, b) => a.localeCompare(b)) } : {}),
       sourceHint: "attachment.agent_listing_delta",
+      ...(clamped.truncated ? { note: `全文过长，已截断至约 ${COMPONENT_TEXT_CHAR_LIMIT} 字符。` } : {}),
     });
   }
 
@@ -252,6 +284,31 @@ export function truncateContextText(text: string, limit = PREVIEW_CHAR_LIMIT): {
 } {
   if (text.length <= limit) return { preview: text, truncated: false };
   return { preview: `${text.slice(0, limit)}\n…`, truncated: true };
+}
+
+function clampComponentText(text: string, limit = COMPONENT_TEXT_CHAR_LIMIT): {
+  text: string;
+  truncated: boolean;
+} {
+  if (text.length <= limit) return { text, truncated: false };
+  return { text: `${text.slice(0, limit)}\n…`, truncated: true };
+}
+
+function isCodexContextLine(line: string): boolean {
+  // Cheap reject before JSON.parse — most rollout lines are tool/assistant noise.
+  return line.includes("session_meta")
+    || line.includes("\"developer\"")
+    || line.includes("\"system\"");
+}
+
+function isClaudeContextLine(line: string): boolean {
+  return line.includes("attachment")
+    && (
+      line.includes("skill_listing")
+      || line.includes("mcp_instructions_delta")
+      || line.includes("deferred_tools_delta")
+      || line.includes("agent_listing_delta")
+    );
 }
 
 function baseInstructionsText(value: unknown): string {
@@ -313,12 +370,20 @@ function stringArray(value: unknown): string[] {
   return value.filter((item): item is string => typeof item === "string" && item.trim().length > 0);
 }
 
-async function* readJsonObjects(filePath: string): AsyncGenerator<Record<string, unknown>> {
+async function* readJsonObjects(
+  filePath: string,
+  shouldParse: (line: string) => boolean = () => true,
+): AsyncGenerator<Record<string, unknown>> {
   const input = createReadStream(filePath, { encoding: "utf8" });
-  const lines = createInterface({ input, crlfDelay: Infinity });
-  for await (const line of lines) {
-    const parsed = parseObject(line);
-    if (parsed) yield parsed;
+  try {
+    const lines = createInterface({ input, crlfDelay: Infinity });
+    for await (const line of lines) {
+      if (!shouldParse(line)) continue;
+      const parsed = parseObject(line);
+      if (parsed) yield parsed;
+    }
+  } finally {
+    input.destroy();
   }
 }
 

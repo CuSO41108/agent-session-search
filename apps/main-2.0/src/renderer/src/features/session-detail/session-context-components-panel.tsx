@@ -99,32 +99,39 @@ export function SessionContextComponentsPanel({
 }) {
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const [payload, setPayload] = useState<SessionContextComponents | null>(null);
 
   useEffect(() => {
     setOpen(false);
     setPayload(null);
     setLoading(false);
+    setError(null);
   }, [session.sessionKey]);
 
   useEffect(() => {
     if (!open || !supportsContextComponents(session)) return;
-    if (payload || loading) return;
+    // Do not put `loading` in deps / guards: setLoading(true) would retrigger the
+    // effect, cancel the in-flight request, then bail because loading===true —
+    // leaving the panel stuck on "加载中…" forever.
+    if (payload) return;
     let cancelled = false;
     setLoading(true);
+    setError(null);
     void window.sessionSearch.getSessionContextComponents(session.sessionKey)
       .then((result) => {
         if (!cancelled) setPayload(result);
       })
-      .catch(() => {
-        if (!cancelled) {
-          setPayload({
-            status: "source_unavailable",
-            source: session.source,
-            format: null,
-            components: [],
-          });
-        }
+      .catch((cause: unknown) => {
+        if (cancelled) return;
+        const message = cause instanceof Error ? cause.message : String(cause ?? "unknown error");
+        setError(message);
+        setPayload({
+          status: "source_unavailable",
+          source: session.source,
+          format: null,
+          components: [],
+        });
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
@@ -132,7 +139,7 @@ export function SessionContextComponentsPanel({
     return () => {
       cancelled = true;
     };
-  }, [open, session.sessionKey, session.source, payload, loading]);
+  }, [open, session.sessionKey, session.source, payload]);
 
   if (!supportsContextComponents(session)) return null;
 
@@ -153,12 +160,23 @@ export function SessionContextComponentsPanel({
       {open ? (
         <div className="detail-context-components-body">
           {loading ? <p className="detail-context-components-empty">{l("Loading…", "加载中…")}</p> : null}
-          {!loading && payload?.status === "source_unavailable" ? (
+          {!loading && error ? (
+            <p className="detail-context-components-empty">
+              {l("Failed to load context composition", "加载上下文构成失败")}
+              {error ? `: ${error}` : ""}
+            </p>
+          ) : null}
+          {!loading && !error && payload?.status === "source_unavailable" ? (
             <p className="detail-context-components-empty">
               {l("Source file unavailable", "源文件不可用")}
             </p>
           ) : null}
-          {!loading && payload?.status === "ok" && payload.components.length === 0 ? (
+          {!loading && !error && payload?.status === "unsupported" ? (
+            <p className="detail-context-components-empty">
+              {l("This session source is not supported", "此会话来源暂不支持")}
+            </p>
+          ) : null}
+          {!loading && !error && payload?.status === "ok" && payload.components.length === 0 ? (
             <p className="detail-context-components-empty">
               {l(
                 "No extractable context metadata in this session.",
@@ -166,13 +184,13 @@ export function SessionContextComponentsPanel({
               )}
             </p>
           ) : null}
-          {!loading && payload?.components.map((component) => (
+          {!loading && !error && payload?.status === "ok" ? payload.components.map((component) => (
             <ContextComponentBlock
               key={`${component.kind}:${component.sourceHint ?? ""}:${component.title}`}
               component={component}
               language={language}
             />
-          ))}
+          )) : null}
         </div>
       ) : null}
     </div>

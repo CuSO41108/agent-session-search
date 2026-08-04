@@ -177,4 +177,62 @@ describe("session context components", () => {
       truncated: true,
     });
   });
+
+  it("caps oversized Codex developer text and stops after the budget", async () => {
+    const root = temporaryDirectory();
+    const filePath = path.join(root, "rollout-huge.jsonl");
+    const huge = "D".repeat(30_000);
+    writeJsonLines(filePath, [
+      {
+        type: "session_meta",
+        payload: { base_instructions: "Keep it short.", dynamic_tools: [] },
+      },
+      {
+        type: "response_item",
+        payload: {
+          type: "message",
+          role: "developer",
+          content: [{ type: "input_text", text: huge }],
+        },
+      },
+      {
+        type: "response_item",
+        payload: {
+          type: "message",
+          role: "developer",
+          content: [{ type: "input_text", text: huge }],
+        },
+      },
+      {
+        type: "response_item",
+        payload: {
+          type: "message",
+          role: "developer",
+          content: [{ type: "input_text", text: "should-not-appear-after-budget" }],
+        },
+      },
+    ]);
+
+    const components = await extractCodexContextComponents(filePath);
+    const developer = components.find((item) => item.kind === "developer_instructions");
+    expect(developer?.text?.length).toBeLessThanOrEqual(48_000 + 2);
+    expect(developer?.text).not.toContain("should-not-appear-after-budget");
+    expect(developer?.note).toMatch(/截断/);
+  });
+
+  it("caches repeated extracts for the same file mtime", async () => {
+    const root = temporaryDirectory();
+    const filePath = path.join(root, "rollout.jsonl");
+    writeJsonLines(filePath, [
+      {
+        type: "session_meta",
+        payload: { base_instructions: "cached once", dynamic_tools: [] },
+      },
+    ]);
+
+    const first = await extractSessionContextComponents({ source: "codex-cli", filePath });
+    const second = await extractSessionContextComponents({ source: "codex-cli", filePath });
+    expect(second).toEqual(first);
+    expect(first.components[0]?.text).toBe("cached once");
+  });
 });

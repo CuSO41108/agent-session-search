@@ -1750,11 +1750,20 @@ function registerIpc(): void {
         components: [],
       };
     }
-    return extractSessionContextComponents({
-      source: session.source,
-      filePath: isLocalSessionEnvironment(session) ? session.filePath : null,
-      sourceAvailable: session.sourceAvailable,
-    });
+    try {
+      return await extractSessionContextComponents({
+        source: session.source,
+        filePath: isLocalSessionEnvironment(session) ? session.filePath : null,
+        sourceAvailable: session.sourceAvailable,
+      });
+    } catch {
+      return {
+        status: "source_unavailable" as const,
+        source: session.source,
+        format: null,
+        components: [],
+      };
+    }
   });
   ipcMain.handle("session:messages", async (_event, sessionKey: string, offset?: number, limit?: number) => {
     const pageOffset = offset ?? 0;

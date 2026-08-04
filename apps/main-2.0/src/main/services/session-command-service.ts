@@ -82,11 +82,20 @@ export class SessionCommandService {
         components: [],
       };
     }
-    return extractSessionContextComponents({
-      source: session.source,
-      filePath: isLocalSessionEnvironment(session) ? session.filePath : null,
-      sourceAvailable: session.sourceAvailable,
-    });
+    try {
+      return await extractSessionContextComponents({
+        source: session.source,
+        filePath: isLocalSessionEnvironment(session) ? session.filePath : null,
+        sourceAvailable: session.sourceAvailable,
+      });
+    } catch {
+      return {
+        status: "source_unavailable",
+        source: session.source,
+        format: null,
+        components: [],
+      };
+    }
   }
 
   async copyResumeCommand(sessionKey: string): Promise<void> {
