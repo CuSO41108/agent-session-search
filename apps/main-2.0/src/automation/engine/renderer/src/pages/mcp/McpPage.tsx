@@ -381,12 +381,17 @@ export function McpPage({
                     <button
                       type="button"
                       className="control-btn compact secondary"
-                      onClick={() =>
-                        setReferences({
-                          ...references,
-                          [isHttp ? "Authorization" : "NEW_VARIABLE"]: "",
-                        })
-                      }
+                      onClick={() => {
+                        // Never reuse an existing key: overwriting would wipe a
+                        // reference the user already filled in.
+                        const candidates = isHttp ? ["Authorization", "New-Header"] : ["NEW_VARIABLE"];
+                        let key = candidates.find((name) => !(name in references));
+                        for (let index = 2; !key; index += 1) {
+                          const candidate = `${isHttp ? "New-Header-" : "NEW_VARIABLE_"}${index}`;
+                          if (!(candidate in references)) key = candidate;
+                        }
+                        setReferences({ ...references, [key]: "" });
+                      }}
                     >
                       {isHttp ? "+ Header" : "+ Variable"}
                     </button>
