@@ -278,6 +278,12 @@ function spanPayload(value: unknown, fallback: string): Record<string, unknown> 
   return fallback ? { text: fallback } : null;
 }
 
+function spanOutput(event: SessionTraceEvent): Record<string, unknown> | null {
+  const hasExplicitOutput = event.attributes !== undefined
+    && Object.prototype.hasOwnProperty.call(event.attributes, "output");
+  return spanPayload(event.attributes?.output, hasExplicitOutput ? "" : event.detail);
+}
+
 function attributeTimestamp(value: unknown): string | null {
   return typeof value === "string" || typeof value === "number" ? timestampString(value) : null;
 }
@@ -299,7 +305,7 @@ function buildSpans(turnId: string, traceEvents: readonly SessionTraceEvent[]): 
     const paired = callId && event.kind !== "tool_call" ? calls.get(callId) : undefined;
     if (paired) {
       paired.endedAt = attributeTimestamp(event.attributes?.endedAt) ?? timestampString(event.timestamp) ?? paired.startedAt;
-      paired.output = spanPayload(event.attributes?.output, event.detail);
+      paired.output = spanOutput(event);
       paired.status = completedSpanStatus(event.status);
       paired.error = event.status === "failed" ? event.detail || event.title : null;
       paired.attributes = {
@@ -325,7 +331,7 @@ function buildSpans(turnId: string, traceEvents: readonly SessionTraceEvent[]): 
       endedAt,
       callId,
       input: spanPayload(event.attributes?.input, event.kind === "tool_call" ? event.detail : ""),
-      output: event.kind === "tool_call" ? null : spanPayload(event.attributes?.output, event.detail),
+      output: event.kind === "tool_call" ? null : spanOutput(event),
       error: event.status === "failed" ? event.detail || event.title : null,
       attributes: {
         source: event.source,

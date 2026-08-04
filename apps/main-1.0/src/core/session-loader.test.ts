@@ -61,6 +61,52 @@ describe("Codex session loading", () => {
     });
   });
 
+  it("keeps an empty send_message function output distinct from its input", () => {
+    const loaded = loadCodexSessionRows("/tmp/codex-send-message.jsonl", [
+      {
+        type: "session_meta",
+        timestamp: "2026-08-04T03:33:15.000Z",
+        payload: { id: "codex-send-message", cwd: "/repo" },
+      },
+      {
+        type: "response_item",
+        timestamp: "2026-08-04T03:33:17.788Z",
+        payload: {
+          type: "function_call",
+          name: "send_message",
+          namespace: "collaboration",
+          arguments: JSON.stringify({ target: "/root", message: "task result" }),
+          call_id: "call-send-message",
+        },
+      },
+      {
+        type: "event_msg",
+        timestamp: "2026-08-04T03:33:17.790Z",
+        payload: {
+          type: "sub_agent_activity",
+          event_id: "call-send-message",
+          agent_thread_id: "child-thread",
+          agent_path: "/root",
+          kind: "interacted",
+        },
+      },
+      {
+        type: "response_item",
+        timestamp: "2026-08-04T03:33:17.939Z",
+        payload: {
+          type: "function_call_output",
+          call_id: "call-send-message",
+          output: "",
+        },
+      },
+    ]);
+
+    const sendMessage = loaded?.traceEvents?.find((event) => event.callId === "call-send-message");
+    expect(sendMessage?.attributes?.input).toEqual({ target: "/root", message: "task result" });
+    expect(sendMessage?.attributes?.output).toBe("");
+    expect(sendMessage?.attributes?.output).not.toEqual(sendMessage?.attributes?.input);
+  });
+
   it("preserves Codex message phases and normalizes turn lifecycle metadata", () => {
     const rows = [
       {

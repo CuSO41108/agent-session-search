@@ -146,6 +146,66 @@ describe("deriveSessionTimeline", () => {
     }]);
   });
 
+  it("does not fill an empty send_message output with the input detail", () => {
+    const loaded = loadCodexSessionRows("/tmp/codex-send-message.jsonl", [
+      {
+        type: "session_meta",
+        timestamp: "2026-08-04T03:33:15.000Z",
+        payload: { id: "codex-send-message", cwd: "/repo" },
+      },
+      {
+        type: "response_item",
+        timestamp: "2026-08-04T03:33:16.000Z",
+        payload: {
+          type: "message",
+          role: "user",
+          content: [{ type: "input_text", text: "send the result" }],
+        },
+      },
+      {
+        type: "response_item",
+        timestamp: "2026-08-04T03:33:17.788Z",
+        payload: {
+          type: "function_call",
+          name: "send_message",
+          namespace: "collaboration",
+          arguments: JSON.stringify({ target: "/root", message: "task result" }),
+          call_id: "call-send-message",
+        },
+      },
+      {
+        type: "event_msg",
+        timestamp: "2026-08-04T03:33:17.790Z",
+        payload: {
+          type: "sub_agent_activity",
+          event_id: "call-send-message",
+          agent_thread_id: "child-thread",
+          agent_path: "/root",
+          kind: "interacted",
+        },
+      },
+      {
+        type: "response_item",
+        timestamp: "2026-08-04T03:33:17.939Z",
+        payload: {
+          type: "function_call_output",
+          call_id: "call-send-message",
+          output: "",
+        },
+      },
+    ]);
+
+    const timeline = deriveSessionTimeline({
+      sessionKey: "codex:codex-send-message",
+      messages: loaded?.messages ?? [],
+      traceEvents: loaded?.traceEvents ?? [],
+    });
+    const sendMessage = timeline.turns[0].spans.find((span) => span.name === "collaboration.send_message");
+
+    expect(sendMessage?.input).toEqual({ target: "/root", message: "task result" });
+    expect(sendMessage?.output).toBeNull();
+  });
+
   it("preserves Agent message direction and turn-trigger metadata in collaboration spans", () => {
     const loaded = loadCodexSessionRows("/tmp/codex-agent-message.jsonl", [
       {
