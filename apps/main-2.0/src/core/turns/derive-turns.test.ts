@@ -430,6 +430,119 @@ describe("deriveSessionTimeline", () => {
     );
   });
 
+  it("reattaches assistant replies tagged with a completed Codex turn to the newer user turn", () => {
+    const sourceMessages: SessionMessage[] = [
+      {
+        role: "user",
+        content: "先定路线",
+        timestamp: "2026-08-04T06:00:00.000Z",
+        index: 0,
+        sourceTurnId: "turn-old",
+      },
+      {
+        role: "assistant",
+        content: "先确认第一点？",
+        timestamp: "2026-08-04T06:00:30.000Z",
+        index: 1,
+        sourceTurnId: "turn-old",
+        phase: "final_answer",
+      },
+      {
+        role: "user",
+        content: "可以",
+        timestamp: "2026-08-04T06:14:00.000Z",
+        index: 2,
+        sourceTurnId: "turn-new",
+      },
+      {
+        role: "assistant",
+        content: "第一部分建议采用控制面拆分。",
+        timestamp: "2026-08-04T06:14:20.000Z",
+        index: 3,
+        sourceTurnId: "turn-old",
+        phase: "final_answer",
+      },
+      {
+        role: "user",
+        content: "认可",
+        timestamp: "2026-08-04T06:15:00.000Z",
+        index: 4,
+        sourceTurnId: "turn-newer",
+      },
+      {
+        role: "assistant",
+        content: "第二部分建议逐级优化导入。",
+        timestamp: "2026-08-04T06:15:20.000Z",
+        index: 5,
+        sourceTurnId: "turn-old",
+        phase: "final_answer",
+      },
+    ];
+    const lifecycle: SessionTraceEvent[] = [
+      {
+        index: 0,
+        kind: "event",
+        source: "codex",
+        title: "Turn completed",
+        detail: "",
+        timestamp: "2026-08-04T06:01:00.000Z",
+        eventType: "codex.turn.completed",
+        status: "completed",
+        sourceTurnId: "turn-old",
+        attributes: { endedAt: "2026-08-04T06:01:00.000Z" },
+      },
+      {
+        index: 1,
+        kind: "event",
+        source: "codex",
+        title: "Turn completed",
+        detail: "",
+        timestamp: "2026-08-04T06:14:40.000Z",
+        eventType: "codex.turn.completed",
+        status: "completed",
+        sourceTurnId: "turn-new",
+        attributes: { endedAt: "2026-08-04T06:14:40.000Z" },
+      },
+      {
+        index: 2,
+        kind: "event",
+        source: "codex",
+        title: "Turn completed",
+        detail: "",
+        timestamp: "2026-08-04T06:15:40.000Z",
+        eventType: "codex.turn.completed",
+        status: "completed",
+        sourceTurnId: "turn-newer",
+        attributes: { endedAt: "2026-08-04T06:15:40.000Z" },
+      },
+    ];
+
+    const timeline = deriveSessionTimeline({
+      sessionKey: "codex:stale-turn-id",
+      messages: sourceMessages,
+      traceEvents: lifecycle,
+    });
+
+    expect(timeline.turns).toHaveLength(3);
+    expect(timeline.turns[0]).toMatchObject({
+      sourceTurnId: "turn-old",
+      userText: "先定路线",
+      assistantText: "先确认第一点？",
+    });
+    expect(timeline.turns[1]).toMatchObject({
+      sourceTurnId: "turn-new",
+      userText: "可以",
+      assistantText: "第一部分建议采用控制面拆分。",
+    });
+    expect(timeline.turns[2]).toMatchObject({
+      sourceTurnId: "turn-newer",
+      userText: "认可",
+      assistantText: "第二部分建议逐级优化导入。",
+    });
+    expect(timeline.turns[1].messages.map((message) => message.role)).toEqual(["user", "assistant"]);
+    expect(timeline.turns[2].messages.map((message) => message.role)).toEqual(["user", "assistant"]);
+  });
+
   it("keeps a started Codex Turn running until a lifecycle terminal arrives", () => {
     const timeline = deriveSessionTimeline({
       sessionKey: "codex:active-turn",

@@ -9,7 +9,7 @@ import type {
 } from "../types";
 import { tracePresentation } from "../trace-presentation";
 
-export const TURN_DERIVATION_VERSION = 3;
+export const TURN_DERIVATION_VERSION = 4;
 
 export interface DerivedRawEvent {
   eventIndex: number;
@@ -146,6 +146,34 @@ function ensureSyntheticTurn(turns: TurnDraft[]): TurnDraft {
   return synthetic;
 }
 
+function lifecycleEndedAtMs(traceEvents: readonly SessionTraceEvent[]): Map<string, number> {
+  const endedAt = new Map<string, number>();
+  for (const event of traceEvents) {
+    if (!event.sourceTurnId) continue;
+    if (event.eventType !== "codex.turn.completed" && event.eventType !== "codex.turn.aborted") continue;
+    const terminalAt = timestampMs(
+      (typeof event.attributes?.endedAt === "string" || typeof event.attributes?.endedAt === "number"
+        ? event.attributes.endedAt
+        : null)
+      ?? event.timestamp,
+    );
+    if (terminalAt === null) continue;
+    const previous = endedAt.get(event.sourceTurnId);
+    if (previous === undefined || terminalAt > previous) endedAt.set(event.sourceTurnId, terminalAt);
+  }
+  return endedAt;
+}
+
+function isStaleSourceTurnId(
+  sourceTurnId: string | null | undefined,
+  occurredAt: number | null,
+  turnEndedAtMs: ReadonlyMap<string, number>,
+): boolean {
+  if (!sourceTurnId || occurredAt === null) return false;
+  const endedAt = turnEndedAtMs.get(sourceTurnId);
+  return endedAt !== undefined && occurredAt > endedAt;
+}
+
 function buildTurnDrafts(
   messages: readonly SessionMessage[],
   traceEvents: readonly SessionTraceEvent[],
@@ -153,9 +181,22 @@ function buildTurnDrafts(
 ): TurnDraft[] {
   const turns: TurnDraft[] = [];
   const turnsBySourceId = new Map<string, TurnDraft>();
+  const turnEndedAtMs = lifecycleEndedAtMs(traceEvents);
   let current: TurnDraft | null = null;
+  let latestUserTurn: TurnDraft | null = null;
 
   for (const message of [...messages].sort((left, right) => left.index - right.index)) {
+    const messageTime = timestampMs(message.timestamp);
+    const staleSourceTurn = isStaleSourceTurnId(message.sourceTurnId, messageTime, turnEndedAtMs);
+
+    // Codex may keep tagging assistant replies with a completed turn id after a newer
+    // user turn started. Prefer the latest user turn for display grouping.
+    if (message.role !== "user" && message.sourceTurnId && staleSourceTurn && latestUserTurn) {
+      latestUserTurn.messages.push(message);
+      current = latestUserTurn;
+      continue;
+    }
+
     if (message.sourceTurnId) {
       current = turnsBySourceId.get(message.sourceTurnId) ?? {
         sourceMessageIndex: null,
@@ -174,6 +215,7 @@ function buildTurnDrafts(
         current.synthetic = false;
       }
       current.messages.push(message);
+      if (message.role === "user") latestUserTurn = current;
     } else if (message.role === "user") {
       current = {
         sourceMessageIndex: message.index,
@@ -184,6 +226,7 @@ function buildTurnDrafts(
         tokenEvents: [],
       };
       turns.push(current);
+      latestUserTurn = current;
     } else {
       current ??= ensureSyntheticTurn(turns);
       current.messages.push(message);
@@ -225,8 +268,11 @@ function buildTurnDrafts(
 
   for (const event of [...traceEvents].sort(compareTimestamped)) {
     const occurredAt = timestampMs(event.timestamp);
-    let target = event.sourceTurnId ? turnsBySourceId.get(event.sourceTurnId) ?? null : null;
-    if (!target && event.sourceTurnId) {
+    const staleSourceTurn = isStaleSourceTurnId(event.sourceTurnId, occurredAt, turnEndedAtMs);
+    let target = !staleSourceTurn && event.sourceTurnId
+      ? turnsBySourceId.get(event.sourceTurnId) ?? null
+      : null;
+    if (!target && event.sourceTurnId && !staleSourceTurn) {
       target = {
         ...createSyntheticTurn(),
         sourceTurnId: event.sourceTurnId,
@@ -245,8 +291,9 @@ function buildTurnDrafts(
   })) {
     const occurredAt = timestampMs(event.timestamp);
     const sourceTurnId = event.sourceTurnId?.trim() || null;
-    let target = sourceTurnId ? turnsBySourceId.get(sourceTurnId) ?? null : null;
-    if (sourceTurnId && !target) continue;
+    const staleSourceTurn = isStaleSourceTurnId(sourceTurnId, occurredAt, turnEndedAtMs);
+    let target = sourceTurnId && !staleSourceTurn ? turnsBySourceId.get(sourceTurnId) ?? null : null;
+    if (sourceTurnId && !target && !staleSourceTurn) continue;
     target ??= findTurnForTimestamp(occurredAt);
     if (!target) target = ensureSyntheticTurn(turns);
     target.tokenEvents.push(event);
