@@ -1291,4 +1291,21 @@ export const POSTGRES_MIGRATIONS: readonly PostgresMigration[] = [{
         ADD COLUMN IF NOT EXISTS headers jsonb NOT NULL DEFAULT '{}'::jsonb;
     `,
   ],
+}, {
+  version: 25,
+  name: "reindex sessions after stale Codex turn attribution fix",
+  statements: [
+    `
+      UPDATE agent_recall.sessions
+      SET
+        content_indexed_mtime_ms = 0,
+        content_indexed_size = 0
+      WHERE EXISTS (
+        SELECT 1
+        FROM agent_recall.session_turns turns
+        WHERE turns.session_key = sessions.session_key
+          AND turns.derivation_version < 4
+      );
+    `,
+  ],
 }];

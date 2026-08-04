@@ -1262,6 +1262,105 @@ describe("Codex session loading", () => {
     expect(JSON.stringify(loaded?.messages)).not.toContain("不能进入对话");
   });
 
+  it("reattributes assistant messages that keep a completed Codex turn passthrough id", () => {
+    const userItem = (turnId: string, id: string, text: string, timestamp: string) => ({
+      type: "event_msg",
+      timestamp,
+      payload: {
+        type: "item_completed",
+        turn_id: turnId,
+        completed_at_ms: Date.parse(timestamp),
+        item: {
+          type: "UserMessage",
+          id,
+          content: [{ type: "text", text }],
+        },
+      },
+    });
+    const rows = [
+      {
+        type: "session_meta",
+        timestamp: "2026-08-04T06:00:00Z",
+        payload: { id: "codex-stale-passthrough", cwd: "/repo", history_mode: "paginated" },
+      },
+      {
+        type: "event_msg",
+        timestamp: "2026-08-04T06:00:01Z",
+        payload: { type: "task_started", turn_id: "turn-old" },
+      },
+      userItem("turn-old", "user-old", "先定路线", "2026-08-04T06:00:02Z"),
+      {
+        type: "response_item",
+        timestamp: "2026-08-04T06:00:30Z",
+        payload: {
+          type: "message",
+          id: "assistant-old",
+          role: "assistant",
+          phase: "final_answer",
+          content: [{ type: "output_text", text: "先确认第一点？" }],
+          internal_chat_message_metadata_passthrough: { turn_id: "turn-old" },
+        },
+      },
+      {
+        type: "event_msg",
+        timestamp: "2026-08-04T06:01:00Z",
+        payload: { type: "task_complete", turn_id: "turn-old" },
+      },
+      {
+        type: "event_msg",
+        timestamp: "2026-08-04T06:14:00Z",
+        payload: { type: "task_started", turn_id: "turn-new" },
+      },
+      userItem("turn-new", "user-new", "可以", "2026-08-04T06:14:01Z"),
+      {
+        type: "response_item",
+        timestamp: "2026-08-04T06:14:20Z",
+        payload: {
+          type: "message",
+          id: "assistant-stale",
+          role: "assistant",
+          phase: "final_answer",
+          content: [{ type: "output_text", text: "第一部分建议采用控制面拆分。" }],
+          internal_chat_message_metadata_passthrough: { turn_id: "turn-old" },
+        },
+      },
+      {
+        type: "event_msg",
+        timestamp: "2026-08-04T06:14:40Z",
+        payload: { type: "task_complete", turn_id: "turn-new" },
+      },
+      {
+        type: "event_msg",
+        timestamp: "2026-08-04T06:15:00Z",
+        payload: { type: "task_started", turn_id: "turn-newer" },
+      },
+      userItem("turn-newer", "user-newer", "认可", "2026-08-04T06:15:01Z"),
+      {
+        type: "response_item",
+        timestamp: "2026-08-04T06:15:20Z",
+        payload: {
+          type: "message",
+          id: "assistant-stale-2",
+          role: "assistant",
+          phase: "final_answer",
+          content: [{ type: "output_text", text: "第二部分建议逐级优化导入。" }],
+          internal_chat_message_metadata_passthrough: { turn_id: "turn-old" },
+        },
+      },
+    ];
+
+    const loaded = loadCodexSessionRows("/tmp/codex-stale-passthrough.jsonl", rows);
+
+    expect(loaded?.messages).toMatchObject([
+      { role: "user", content: "先定路线", sourceTurnId: "turn-old" },
+      { role: "assistant", content: "先确认第一点？", sourceTurnId: "turn-old" },
+      { role: "user", content: "可以", sourceTurnId: "turn-new" },
+      { role: "assistant", content: "第一部分建议采用控制面拆分。", sourceTurnId: "turn-new" },
+      { role: "user", content: "认可", sourceTurnId: "turn-newer" },
+      { role: "assistant", content: "第二部分建议逐级优化导入。", sourceTurnId: "turn-newer" },
+    ]);
+  });
+
   it("normalizes completed Codex tools by strong item id and omits opaque payloads", () => {
     const rows: unknown[] = [
       {

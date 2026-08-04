@@ -67,17 +67,16 @@ function historyMode(value: unknown): CodexHistoryMode {
 
 function responseMessageContext(
   payload: Record<string, unknown>,
-  fallbackTurnId: string | null,
 ): Extract<NormalizedCodexFact, { kind: "message" }> | null {
   if (payload.type !== "message") return null;
   const metadata = record(payload.internal_chat_message_metadata_passthrough);
-  const explicitTurnId = stringValue(metadata?.turn_id) || fallbackTurnId;
+  const explicitTurnId = stringValue(metadata?.turn_id) || null;
   const rawPhase = stringValue(payload.phase);
   const phase = rawPhase === "commentary" || rawPhase === "final_answer" ? rawPhase : null;
   const itemId = stringValue(payload.id);
   return {
     kind: "message",
-    sourceTurnId: explicitTurnId || null,
+    sourceTurnId: explicitTurnId,
     phase,
     sourceRecordId: itemId ? `response_item:${itemId}` : null,
     rawType: "response_item.message",
@@ -811,6 +810,7 @@ const LEGACY_TURN_ID_PREFIX = "agent-recall:legacy-turn:";
 export class CodexRolloutAccumulator {
   private currentHistoryMode: CodexHistoryMode;
   private readonly activeTurnIds = new Set<string>();
+  private latestStartedTurnId: string | null = null;
   private nextLegacyTurnSequence = 1;
 
   constructor(
@@ -822,6 +822,7 @@ export class CodexRolloutAccumulator {
     for (const turnId of state?.activeTurnIds ?? []) {
       if (!turnId) continue;
       this.activeTurnIds.add(turnId);
+      this.latestStartedTurnId = turnId;
       this.rememberSourceTurnId(turnId);
     }
     for (const turnId of state?.sourceTurnIds ?? []) this.rememberSourceTurnId(turnId);
@@ -836,7 +837,35 @@ export class CodexRolloutAccumulator {
   }
 
   discardActiveTurnIds(turnIds: Iterable<string>): void {
-    for (const turnId of turnIds) this.activeTurnIds.delete(turnId);
+    for (const turnId of turnIds) this.retireActiveTurnId(turnId);
+  }
+
+  /**
+   * Codex sometimes keeps writing assistant messages with a completed turn's
+   * passthrough id after a newer task_started. Prefer an active turn instead.
+   */
+  private resolveAttributionTurnId(
+    explicitTurnId: string | null,
+    uniqueActiveTurnId: string | null,
+  ): string | null {
+    if (explicitTurnId && this.activeTurnIds.has(explicitTurnId)) return explicitTurnId;
+    if (uniqueActiveTurnId) return uniqueActiveTurnId;
+    if (this.latestStartedTurnId && this.activeTurnIds.has(this.latestStartedTurnId)) {
+      return this.latestStartedTurnId;
+    }
+    if (this.activeTurnIds.size > 0) {
+      return this.activeTurnIds.values().next().value as string;
+    }
+    return explicitTurnId;
+  }
+
+  private retireActiveTurnId(turnId: string | null): void {
+    if (!turnId) return;
+    this.activeTurnIds.delete(turnId);
+    if (this.latestStartedTurnId !== turnId) return;
+    this.latestStartedTurnId = this.activeTurnIds.size > 0
+      ? [...this.activeTurnIds].at(-1) ?? null
+      : null;
   }
 
   private rememberSourceTurnId(value: string | null | undefined): void {
@@ -885,11 +914,12 @@ export class CodexRolloutAccumulator {
       });
     }
     if (row.type === "response_item") {
-      const message = responseMessageContext(payload, uniqueActiveTurnId);
-      const metadata = record(payload.internal_chat_message_metadata_passthrough);
-      const sourceTurnId = message?.sourceTurnId
-        ?? stringValue(metadata?.turn_id)
-        ?? uniqueActiveTurnId;
+      const messageContext = responseMessageContext(payload);
+      const sourceTurnId = this.resolveAttributionTurnId(
+        messageContext?.sourceTurnId ?? null,
+        uniqueActiveTurnId,
+      );
+      const message = messageContext ? { ...messageContext, sourceTurnId } : null;
       const richTrace = richResponseTrace(row, payload, sourceTurnId);
       return emptyResult({
         message,
@@ -898,7 +928,10 @@ export class CodexRolloutAccumulator {
       });
     }
     if (row.type === "item_completed" || (row.type === "event_msg" && payload.type === "item_completed")) {
-      const sourceTurnId = stringValue(payload.turn_id) || uniqueActiveTurnId;
+      const sourceTurnId = this.resolveAttributionTurnId(
+        stringValue(payload.turn_id) || null,
+        uniqueActiveTurnId,
+      );
       const decoded = completedItem(payload.item);
       if (!decoded) return emptyResult({ sourceTurnId });
       const itemId = stringValue(decoded.payload.id);
@@ -943,6 +976,7 @@ export class CodexRolloutAccumulator {
     if (rawType === "task_started") {
       const sourceTurnId = stringValue(payload.turn_id) || this.createLegacyTurnId();
       this.activeTurnIds.add(sourceTurnId);
+      this.latestStartedTurnId = sourceTurnId;
       const startedAt = unixSecondsToIso(payload.started_at) || stringValue(row.timestamp) || null;
       const attributes: Record<string, unknown> = { rawType };
       if (startedAt) attributes.startedAt = startedAt;
@@ -971,7 +1005,7 @@ export class CodexRolloutAccumulator {
 
     if (rawType === "task_complete") {
       const sourceTurnId = stringValue(payload.turn_id) || uniqueActiveTurnId;
-      if (sourceTurnId) this.activeTurnIds.delete(sourceTurnId);
+      this.retireActiveTurnId(sourceTurnId);
       const startedAt = unixSecondsToIso(payload.started_at);
       const endedAt = unixSecondsToIso(payload.completed_at) || stringValue(row.timestamp) || null;
       const durationMs = nonNegativeNumber(payload.duration_ms);
@@ -1002,7 +1036,7 @@ export class CodexRolloutAccumulator {
 
     if (rawType === "turn_aborted") {
       const sourceTurnId = stringValue(payload.turn_id) || uniqueActiveTurnId;
-      if (sourceTurnId) this.activeTurnIds.delete(sourceTurnId);
+      this.retireActiveTurnId(sourceTurnId);
       const startedAt = unixSecondsToIso(payload.started_at);
       const endedAt = unixSecondsToIso(payload.completed_at) || stringValue(row.timestamp) || null;
       const durationMs = nonNegativeNumber(payload.duration_ms);
