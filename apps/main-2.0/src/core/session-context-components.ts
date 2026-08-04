@@ -134,7 +134,7 @@ export async function extractCodexContextComponents(filePath: string): Promise<C
   if (baseInstructions.text) {
     components.push({
       kind: "system_instructions",
-      title: "系统 / 基础指令",
+      title: "系统提示词",
       fidelity: "full",
       text: baseInstructions.text,
       bytes: Buffer.byteLength(baseInstructions.text, "utf8"),
@@ -152,7 +152,7 @@ export async function extractCodexContextComponents(filePath: string): Promise<C
     const joined = clampComponentText(joinedRaw);
     components.push({
       kind: "developer_instructions",
-      title: "Developer 指令（额外指令）",
+      title: "Developer 提示词",
       fidelity: "full",
       text: joined.text,
       items: developerTexts.map((_, index) => `Developer #${index + 1}`),

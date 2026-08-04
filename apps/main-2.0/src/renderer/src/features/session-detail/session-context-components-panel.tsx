@@ -26,9 +26,9 @@ function supportsContextComponents(session: SessionSearchResult): boolean {
 function componentTitle(component: ContextComponent, language: LanguageMode): string {
   switch (component.kind) {
     case "system_instructions":
-      return localize(language, "System / base instructions", "系统 / 基础指令");
+      return localize(language, "System prompt", "系统提示词");
     case "developer_instructions":
-      return localize(language, "Developer instructions (extra)", "Developer 指令（额外指令）");
+      return localize(language, "Developer prompt", "Developer 提示词");
     case "tool_inventory":
       return localize(language, "Tools", "工具清单");
     case "skill_listing":
