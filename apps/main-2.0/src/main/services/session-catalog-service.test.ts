@@ -183,6 +183,36 @@ describe("SessionCatalogService deletion policy", () => {
     expect(store.deleteSessionRecords).not.toHaveBeenCalled();
   });
 
+  it("continues deletion when the fresh live-session scan reports an error", async () => {
+    const current = session({
+      sessionKey: "codex:closed",
+      rawId: "closed",
+      source: "codex-cli",
+      environmentId: "local",
+      environmentKind: "local",
+      filePath: "/fixtures/missing-closed.jsonl",
+      sourceAvailable: true,
+    });
+    const { service, store, loadLiveSessions } = createService(current);
+    loadLiveSessions.mockResolvedValue({
+      generatedAt: "2026-08-03T00:00:01.000Z",
+      sessions: [],
+      error: "process list unavailable",
+    });
+
+    await expect(service.bulkDeleteSessions({
+      sessionKeys: [current.sessionKey],
+      liveSessionKeys: [],
+    })).resolves.toMatchObject({
+      deletedSessionKeys: [current.sessionKey],
+      skipped: [],
+      failed: [],
+    });
+
+    expect(loadLiveSessions).toHaveBeenCalledWith(true);
+    expect(store.deleteSessionRecords).toHaveBeenCalledWith([current.sessionKey], false);
+  });
+
   it("refuses to delete a shared Hermes database file on WSL", async () => {
     const store = {
       getSession: vi.fn(async () => session({

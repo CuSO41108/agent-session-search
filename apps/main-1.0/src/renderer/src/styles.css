@@ -6255,6 +6255,41 @@ select:focus-visible {
   padding: 14px;
 }
 
+.orphan-delete-dialog {
+  width: min(380px, calc(100vw - 32px));
+}
+
+.orphan-delete-dialog .dialog-title {
+  margin-bottom: 8px;
+  font-size: 14px;
+}
+
+.orphan-delete-dialog .dialog-copy {
+  margin: 8px 0 10px;
+  font-size: 12.5px;
+  line-height: 1.42;
+}
+
+.orphan-delete-dialog .bulk-delete-summary {
+  margin: 0 0 10px;
+}
+
+.orphan-delete-dialog .dialog-copy.danger-copy,
+.orphan-delete-dialog .delete-confirmation-field {
+  margin: 0 0 10px;
+}
+
+.orphan-delete-dialog .dialog-actions {
+  margin-top: 12px;
+}
+
+.orphan-delete-dialog .dialog-actions button {
+  min-width: 68px;
+  min-height: 30px;
+  padding: 0 11px;
+  font-size: 12px;
+}
+
 .bulk-delete-date {
   display: grid;
   gap: 8px;

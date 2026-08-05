@@ -179,7 +179,7 @@ export function BulkDeleteDialog({
   const skippedCounts = preview ? countIssueReasons(preview) : [];
   return (
     <div className="dialog-backdrop" onMouseDown={onCancel}>
-      <div className="command-dialog bulk-delete-dialog" onMouseDown={(event) => event.stopPropagation()}>
+      <div className={`command-dialog bulk-delete-dialog${mode === "orphans" ? " orphan-delete-dialog" : ""}`} onMouseDown={(event) => event.stopPropagation()}>
         <div className="dialog-title">
           <span>{mode === "cleanup"
             ? l("Clean Up Sessions", "按日期清理会话")
