@@ -88,6 +88,14 @@ export class AutoStartingOpenVikingClient implements OpenVikingClientPort {
     return (await this.client()).saveMemory(auth, input);
   }
 
+  async writeMemoryContent(
+    auth: OpenVikingWorkspaceAuth,
+    uri: string,
+    content: string,
+  ): Promise<void> {
+    return (await this.client()).writeMemoryContent(auth, uri, content);
+  }
+
   async deleteMemory(auth: OpenVikingWorkspaceAuth, uri: string): Promise<void> {
     return (await this.client()).deleteMemory(auth, uri);
   }

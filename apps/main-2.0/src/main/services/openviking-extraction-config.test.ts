@@ -32,6 +32,29 @@ describe("resolveOpenVikingExtractionConfig", () => {
     }).model).toBe("gpt-5.5");
   });
 
+  it("uses the active Codex Responses endpoint instead of requiring OAuth", () => {
+    expect(resolveOpenVikingExtractionConfig({
+      settings: {
+        ...defaultSettings,
+        summarySource: "codex",
+        openVikingExtractionReasoningEffort: "high",
+      },
+      codex: { activeModel: "stale-model" },
+      codexEndpoint: {
+        baseUrl: "https://example.com/v1",
+        model: "provider-model",
+        apiKey: "secret",
+        apiFormat: "openai_responses",
+      },
+    })).toEqual({
+      provider: "openai-codex",
+      model: "provider-model",
+      api_base: "https://example.com/v1",
+      api_key: "secret",
+      reasoning_effort: "high",
+    });
+  });
+
   it("maps a custom OpenAI Chat Provider", () => {
     expect(resolveOpenVikingExtractionConfig({
       settings: {

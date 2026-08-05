@@ -9,12 +9,13 @@ const require = createRequire(import.meta.url);
 const {
   findWorkspaceForCwd,
   handleHook,
+  estimateTokens,
   recallForWorkspace,
 } = require("../bin/openviking-memory-hook.cjs");
 
-function managedManifest(rootPath) {
+function managedManifest(rootPath, overrides = {}) {
   return {
-    version: 1,
+    version: 2,
     baseUrl: "http://127.0.0.1:21933",
     integrations: { claude: true, codex: true, opencode: true },
     workspaces: [{
@@ -23,6 +24,8 @@ function managedManifest(rootPath) {
       accountId: "agent-recall-v2",
       userId: "workspace_user",
       apiKey: "workspace-key",
+      recallTokenBudget: 1_200,
+      ...overrides,
     }],
   };
 }
@@ -180,6 +183,12 @@ test("managed Stop appends once and waits for the session lifecycle to commit", 
 
   await handleHook(input, { ...options, event: "PreCompact" });
   assert.equal(requests.filter((request) => request.url.endsWith("/commit")).length, 1);
+  const stateFile = fs.readdirSync(options.stateDir).find((name) => name.endsWith(".json"));
+  const state = JSON.parse(fs.readFileSync(path.join(options.stateDir, stateFile), "utf8"));
+  assert.equal(state.sourceSessionId, "session-1");
+  assert.equal(state.commitTasks[0].sourceSessionId, "session-1");
+  assert.ok(state.commitTasks[0].inputChars > 0);
+  assert.equal(state.commitTasks[0].toolCount, 1);
 
   const recallRequests = [];
   await handleHook({
@@ -203,6 +212,26 @@ test("managed Stop appends once and waits for the session lifecycle to commit", 
   assert.match(query, /Continue with that/);
   assert.match(query, /The release checklist has one user-facing bullet/);
   assert.match(query, /I will keep the checklist/);
+
+  const clearRequests = [];
+  await handleHook({
+    cwd: rootPath,
+    session_id: "session-1",
+    prompt: "Explain the production database migration plan.",
+  }, {
+    ...options,
+    event: "UserPromptSubmit",
+    fetchImpl: async (url, init) => {
+      clearRequests.push({ url: String(url), init });
+      if (String(url).includes("/api/v1/content/read")) {
+        return Response.json({ status: "ok", result: { content: "" } });
+      }
+      return Response.json({ status: "ok", result: { memories: [] } });
+    },
+  });
+  const clearSearch = clearRequests.find((request) => request.url.endsWith("/api/v1/search/search"));
+  const clearQuery = JSON.parse(clearSearch.init.body).query;
+  assert.equal(clearQuery, "Explain the production database migration plan.");
 });
 
 test("managed Stop commits automatically after the pending token threshold", async (context) => {
@@ -347,6 +376,178 @@ test("managed prompt recall keeps useful category diversity", async () => {
   assert.match(contextText, /manual fallback/);
 });
 
+test("recall filters invalid evidence, prefers user-locked content and persists a decision trace", async (context) => {
+  const testHome = fs.mkdtempSync(path.join(os.tmpdir(), "agent-recall-openviking-policy-"));
+  context.after(() => fs.rmSync(testHome, { recursive: true, force: true }));
+  const rootPath = path.join(testHome, "project");
+  const stateDir = path.join(testHome, "state");
+  const policyPath = path.join(testHome, "policy.json");
+  fs.mkdirSync(rootPath, { recursive: true });
+  fs.writeFileSync(policyPath, JSON.stringify({
+    memories: {
+      "viking://user/memories/preferences/editor.md": {
+        memoryType: "preferences",
+        authority: "user",
+        lifecycle: "active",
+        locked: true,
+        evidenceStatus: "verified",
+        evidenceCount: 3,
+        lockedContent: "Prefer the human-approved concise diff policy.",
+      },
+      "viking://user/memories/events/obsolete.md": {
+        memoryType: "events",
+        authority: "model",
+        lifecycle: "invalidated",
+        locked: false,
+        evidenceStatus: "invalid",
+        evidenceCount: 0,
+      },
+    },
+  }));
+
+  const result = await handleHook({ cwd: rootPath, prompt: "How should I format this change?" }, {
+    agent: "codex",
+    event: "UserPromptSubmit",
+    manifest: managedManifest(rootPath, { policyPath, recallTokenBudget: 420 }),
+    stateDir,
+    fetchImpl: async (url) => {
+      if (String(url).includes("/api/v1/content/read")) {
+        return Response.json({ status: "ok", result: { content: "" } });
+      }
+      return Response.json({
+        status: "ok",
+        result: {
+          memories: [
+            {
+              uri: "viking://user/workspace_user/memories/events/obsolete.md",
+              abstract: "Execute the obsolete process.",
+              score: 0.99,
+            },
+            {
+              uri: "viking://user/workspace_user/memories/preferences/editor.md",
+              abstract: "Model-generated replacement.",
+              score: 0.2,
+            },
+          ],
+        },
+      });
+    },
+    realpathSync: (value) => path.resolve(value),
+  });
+
+  const recalled = result.hookSpecificOutput.additionalContext;
+  assert.match(recalled, /human-approved concise diff policy/);
+  assert.doesNotMatch(recalled, /Model-generated replacement|obsolete process/);
+  assert.match(recalled, /trust="untrusted-background"/);
+  assert.ok(estimateTokens(recalled) <= 420);
+  const traceFiles = fs.readdirSync(path.join(stateDir, "recall-traces"));
+  assert.equal(traceFiles.length, 1);
+  const trace = JSON.parse(fs.readFileSync(path.join(stateDir, "recall-traces", traceFiles[0]), "utf8"));
+  assert.equal(trace.injectedUris.includes("viking://user/memories/preferences/editor.md"), true);
+  assert.equal(trace.candidates.find((candidate) => candidate.uri.endsWith("obsolete.md")).reason, "lifecycle-invalidated");
+});
+
+test("strict recall hides uncontrolled and in-flight model memories while keeping locked user content", async (context) => {
+  const testHome = fs.mkdtempSync(path.join(os.tmpdir(), "agent-recall-openviking-publish-gate-"));
+  context.after(() => fs.rmSync(testHome, { recursive: true, force: true }));
+  const rootPath = path.join(testHome, "project");
+  const stateDir = path.join(testHome, "state");
+  const policyPath = path.join(testHome, "policy.json");
+  fs.mkdirSync(rootPath, { recursive: true });
+  fs.mkdirSync(stateDir, { recursive: true });
+  fs.writeFileSync(policyPath, JSON.stringify({
+    version: 2,
+    strict: true,
+    memories: {
+      "viking://user/memories/preferences/editor.md": {
+        memoryType: "preferences",
+        authority: "user",
+        lifecycle: "active",
+        locked: true,
+        evidenceStatus: "verified",
+        evidenceCount: 1,
+        lockedContent: "Use the human-approved editor policy.",
+        updatedAt: "2026-08-05T01:00:00.000Z",
+      },
+      "viking://user/memories/events/high.md": {
+        memoryType: "events",
+        authority: "model",
+        lifecycle: "active",
+        locked: false,
+        evidenceStatus: "verified",
+        evidenceCount: 1,
+        updatedAt: "2026-08-05T02:00:00.000Z",
+      },
+      "viking://user/memories/events/low.md": {
+        memoryType: "events",
+        authority: "model",
+        lifecycle: "active",
+        locked: false,
+        evidenceStatus: "verified",
+        evidenceCount: 1,
+        updatedAt: "2026-08-05T03:00:00.000Z",
+      },
+    },
+  }));
+  const statePath = path.join(stateDir, "pending.json");
+  fs.writeFileSync(statePath, JSON.stringify({
+    workspaceId: "workspace-1",
+    sessionId: "session-1",
+    commitTasks: [{ taskId: "task-running" }],
+  }));
+  const memories = [
+    {
+      uri: "viking://user/memories/preferences/editor.md",
+      abstract: "Model replacement must not win.",
+      score: 0.05,
+    },
+    {
+      uri: "viking://user/memories/events/high.md",
+      abstract: "The completed high-confidence event.",
+      score: 0.92,
+    },
+    {
+      uri: "viking://user/memories/events/low.md",
+      abstract: "A low-confidence event.",
+      score: 0.1,
+    },
+    {
+      uri: "viking://user/memories/events/uncontrolled.md",
+      abstract: "A partially visible in-flight event.",
+      score: 0.99,
+    },
+  ];
+  const options = {
+    agent: "codex",
+    event: "UserPromptSubmit",
+    manifest: managedManifest(rootPath, { policyPath }),
+    stateDir,
+    fetchImpl: async () => Response.json({ status: "ok", result: { memories } }),
+    realpathSync: (value) => path.resolve(value),
+  };
+
+  const blocked = await handleHook({ cwd: rootPath, prompt: "Summarize the release policy." }, options);
+
+  assert.match(blocked.hookSpecificOutput.additionalContext, /human-approved editor policy/);
+  assert.match(blocked.hookSpecificOutput.additionalContext, /time=2026-08-05T01:00:00.000Z/);
+  assert.doesNotMatch(blocked.hookSpecificOutput.additionalContext, /high-confidence|low-confidence|partially visible/);
+
+  fs.writeFileSync(statePath, JSON.stringify({
+    workspaceId: "workspace-1",
+    sessionId: "session-1",
+    commitTasks: [],
+  }));
+  const completed = await handleHook({ cwd: rootPath, prompt: "Summarize the release policy." }, options);
+
+  assert.match(completed.hookSpecificOutput.additionalContext, /human-approved editor policy/);
+  assert.match(completed.hookSpecificOutput.additionalContext, /completed high-confidence event/);
+  assert.doesNotMatch(completed.hookSpecificOutput.additionalContext, /low-confidence|partially visible/);
+  const traceFiles = fs.readdirSync(path.join(stateDir, "recall-traces")).sort();
+  const trace = JSON.parse(fs.readFileSync(path.join(stateDir, "recall-traces", traceFiles.at(-1)), "utf8"));
+  assert.equal(trace.candidates.find((candidate) => candidate.uri.endsWith("low.md")).reason, "score-threshold");
+  assert.equal(trace.candidates.find((candidate) => candidate.uri.endsWith("uncontrolled.md")).reason, "uncontrolled-memory");
+});
+
 test("large recalled context remains structurally complete", async () => {
   const rootPath = path.join(os.tmpdir(), "managed-project");
   const contextText = await recallForWorkspace(managedManifest(rootPath).workspaces[0], "summarize the project", {
@@ -372,7 +573,7 @@ test("large recalled context remains structurally complete", async () => {
     },
   });
 
-  assert.ok(contextText.length <= 6_000);
+  assert.ok(estimateTokens(contextText) <= 1_200);
   assert.match(contextText, /<\/openviking-core>/);
   assert.match(contextText, /<\/openviking-recall>/);
   assert.match(contextText, /<\/openviking-context>$/);

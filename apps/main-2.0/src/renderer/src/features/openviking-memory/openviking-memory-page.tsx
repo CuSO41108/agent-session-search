@@ -6,27 +6,28 @@ import {
   ChevronDown,
   ChevronRight,
   FolderOpen,
-  Pause,
-  Play,
   Plus,
   RefreshCw,
   Save,
   Search,
   Settings2,
+  ShieldCheck,
+  ThumbsDown,
+  ThumbsUp,
   Trash2,
   X,
 } from "lucide-react";
 
 import type {
+  OpenVikingMemoryDetails,
+  OpenVikingMemoryFeedbackKind,
+} from "../../../../core/openviking-memory-control";
+import type {
   OpenVikingMemoryItem,
   OpenVikingMemorySnapshot,
-  OpenVikingWorkspace,
 } from "../../../../core/openviking-memory";
 import { isOpenVikingMemoryTransient } from "../../../../core/openviking-memory-lifecycle";
-import type {
-  OpenVikingDirectoryPreview,
-  OpenVikingImportSessionPreview,
-} from "../../../../main/services/openviking-memory-service";
+import type { OpenVikingDirectoryPreview } from "../../../../main/services/openviking-memory-service";
 import { localize, type LanguageMode } from "../../language";
 import {
   groupOpenVikingMemories,
@@ -39,13 +40,12 @@ type MemoryView = "memory" | "runtime";
 type PageAction =
   | "choose"
   | "add"
-  | "list-import-sessions"
   | "refresh"
   | "search"
   | "read"
   | "save"
   | "delete-memory"
-  | "import"
+  | "feedback"
   | "stop"
   | "delete-workspace"
   | null;
@@ -64,15 +64,10 @@ export function OpenVikingMemoryPage({
   const [snapshot, setSnapshot] = useState<OpenVikingMemorySnapshot | null>(null);
   const [workspaceId, setWorkspaceId] = useState<string | null>(null);
   const [preview, setPreview] = useState<OpenVikingDirectoryPreview | null>(null);
-  const [importPickerWorkspace, setImportPickerWorkspace] = useState<OpenVikingWorkspace | null>(null);
-  const [importSessions, setImportSessions] = useState<OpenVikingImportSessionPreview[]>([]);
-  const [importSessionQuery, setImportSessionQuery] = useState("");
-  const [selectedImportSessionKeys, setSelectedImportSessionKeys] = useState<Set<string>>(
-    () => new Set(),
-  );
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<OpenVikingMemoryItem[]>([]);
   const [selected, setSelected] = useState<OpenVikingMemoryItem | null>(null);
+  const [details, setDetails] = useState<OpenVikingMemoryDetails | null>(null);
   const [draftTitle, setDraftTitle] = useState("");
   const [draftContent, setDraftContent] = useState("");
   const [action, setAction] = useState<PageAction>(null);
@@ -104,7 +99,7 @@ export function OpenVikingMemoryPage({
     void refresh().catch((cause) => setError(errorMessage(cause)));
   }, [enabled, refresh]);
 
-  const transient = isOpenVikingMemoryTransient(snapshot, action === "import");
+  const transient = isOpenVikingMemoryTransient(snapshot);
 
   useEffect(() => {
     if (!enabled || !transient) return;
@@ -120,13 +115,6 @@ export function OpenVikingMemoryPage({
   );
   const runtimeRunning = snapshot?.runtime.state === "running";
   const memoryGroups = useMemo(() => groupOpenVikingMemories(results), [results]);
-  const visibleImportSessions = useMemo(() => {
-    const normalizedQuery = importSessionQuery.trim().toLocaleLowerCase();
-    if (!normalizedQuery) return importSessions;
-    return importSessions.filter((session) =>
-      session.title.toLocaleLowerCase().includes(normalizedQuery)
-      || session.source.toLocaleLowerCase().includes(normalizedQuery));
-  }, [importSessionQuery, importSessions]);
 
   useEffect(() => {
     setCollapsedCategories(new Set());
@@ -140,7 +128,6 @@ export function OpenVikingMemoryPage({
       !enabled
       || !workspace
       || query.trim()
-      || action === "import"
       || snapshot?.runtime.state !== "running"
     ) {
       setBrowseLoading(false);
@@ -162,7 +149,7 @@ export function OpenVikingMemoryPage({
     return () => {
       current = false;
     };
-  }, [action, enabled, query, snapshot?.runtime.state, workspace?.id, workspace?.importState]);
+  }, [action, enabled, query, snapshot?.runtime.state, workspace?.id]);
 
   const ready = snapshot?.runtime.state !== "not-installed" && snapshot?.model.installed;
   const editableMemoryUri = selected ? editableUriForMemory(selected.id) : null;
@@ -184,7 +171,7 @@ export function OpenVikingMemoryPage({
     try {
       await operation();
     } catch (cause) {
-      if (!isOpenVikingPausedError(cause)) setError(errorMessage(cause));
+      setError(errorMessage(cause));
     } finally {
       setAction(null);
     }
@@ -201,89 +188,16 @@ export function OpenVikingMemoryPage({
       setPreview(null);
       setWorkspaceId(added.id);
       await refresh();
-      await openImportPicker(added);
     });
   };
 
-  const openImportPicker = async (target: OpenVikingWorkspace) => {
-    setAction("list-import-sessions");
-    setError(null);
-    try {
-      const sessions = await window.sessionSearch.listOpenVikingImportSessions(target.id);
-      setImportPickerWorkspace(target);
-      setImportSessions(sessions);
-      setImportSessionQuery("");
-      setSelectedImportSessionKeys(new Set());
-    } catch (cause) {
-      setError(errorMessage(cause));
-    } finally {
-      setAction(null);
-    }
-  };
-
-  const toggleImportSession = (session: OpenVikingImportSessionPreview) => {
-    if (!isImportSessionSelectable(session)) return;
-    setSelectedImportSessionKeys((current) => {
-      const next = new Set(current);
-      if (next.has(session.sessionKey)) next.delete(session.sessionKey);
-      else next.add(session.sessionKey);
-      return next;
+  const resumeTracking = () => {
+    if (!workspace) return;
+    void run("add", async () => {
+      const resumed = await window.sessionSearch.addOpenVikingWorkspace(workspace.rootPath);
+      setWorkspaceId(resumed.id);
+      await refresh();
     });
-  };
-
-  const selectVisibleImportSessions = () => {
-    setSelectedImportSessionKeys((current) => {
-      const next = new Set(current);
-      for (const session of visibleImportSessions) {
-        if (isImportSessionSelectable(session)) next.add(session.sessionKey);
-      }
-      return next;
-    });
-  };
-
-  const beginSelectedImport = () => {
-    if (!importPickerWorkspace || selectedImportSessionKeys.size === 0) return;
-    const target = importPickerWorkspace;
-    const selectedKeys = [...selectedImportSessionKeys];
-    setImportPickerWorkspace(null);
-    browseRequestVersion.current += 1;
-    setBrowseLoading(false);
-    setAction("import");
-    setError(null);
-    void window.sessionSearch.importOpenVikingWorkspace(target.id, selectedKeys)
-      .catch((cause) => setError(errorMessage(cause)))
-      .finally(async () => {
-        try {
-          await refresh();
-        } catch (cause) {
-          setError(errorMessage(cause));
-        } finally {
-          setAction(null);
-        }
-      });
-    void refresh().catch((cause) => setError(errorMessage(cause)));
-  };
-
-  const startImport = (target: OpenVikingWorkspace, resume: boolean) => {
-    browseRequestVersion.current += 1;
-    setBrowseLoading(false);
-    setAction("import");
-    setError(null);
-    const request = resume
-      ? window.sessionSearch.resumeOpenVikingImport(target.id)
-      : window.sessionSearch.pauseOpenVikingImport(target.id);
-    void request
-      .catch((cause) => setError(errorMessage(cause)))
-      .finally(async () => {
-        try {
-          await refresh();
-        } catch (cause) {
-          setError(errorMessage(cause));
-        } finally {
-          setAction(null);
-        }
-      });
-    void refresh().catch((cause) => setError(errorMessage(cause)));
   };
 
   const search = () => {
@@ -297,12 +211,15 @@ export function OpenVikingMemoryPage({
 
   const openMemory = (memory: OpenVikingMemoryItem) => run("read", async () => {
     if (!runtimeRunning && !memory.content) return;
-    const content = memory.content || await window.sessionSearch.readOpenVikingMemory(
-      memory.workspaceId,
-      memory.id,
-    );
+    const [content, memoryDetails] = await Promise.all([
+      runtimeRunning
+        ? window.sessionSearch.readOpenVikingMemory(memory.workspaceId, memory.id)
+        : Promise.resolve(memory.content),
+      window.sessionSearch.getOpenVikingMemoryDetails(memory.workspaceId, memory.id),
+    ]);
     const next = { ...memory, content };
     setSelected(next);
+    setDetails(memoryDetails);
     setDraftTitle(next.title);
     setDraftContent(content);
   });
@@ -317,6 +234,7 @@ export function OpenVikingMemoryPage({
     });
     setDraftTitle("");
     setDraftContent("");
+    setDetails(null);
   };
 
   const saveMemory = () => {
@@ -328,11 +246,14 @@ export function OpenVikingMemoryPage({
         content: draftContent,
       });
       setSelected(saved);
+      setDetails(await window.sessionSearch.getOpenVikingMemoryDetails(workspace.id, saved.id));
       setDraftTitle(saved.title);
       setDraftContent(saved.content);
-      if (query.trim()) setResults(
-        await window.sessionSearch.searchOpenVikingMemories(workspace.id, query.trim(), 30),
-      );
+      setResults(await window.sessionSearch.searchOpenVikingMemories(
+        workspace.id,
+        query.trim(),
+        query.trim() ? 30 : 200,
+      ));
     });
   };
 
@@ -343,6 +264,29 @@ export function OpenVikingMemoryPage({
       await window.sessionSearch.deleteOpenVikingMemory(workspace.id, selected.id);
       setResults((current) => current.filter((item) => item.id !== selected.id));
       setSelected(null);
+      setDetails(null);
+    });
+  };
+
+  const feedbackMemory = (feedback: OpenVikingMemoryFeedbackKind) => {
+    if (!workspace || !selected?.id) return;
+    void run("feedback", async () => {
+      const control = await window.sessionSearch.sendOpenVikingMemoryFeedback(
+        workspace.id,
+        selected.id,
+        feedback,
+      );
+      const next = {
+        ...selected,
+        authority: control.authority,
+        lifecycle: control.lifecycle,
+        locked: control.locked,
+        evidenceStatus: control.evidenceStatus,
+        evidenceCount: control.evidenceCount,
+      };
+      setSelected(next);
+      setDetails(await window.sessionSearch.getOpenVikingMemoryDetails(workspace.id, selected.id));
+      setResults((current) => current.map((item) => item.id === selected.id ? next : item));
     });
   };
 
@@ -426,7 +370,10 @@ export function OpenVikingMemoryPage({
       <header className="app-page-head openviking-page-head">
         <div>
           <h2>{l("Memory", "记忆")}</h2>
-          <p>{l("Each managed directory has isolated sessions, memories and indexes.", "每个受管理目录都有隔离的会话、记忆和索引。")}</p>
+          <p>{l(
+            "Managed directories track new agent turns incrementally and keep memory isolated.",
+            "受管理目录会增量跟踪新的 Agent 对话，并保持记忆彼此隔离。",
+          )}</p>
         </div>
         <div className="openviking-page-actions">
           <button
@@ -508,8 +455,8 @@ export function OpenVikingMemoryPage({
                     <strong>{item.displayName}</strong>
                     <small title={item.rootPath}>{item.rootPath}</small>
                   </span>
-                  <em className={item.managed ? item.importState : "stopped"}>
-                    {item.managed ? importLabel(item, language) : l("Stopped", "已停止")}
+                  <em className={item.managed ? "tracking" : "stopped"}>
+                    {item.managed ? l("Tracking", "跟踪中") : l("Stopped", "已停止")}
                   </em>
                 </button>
               ))}
@@ -525,75 +472,40 @@ export function OpenVikingMemoryPage({
                     <span title={workspace.rootPath}>{workspace.rootPath}</span>
                   </div>
                   <div>
-                    {workspace.importState === "running" ? (
-                      <button type="button" onClick={() => startImport(workspace, false)} disabled={action !== null}>
-                        <Pause size={13} />{l("Pause import", "暂停导入")}
-                      </button>
-                    ) : workspace.importState === "paused" && workspace.managed ? (
-                      <button type="button" onClick={() => startImport(workspace, true)} disabled={action !== null}>
-                        <Play size={13} />{l("Resume import", "继续导入")}
-                      </button>
-                    ) : null}
-                    {workspace.managed ? (
-                      <button
-                        type="button"
-                        onClick={() => void openImportPicker(workspace)}
-                        disabled={action !== null && action !== "import"}
-                      >
-                        <Plus size={13} />{l("Select sessions", "选择导入")}
-                      </button>
-                    ) : null}
                     {workspace.managed ? (
                       <button type="button" onClick={stopManaging} disabled={action !== null}>
                         <CircleStopIcon />{l("Stop managing", "停止管理")}
                       </button>
-                    ) : null}
+                    ) : (
+                      <button type="button" onClick={resumeTracking} disabled={action !== null}>
+                        <Plus size={13} />{l("Resume tracking", "恢复跟踪")}
+                      </button>
+                    )}
                     <button type="button" className="danger" onClick={deleteWorkspace} disabled={action !== null}>
                       <Trash2 size={13} />{l("Delete data", "删除数据")}
                     </button>
                   </div>
                 </header>
 
-                <div className={`openviking-import-status ${workspace.importState}`}>
-                  <div className="openviking-import-status-head">
-                    <span className="openviking-import-live" aria-hidden="true" />
-                    <strong>{importActivityLabel(workspace, language)}</strong>
-                    {workspace.importActivity?.sessionTitle ? (
-                      <span title={workspace.importActivity.sessionTitle}>
-                        {workspace.importActivity.sessionTitle}
-                      </span>
-                    ) : null}
-                    {workspace.importActivity?.currentSession !== undefined
-                      && workspace.importActivity.totalSessions !== undefined ? (
-                        <em>{l(
-                          `Session ${workspace.importActivity.currentSession} / ${workspace.importActivity.totalSessions}`,
-                          `会话 ${workspace.importActivity.currentSession} / ${workspace.importActivity.totalSessions}`,
-                        )}</em>
-                      ) : null}
-                    {workspace.importActivity?.currentBatch !== undefined
-                      && workspace.importActivity.totalBatches !== undefined ? (
-                        <em>{l(
-                          `Batch ${workspace.importActivity.currentBatch} / ${workspace.importActivity.totalBatches}`,
-                          `批次 ${workspace.importActivity.currentBatch} / ${workspace.importActivity.totalBatches}`,
-                        )}</em>
-                      ) : null}
-                  </div>
-                  <div className="openviking-import-track"><i
-                    className={workspace.importState === "running" ? "active" : ""}
-                    style={{ width: importProgress(workspace) }}
-                  /></div>
-                  <div className="openviking-import-status-foot">
-                    <span>{l(
-                      `Imported ${workspace.importedTurns} / ${workspace.totalTurns}`,
-                      `已导入 ${workspace.importedTurns} / ${workspace.totalTurns}`,
-                    )}</span>
-                    {(workspace.totalTasks ?? 0) > 0 ? (
-                      <span>{l(
-                        `Tasks ${workspace.completedTasks ?? 0} / ${workspace.totalTasks}`,
-                        `任务 ${workspace.completedTasks ?? 0} / ${workspace.totalTasks}`,
+                <div className={`openviking-tracking-status ${workspace.managed ? "tracking" : "stopped"}`}>
+                  <span className="openviking-tracking-dot" aria-hidden="true" />
+                  <div>
+                    <strong>{workspace.managed
+                      ? l("Incremental tracking is enabled", "已启用增量跟踪")
+                      : l("Incremental tracking is stopped", "增量跟踪已停止")}</strong>
+                    <span>{workspace.managed
+                      ? l(
+                        "New turns created inside this directory are captured automatically. Historical AgentRecall sessions are never bulk-imported.",
+                        "此目录中新产生的对话会被自动捕获；AgentRecall 中的历史会话不会被批量导入。",
+                      )
+                      : l(
+                        "Existing memory remains available, but new agent turns are not captured until tracking resumes.",
+                        "已有记忆仍然保留，但在恢复跟踪前不会捕获新的 Agent 对话。",
                       )}</span>
-                    ) : null}
-                    <em>{importProgress(workspace)}</em>
+                    {workspace.managed ? <small>{l(
+                      "Turns are appended first. After enough context accumulates, you explicitly ask to remember something, or the session closes, OpenViking runs model-based extraction in the background and may finish later.",
+                      "新对话会先增量追加；上下文达到阈值、你明确要求记住内容或会话结束后，OpenViking 才会在后台运行模型提炼，完成时间可能更晚。",
+                    )}</small> : null}
                   </div>
                 </div>
 
@@ -622,14 +534,10 @@ export function OpenVikingMemoryPage({
                       <div className="openviking-result-empty">{l(
                         query.trim()
                           ? "No matching memories."
-                          : workspace.importState === "completed"
-                            ? "No memories have been generated yet."
-                            : "Generated memories will appear here.",
+                          : "No memories have been generated yet.",
                         query.trim()
                           ? "没有匹配的记忆。"
-                          : workspace.importState === "completed"
-                            ? "还没有生成记忆。"
-                            : "生成的记忆会显示在这里。",
+                          : "还没有生成记忆。",
                       )}</div>
                     ) : memoryGroups.map((group) => {
                       const isCollapsed = collapsedCategories.has(group.key);
@@ -680,6 +588,17 @@ export function OpenVikingMemoryPage({
                           <strong>{selected.id ? l("Memory detail", "记忆详情") : l("New memory", "新建记忆")}</strong>
                           <button type="button" onClick={() => setSelected(null)}><X size={14} /></button>
                         </header>
+                        {selected.id ? (
+                          <div className="openviking-memory-control-meta">
+                            <span className={selected.locked ? "locked" : ""}>
+                              <ShieldCheck size={12} />
+                              {selected.locked ? l("User locked", "用户锁定") : l("Automatic", "自动维护")}
+                            </span>
+                            <span>{l("Authority", "权威")}: {selected.authority ?? "model"}</span>
+                            <span>{l("State", "状态")}: {selected.lifecycle ?? "active"}</span>
+                            <span>{l("Evidence", "证据")}: {selected.evidenceStatus ?? "legacy"} · {selected.evidenceCount ?? 0}</span>
+                          </div>
+                        ) : null}
                         <input
                           value={draftTitle}
                           readOnly={!runtimeRunning || !canEditSelected}
@@ -697,10 +616,25 @@ export function OpenVikingMemoryPage({
                             identityMemory
                               ? l("Identity memory", "身份记忆")
                               : canEditSelected
-                                ? l("Manual memory", "手动记忆")
-                                : l("Generated memory · read only", "自动生成的记忆 · 只读")
+                                ? selected.id
+                                  ? l("Saving creates a locked user version", "保存后生成用户锁定版本")
+                                  : l("Manual memory", "手动记忆")
+                                : l("Generated memory", "自动生成的记忆")
                           }</span>
                           <div>
+                            {selected.id ? (
+                              <div className="openviking-memory-feedback-actions">
+                                <button type="button" onClick={() => feedbackMemory("helpful")} disabled={action !== null}>
+                                  <ThumbsUp size={12} />{l("Helpful", "有用")}
+                                </button>
+                                <button type="button" onClick={() => feedbackMemory("outdated")} disabled={action !== null}>
+                                  <ThumbsDown size={12} />{l("Outdated", "已过时")}
+                                </button>
+                                <button type="button" onClick={() => feedbackMemory("wrong")} disabled={action !== null}>
+                                  <X size={12} />{l("Wrong", "错误")}
+                                </button>
+                              </div>
+                            ) : null}
                             {selected.id ? (
                               <button type="button" className="danger" onClick={deleteMemory} disabled={!runtimeRunning || action !== null}>
                                 <Trash2 size={13} />{l("Delete", "删除")}
@@ -713,6 +647,18 @@ export function OpenVikingMemoryPage({
                             ) : null}
                           </div>
                         </footer>
+                        {details?.evidence.length ? (
+                          <div className="openviking-memory-evidence">
+                            <strong>{l("Evidence history", "证据记录")}</strong>
+                            {details.evidence.slice(0, 4).map((evidence) => (
+                              <span key={evidence.id}>
+                                {evidence.sourceAgent ?? l("Unknown agent", "未知 Agent")}
+                                {evidence.sourceSessionId ? ` · ${evidence.sourceSessionId}` : ""}
+                                {evidence.remoteTaskId ? ` · ${evidence.remoteTaskId}` : ""}
+                              </span>
+                            ))}
+                          </div>
+                        ) : null}
                       </>
                     ) : (
                       <div className="openviking-detail-empty"><BookOpen size={21} />{l("Select a memory", "选择一条记忆")}</div>
@@ -736,7 +682,18 @@ export function OpenVikingMemoryPage({
               <button type="button" onClick={() => setPreview(null)}><X size={15} /></button>
             </header>
             <div className="openviking-preview-facts">
-              <span><strong>{preview.sessionCount}</strong>{l(" sessions can be selected after managing", " 个会话可在开始管理后选择导入")}</span>
+              <span>{l(
+                "Only new agent turns created after tracking starts are sent to OpenViking.",
+                "只有开始跟踪后新产生的 Agent 对话会发送给 OpenViking。",
+              )}</span>
+              <span>{l(
+                "Historical sessions stay searchable in AgentRecall and are never bulk-imported into memory.",
+                "历史会话仍可在 AgentRecall 中搜索，但不会被批量导入记忆。",
+              )}</span>
+              <span>{l(
+                "For reusable history, locate it with session search, then save it manually or ask the agent to remember it.",
+                "需要复用历史信息时，可先通过会话搜索定位，再手动保存或让 Agent 明确记住。",
+              )}</span>
               <span>{l("Memory remains isolated from every other directory.", "记忆将与其他所有目录保持隔离。")}</span>
               {preview.existingWorkspaceId ? <span>{l("This directory already has a retained workspace.", "这个目录已有保留的 workspace，将恢复管理。")}</span> : null}
             </div>
@@ -744,74 +701,8 @@ export function OpenVikingMemoryPage({
               <button type="button" onClick={() => setPreview(null)}>{l("Cancel", "取消")}</button>
               <button type="button" className="primary" onClick={addWorkspace} disabled={action !== null}>
                 {action === "add" ? <RefreshCw size={14} className="spin" /> : <FolderOpen size={14} />}
-                {preview.relinkWorkspaceId ? l("Relink directory", "重新关联目录") : l("Manage directory", "开始管理")}
+                {preview.relinkWorkspaceId ? l("Relink directory", "重新关联目录") : l("Start tracking", "开始跟踪")}
               </button>
-            </footer>
-          </section>
-        </div>
-      ) : null}
-
-      {importPickerWorkspace ? (
-        <div className="openviking-preview-backdrop" onMouseDown={() => setImportPickerWorkspace(null)}>
-          <section className="openviking-preview-dialog openviking-import-picker" onMouseDown={(event) => event.stopPropagation()}>
-            <header>
-              <div>
-                <h3>{l("Select sessions to import", "选择要导入的会话")}</h3>
-                <p>{importPickerWorkspace.rootPath}</p>
-              </div>
-              <button type="button" onClick={() => setImportPickerWorkspace(null)}><X size={15} /></button>
-            </header>
-            <div className="openviking-import-picker-tools">
-              <label>
-                <Search size={14} />
-                <input
-                  value={importSessionQuery}
-                  onChange={(event) => setImportSessionQuery(event.currentTarget.value)}
-                  placeholder={l("Search session title or source", "搜索会话标题或来源")}
-                  autoFocus
-                />
-              </label>
-              <button type="button" onClick={selectVisibleImportSessions}>
-                {l("Select visible", "全选当前结果")}
-              </button>
-              <button type="button" onClick={() => setSelectedImportSessionKeys(new Set())}>
-                {l("Clear", "清空")}
-              </button>
-            </div>
-            <div className="openviking-import-session-list">
-              {visibleImportSessions.length > 0 ? visibleImportSessions.map((session) => (
-                <label className={!isImportSessionSelectable(session) ? "disabled" : ""} key={session.sessionKey}>
-                  <input
-                    type="checkbox"
-                    checked={selectedImportSessionKeys.has(session.sessionKey)}
-                    disabled={!isImportSessionSelectable(session)}
-                    onChange={() => toggleImportSession(session)}
-                  />
-                  <span>
-                    <strong title={session.title}>{session.title}</strong>
-                    <small>
-                      {session.source} · {l(`${session.messageCount} messages`, `${session.messageCount} 条消息`)} · {formatImportSessionTime(session.lastActivityAt, language)}
-                    </small>
-                  </span>
-                  <em className={session.state}>{importSessionStateLabel(session.state, language)}</em>
-                </label>
-              )) : (
-                <div className="openviking-import-session-empty">
-                  {l("No matching sessions", "没有匹配的会话")}
-                </div>
-              )}
-            </div>
-            <footer>
-              <span>{l(
-                `${selectedImportSessionKeys.size} selected`,
-                `已选择 ${selectedImportSessionKeys.size} 个会话`,
-              )}</span>
-              <div>
-                <button type="button" onClick={() => setImportPickerWorkspace(null)}>{l("Cancel", "取消")}</button>
-                <button type="button" className="primary" onClick={beginSelectedImport} disabled={selectedImportSessionKeys.size === 0}>
-                  <Play size={14} />{l("Start import", "开始导入")}
-                </button>
-              </div>
             </footer>
           </section>
         </div>
@@ -852,35 +743,12 @@ function OpenVikingMemoryTabs({
   );
 }
 
-function importSessionStateLabel(
-  state: OpenVikingImportSessionPreview["state"],
-  language: LanguageMode,
-): string {
-  if (state === "new") return localize(language, "Not imported", "未导入");
-  if (state === "changed") return localize(language, "Updated", "有更新");
-  if (state === "importing") return localize(language, "Importing", "导入中");
-  return localize(language, "Imported", "已导入");
-}
-
-function isImportSessionSelectable(session: OpenVikingImportSessionPreview): boolean {
-  return session.state === "new" || session.state === "changed";
-}
-
-function formatImportSessionTime(timestamp: number, language: LanguageMode): string {
-  if (!Number.isFinite(timestamp)) return "";
-  return new Intl.DateTimeFormat(language === "zh" ? "zh-CN" : "en", {
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  }).format(new Date(timestamp));
-}
-
 function CircleStopIcon(): ReactElement {
   return <span className="openviking-stop-icon" aria-hidden="true" />;
 }
 
 function editableUriForMemory(uri: string): string | null {
-  return /^viking:\/\/user\/memories\/(?:(?:identity|soul)\.md|manual\/[A-Za-z0-9][A-Za-z0-9_-]{0,127}\.md)$/u.test(uri)
+  return /^viking:\/\/user\/memories(?:\/[A-Za-z0-9][A-Za-z0-9._-]{0,127})+$/u.test(uri)
     ? uri
     : null;
 }
@@ -890,37 +758,6 @@ function isIdentityMemory(uri: string): boolean {
   return candidate === "identity.md" || candidate === "soul.md";
 }
 
-function importProgress(workspace: OpenVikingWorkspace): string {
-  if (workspace.totalTurns <= 0) return workspace.importState === "completed" ? "100%" : "0%";
-  return `${Math.min(100, Math.round((workspace.importedTurns / workspace.totalTurns) * 100))}%`;
-}
-
-function importLabel(workspace: OpenVikingWorkspace, language: LanguageMode): string {
-  const l = (en: string, zh: string) => localize(language, en, zh);
-  switch (workspace.importState) {
-    case "running": return l("Importing and extracting memory", "正在导入并提取记忆");
-    case "queued": return l("Queued", "等待导入");
-    case "paused": return l("Paused", "已暂停");
-    case "failed": return l("Import failed", "导入失败");
-    case "completed": return l("Ready", "就绪");
-    default: return l("Preparing", "准备中");
-  }
-}
-
-function importActivityLabel(workspace: OpenVikingWorkspace, language: LanguageMode): string {
-  const l = (en: string, zh: string) => localize(language, en, zh);
-  switch (workspace.importActivity?.phase) {
-    case "scanning": return l("Scanning importable sessions", "正在扫描可导入的会话");
-    case "uploading": return l("Sending session content", "正在传送会话内容");
-    case "extracting": return l("Extracting memory from this session", "正在提取当前会话的记忆");
-    default: return importLabel(workspace, language);
-  }
-}
-
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
-}
-
-function isOpenVikingPausedError(error: unknown): boolean {
-  return errorMessage(error).includes("OpenViking is paused");
 }

@@ -550,9 +550,7 @@ export function WorkbenchPage({
             rows={(memoryEnabled ? managedMemoryWorkspaces : []).slice(0, 3).map((workspace) => ({
               id: workspace.id,
               title: workspace.displayName,
-              detail: `${workspace.importedTurns}/${workspace.totalTurns} ${l("turns", "轮")} · ${
-                memoryImportStateLabel(workspace.importState, language)
-              }`,
+              detail: l("Tracking new turns only", "仅增量跟踪新对话"),
             }))}
             empty={memoryLoading
               ? l("Loading Memory…", "正在加载 Memory…")
@@ -754,18 +752,6 @@ function memoryRuntimeStateLabel(
   if (state === "stopped") return localize(language, "Stopped", "已停止");
   if (state === "not-installed") return localize(language, "Not installed", "未安装");
   return localize(language, "Unavailable", "不可用");
-}
-
-function memoryImportStateLabel(
-  state: OpenVikingMemorySnapshot["workspaces"][number]["importState"],
-  language: LanguageMode,
-): string {
-  if (state === "completed") return localize(language, "Ready", "已就绪");
-  if (state === "running") return localize(language, "Importing", "导入中");
-  if (state === "queued") return localize(language, "Queued", "等待导入");
-  if (state === "paused") return localize(language, "Paused", "已暂停");
-  if (state === "failed") return localize(language, "Failed", "失败");
-  return localize(language, "Not imported", "未导入");
 }
 
 function UsageMetric({ value, label }: { value: string; label: string }): ReactElement {

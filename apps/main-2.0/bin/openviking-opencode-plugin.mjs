@@ -7,6 +7,7 @@ const {
   commitSession,
   explicitlyRequestsMemory,
   findWorkspaceForCwd,
+  isVagueContinuation,
   recallForWorkspace,
 } = require("./openviking-memory-hook.cjs");
 
@@ -18,7 +19,7 @@ export function createAgentRecallOpenVikingPlugin(manifestPath, dependencies = {
 
     async function activeScope() {
       const manifest = readManifest(manifestPath);
-      if (!manifest || manifest.version !== 1 || !manifest.baseUrl || manifest.integrations?.opencode !== true) return null;
+      if (!manifest || ![1, 2].includes(manifest.version) || !manifest.baseUrl || manifest.integrations?.opencode !== true) return null;
       let canonicalDirectory;
       try {
         canonicalDirectory = (dependencies.realpathSync || fs.realpathSync.native)(directory);
@@ -38,6 +39,8 @@ export function createAgentRecallOpenVikingPlugin(manifestPath, dependencies = {
         fetchImpl: dependencies.fetchImpl,
         timeoutMs: dependencies.timeoutMs,
         stateDir: scope.manifest.stateDir,
+        agent: "opencode",
+        sourceSessionId: sessionID,
         commitRequested: explicitlyRequestsMemory(session.user),
       });
       if (captured) {
@@ -57,6 +60,9 @@ export function createAgentRecallOpenVikingPlugin(manifestPath, dependencies = {
         fetchImpl: dependencies.fetchImpl,
         timeoutMs: dependencies.timeoutMs,
         stateDir: scope.manifest.stateDir,
+        agent: "opencode",
+        sourceSessionId: sessionID,
+        trigger: "session-lifecycle",
       });
     }
 
@@ -73,8 +79,10 @@ export function createAgentRecallOpenVikingPlugin(manifestPath, dependencies = {
           baseUrl: scope.manifest.baseUrl,
           fetchImpl: dependencies.fetchImpl,
           timeoutMs: dependencies.timeoutMs,
+          stateDir: scope.manifest.stateDir,
+          agent: "opencode",
           sessionId: sessionID ? sessionKey(scope.workspace.id, sessionID) : undefined,
-          recentTurns: session?.recentTurns,
+          recentTurns: isVagueContinuation(prompt) ? session?.recentTurns : undefined,
         });
         if (recalled && Array.isArray(output?.parts)) output.parts.unshift({ type: "text", text: recalled, synthetic: true });
       },

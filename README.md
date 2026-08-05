@@ -81,7 +81,7 @@ v2 在会话管理、远程同步和用量统计之外，增加了可复用 Agen
 - **Workflow**：描述任务并回答规划 Agent 的追问，生成、Review 和确认流程图后运行 Agent 或脚本节点；运行期间可以处理追问、审批、产物和异常恢复。
 - **Eval**：用固定数据集和评估器重复运行 Agent，查看平均分、通过率、失败 Case、评估原因和历史结果。
 - **MCP**：注册并测试 STDIO 或 HTTP MCP Server，查看工具列表，再把需要的服务绑定到指定 Agent 的新会话。
-- **目录 Memory**：为主动选择的项目目录建立彼此隔离的长期记忆，导入历史会话，维护手动记忆，并为 Codex、Claude Code 或 OpenCode 开启自动召回。
+- **目录 Memory**：为主动选择的项目目录建立彼此隔离的长期记忆，只增量捕获开启后的新对话，维护手动记忆，并为 Codex、Claude Code 或 OpenCode 开启自动召回；历史会话继续通过 Session 搜索按需复用。
 - **Skills 和 Provider**：查看本机 Skill 或从公共仓库发现 Skill，加入 Skill 库后安装到 Codex、Claude Code 等编码 Agent；Provider 页面单独管理本机 Codex、Claude Code 和会话 AI 功能使用的服务。
 
 ### 安装与启动

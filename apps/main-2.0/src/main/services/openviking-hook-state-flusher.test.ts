@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile, mkdir } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -6,10 +6,35 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { OpenVikingHookStateFlusher } from "./openviking-hook-state-flusher";
 
 const roots: string[] = [];
+const auth = {
+  accountId: "agent-recall-v2",
+  userId: "workspace_user",
+  apiKey: "workspace-key",
+};
 
 afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
+
+function control() {
+  return {
+    upsertOpenVikingCommitRun: vi.fn(async (_run: unknown) => undefined),
+    applyOpenVikingCommitResult: vi.fn(async (
+      _input: unknown,
+    ): Promise<Array<{ uri: string; content: string }>> => []),
+    recordOpenVikingOperationEvent: vi.fn(async (_event: unknown) => undefined),
+    recordOpenVikingRecallTrace: vi.fn(async (_trace: unknown) => undefined),
+  };
+}
+
+function client() {
+  return {
+    commitSession: vi.fn(async () => ({ taskId: "task-1" })),
+    getTask: vi.fn(async (): Promise<Record<string, unknown> | null> => null),
+    readMemory: vi.fn(async () => ""),
+    writeMemoryContent: vi.fn(async () => undefined),
+  };
+}
 
 describe("OpenVikingHookStateFlusher", () => {
   it("commits idle pending sessions while leaving active sessions alone", async () => {
@@ -22,7 +47,9 @@ describe("OpenVikingHookStateFlusher", () => {
     await writeFile(idlePath, JSON.stringify({
       workspaceId: "workspace-1",
       sessionId: "session-idle",
+      agent: "codex",
       pendingTokenEstimate: 120,
+      pendingEvidence: [{ id: "turn-1", inputChars: 480, toolCount: 3 }],
       updatedAt: "2026-07-30T00:00:00.000Z",
     }));
     await writeFile(activePath, JSON.stringify({
@@ -31,32 +58,46 @@ describe("OpenVikingHookStateFlusher", () => {
       pendingTokenEstimate: 80,
       updatedAt: "2026-07-30T00:02:30.000Z",
     }));
-    const commitSession = vi.fn(async () => ({ taskId: "task-1" }));
+    const openViking = client();
+    const memoryControl = control();
     const flusher = new OpenVikingHookStateFlusher({
       stateDir,
       idleMs: 120_000,
-      client: { commitSession },
-      credentials: {
-        get: vi.fn(async () => ({
-          accountId: "agent-recall-v2",
-          userId: "workspace_user",
-          apiKey: "workspace-key",
-        })),
-      },
+      client: openViking,
+      control: memoryControl,
+      credentials: { get: vi.fn(async () => auth) },
     });
 
     await flusher.flushIdle(Date.parse("2026-07-30T00:03:00.000Z"));
 
-    expect(commitSession).toHaveBeenCalledOnce();
-    expect(commitSession).toHaveBeenCalledWith(expect.objectContaining({ apiKey: "workspace-key" }), "session-idle");
+    expect(openViking.commitSession).toHaveBeenCalledOnce();
+    expect(openViking.commitSession).toHaveBeenCalledWith(auth, "session-idle");
     expect(JSON.parse(await readFile(idlePath, "utf8"))).toMatchObject({
       pendingTokenEstimate: 0,
       lastCommittedAt: "2026-07-30T00:03:00.000Z",
+      commitTasks: [{
+        taskId: "task-1",
+        trigger: "idle",
+        sourceTurnIds: ["turn-1"],
+        tokenEstimate: 120,
+        inputChars: 480,
+        toolCount: 3,
+      }],
     });
     expect(JSON.parse(await readFile(activePath, "utf8"))).toMatchObject({ pendingTokenEstimate: 80 });
+    expect(memoryControl.upsertOpenVikingCommitRun).toHaveBeenCalledWith(expect.objectContaining({
+      taskId: "task-1",
+      state: "running",
+      trigger: "idle",
+      sourceTurnIds: ["turn-1"],
+    }));
+    expect(memoryControl.recordOpenVikingOperationEvent).toHaveBeenCalledWith(expect.objectContaining({
+      phase: "commit",
+      details: expect.objectContaining({ inputChars: 480, toolCount: 3 }),
+    }));
   });
 
-  it("keeps failed commits pending and retries them on the next sweep", async () => {
+  it("keeps failed idle commits pending and retries them on the next sweep", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "agent-recall-openviking-retry-"));
     roots.push(root);
     const stateDir = path.join(root, "hook-state");
@@ -68,27 +109,337 @@ describe("OpenVikingHookStateFlusher", () => {
       pendingTokenEstimate: 40,
       updatedAt: "2026-07-30T00:00:00.000Z",
     }));
-    const commitSession = vi.fn()
+    const openViking = client();
+    openViking.commitSession
       .mockRejectedValueOnce(new Error("runtime unavailable"))
       .mockResolvedValueOnce({ taskId: "task-2" });
+    const memoryControl = control();
     const flusher = new OpenVikingHookStateFlusher({
       stateDir,
       idleMs: 1,
-      client: { commitSession },
-      credentials: {
-        get: vi.fn(async () => ({
-          accountId: "agent-recall-v2",
-          userId: "workspace_user",
-          apiKey: "workspace-key",
-        })),
-      },
+      client: openViking,
+      control: memoryControl,
+      credentials: { get: vi.fn(async () => auth) },
     });
 
     await flusher.flushIdle(Date.parse("2026-07-30T00:01:00.000Z"));
     expect(JSON.parse(await readFile(statePath, "utf8"))).toMatchObject({ pendingTokenEstimate: 40 });
+    expect(memoryControl.recordOpenVikingOperationEvent).toHaveBeenCalledWith(expect.objectContaining({
+      phase: "commit",
+      status: "failed",
+    }));
 
     await flusher.flushIdle(Date.parse("2026-07-30T00:02:00.000Z"));
-    expect(commitSession).toHaveBeenCalledTimes(2);
+    expect(openViking.commitSession).toHaveBeenCalledTimes(2);
     expect(JSON.parse(await readFile(statePath, "utf8"))).toMatchObject({ pendingTokenEstimate: 0 });
+  });
+
+  it("polls completed commits, persists Memory Diff evidence and records pipeline phases", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "agent-recall-openviking-complete-"));
+    roots.push(root);
+    const stateDir = path.join(root, "hook-state");
+    await mkdir(stateDir);
+    const statePath = path.join(stateDir, "commit.json");
+    await writeFile(statePath, JSON.stringify({
+      workspaceId: "workspace-1",
+      sessionId: "agent-recall-synthetic-session",
+      sourceSessionId: "session-1",
+      agent: "codex",
+      pendingTokenEstimate: 0,
+      updatedAt: "2026-08-05T00:00:00.000Z",
+      commitTasks: [{
+        taskId: "task-9",
+        trigger: "explicit-remember",
+        sourceSessionId: "session-1",
+        sourceTurnIds: ["turn-a", "turn-b"],
+        tokenEstimate: 320,
+        startedAt: "2026-08-05T00:00:00.000Z",
+        acceptedAt: "2026-08-05T00:00:01.000Z",
+      }],
+    }));
+    const openViking = client();
+    openViking.getTask.mockResolvedValue({
+      status: "completed",
+      result: {
+        archive_uri: "viking://session/archive/session-1.md",
+        memory_diff_uri: "viking://resources/memory_diff.json",
+        memories_extracted: { events: 1 },
+        token_usage: { total: 421 },
+        stage_timings: {
+          summary: {
+            started_at: "2026-08-05T00:00:02.000Z",
+            completed_at: "2026-08-05T00:00:07.000Z",
+            duration_ms: 5_000,
+          },
+        },
+      },
+    });
+    openViking.readMemory.mockResolvedValue(JSON.stringify({
+      operations: {
+        adds: [{
+          uri: "memory/user/workspace_user/events/release.md",
+          memory_type: "events",
+          after: "Release requires one user-facing note.",
+        }],
+        updates: [],
+        deletes: [],
+      },
+    }));
+    const memoryControl = control();
+    const flusher = new OpenVikingHookStateFlusher({
+      stateDir,
+      client: openViking,
+      control: memoryControl,
+      credentials: { get: vi.fn(async () => auth) },
+      snapshot: vi.fn(async () => ({
+        modelSnapshot: {
+          provider: "openai-codex",
+          model: "gpt-5.6-terra",
+          reasoningEffort: "medium",
+        },
+        policySnapshot: {
+          runtimeVersion: "0.4.11-r4",
+          recallTokenBudget: 1_200,
+        },
+      })),
+    });
+
+    await flusher.flushIdle(Date.parse("2026-08-05T00:01:00.000Z"));
+
+    expect(memoryControl.applyOpenVikingCommitResult).toHaveBeenCalledWith(expect.objectContaining({
+      run: expect.objectContaining({
+        taskId: "task-9",
+        state: "completed",
+        sessionId: "agent-recall-synthetic-session",
+        sourceSessionId: "session-1",
+        sourceTurnIds: ["turn-a", "turn-b"],
+      }),
+      changes: [{
+        kind: "add",
+        uri: "viking://user/memories/events/release.md",
+        memoryType: "events",
+        after: "Release requires one user-facing note.",
+      }],
+      memoryDiffUri: "viking://resources/memory_diff.json",
+      modelSnapshot: expect.objectContaining({ model: "gpt-5.6-terra" }),
+      policySnapshot: expect.objectContaining({
+        trigger: "explicit-remember",
+        runtimeVersion: "0.4.11-r4",
+      }),
+    }));
+    const phases = memoryControl.recordOpenVikingOperationEvent.mock.calls
+      .map(([event]) => (event as { phase: string }).phase);
+    expect(phases).toEqual(expect.arrayContaining([
+      "summary",
+      "long-term-memory",
+      "experience",
+      "vectorize",
+      "verify",
+    ]));
+    expect(memoryControl.recordOpenVikingOperationEvent).toHaveBeenCalledWith(expect.objectContaining({
+      phase: "summary",
+      durationMs: 5_000,
+      details: expect.objectContaining({ timingSource: "remote-task" }),
+    }));
+    expect(JSON.parse(await readFile(statePath, "utf8"))).toMatchObject({ commitTasks: [] });
+  });
+
+  it("completes a successful Commit even when OpenViking produced no Memory Diff", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "agent-recall-openviking-empty-"));
+    roots.push(root);
+    const stateDir = path.join(root, "hook-state");
+    await mkdir(stateDir);
+    const statePath = path.join(stateDir, "commit.json");
+    await writeFile(statePath, JSON.stringify({
+      workspaceId: "workspace-1",
+      sessionId: "session-empty",
+      commitTasks: [{
+        taskId: "task-empty",
+        trigger: "token-threshold",
+        sourceTurnIds: ["turn-a"],
+        tokenEstimate: 100,
+        startedAt: "2026-08-05T00:00:00.000Z",
+      }],
+      updatedAt: "2026-08-05T00:00:00.000Z",
+    }));
+    const openViking = client();
+    openViking.getTask.mockResolvedValue({
+      status: "completed",
+      result: { memories_extracted: {} },
+    });
+    const memoryControl = control();
+    const flusher = new OpenVikingHookStateFlusher({
+      stateDir,
+      client: openViking,
+      control: memoryControl,
+      credentials: { get: vi.fn(async () => auth) },
+    });
+
+    await flusher.flushIdle(Date.parse("2026-08-05T00:01:00.000Z"));
+
+    expect(memoryControl.applyOpenVikingCommitResult).toHaveBeenCalledWith(expect.objectContaining({
+      changes: [],
+      run: expect.objectContaining({ taskId: "task-empty", state: "completed" }),
+    }));
+    expect(JSON.parse(await readFile(statePath, "utf8"))).toMatchObject({ commitTasks: [] });
+  });
+
+  it("keeps automatic recall blocked after a failed Commit until a later Commit succeeds", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "agent-recall-openviking-recall-block-"));
+    roots.push(root);
+    const stateDir = path.join(root, "hook-state");
+    await mkdir(stateDir);
+    const statePath = path.join(stateDir, "commit.json");
+    await writeFile(statePath, JSON.stringify({
+      workspaceId: "workspace-1",
+      sessionId: "session-1",
+      commitTasks: [{
+        taskId: "task-failed",
+        trigger: "token-threshold",
+        sourceTurnIds: ["turn-a"],
+        tokenEstimate: 100,
+        startedAt: "2026-08-05T00:00:00.000Z",
+      }],
+      updatedAt: "2026-08-05T00:00:00.000Z",
+    }));
+    const openViking = client();
+    openViking.getTask
+      .mockResolvedValueOnce({ status: "failed", error: "model unavailable" })
+      .mockResolvedValueOnce({ status: "completed", result: { memories_extracted: {} } });
+    const memoryControl = control();
+    const flusher = new OpenVikingHookStateFlusher({
+      stateDir,
+      client: openViking,
+      control: memoryControl,
+      credentials: { get: vi.fn(async () => auth) },
+    });
+
+    await flusher.flushIdle(Date.parse("2026-08-05T00:01:00.000Z"));
+
+    expect(JSON.parse(await readFile(statePath, "utf8"))).toMatchObject({
+      commitTasks: [],
+      recallBlockedByTaskId: "task-failed",
+    });
+
+    const blocked = JSON.parse(await readFile(statePath, "utf8"));
+    blocked.commitTasks = [{
+      taskId: "task-success",
+      trigger: "explicit-remember",
+      sourceTurnIds: ["turn-b"],
+      tokenEstimate: 80,
+      startedAt: "2026-08-05T00:02:00.000Z",
+    }];
+    blocked.updatedAt = "2026-08-05T00:02:00.000Z";
+    await writeFile(statePath, JSON.stringify(blocked));
+
+    await flusher.flushIdle(Date.parse("2026-08-05T00:03:00.000Z"));
+
+    const recovered = JSON.parse(await readFile(statePath, "utf8"));
+    expect(recovered.commitTasks).toEqual([]);
+    expect(recovered.recallBlockedByTaskId).toBeUndefined();
+  });
+
+  it("restores a user-locked memory after automatic extraction tries to overwrite it", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "agent-recall-openviking-lock-"));
+    roots.push(root);
+    const stateDir = path.join(root, "hook-state");
+    await mkdir(stateDir);
+    await writeFile(path.join(stateDir, "commit.json"), JSON.stringify({
+      workspaceId: "workspace-1",
+      sessionId: "session-1",
+      commitTasks: [{
+        taskId: "task-lock",
+        trigger: "token-threshold",
+        sourceTurnIds: ["turn-a"],
+        tokenEstimate: 200,
+        startedAt: "2026-08-05T00:00:00.000Z",
+      }],
+      updatedAt: "2026-08-05T00:00:00.000Z",
+    }));
+    const openViking = client();
+    openViking.getTask.mockResolvedValue({
+      status: "completed",
+      result: { memory_diff_uri: "viking://resources/memory_diff.json" },
+    });
+    openViking.readMemory.mockResolvedValue(JSON.stringify({
+      operations: {
+        adds: [],
+        updates: [{
+          uri: "memory/user/workspace_user/preferences/editor.md",
+          memory_type: "preferences",
+          before: "Use verbose diffs.",
+          after: "Use automatic formatting.",
+        }],
+        deletes: [],
+      },
+    }));
+    const memoryControl = control();
+    memoryControl.applyOpenVikingCommitResult.mockResolvedValue([{
+      uri: "viking://user/memories/preferences/editor.md",
+      content: "Prefer concise diffs.",
+    }]);
+    const flusher = new OpenVikingHookStateFlusher({
+      stateDir,
+      client: openViking,
+      control: memoryControl,
+      credentials: { get: vi.fn(async () => auth) },
+    });
+
+    await flusher.flushIdle(Date.parse("2026-08-05T00:01:00.000Z"));
+
+    expect(openViking.writeMemoryContent).toHaveBeenCalledWith(
+      auth,
+      "viking://user/memories/preferences/editor.md",
+      "Prefer concise diffs.",
+    );
+    expect(memoryControl.recordOpenVikingOperationEvent).toHaveBeenCalledWith(expect.objectContaining({
+      phase: "verify",
+      details: expect.objectContaining({ restoredLockedMemories: 1 }),
+    }));
+  });
+
+  it("imports hook operation events and recall traces before deleting their artifact files", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "agent-recall-openviking-artifacts-"));
+    roots.push(root);
+    const stateDir = path.join(root, "hook-state");
+    const eventDir = path.join(stateDir, "operation-events");
+    const traceDir = path.join(stateDir, "recall-traces");
+    await mkdir(eventDir, { recursive: true });
+    await mkdir(traceDir, { recursive: true });
+    await writeFile(path.join(eventDir, "event.json"), JSON.stringify({
+      id: "event-1",
+      workspaceId: "workspace-1",
+      phase: "append",
+      status: "completed",
+      startedAt: "2026-08-05T00:00:00.000Z",
+    }));
+    await writeFile(path.join(traceDir, "trace.json"), JSON.stringify({
+      id: "trace-1",
+      workspaceId: "workspace-1",
+      agent: "codex",
+      query: "release",
+      contextualQuery: "release",
+      searchedScopes: ["workspace-1"],
+      searchedTypes: ["events"],
+      candidates: [],
+      injectedUris: [],
+      injectedTokenCount: 0,
+      durationMs: 12,
+      createdAt: "2026-08-05T00:00:00.000Z",
+    }));
+    const memoryControl = control();
+    const flusher = new OpenVikingHookStateFlusher({
+      stateDir,
+      client: client(),
+      control: memoryControl,
+      credentials: { get: vi.fn(async () => auth) },
+    });
+
+    await flusher.flushIdle();
+
+    expect(memoryControl.recordOpenVikingOperationEvent).toHaveBeenCalledWith(expect.objectContaining({ id: "event-1" }));
+    expect(memoryControl.recordOpenVikingRecallTrace).toHaveBeenCalledWith(expect.objectContaining({ id: "trace-1" }));
+    expect(await readdir(eventDir)).toEqual([]);
+    expect(await readdir(traceDir)).toEqual([]);
   });
 });

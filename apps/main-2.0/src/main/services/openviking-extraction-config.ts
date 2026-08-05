@@ -1,4 +1,7 @@
-import type { CodexConfigSnapshot } from "../../core/codex-profile";
+import type {
+  CodexConfigSnapshot,
+  CodexSummaryEndpointDefaults,
+} from "../../core/codex-profile";
 import type {
   AppSettings,
   OpenVikingExtractionReasoningEffort,
@@ -16,6 +19,7 @@ export interface ResolvedOpenVikingVlmConfig {
 export function resolveOpenVikingExtractionConfig(input: {
   settings: AppSettings;
   codex: Pick<CodexConfigSnapshot, "activeModel">;
+  codexEndpoint?: CodexSummaryEndpointDefaults | null;
 }): ResolvedOpenVikingVlmConfig {
   if (input.settings.summarySource === "claude") {
     throw new Error("Claude CLI cannot be used for OpenViking memory extraction.");
@@ -23,8 +27,20 @@ export function resolveOpenVikingExtractionConfig(input: {
 
   if (input.settings.summarySource === "codex") {
     const model = input.settings.summaryCodexModel.trim()
+      || input.codexEndpoint?.model.trim()
       || input.codex.activeModel.trim()
       || DEFAULT_OPENVIKING_CODEX_EXTRACTION_MODEL;
+    if (input.codexEndpoint) {
+      return {
+        provider: input.codexEndpoint.apiFormat === "openai_responses"
+          ? "openai-codex"
+          : "openai",
+        model,
+        api_base: input.codexEndpoint.baseUrl,
+        api_key: input.codexEndpoint.apiKey,
+        reasoning_effort: input.settings.openVikingExtractionReasoningEffort,
+      };
+    }
     return {
       provider: "openai-codex",
       model,

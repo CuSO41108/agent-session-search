@@ -6,7 +6,10 @@ import {
   type Message,
 } from "@openviking/sdk";
 
-import type { OpenVikingMemoryItem } from "../../core/openviking-memory";
+import {
+  canonicalOpenVikingMemoryUri,
+  type OpenVikingMemoryItem,
+} from "../../core/openviking-memory";
 
 const MANUAL_MEMORY_URI = /^viking:\/\/user\/memories\/manual\/[A-Za-z0-9][A-Za-z0-9_-]{0,127}\.md$/u;
 const MANUAL_TITLE_PREFIX = /^<!-- agent-recall-title:([A-Za-z0-9_-]+) -->\r?\n/u;
@@ -54,6 +57,7 @@ export interface OpenVikingClientPort {
     auth: OpenVikingWorkspaceAuth,
     input: SaveOpenVikingMemoryInput,
   ): Promise<OpenVikingMemoryItem>;
+  writeMemoryContent(auth: OpenVikingWorkspaceAuth, uri: string, content: string): Promise<void>;
   deleteMemory(auth: OpenVikingWorkspaceAuth, uri: string): Promise<void>;
 }
 
@@ -205,7 +209,7 @@ export class OpenVikingGateway implements OpenVikingClientPort {
           client.glob("**/*.md", "viking://user/memories", 1_000),
         ]);
         const memories = listed
-          .map(normalizeMemory)
+          .map((value) => normalizeMemory(value, auth.userId))
           .filter((memory): memory is OpenVikingMemoryItem => memory !== null);
         const listedIds = new Set(memories.map((memory) => memory.id));
         const matches = Array.isArray(globbed.matches) ? globbed.matches : [];
@@ -214,7 +218,7 @@ export class OpenVikingGateway implements OpenVikingClientPort {
           const memory = normalizeMemory({
             uri,
             rel_path: uri.replace(/^viking:\/\/user\/memories\//u, ""),
-          });
+          }, auth.userId);
           if (memory) memories.push(memory);
         }
         const selected = memories
@@ -239,15 +243,16 @@ export class OpenVikingGateway implements OpenVikingClientPort {
         limit,
       });
       return (result.memories ?? [])
-        .map(normalizeMemory)
+        .map((value) => normalizeMemory(value, auth.userId))
         .filter((memory): memory is OpenVikingMemoryItem => memory !== null);
     });
   }
 
   async readMemory(auth: OpenVikingWorkspaceAuth, uri: string): Promise<string> {
     return this.normalize(async () => {
-      const content = await this.workspaceClient(auth).read(uri);
-      return MANUAL_MEMORY_URI.test(uri) ? decodeManualMemory(content).content : content;
+      const memoryUri = requireMemoryUri(uri, auth.userId);
+      const content = await this.workspaceClient(auth).read(memoryUri);
+      return MANUAL_MEMORY_URI.test(memoryUri) ? decodeManualMemory(content).content : content;
     });
   }
 
@@ -259,10 +264,7 @@ export class OpenVikingGateway implements OpenVikingClientPort {
       const existingUri = input.uri?.trim();
       let uri: string;
       if (existingUri) {
-        if (!/^viking:\/\/user\/memories\/(?:(?:identity|soul)\.md|manual\/[A-Za-z0-9][A-Za-z0-9_-]{0,127}\.md)$/u.test(existingUri)) {
-          throw new Error("Only manual, identity, and soul memories can be edited.");
-        }
-        uri = existingUri;
+        uri = requireMemoryUri(existingUri, auth.userId);
       } else {
         const id = input.id?.trim() || randomUUID();
         if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/u.test(id)) {
@@ -286,9 +288,33 @@ export class OpenVikingGateway implements OpenVikingClientPort {
     });
   }
 
+  async writeMemoryContent(
+    auth: OpenVikingWorkspaceAuth,
+    uri: string,
+    content: string,
+  ): Promise<void> {
+    const memoryUri = requireMemoryUri(uri, auth.userId);
+    try {
+      await this.normalize(async () => {
+        await this.workspaceClient(auth).write(memoryUri, content, {
+          mode: "replace",
+          wait: true,
+        });
+      });
+    } catch (error) {
+      if (!(error instanceof OpenVikingGatewayError) || error.code !== "NOT_FOUND") throw error;
+      await this.normalize(async () => {
+        await this.workspaceClient(auth).write(memoryUri, content, {
+          mode: "create",
+          wait: true,
+        });
+      });
+    }
+  }
+
   async deleteMemory(auth: OpenVikingWorkspaceAuth, uri: string): Promise<void> {
     await this.normalize(async () => {
-      await this.workspaceClient(auth).remove(uri, { wait: true });
+      await this.workspaceClient(auth).remove(requireMemoryUri(uri, auth.userId), { wait: true });
     });
   }
 
@@ -386,12 +412,18 @@ function requiredString(record: JsonObject, keys: string[], label: string): stri
   return value;
 }
 
-function normalizeMemory(value: unknown): OpenVikingMemoryItem | null {
+function normalizeMemory(value: unknown, userId: string): OpenVikingMemoryItem | null {
   if (!value || typeof value !== "object") return null;
   const record = value as Record<string, unknown>;
   if (record.isDir === true || record.is_dir === true) return null;
-  const id = stringValue(record.uri) || stringValue(record.id);
-  if (!id) return null;
+  const rawId = stringValue(record.uri) || stringValue(record.id);
+  if (!rawId) return null;
+  let id: string;
+  try {
+    id = canonicalOpenVikingMemoryUri(rawId, userId);
+  } catch {
+    return null;
+  }
   const rawContent = stringValue(record.content)
     || stringValue(record.abstract)
     || stringValue(record.overview);
@@ -442,4 +474,8 @@ function decodeManualMemory(content: string): { title: string; content: string }
 
 function stringValue(value: unknown): string {
   return typeof value === "string" ? value : "";
+}
+
+function requireMemoryUri(uri: string, userId: string): string {
+  return canonicalOpenVikingMemoryUri(uri, userId);
 }
