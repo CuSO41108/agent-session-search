@@ -37,6 +37,8 @@ import {
 } from "../session-ui";
 import type { UsageDelta } from "../session-ui";
 
+const SIDEBAR_PROJECT_PAGE_SIZE = 30;
+
 /* ------------------------------------------------------------------ types */
 
 export type SidebarTreeGroup = {
@@ -134,6 +136,7 @@ export function Sidebar(props: SidebarProps): ReactElement {
     onSelectVisibility,
   } = props;
   const t = (en: string, zh: string) => localize(language, en, zh);
+  const [visibleProjectCounts, setVisibleProjectCounts] = useState<Record<string, number>>({});
 
   return (
     <section className="sidebar">
@@ -226,6 +229,13 @@ export function Sidebar(props: SidebarProps): ReactElement {
             const groupId = group.projects[0]?.environmentId ?? "unknown";
             const envCollapsed = collapsedProjectGroups.has(groupId);
             const envActive = environmentId === groupId && !projectPath && !tag;
+            const visibleProjectCount = visibleProjectCounts[groupId] ?? SIDEBAR_PROJECT_PAGE_SIZE;
+            const visibleProjects = group.projects.slice(0, visibleProjectCount);
+            const selectedProject = group.projects.find((project) =>
+              project.path === projectPath && project.environmentId === projectEnvironmentId);
+            if (selectedProject && !visibleProjects.includes(selectedProject)) visibleProjects.push(selectedProject);
+            const hiddenProjectCount = Math.max(0, group.projects.length - visibleProjectCount);
+            const nextProjectCount = Math.min(SIDEBAR_PROJECT_PAGE_SIZE, hiddenProjectCount);
             return (
               <div key={groupId} className="tree-group">
                 <div className="tree-row tree-env-row">
@@ -247,7 +257,7 @@ export function Sidebar(props: SidebarProps): ReactElement {
                     <em className="tree-count">{group.projects.length}</em>
                   </button>
                 </div>
-                {!envCollapsed && group.projects.map((project) => {
+                {!envCollapsed && visibleProjects.map((project) => {
                   const projectKey = `${project.environmentId}:${project.path}`;
                   const projExpanded = collapsedTreeProjects.has(projectKey);
                   const projCollapsed = !projExpanded;
@@ -306,6 +316,19 @@ export function Sidebar(props: SidebarProps): ReactElement {
                     </div>
                   );
                 })}
+                {!envCollapsed && hiddenProjectCount > 0 ? (
+                  <button
+                    type="button"
+                    className="tree-project-more"
+                    onClick={() => setVisibleProjectCounts((current) => ({
+                      ...current,
+                      [groupId]: visibleProjectCount + nextProjectCount,
+                    }))}
+                  >
+                    <ChevronDown size={13} />
+                    <span>{t(`Show ${nextProjectCount} more projects`, `再显示 ${nextProjectCount} 个项目`)}</span>
+                  </button>
+                ) : null}
               </div>
             );
           })}

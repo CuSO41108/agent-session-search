@@ -56,6 +56,7 @@ import {
 } from "../../session-ui";
 
 const LIVE_STATUS_FILTERS: LiveStatusFilter[] = ["all", "open", "closed"];
+const SIDEBAR_PROJECT_PAGE_SIZE = 30;
 
 export interface SessionSidebarGroup {
   environment: SessionEnvironment | null;
@@ -378,6 +379,8 @@ function SessionSidebar({
   actions: SessionsPageActions;
   l(en: string, zh: string): string;
 }): ReactElement {
+  const [visibleProjectCounts, setVisibleProjectCounts] = useState<Record<string, number>>({});
+
   return (
     <section className="sidebar">
       <div className="session-sidebar-title">
@@ -404,6 +407,14 @@ function SessionSidebar({
             const environmentCollapsed = model.collapsedProjectGroups.has(groupId);
             const environmentActive =
               model.environmentId === groupId && !model.projectPath && !model.tag;
+            const visibleProjectCount = visibleProjectCounts[groupId] ?? SIDEBAR_PROJECT_PAGE_SIZE;
+            const visibleProjects = group.projects.slice(0, visibleProjectCount);
+            const selectedProject = group.projects.find((project) =>
+              project.path === model.projectPath
+              && project.environmentId === model.projectEnvironmentId);
+            if (selectedProject && !visibleProjects.includes(selectedProject)) visibleProjects.push(selectedProject);
+            const hiddenProjectCount = Math.max(0, group.projects.length - visibleProjectCount);
+            const nextProjectCount = Math.min(SIDEBAR_PROJECT_PAGE_SIZE, hiddenProjectCount);
             return (
               <div key={groupId} className="tree-group">
                 <div className="tree-row tree-env-row">
@@ -432,7 +443,7 @@ function SessionSidebar({
                   </button>
                 </div>
                 {!environmentCollapsed
-                  ? group.projects.map((project) => {
+                  ? visibleProjects.map((project) => {
                       const projectKey = `${project.environmentId}:${project.path}`;
                       const expanded = model.expandedTreeProjects.has(projectKey);
                       const active =
@@ -513,6 +524,19 @@ function SessionSidebar({
                       );
                     })
                   : null}
+                {!environmentCollapsed && hiddenProjectCount > 0 ? (
+                  <button
+                    type="button"
+                    className="tree-project-more"
+                    onClick={() => setVisibleProjectCounts((current) => ({
+                      ...current,
+                      [groupId]: visibleProjectCount + nextProjectCount,
+                    }))}
+                  >
+                    <ChevronDown size={13} />
+                    <span>{l(`Show ${nextProjectCount} more projects`, `再显示 ${nextProjectCount} 个项目`)}</span>
+                  </button>
+                ) : null}
               </div>
             );
           })}

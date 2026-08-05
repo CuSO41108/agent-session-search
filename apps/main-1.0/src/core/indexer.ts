@@ -8,7 +8,7 @@ import {
   loadCodexSessionRows,
   loadCursorTranscriptFile,
   loadDefaultSessions,
-  loadDefaultSessionsIterator,
+  loadDefaultSessionsAsyncIterator,
   parseJsonlText,
   type SessionLoadOptions,
 } from "./session-loader";
@@ -81,7 +81,7 @@ function indexFailureMessage(
 
 export async function syncLoadedSessionsInBatches(
   store: SessionStore,
-  loaded: Iterable<LoadedSession>,
+  loaded: Iterable<LoadedSession> | AsyncIterable<LoadedSession>,
   options: BatchIndexOptions = {},
 ): Promise<IndexStatus> {
   const batchSize = Math.max(1, options.batchSize ?? 3);
@@ -103,7 +103,7 @@ export async function syncLoadedSessionsInBatches(
       .map((environment) => [environment.hostAlias!, environment]),
   );
 
-  for (const loadedItem of loaded) {
+  for await (const loadedItem of loaded) {
     try {
       const item = resolveExecutionEnvironment(
         store,
@@ -235,21 +235,13 @@ function resolveExecutionEnvironment(
 export function syncDefaultSessionsInBatches(store: SessionStore, options: BatchIndexOptions = {}): Promise<IndexStatus> {
   const storedFiles = store.listIndexedSessionFiles();
   const indexedFiles = sessionFileSnapshots(storedFiles);
-  const incrementalCodexSessions = new Map<string, { offset: number; loaded: LoadedSession }>();
+  const incrementalCodexFiles = new Map<string, { offset: number; sessionKey: string }>();
   for (const file of storedFiles) {
     if (file.source !== "codex-cli" && file.source !== "codex-app" && file.source !== "tcodex-cli") continue;
     if (file.fileMtimeMs <= 0) continue;
-    const session = store.getSession(file.sessionKey);
-    if (!session) continue;
-    incrementalCodexSessions.set(file.filePath, {
+    incrementalCodexFiles.set(file.filePath, {
       offset: file.fileSize,
-      loaded: {
-        session,
-        messages: store.getAllMessages(file.sessionKey),
-        tokenEvents: store.getTokenEvents(file.sessionKey),
-        traceEvents: store.getTraceEvents(file.sessionKey),
-        codexIncrementalState: store.getCodexIncrementalState(file.sessionKey),
-      },
+      sessionKey: file.sessionKey,
     });
   }
   const dependencyChangedFiles = new Set<string>();
@@ -259,9 +251,24 @@ export function syncDefaultSessionsInBatches(store: SessionStore, options: Batch
   const onSkippedFile = loadOptions.onSkippedFile;
   const scannedFilePaths = new Set<string>();
   const scannedSessionKeys = new Set<string>();
-  const rawLoaded = loadDefaultSessionsIterator({
+  const rawLoaded = loadDefaultSessionsAsyncIterator({
     ...loadOptions,
-    incrementalCodexSessions,
+    loadIncrementalCodexSession: (filePath) => {
+      const previous = incrementalCodexFiles.get(filePath);
+      if (!previous) return undefined;
+      const session = store.getSession(previous.sessionKey);
+      if (!session) return undefined;
+      return {
+        offset: previous.offset,
+        loaded: {
+          session,
+          messages: store.getAllMessages(previous.sessionKey),
+          tokenEvents: store.getTokenEvents(previous.sessionKey),
+          traceEvents: store.getTraceEvents(previous.sessionKey),
+          codexIncrementalState: store.getCodexIncrementalState(previous.sessionKey),
+        },
+      };
+    },
     shouldSkipFile: (filePath, stat, dependencyMtimeMs = 0) => {
       scannedFilePaths.add(filePath);
       const customDecision = shouldSkipFile?.(filePath, stat, dependencyMtimeMs);
@@ -269,7 +276,7 @@ export function syncDefaultSessionsInBatches(store: SessionStore, options: Batch
       const snapshot = findSessionFileSnapshot(indexedFiles, filePath, stat);
       if (snapshot !== undefined && dependencyMtimeMs > snapshot.indexedAt) {
         dependencyChangedFiles.add(filePath);
-        incrementalCodexSessions.delete(filePath);
+        incrementalCodexFiles.delete(filePath);
       }
       return snapshot !== undefined && snapshot.indexedAt > 0 && dependencyMtimeMs <= snapshot.indexedAt;
     },
@@ -278,8 +285,8 @@ export function syncDefaultSessionsInBatches(store: SessionStore, options: Batch
       onSkippedFile?.(filePath, stat);
     },
   });
-  const loaded = (function* () {
-    for (const item of rawLoaded) {
+  const loaded = (async function* () {
+    for await (const item of rawLoaded) {
       if (item.session.filePath) scannedFilePaths.add(item.session.filePath);
       scannedSessionKeys.add(item.session.sessionKey);
       yield item;

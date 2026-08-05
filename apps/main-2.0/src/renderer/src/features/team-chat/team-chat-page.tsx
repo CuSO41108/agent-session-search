@@ -38,7 +38,7 @@ import type {
 import { parseTeamChatMentions, removeMentionFromText, resolveMentionedMemberIds } from "../../../../shared/team-chat";
 import { localize, type LanguageMode } from "../../language";
 import { Markdown } from "../../markdown";
-import { useAutomation } from "../automation/automation-provider";
+import { useAutomationDetails } from "../automation/automation-provider";
 
 interface StreamDraft {
   dispatchId: string;
@@ -160,7 +160,7 @@ export function TeamChatPage({
 }): ReactElement {
   const l = useCallback((en: string, zh: string) => localize(language, en, zh), [language]);
   const api = useMemo(() => window.sessionSearch.teamChat, []);
-  const { api: automationApi, snapshot } = useAutomation();
+  const { api: automationApi, snapshot } = useAutomationDetails();
   const [connection, setConnection] = useState<TeamChatConnectionStatus>(INITIAL_CONNECTION);
   const [connectionBusy, setConnectionBusy] = useState(false);
   const [rooms, setRooms] = useState<TeamChatRoomSummary[]>([]);

@@ -7,7 +7,7 @@ import { combineIpcDisposers, registerIpcHandler, type IpcMainRegistrar } from "
 
 export interface SkillsIpcService {
   listSkills(): InstalledSkillsSnapshot;
-  refreshUsage(): SkillUsageRefreshStatus;
+  refreshUsage(): Promise<SkillUsageRefreshStatus>;
   getSyncSnapshot(): Promise<SkillSyncSnapshot>;
   upload(skillPath: string, force: boolean): Promise<SkillSyncUploadOutcome>;
   install(remoteSkillId: string): Promise<SkillSyncInstallResult>;

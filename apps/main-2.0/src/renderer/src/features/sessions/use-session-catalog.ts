@@ -60,6 +60,7 @@ export function useSessionCatalog({
   const [sessionTotalCount, setSessionTotalCount] = useState(0);
   const [hasMoreSessions, setHasMoreSessions] = useState(false);
   const [results, setResults] = useState<SessionSearchResult[]>([]);
+  const [resultsScopeKey, setResultsScopeKey] = useState<string | null>(null);
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const loadSeqRef = useRef(0);
   const searchRef = useRef<HTMLInputElement>(null);
@@ -106,6 +107,7 @@ export function useSessionCatalog({
 
   const load = useCallback(async () => {
     const requestId = ++loadSeqRef.current;
+    const requestScopeKey = searchScopeKey;
     const searchScope = resolveSearchScope(
       environmentId,
       projectPath,
@@ -138,6 +140,7 @@ export function useSessionCatalog({
 
     startTransition(() => {
       setResults(page.sessions);
+      setResultsScopeKey(requestScopeKey);
       setSessionTotalCount(page.totalCount);
       setHasMoreSessions(page.hasMore);
       setSelectedKey((current) =>
@@ -162,6 +165,7 @@ export function useSessionCatalog({
     liveStatus,
     liveDetectionFailed,
     liveSearchKeys,
+    searchScopeKey,
   ]);
 
   const searchAllMatching = useCallback(async (ignoreDate: boolean): Promise<SessionSearchResult[]> => {
@@ -270,15 +274,16 @@ export function useSessionCatalog({
     projects,
   ]);
 
+  const resultsMatchSearchScope = resultsScopeKey === searchScopeKey;
   const displayedResults = useMemo(
     () =>
       filterSessionsByLiveStatus(
-        results,
+        resultsMatchSearchScope ? results : [],
         liveSessionKeys,
         liveStatus,
         liveDetectionFailed,
       ),
-    [results, liveSessionKeys, liveStatus, liveDetectionFailed],
+    [resultsMatchSearchScope, results, liveSessionKeys, liveStatus, liveDetectionFailed],
   );
   const selected = useMemo(
     () =>
@@ -325,8 +330,8 @@ export function useSessionCatalog({
     setCustomDateRange,
     liveStatus,
     setLiveStatus,
-    sessionTotalCount,
-    hasMoreSessions,
+    sessionTotalCount: resultsMatchSearchScope ? sessionTotalCount : 0,
+    hasMoreSessions: resultsMatchSearchScope && hasMoreSessions,
     displayedResults,
     selectedKey,
     setSelectedKey,

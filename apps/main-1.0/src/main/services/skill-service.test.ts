@@ -107,8 +107,8 @@ function createHarness(options: { settings?: AppSettings; groups?: RemoteSkillGr
     listInstalledSkills: vi.fn(() => ({ skills: [installedSkill()], roots: [], scannedAt: 1 })),
     skillProjectDirsFromIndexedProjects: vi.fn(() => []),
     usageForSkill: vi.fn(() => ({ skill: "review", count: 3, lastUsedAt: 100 })),
-    listSkillUsageSources: vi.fn(() => usageSources),
-    readSkillUsageSourceEvents: vi.fn(() => [{ agent: "codex" as const, skill: "review", timestamp: 100 }]),
+    listSkillUsageSources: vi.fn(async () => usageSources),
+    readSkillUsageSourceEvents: vi.fn(async () => [{ agent: "codex" as const, skill: "review", timestamp: 100 }]),
     isSyncableSkill: vi.fn(() => true),
     portableSkillLocation: vi.fn(() => ({ scope: "codex-user" as const, relativePath: "review", identity: "codex-user/review" })),
     skillSyncLocalContentHash: vi.fn(async () => "local-hash"),
@@ -154,7 +154,7 @@ describe("SkillService local skills and usage", () => {
     expect(snapshot.usage).toEqual({ hookInstalled: true, logExists: true, totalEvents: 3 });
   });
 
-  it("refreshes only stale usage sources and prunes removed files", () => {
+  it("refreshes only stale usage sources and prunes removed files", async () => {
     const harness = createHarness();
     harness.usageSources.push(
       { agent: "codex", kind: "codex-session", path: "/tmp/a.jsonl", mtimeMs: 1, fileSize: 1 },
@@ -162,7 +162,7 @@ describe("SkillService local skills and usage", () => {
     );
     vi.mocked(harness.store.isSkillUsageSourceFresh).mockImplementation((source) => source.path.endsWith("a.jsonl"));
 
-    expect(harness.service.refreshUsage()).toEqual({
+    await expect(harness.service.refreshUsage()).resolves.toEqual({
       refreshed: 1,
       skipped: 1,
       total: 2,
@@ -171,6 +171,21 @@ describe("SkillService local skills and usage", () => {
     });
     expect(harness.store.upsertSkillUsageSource).toHaveBeenCalledOnce();
     expect(harness.store.pruneSkillUsageSources).toHaveBeenCalledWith(["/tmp/a.jsonl", "/tmp/b.jsonl"]);
+  });
+
+  it("coalesces overlapping usage refreshes into one filesystem scan", async () => {
+    const harness = createHarness();
+    let resolveSources!: (sources: SkillUsageSource[]) => void;
+    vi.mocked(harness.operations.listSkillUsageSources).mockReturnValue(new Promise((resolve) => {
+      resolveSources = resolve;
+    }));
+
+    const first = harness.service.refreshUsage();
+    const second = harness.service.refreshUsage();
+    resolveSources([]);
+
+    await Promise.all([first, second]);
+    expect(harness.operations.listSkillUsageSources).toHaveBeenCalledOnce();
   });
 });
 

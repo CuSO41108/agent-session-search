@@ -141,6 +141,32 @@ async function flushPromises(): Promise<void> {
 }
 
 describe("RemoteEnvironmentLifecycle", () => {
+  it("skips password SSH during passive startup sync unless explicitly requested", async () => {
+    const store = createStore();
+    const syncEnvironment = vi.fn(async () => undefined);
+    const lifecycle = new RemoteEnvironmentLifecycle({
+      store,
+      syncEnvironment,
+      watchManager: createWatchManager(),
+    });
+    await store.upsertEnvironment({
+      id: "ssh-password",
+      kind: "ssh",
+      label: "password host",
+      hostAlias: "password-host",
+      authMode: "password",
+      enabled: true,
+    });
+
+    await lifecycle.startEnabledEnvironments();
+    await flushPromises();
+    expect(syncEnvironment).not.toHaveBeenCalled();
+
+    await lifecycle.startEnabledEnvironments({ includePasswordAuthenticated: true });
+    await lifecycle.waitForIdle("ssh-password");
+    expect(syncEnvironment).toHaveBeenCalledOnce();
+  });
+
   it("runs credential hooks when an environment is saved and deleted", async () => {
     const store = createStore();
     const onEnvironmentSaved = vi.fn();

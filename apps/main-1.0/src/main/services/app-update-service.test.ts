@@ -170,7 +170,7 @@ describe("AppUpdateService", () => {
     harness.service.scheduleInitialCheck();
 
     expect(harness.scheduled).toHaveLength(1);
-    expect(harness.scheduled[0].delayMs).toBe(1_000);
+    expect(harness.scheduled[0].delayMs).toBe(24_000);
     harness.scheduled[0].callback();
     expect(harness.client.checkForUpdate).toHaveBeenCalledOnce();
   });

@@ -43,6 +43,7 @@ describe("remote live session detection", () => {
       environment(),
       environment({ id: "wsl-ubuntu", kind: "wsl", hostAlias: null, wslDistribution: "Ubuntu" }),
       environment({ id: "ssh-disabled", enabled: false }),
+      environment({ id: "ssh-password", authMode: "password" }),
       environment({ id: "local", kind: "local", hostAlias: null }),
       environment({ id: "ssh-broken" }),
     ], runner);
@@ -66,6 +67,38 @@ describe("remote live session detection", () => {
     ], async () => {
       throw new Error("python3 is unavailable");
     })).rejects.toThrow("Could not inspect live sessions in WSL environment devbox: python3 is unavailable");
+  });
+
+  it("includes password-authenticated SSH only for fresh safety checks", async () => {
+    const passwordEnvironment = environment({ id: "ssh-password", authMode: "password" });
+    const runner = vi.fn(async () => '{"family":"codex","rawId":"remote-codex","pid":42}');
+
+    await expect(loadRemoteLiveSessions([passwordEnvironment], runner)).resolves.toEqual([]);
+    await expect(loadRemoteLiveSessions([passwordEnvironment], runner, {
+      includePasswordAuthenticated: true,
+    })).resolves.toEqual([
+      { family: "codex", rawId: "remote-codex", pid: 42, environmentId: "ssh-password" },
+    ]);
+    expect(runner).toHaveBeenCalledOnce();
+  });
+
+  it("bounds concurrent remote probes", async () => {
+    let active = 0;
+    let maximumActive = 0;
+    const environments = Array.from({ length: 8 }, (_, index) => environment({
+      id: `ssh-${index}`,
+      label: `ssh-${index}`,
+    }));
+
+    await loadRemoteLiveSessions(environments, async () => {
+      active += 1;
+      maximumActive = Math.max(maximumActive, active);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      active -= 1;
+      return "";
+    });
+
+    expect(maximumActive).toBe(3);
   });
 
   it.skipIf(process.platform === "win32")("detects active Codex and Claude sessions from a synthetic remote process tree", async () => {

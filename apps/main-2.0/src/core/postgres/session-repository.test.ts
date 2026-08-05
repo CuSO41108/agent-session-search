@@ -506,6 +506,33 @@ describe("PostgresSessionRepository", () => {
     });
   });
 
+  it("pages completed Turn conversation text without loading trajectories", async () => {
+    await repository.upsertIndexedSession(session(), messages, [], []);
+
+    await expect(turnsRepository.listSessionImportTurns(
+      "codex:session-a",
+      null,
+      1,
+    )).resolves.toEqual([{
+      turnIndex: 0,
+      startedAt: "2026-07-20T08:00:00.000Z",
+      endedAt: "2026-07-20T08:00:01.000Z",
+      user: "Find the login failure",
+      assistant: "The cache key is stale.",
+    }]);
+    await expect(turnsRepository.listSessionImportTurns(
+      "codex:session-a",
+      0,
+      10,
+    )).resolves.toEqual([{
+      turnIndex: 1,
+      startedAt: "2026-07-20T08:01:00.000Z",
+      endedAt: "2026-07-20T08:01:00.000Z",
+      user: "Fix the cache and retry",
+      assistant: "",
+    }]);
+  });
+
   it("loads one Turn trajectory and rejects a mismatched Session", async () => {
     await repository.upsertIndexedSession(session(), messages, tokens, traces);
     const [turn] = await turnsRepository.listSessionTurns("codex:session-a");

@@ -196,8 +196,29 @@ function harness(options: {
       return true;
     }),
     searchSessions: vi.fn(async () => options.sessions ?? []),
-    listSessionTurns: vi.fn(async (sessionKey) => options.turns?.[sessionKey] ?? []),
-    getSessionTurn: vi.fn(async (_sessionKey, turnId) => options.details?.[turnId] ?? null),
+    listSessionImportTurns: vi.fn(async (sessionKey, afterTurnIndex, limit) =>
+      (options.turns?.[sessionKey] ?? [])
+        .filter((summary) =>
+          !summary.synthetic
+          && summary.status === "completed"
+          && (afterTurnIndex === null || summary.turnIndex > afterTurnIndex))
+        .sort((left, right) => left.turnIndex - right.turnIndex)
+        .slice(0, limit)
+        .map((summary) => {
+          const turnDetail = options.details?.[summary.id];
+          const textForRole = (role: "user" | "assistant") => (turnDetail?.messages ?? [])
+            .filter((message) => message.role === role)
+            .map((message) => message.content.trim())
+            .filter(Boolean)
+            .join("\n\n");
+          return {
+            turnIndex: summary.turnIndex,
+            startedAt: summary.startedAt,
+            endedAt: summary.endedAt,
+            user: textForRole("user"),
+            assistant: textForRole("assistant"),
+          };
+        })),
     getOpenVikingImportJob: vi.fn(async (workspaceId) => {
       const job = jobs.get(workspaceId);
       return job ? { workspaceId, updatedAt: "2026-07-24T00:00:00.000Z", ...job } : null;
@@ -540,31 +561,30 @@ describe("OpenVikingMemoryService", () => {
       importedTurns: 2,
       totalTurns: 2,
     });
-    expect(client.appendMessages).toHaveBeenCalledTimes(2);
-    expect(client.appendMessages).toHaveBeenNthCalledWith(
-      1,
+    expect(client.appendMessages).toHaveBeenCalledOnce();
+    expect(client.appendMessages).toHaveBeenCalledWith(
       expect.anything(),
       expect.stringMatching(/^agentrecall_[a-f0-9]{32}$/u),
       [
         expect.objectContaining({ role: "user", content: "question" }),
         expect.objectContaining({ role: "assistant", content: "answer" }),
+        expect.objectContaining({ role: "user", content: "long question" }),
+        expect.objectContaining({ role: "assistant" }),
       ],
     );
-    const secondBatch = vi.mocked(client.appendMessages).mock.calls[1][2];
-    expect(secondBatch[1].content).toHaveLength(12_000);
+    const appendedMessages = vi.mocked(client.appendMessages).mock.calls[0][2];
+    expect(appendedMessages[3].content).toHaveLength(12_000);
     expect(store.completeOpenVikingImportTask).toHaveBeenCalledOnce();
     expect(client.commitSession).toHaveBeenCalledOnce();
 
-    vi.mocked(store.listSessionTurns).mockClear();
-    vi.mocked(store.getSessionTurn).mockClear();
+    vi.mocked(store.listSessionImportTurns).mockClear();
     await service.importWorkspace("workspace-1");
-    expect(client.appendMessages).toHaveBeenCalledTimes(2);
-    expect(store.listSessionTurns).not.toHaveBeenCalled();
-    expect(store.getSessionTurn).not.toHaveBeenCalled();
+    expect(client.appendMessages).toHaveBeenCalledOnce();
+    expect(store.listSessionImportTurns).not.toHaveBeenCalled();
   });
 
-  it("commits every Turn from one scanned Session in one OpenViking task", async () => {
-    const summaries = Array.from({ length: 60 }, (_, index) => turn(`turn-${index + 1}`, index));
+  it("bounds scanning and remote requests for a 300-Turn Session", async () => {
+    const summaries = Array.from({ length: 300 }, (_, index) => turn(`turn-${index + 1}`, index));
     const longContent = "x".repeat(1_000);
     const details = Object.fromEntries(summaries.map((summary, index) => [
       summary.id,
@@ -579,23 +599,43 @@ describe("OpenVikingMemoryService", () => {
 
     await expect(h.service.importWorkspace("workspace-1")).resolves.toMatchObject({
       state: "completed",
-      importedTurns: 60,
-      totalTurns: 60,
+      importedTurns: 300,
+      totalTurns: 300,
     });
 
     const plannedTasks = vi.mocked(h.store.syncOpenVikingImportTasks).mock.calls[0][1];
-    expect(plannedTasks).toHaveLength(1);
-    expect(plannedTasks[0].payload.primary).toHaveLength(60);
+    expect(plannedTasks).toHaveLength(6);
+    expect(plannedTasks.map((task) => task.payload.primary.length)).toEqual([50, 50, 50, 50, 50, 50]);
+    expect(h.store.listSessionImportTurns).toHaveBeenCalledTimes(4);
     const appendedSessionIds = vi.mocked(h.client.appendMessages).mock.calls.map((call) => call[1]);
     expect(new Set(appendedSessionIds)).toHaveLength(1);
-    expect(h.client.appendMessages).toHaveBeenCalledTimes(60);
-    expect(h.client.commitSession).toHaveBeenCalledOnce();
-    expect(h.client.commitSession).toHaveBeenCalledWith(
-      expect.anything(),
-      appendedSessionIds[0],
-      0,
-    );
-    expect(h.store.completeOpenVikingImportTask).toHaveBeenCalledOnce();
+    expect(h.client.appendMessages).toHaveBeenCalledTimes(6);
+    expect(vi.mocked(h.client.appendMessages).mock.calls.map((call) => call[2].length))
+      .toEqual([100, 100, 100, 100, 100, 100]);
+    expect(h.client.commitSession).toHaveBeenCalledTimes(6);
+    expect(h.store.completeOpenVikingImportTask).toHaveBeenCalledTimes(6);
+  });
+
+  it("splits import tasks by UTF-8 payload size before the API message limit", async () => {
+    const summaries = Array.from({ length: 25 }, (_, index) => turn(`turn-${index + 1}`, index));
+    const maxContent = "界".repeat(12_000);
+    const h = harness({
+      initialWorkspaces: [workspace()],
+      sessions: [session("codex:wide")],
+      turns: { "codex:wide": summaries },
+      details: Object.fromEntries(summaries.map((summary) => [
+        summary.id,
+        detail(summary, maxContent, maxContent),
+      ])),
+    });
+
+    await h.service.importWorkspace("workspace-1");
+
+    const plannedTasks = vi.mocked(h.store.syncOpenVikingImportTasks).mock.calls[0][1];
+    expect(plannedTasks.map((task) => task.payload.primary.length)).toEqual([3, 3, 3, 3, 3, 3, 3, 3, 1]);
+    expect(h.client.appendMessages).toHaveBeenCalledTimes(9);
+    expect(vi.mocked(h.client.appendMessages).mock.calls.every((call) => call[2].length <= 100))
+      .toBe(true);
   });
 
   it("imports only changed Turns without replaying artificial overlap", async () => {
@@ -628,7 +668,8 @@ describe("OpenVikingMemoryService", () => {
       totalTurns: 41,
     });
     const appendedSessionIds = vi.mocked(h.client.appendMessages).mock.calls.map((call) => call[1]);
-    expect(appendedSessionIds).toEqual([stableSessionId, stableSessionId]);
+    expect(appendedSessionIds).toEqual([stableSessionId]);
+    expect(vi.mocked(h.client.appendMessages).mock.calls[0][2]).toHaveLength(4);
     expect(h.client.commitSession).toHaveBeenCalledWith(
       expect.anything(),
       stableSessionId,
@@ -681,16 +722,13 @@ describe("OpenVikingMemoryService", () => {
       },
     });
     await h.service.importWorkspace("workspace-1");
-    vi.mocked(h.store.listSessionTurns).mockClear();
-    vi.mocked(h.store.getSessionTurn).mockClear();
+    vi.mocked(h.store.listSessionImportTurns).mockClear();
 
     secondSession.fileSize += 1;
     await h.service.importWorkspace("workspace-1");
 
-    expect(h.store.listSessionTurns).toHaveBeenCalledOnce();
-    expect(h.store.listSessionTurns).toHaveBeenCalledWith("codex:2");
-    expect(h.store.getSessionTurn).toHaveBeenCalledOnce();
-    expect(h.store.getSessionTurn).toHaveBeenCalledWith("codex:2", "turn-2");
+    expect(h.store.listSessionImportTurns).toHaveBeenCalledOnce();
+    expect(h.store.listSessionImportTurns).toHaveBeenCalledWith("codex:2", null, 100);
     expect(h.client.appendMessages).toHaveBeenCalledTimes(2);
   });
 
@@ -972,7 +1010,7 @@ describe("OpenVikingMemoryService", () => {
       state: "paused",
       importedTurns: 0,
     });
-    expect(h.client.appendMessages).toHaveBeenCalledTimes(2);
+    expect(h.client.appendMessages).toHaveBeenCalledOnce();
     expect(h.client.commitSession).toHaveBeenCalledOnce();
     expect(h.store.completeOpenVikingImportTask).not.toHaveBeenCalled();
 
@@ -981,7 +1019,7 @@ describe("OpenVikingMemoryService", () => {
       state: "completed",
       importedTurns: 2,
     }));
-    expect(h.client.appendMessages).toHaveBeenCalledTimes(2);
+    expect(h.client.appendMessages).toHaveBeenCalledOnce();
     expect(h.client.commitSession).toHaveBeenCalledOnce();
     expect(h.store.completeOpenVikingImportTask).toHaveBeenCalledOnce();
   });

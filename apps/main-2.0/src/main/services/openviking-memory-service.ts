@@ -23,11 +23,10 @@ import {
   type OpenVikingMemoryItem,
   type OpenVikingWorkspace,
 } from "../../core/openviking-memory";
+import type { SessionImportTurn } from "../../core/postgres/session-turn-repository";
 import type {
   SearchOptions,
   SessionSearchResult,
-  SessionTurnDetail,
-  SessionTurnSummary,
 } from "../../core/types";
 import type {
   AddOpenVikingWorkspaceInput,
@@ -47,6 +46,9 @@ import type {
 
 const execFileAsync = promisify(execFile);
 const MAX_TURN_CONTENT = 12_000;
+const IMPORT_SCAN_PAGE_SIZE = 100;
+const IMPORT_TASK_MAX_TURNS = 50;
+const IMPORT_TASK_MAX_BYTES = 256 * 1024;
 const IMPORT_CONCURRENCY = 2;
 
 export interface OpenVikingDirectoryPreview {
@@ -81,8 +83,11 @@ export interface OpenVikingMemoryStorePort {
   setOpenVikingWorkspaceManaged(id: string, managed: boolean): Promise<OpenVikingWorkspace>;
   deleteOpenVikingWorkspace(id: string): Promise<boolean>;
   searchSessions(options: SearchOptions): Promise<SessionSearchResult[]>;
-  listSessionTurns(sessionKey: string): Promise<SessionTurnSummary[]>;
-  getSessionTurn(sessionKey: string, turnId: string): Promise<SessionTurnDetail | null>;
+  listSessionImportTurns(
+    sessionKey: string,
+    afterTurnIndex: number | null,
+    limit: number,
+  ): Promise<SessionImportTurn[]>;
   getOpenVikingImportJob(workspaceId: string): Promise<OpenVikingImportJob | null>;
   setOpenVikingImportSelection(
     workspaceId: string,
@@ -143,9 +148,10 @@ interface OpenVikingMemoryServiceOptions {
 }
 
 interface ImportCandidate {
-  session: SessionSearchResult;
-  summary: SessionTurnSummary;
-  detail: SessionTurnDetail;
+  sessionKey: string;
+  turnIndex: number;
+  startedAt: string | null;
+  endedAt: string | null;
   user: string;
   assistant: string;
   fingerprint: string;
@@ -454,9 +460,9 @@ export class OpenVikingMemoryService {
     const candidates = await this.collectCandidates(changedSessions);
     const candidatesBySession = new Map<string, ImportCandidate[]>();
     for (const candidate of candidates) {
-      const entries = candidatesBySession.get(candidate.session.sessionKey) ?? [];
+      const entries = candidatesBySession.get(candidate.sessionKey) ?? [];
       entries.push(candidate);
-      candidatesBySession.set(candidate.session.sessionKey, entries);
+      candidatesBySession.set(candidate.sessionKey, entries);
     }
     const importedTurnCheckpoints = await this.options.store.listOpenVikingImportedTurns(workspaceId);
     const importedCandidates = new Set(
@@ -481,29 +487,29 @@ export class OpenVikingMemoryService {
     const taskInputs: CreateOpenVikingImportTaskInput[] = [];
     for (const session of changedSessions) {
       const sourceRevision = revisionBySession.get(session.sessionKey)!;
-      const primary = (candidatesBySession.get(session.sessionKey) ?? [])
-        .filter((candidate) => !importedCandidates.has(
-          importedTurnCheckpointKey(candidate.sourceTurnId, candidate.fingerprint),
-        ));
-      if (primary.length === 0) continue;
-      taskInputs.push({
-        id: deterministicImportTaskId(
+      for (const primary of buildImportTaskChunks(
+        candidatesBySession.get(session.sessionKey) ?? [],
+        importedCandidates,
+      )) {
+        taskInputs.push({
+          id: deterministicImportTaskId(
+            workspaceId,
+            session.sessionKey,
+            sourceRevision,
+            primary,
+          ),
+          position: taskInputs.length,
           workspaceId,
-          session.sessionKey,
+          sessionKey: session.sessionKey,
           sourceRevision,
-          primary,
-        ),
-        position: taskInputs.length,
-        workspaceId,
-        sessionKey: session.sessionKey,
-        sourceRevision,
-        sessionTitle: session.displayTitle,
-        payload: {
-          context: [],
-          primary: primary.map(importTaskTurn),
-          keepRecentCount: 0,
-        },
-      });
+          sessionTitle: session.displayTitle,
+          payload: {
+            context: [],
+            primary: primary.map(importTaskTurn),
+            keepRecentCount: 0,
+          },
+        });
+      }
     }
     const tasks = await this.options.store.syncOpenVikingImportTasks(
       workspaceId,
@@ -520,11 +526,6 @@ export class OpenVikingMemoryService {
     let progressWrites = Promise.resolve();
     const persistProgress = (sessionKey: string) => {
       progressWrites = progressWrites.then(async () => {
-        importedTurns = unchangedTurns + candidates.filter((candidate) =>
-          importedCandidates.has(importedTurnCheckpointKey(
-            candidate.sourceTurnId,
-            candidate.fingerprint,
-          ))).length;
         await this.options.store.updateOpenVikingImportJob(workspaceId, {
           state: "running",
           importedTurns,
@@ -554,7 +555,11 @@ export class OpenVikingMemoryService {
               if (firstError) return;
               if (task.state === "completed") {
                 for (const turn of task.payload.primary) {
-                  importedCandidates.add(importedTurnCheckpointKey(turn.sourceTurnId, turn.fingerprint));
+                  const key = importedTurnCheckpointKey(turn.sourceTurnId, turn.fingerprint);
+                  if (!importedCandidates.has(key)) {
+                    importedCandidates.add(key);
+                    importedTurns += 1;
+                  }
                 }
                 continue;
               }
@@ -573,7 +578,11 @@ export class OpenVikingMemoryService {
                 );
                 if (!completed) return;
                 for (const turn of task.payload.primary) {
-                  importedCandidates.add(importedTurnCheckpointKey(turn.sourceTurnId, turn.fingerprint));
+                  const key = importedTurnCheckpointKey(turn.sourceTurnId, turn.fingerprint);
+                  if (!importedCandidates.has(key)) {
+                    importedCandidates.add(key);
+                    importedTurns += 1;
+                  }
                 }
                 await persistProgress(task.sessionKey);
               } catch (error) {
@@ -742,20 +751,22 @@ export class OpenVikingMemoryService {
     await this.options.store.beginOpenVikingImportTaskAttempt(task.id);
     const importSessionId = deterministicImportSessionId(workspaceId, task.sessionKey);
     activity("uploading");
-    for (const turn of [...task.payload.context, ...task.payload.primary]) {
-      await this.options.client.appendMessages(auth, importSessionId, [
+    await this.options.client.appendMessages(
+      auth,
+      importSessionId,
+      [...task.payload.context, ...task.payload.primary].flatMap((turn) => [
         {
-          role: "user",
+          role: "user" as const,
           content: turn.user,
           ...(turn.startedAt ? { createdAt: turn.startedAt } : {}),
         },
         {
-          role: "assistant",
+          role: "assistant" as const,
           content: turn.assistant,
           ...(turn.endedAt ? { createdAt: turn.endedAt } : {}),
         },
-      ]);
-    }
+      ]),
+    );
     activity("extracting");
     const committed = await this.options.client.commitSession(
       auth,
@@ -866,38 +877,38 @@ export class OpenVikingMemoryService {
   private async collectCandidates(sessions: SessionSearchResult[]): Promise<ImportCandidate[]> {
     const candidates: ImportCandidate[] = [];
     for (const session of sessions) {
-      const turns = await this.options.store.listSessionTurns(session.sessionKey);
-      for (const summary of turns) {
-        if (summary.synthetic || summary.status !== "completed") continue;
-        const turn = await this.options.store.getSessionTurn(session.sessionKey, summary.id);
-        if (!turn) continue;
-        const user = truncate(turn.messages
-          .filter((message) => message.role === "user")
-          .map((message) => message.content.trim())
-          .filter(Boolean)
-          .join("\n\n"));
-        const assistant = truncate(turn.messages
-          .filter((message) => message.role === "assistant")
-          .map((message) => message.content.trim())
-          .filter(Boolean)
-          .join("\n\n"));
-        if (!user || !assistant) continue;
-        const sourceTurnId = `${session.sessionKey}:${summary.turnIndex}`;
-        candidates.push({
-          session,
-          summary,
-          detail: turn,
-          user,
-          assistant,
-          sourceTurnId,
-          fingerprint: importTurnFingerprint({
-            source: session.source,
-            sessionId: session.sessionKey,
-            turnIndex: summary.turnIndex,
+      let afterTurnIndex: number | null = null;
+      for (;;) {
+        const turns = await this.options.store.listSessionImportTurns(
+          session.sessionKey,
+          afterTurnIndex,
+          IMPORT_SCAN_PAGE_SIZE,
+        );
+        for (const turn of turns) {
+          const user = truncate(turn.user);
+          const assistant = truncate(turn.assistant);
+          if (!user || !assistant) continue;
+          const sourceTurnId = `${session.sessionKey}:${turn.turnIndex}`;
+          candidates.push({
+            sessionKey: session.sessionKey,
+            turnIndex: turn.turnIndex,
+            startedAt: turn.startedAt,
+            endedAt: turn.endedAt,
             user,
             assistant,
-          }),
-        });
+            sourceTurnId,
+            fingerprint: importTurnFingerprint({
+              source: session.source,
+              sessionId: session.sessionKey,
+              turnIndex: turn.turnIndex,
+              user,
+              assistant,
+            }),
+          });
+        }
+        if (turns.length < IMPORT_SCAN_PAGE_SIZE) break;
+        afterTurnIndex = turns.at(-1)!.turnIndex;
+        await new Promise<void>((resolve) => setImmediate(resolve));
       }
     }
     return candidates;
@@ -1043,10 +1054,9 @@ export class OpenVikingWorkspaceCredentialStore implements OpenVikingCredentialS
 export function deterministicImportSessionId(
   workspaceId: string,
   sessionKey: string,
-  chunkAnchor?: string,
 ): string {
   return `agentrecall_${createHash("sha256")
-    .update(`${workspaceId}\0${sessionKey}${chunkAnchor ? `\0${chunkAnchor}` : ""}`, "utf8")
+    .update(`${workspaceId}\0${sessionKey}`, "utf8")
     .digest("hex")
     .slice(0, 32)}`;
 }
@@ -1074,9 +1084,38 @@ function importTaskTurn(candidate: ImportCandidate): OpenVikingImportTaskTurn {
     fingerprint: candidate.fingerprint,
     user: candidate.user,
     assistant: candidate.assistant,
-    ...(candidate.detail.startedAt ? { startedAt: candidate.detail.startedAt } : {}),
-    ...(candidate.detail.endedAt ? { endedAt: candidate.detail.endedAt } : {}),
+    ...(candidate.startedAt ? { startedAt: candidate.startedAt } : {}),
+    ...(candidate.endedAt ? { endedAt: candidate.endedAt } : {}),
   };
+}
+
+function buildImportTaskChunks(
+  candidates: ImportCandidate[],
+  importedCandidates: ReadonlySet<string>,
+): ImportCandidate[][] {
+  const chunks: ImportCandidate[][] = [];
+  let chunk: ImportCandidate[] = [];
+  let chunkBytes = 0;
+  for (const candidate of candidates) {
+    if (importedCandidates.has(
+      importedTurnCheckpointKey(candidate.sourceTurnId, candidate.fingerprint),
+    )) continue;
+    const candidateBytes = Buffer.byteLength(candidate.user, "utf8")
+      + Buffer.byteLength(candidate.assistant, "utf8");
+    if (
+      chunk.length > 0
+      && (chunk.length >= IMPORT_TASK_MAX_TURNS
+        || chunkBytes + candidateBytes > IMPORT_TASK_MAX_BYTES)
+    ) {
+      chunks.push(chunk);
+      chunk = [];
+      chunkBytes = 0;
+    }
+    chunk.push(candidate);
+    chunkBytes += candidateBytes;
+  }
+  if (chunk.length > 0) chunks.push(chunk);
+  return chunks;
 }
 
 export async function resolveDirectoryIdentity(

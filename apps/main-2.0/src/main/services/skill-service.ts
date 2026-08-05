@@ -58,7 +58,7 @@ import {
   type SkillVersionBasePayload,
 } from "../../core/skill-sync";
 import {
-  listSkillUsageSources,
+  listSkillUsageSourcesAsync,
   readSkillUsageSourceEventsAsync,
   usageForSkill,
   type SkillUsageEvent,
@@ -208,7 +208,7 @@ export interface SkillServiceOperations {
   listInstalledSkills: typeof listInstalledSkills;
   skillProjectDirsFromIndexedProjects: typeof skillProjectDirsFromIndexedProjects;
   usageForSkill: typeof usageForSkill;
-  listSkillUsageSources: typeof listSkillUsageSources;
+  listSkillUsageSources: typeof listSkillUsageSourcesAsync;
   readSkillUsageSourceEvents: typeof readSkillUsageSourceEventsAsync;
   isSyncableSkill: typeof isSyncableSkill;
   portableSkillLocation: typeof portableSkillLocation;
@@ -255,7 +255,7 @@ const defaultOperations: SkillServiceOperations = {
   listInstalledSkills,
   skillProjectDirsFromIndexedProjects,
   usageForSkill,
-  listSkillUsageSources,
+  listSkillUsageSources: listSkillUsageSourcesAsync,
   readSkillUsageSourceEvents: readSkillUsageSourceEventsAsync,
   isSyncableSkill,
   portableSkillLocation,
@@ -290,6 +290,7 @@ export class SkillService {
   private importCandidatesCache: InstalledSkillsSnapshot | null = null;
   private initialUsageTimer: ReturnType<typeof setTimeout> | null = null;
   private autoUsageTimer: ReturnType<typeof setInterval> | null = null;
+  private usageRefreshPromise: Promise<SkillUsageRefreshStatus> | null = null;
 
   constructor(private readonly dependencies: SkillServiceDependencies) {
     this.operations = { ...defaultOperations, ...dependencies.operations };
@@ -404,9 +405,19 @@ export class SkillService {
   }
 
   async refreshUsage(): Promise<SkillUsageRefreshStatus> {
+    if (this.usageRefreshPromise) return this.usageRefreshPromise;
+    const request = this.performUsageRefresh();
+    this.usageRefreshPromise = request;
+    void request.finally(() => {
+      if (this.usageRefreshPromise === request) this.usageRefreshPromise = null;
+    }).catch(() => undefined);
+    return request;
+  }
+
+  private async performUsageRefresh(): Promise<SkillUsageRefreshStatus> {
     const store = this.dependencies.getStore();
     const settings = this.dependencies.getSettings();
-    const sources = this.operations.listSkillUsageSources({
+    const sources = await this.operations.listSkillUsageSources({
       homeDir: this.dependencies.homeDir,
       includeTclaude: settings.includeTclaude,
       includeTcodex: settings.includeTcodex,

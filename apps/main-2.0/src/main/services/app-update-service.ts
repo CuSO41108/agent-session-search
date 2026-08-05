@@ -9,6 +9,7 @@ import type {
   AppUpdateProgress,
   AppUpdateStatus,
 } from "../../core/app-update-types";
+import { INITIAL_APP_UPDATE_CHECK_DELAY_MS } from "../../core/refresh-policy";
 
 export interface StagedAppUpdate {
   version: string;
@@ -187,7 +188,7 @@ export class AppUpdateService {
   scheduleInitialCheck(): void {
     if (!this.dependencies.releaseRuntime) return;
     if (!this.dependencies.getAutoCheckEnabled() || this.dependencies.autoCheckDisabled()) return;
-    this.dependencies.schedule(() => void this.getStatus(false), 1_000);
+    this.dependencies.schedule(() => void this.getStatus(false), INITIAL_APP_UPDATE_CHECK_DELAY_MS);
   }
 
   async showPreviousUpdateResult(): Promise<void> {

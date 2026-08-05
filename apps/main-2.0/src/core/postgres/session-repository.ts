@@ -467,7 +467,7 @@ async function insertRawEvents(
           payload jsonb
         )
       `,
-      [sessionKey, JSON.stringify(batch.map((event) => ({
+      [sessionKey, JSON.stringify(batch.map((event) => postgresJsonValue({
         event_index: event.eventIndex,
         event_id: event.eventId,
         kind: event.kind,

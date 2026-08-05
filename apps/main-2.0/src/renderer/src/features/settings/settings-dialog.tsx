@@ -110,7 +110,7 @@ function updateProgressLabel(progress: AppUpdateProgress, language: LanguageMode
 export function SettingsDialog({
   platform,
   initialSection,
-  settings,
+  settings: persistedSettings,
   runtimeChannels,
   appUpdateStatus,
   appUpdateProgress,
@@ -122,14 +122,12 @@ export function SettingsDialog({
   theme,
   language,
   feedback,
-  onSettingsChange,
+  onSettingsChange: persistSettings,
   onCheckAppUpdate,
   onInstallAppUpdate,
   onSkipAppUpdate,
   onThemeChange,
   onLanguageChange,
-  onDefaultTerminalChange,
-  onGlobalShortcutChange,
   sessionHookStatus,
   sessionHookBusy,
   onSessionHookChange,
@@ -156,14 +154,12 @@ export function SettingsDialog({
   theme: ThemeMode;
   language: LanguageMode;
   feedback: SettingsFeedback;
-  onSettingsChange: (settings: AppSettingsUpdate) => void;
+  onSettingsChange: (settings: AppSettingsUpdate) => Promise<void>;
   onCheckAppUpdate: () => void;
   onInstallAppUpdate: () => void;
   onSkipAppUpdate: (untilNextVersion: boolean) => void;
   onThemeChange: (theme: ThemeMode) => void;
   onLanguageChange: (language: LanguageMode) => void;
-  onDefaultTerminalChange: (terminal: AppSettings["defaultTerminal"]) => void;
-  onGlobalShortcutChange: (shortcut: AppSettings["globalShortcut"]) => void;
   sessionHookStatus: SessionSyncHookStatus | null;
   sessionHookBusy: boolean;
   onSessionHookChange: (enabled: boolean) => void;
@@ -176,9 +172,31 @@ export function SettingsDialog({
   onOpenRemoteSessions: () => void;
   onClose: () => void;
 }): ReactElement {
+  const [pendingSettings, setPendingSettings] = useState<AppSettingsUpdate>({});
+  const settings = persistedSettings ? { ...persistedSettings, ...pendingSettings } as AppSettings : null;
   const defaultTerminal = settings?.defaultTerminal ?? (platform === "win32" ? "WindowsTerminal" : "Terminal");
   const globalShortcut = settings?.globalShortcut ?? (platform === "win32" ? "Ctrl+Alt+Space" : "Alt+Space");
-  const saving = feedback?.kind === "running";
+  const hasPendingSetting = (...keys: Array<keyof AppSettingsUpdate>): boolean =>
+    keys.some((key) => Object.prototype.hasOwnProperty.call(pendingSettings, key));
+  const saveSettings = async (next: AppSettingsUpdate): Promise<void> => {
+    const keys = Object.keys(next) as Array<keyof AppSettingsUpdate>;
+    setPendingSettings((current) => ({ ...current, ...next }));
+    try {
+      await persistSettings(next);
+    } finally {
+      setPendingSettings((current) => {
+        const updated = { ...current } as Record<string, unknown>;
+        const submitted = next as Record<string, unknown>;
+        for (const key of keys) {
+          if (updated[key] === submitted[key]) delete updated[key];
+        }
+        return updated as AppSettingsUpdate;
+      });
+    }
+  };
+  const onSettingsChange = (next: AppSettingsUpdate): void => {
+    void saveSettings(next);
+  };
   const [summaryBatch, setSummaryBatch] = useState<{ running: boolean; message: string | null }>({ running: false, message: null });
   const [mcpEnabled, setMcpEnabled] = useState<boolean | null>(null);
   const [mcpBusy, setMcpBusy] = useState(false);
@@ -367,8 +385,8 @@ export function SettingsDialog({
                   <select
                     id="default-terminal"
                     value={defaultTerminal}
-                    disabled={!settings || saving}
-                    onChange={(event) => onDefaultTerminalChange(event.target.value as AppSettings["defaultTerminal"])}
+                    disabled={!settings || hasPendingSetting("defaultTerminal")}
+                    onChange={(event) => void saveSettings({ defaultTerminal: event.target.value as AppSettings["defaultTerminal"] })}
                   >
                     {terminalSelectOptions(platform).map((option) => (
                       <option key={option.value} value={option.value}>
@@ -393,8 +411,8 @@ export function SettingsDialog({
                   <select
                     id="global-shortcut"
                     value={globalShortcut}
-                    disabled={!settings || saving}
-                    onChange={(event) => onGlobalShortcutChange(event.target.value as AppSettings["globalShortcut"])}
+                    disabled={!settings || hasPendingSetting("globalShortcut")}
+                    onChange={(event) => void saveSettings({ globalShortcut: event.target.value as AppSettings["globalShortcut"] })}
                   >
                     {globalShortcutOptions(platform).map((option) => (
                       <option key={option.label} value={option.value}>
@@ -538,7 +556,7 @@ export function SettingsDialog({
                     type="checkbox"
                     className="switch"
                     checked={Boolean(settings?.includeCodeWizCli)}
-                    disabled={!settings || saving}
+                    disabled={!settings}
                     onChange={(event) => onSettingsChange({ includeCodeWizCli: event.currentTarget.checked })}
                   />
                 </label>
@@ -551,7 +569,7 @@ export function SettingsDialog({
                     type="checkbox"
                     className="switch"
                     checked={Boolean(settings?.includeTclaude)}
-                    disabled={!settings || saving}
+                    disabled={!settings}
                     onChange={(event) => onSettingsChange({ includeTclaude: event.currentTarget.checked })}
                   />
                 </label>
@@ -564,7 +582,7 @@ export function SettingsDialog({
                     type="checkbox"
                     className="switch"
                     checked={Boolean(settings?.includeTcodex)}
-                    disabled={!settings || saving}
+                    disabled={!settings}
                     onChange={(event) => onSettingsChange({ includeTcodex: event.currentTarget.checked })}
                   />
                 </label>
@@ -577,7 +595,7 @@ export function SettingsDialog({
                     type="checkbox"
                     className="switch"
                     checked={Boolean(settings?.includeCodeBuddyCli)}
-                    disabled={!settings || saving}
+                    disabled={!settings}
                     onChange={(event) => onSettingsChange({ includeCodeBuddyCli: event.currentTarget.checked })}
                   />
                 </label>
@@ -590,7 +608,7 @@ export function SettingsDialog({
                     type="checkbox"
                     className="switch"
                     checked={Boolean(settings?.includeOpenClaw)}
-                    disabled={!settings || saving}
+                    disabled={!settings}
                     onChange={(event) => onSettingsChange({ includeOpenClaw: event.currentTarget.checked })}
                   />
                 </label>
@@ -603,7 +621,7 @@ export function SettingsDialog({
                     type="checkbox"
                     className="switch"
                     checked={Boolean(settings?.includeHermes)}
-                    disabled={!settings || saving}
+                    disabled={!settings}
                     onChange={(event) => onSettingsChange({ includeHermes: event.currentTarget.checked })}
                   />
                 </label>
@@ -616,7 +634,7 @@ export function SettingsDialog({
                     type="checkbox"
                     className="switch"
                     checked={Boolean(settings?.includeOpenCode)}
-                    disabled={!settings || saving}
+                    disabled={!settings}
                     onChange={(event) => onSettingsChange({ includeOpenCode: event.currentTarget.checked })}
                   />
                 </label>
@@ -631,7 +649,7 @@ export function SettingsDialog({
                     type="checkbox"
                     className="switch"
                     checked={Boolean(settings?.includeZcode)}
-                    disabled={!settings || saving}
+                    disabled={!settings}
                     onChange={(event) => onSettingsChange({ includeZcode: event.currentTarget.checked })}
                   />
                 </label>
@@ -646,7 +664,7 @@ export function SettingsDialog({
                     type="checkbox"
                     className="switch"
                     checked={Boolean(settings?.includePi)}
-                    disabled={!settings || saving}
+                    disabled={!settings}
                     onChange={(event) => onSettingsChange({ includePi: event.currentTarget.checked })}
                   />
                 </label>
@@ -659,7 +677,7 @@ export function SettingsDialog({
                     type="checkbox"
                     className="switch"
                     checked={Boolean(settings?.includeCursorAgent)}
-                    disabled={!settings || saving}
+                    disabled={!settings}
                     onChange={(event) => onSettingsChange({ includeCursorAgent: event.currentTarget.checked })}
                   />
                 </label>
@@ -672,7 +690,7 @@ export function SettingsDialog({
                     type="checkbox"
                     className="switch"
                     checked={Boolean(settings?.includeTrae)}
-                    disabled={!settings || saving}
+                    disabled={!settings}
                     onChange={(event) => onSettingsChange({ includeTrae: event.currentTarget.checked })}
                   />
                 </label>
@@ -685,7 +703,7 @@ export function SettingsDialog({
                     type="checkbox"
                     className="switch"
                     checked={Boolean(settings?.includeQoder)}
-                    disabled={!settings || saving}
+                    disabled={!settings}
                     onChange={(event) => onSettingsChange({ includeQoder: event.currentTarget.checked })}
                   />
                 </label>
@@ -706,7 +724,7 @@ export function SettingsDialog({
                     type="checkbox"
                     className="switch"
                     checked={Boolean(settings?.hideCodexQuota)}
-                    disabled={!settings || saving}
+                    disabled={!settings}
                     onChange={(event) => onSettingsChange({ hideCodexQuota: event.currentTarget.checked })}
                   />
                 </label>
@@ -719,7 +737,7 @@ export function SettingsDialog({
                     type="checkbox"
                     className="switch"
                     checked={Boolean(settings?.hideClaudeQuota)}
-                    disabled={!settings || saving}
+                    disabled={!settings}
                     onChange={(event) => onSettingsChange({ hideClaudeQuota: event.currentTarget.checked })}
                   />
                 </label>
@@ -750,7 +768,7 @@ export function SettingsDialog({
                     type="checkbox"
                     className="switch"
                     checked={Boolean(settings?.summaryAutoBackfill)}
-                    disabled={!settings || saving}
+                    disabled={!settings}
                     onChange={(event) => onSettingsChange({ summaryAutoBackfill: event.currentTarget.checked })}
                   />
                 </label>
@@ -765,7 +783,7 @@ export function SettingsDialog({
                     max={3650}
                     className="settings-number"
                     value={settings?.summaryMaxAgeDays ?? 30}
-                    disabled={!settings || saving}
+                    disabled={!settings}
                     onChange={(event) => onSettingsChange({ summaryMaxAgeDays: Number(event.currentTarget.value) })}
                   />
                 </label>
@@ -780,7 +798,7 @@ export function SettingsDialog({
                     max={32}
                     className="settings-number"
                     value={settings?.compressionConcurrency ?? 8}
-                    disabled={!settings || saving}
+                    disabled={!settings}
                     onChange={(event) => onSettingsChange({ compressionConcurrency: Number(event.currentTarget.value) })}
                   />
                 </label>
@@ -796,7 +814,7 @@ export function SettingsDialog({
                     step={10}
                     className="settings-number"
                     value={(settings?.migrationCompleteTokenLimit ?? 100_000) / 1_000}
-                    disabled={!settings || saving}
+                    disabled={!settings}
                     onChange={(event) => onSettingsChange({
                       migrationCompleteTokenLimit: Number(event.currentTarget.value) * 1_000,
                     })}
@@ -860,7 +878,7 @@ export function SettingsDialog({
               <OpenVikingMemorySettings
                 language={language}
                 settings={settings}
-                saving={saving}
+                saving={hasPendingSetting("openVikingMemoryEnabled", "openVikingClaudeEnabled", "openVikingCodexEnabled", "openVikingOpenCodeEnabled")}
                 onSettingsChange={onSettingsChange}
               />
             ) : null}
@@ -868,7 +886,7 @@ export function SettingsDialog({
               <EvalSettings
                 language={language}
                 settings={settings}
-                saving={saving}
+                saving={hasPendingSetting("evalEnabled")}
                 onSettingsChange={onSettingsChange}
               />
             ) : null}
@@ -885,7 +903,7 @@ export function SettingsDialog({
                     </p>
                   </div>
                   {settings?.remoteSyncEnabled ? (
-                    <button type="button" className="settings-action-button" onClick={onOpenRemoteSessions}>
+                    <button type="button" className="settings-action-button" disabled={hasPendingSetting("remoteSyncEnabled", "remoteSyncSupabaseUrl", "remoteSyncSupabaseAnonKey")} onClick={onOpenRemoteSessions}>
                       {l("Session sync", "会话同步")}
                     </button>
                   ) : null}
@@ -904,7 +922,7 @@ export function SettingsDialog({
                     type="checkbox"
                     className="switch"
                     checked={Boolean(settings?.remoteSyncEnabled)}
-                    disabled={!settings || saving}
+                    disabled={!settings}
                     onChange={(event) => onSettingsChange({ remoteSyncEnabled: event.currentTarget.checked })}
                   />
                 </label>
@@ -915,12 +933,12 @@ export function SettingsDialog({
                         <span className="settings-field-title">Supabase URL</span>
                         <span className="settings-field-sub">https://your-project.supabase.co</span>
                       </div>
-                      <input
+                      <SettingsTextInput
                         type="text"
                         value={settings.remoteSyncSupabaseUrl}
-                        disabled={saving}
+                        disabled={hasPendingSetting("remoteSyncSupabaseUrl")}
                         placeholder="https://your-project.supabase.co"
-                        onChange={(event) => onSettingsChange({ remoteSyncSupabaseUrl: event.currentTarget.value })}
+                        onCommit={(value) => onSettingsChange({ remoteSyncSupabaseUrl: value })}
                       />
                     </label>
                     <label className="settings-field remote-sync-field">
@@ -928,12 +946,12 @@ export function SettingsDialog({
                         <span className="settings-field-title">anon key</span>
                         <span className="settings-field-sub">{l("Stored locally. Do not commit this value to the repository.", "保存在本地，请不要提交到仓库。")}</span>
                       </div>
-                      <input
+                      <SettingsTextInput
                         type="password"
                         value={settings.remoteSyncSupabaseAnonKey}
-                        disabled={saving}
+                        disabled={hasPendingSetting("remoteSyncSupabaseAnonKey")}
                         placeholder="eyJhbGciOi..."
-                        onChange={(event) => onSettingsChange({ remoteSyncSupabaseAnonKey: event.currentTarget.value })}
+                        onCommit={(value) => onSettingsChange({ remoteSyncSupabaseAnonKey: value })}
                       />
                     </label>
                     <label className="settings-field settings-toggle">
@@ -950,7 +968,7 @@ export function SettingsDialog({
                         type="checkbox"
                         className="switch"
                         checked={settings.syncSessionAttachments !== false}
-                        disabled={saving}
+                        disabled={hasPendingSetting("syncSessionAttachments")}
                         onChange={(event) => onSettingsChange({ syncSessionAttachments: event.currentTarget.checked })}
                       />
                     </label>
@@ -975,7 +993,7 @@ export function SettingsDialog({
                       <button
                         type="button"
                         className={`settings-action-button${sessionHookStatus?.installed ? " danger" : ""}`}
-                        disabled={sessionHookBusy || saving || !settings.remoteSyncSupabaseUrl || !settings.remoteSyncSupabaseAnonKey}
+                        disabled={sessionHookBusy || hasPendingSetting("remoteSyncEnabled", "remoteSyncSupabaseUrl", "remoteSyncSupabaseAnonKey") || !settings.remoteSyncSupabaseUrl || !settings.remoteSyncSupabaseAnonKey}
                         onClick={() => onSessionHookChange(!sessionHookStatus?.installed)}
                       >
                         {sessionHookBusy
@@ -1008,7 +1026,7 @@ export function SettingsDialog({
                   </div>
                   <select
                     value={settings?.skillAiRuntimeId ?? ""}
-                    disabled={!settings || saving}
+                    disabled={!settings}
                     onChange={(event) => onSettingsChange({ skillAiRuntimeId: event.currentTarget.value })}
                   >
                     <option value="">{l("Automatic (first available)", "自动（第一个可用 Runtime）")}</option>
@@ -1035,12 +1053,12 @@ export function SettingsDialog({
                     <span className="settings-field-title">Supabase URL</span>
                     <span className="settings-field-sub">https://your-project.supabase.co</span>
                   </div>
-                  <input
+                  <SettingsTextInput
                     type="text"
                     value={settings?.skillSyncSupabaseUrl ?? ""}
-                    disabled={!settings || saving}
+                    disabled={!settings || hasPendingSetting("skillSyncSupabaseUrl")}
                     placeholder="https://your-project.supabase.co"
-                    onChange={(event) => onSettingsChange({ skillSyncSupabaseUrl: event.currentTarget.value })}
+                    onCommit={(value) => onSettingsChange({ skillSyncSupabaseUrl: value })}
                   />
                 </label>
                 <label className="settings-field skills-sync-field">
@@ -1048,12 +1066,12 @@ export function SettingsDialog({
                     <span className="settings-field-title">anon key</span>
                     <span className="settings-field-sub">{l("Stored locally and used only for the skills sync table.", "保存在本地，仅用于 Skills 同步表。")}</span>
                   </div>
-                  <input
+                  <SettingsTextInput
                     type="password"
                     value={settings?.skillSyncSupabaseAnonKey ?? ""}
-                    disabled={!settings || saving}
+                    disabled={!settings || hasPendingSetting("skillSyncSupabaseAnonKey")}
                     placeholder="eyJhbGciOi..."
-                    onChange={(event) => onSettingsChange({ skillSyncSupabaseAnonKey: event.currentTarget.value })}
+                    onCommit={(value) => onSettingsChange({ skillSyncSupabaseAnonKey: value })}
                   />
                 </label>
                 <SupabaseSetupGuide
@@ -1078,7 +1096,7 @@ export function SettingsDialog({
                     type="checkbox"
                     className="switch"
                     checked={Boolean(settings?.skillSyncEnabled)}
-                    disabled={!settings || saving}
+                    disabled={!settings}
                     onChange={(event) => onSettingsChange({ skillSyncEnabled: event.currentTarget.checked })}
                   />
                 </label>
@@ -1102,7 +1120,7 @@ export function SettingsDialog({
                     type="checkbox"
                     className="switch"
                     checked={Boolean(settings?.rulesSyncEnabled)}
-                    disabled={!settings || saving}
+                    disabled={!settings}
                     onChange={(event) => onSettingsChange({ rulesSyncEnabled: event.currentTarget.checked })}
                   />
                 </label>
@@ -1126,7 +1144,7 @@ export function SettingsDialog({
                     type="checkbox"
                     className="switch"
                     checked={Boolean(settings?.memoriesSyncEnabled)}
-                    disabled={!settings || saving}
+                    disabled={!settings}
                     onChange={(event) => onSettingsChange({ memoriesSyncEnabled: event.currentTarget.checked })}
                   />
                 </label>
@@ -1185,7 +1203,7 @@ export function SettingsDialog({
                       type="checkbox"
                       className="switch"
                       checked={settings?.showInDock !== false}
-                      disabled={!settings || saving}
+                    disabled={!settings}
                       onChange={(event) => onSettingsChange({ showInDock: event.currentTarget.checked })}
                     />
                   </label>
@@ -1317,7 +1335,7 @@ export function SettingsDialog({
                       type="checkbox"
                       className="switch"
                       checked={Boolean(settings?.autoCheckUpdates)}
-                      disabled={!settings || saving}
+                    disabled={!settings}
                       onChange={(event) => onSettingsChange({ autoCheckUpdates: event.currentTarget.checked })}
                     />
                   </label>
@@ -1331,5 +1349,59 @@ export function SettingsDialog({
         </div>
       </section>
     </div>
+  );
+}
+
+function SettingsTextInput({
+  type,
+  value,
+  disabled,
+  placeholder,
+  onCommit,
+}: {
+  type: "text" | "password";
+  value: string;
+  disabled: boolean;
+  placeholder: string;
+  onCommit: (value: string) => void;
+}): ReactElement {
+  const [draft, setDraft] = useState(value);
+  const focusedRef = useRef(false);
+  const cancelledRef = useRef(false);
+
+  useEffect(() => {
+    if (!focusedRef.current) setDraft(value);
+  }, [value]);
+
+  const commit = (): void => {
+    focusedRef.current = false;
+    if (cancelledRef.current) {
+      cancelledRef.current = false;
+      return;
+    }
+    if (draft !== value) onCommit(draft);
+  };
+
+  return (
+    <input
+      type={type}
+      value={draft}
+      disabled={disabled}
+      placeholder={placeholder}
+      onFocus={() => {
+        focusedRef.current = true;
+        cancelledRef.current = false;
+      }}
+      onChange={(event) => setDraft(event.currentTarget.value)}
+      onBlur={commit}
+      onKeyDown={(event) => {
+        if (event.key === "Enter") event.currentTarget.blur();
+        if (event.key === "Escape") {
+          cancelledRef.current = true;
+          setDraft(value);
+          event.currentTarget.blur();
+        }
+      }}
+    />
   );
 }

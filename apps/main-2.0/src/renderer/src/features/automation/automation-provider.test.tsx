@@ -1,11 +1,15 @@
 // @vitest-environment happy-dom
 
-import { act, type ReactElement } from "react";
+import { act, useEffect, type ReactElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_SNAPSHOT } from "../../../../automation/engine/renderer/src/app/app-state";
 import type { AppSnapshot } from "../../../../automation/contracts";
-import type { WorkflowSidebarSnapshot } from "../../../../shared/ipc/automation";
+import {
+  AUTOMATION_CHANGE_PROTOCOL_VERSION,
+  type AutomationChange,
+  type WorkflowSidebarSnapshot,
+} from "../../../../shared/ipc/automation";
 import { AutomationProvider, useAutomation } from "./automation-provider";
 
 function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void; reject: (reason: unknown) => void } {
@@ -15,8 +19,23 @@ function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void; reje
   return { promise, resolve, reject };
 }
 
-function Observer(): ReactElement {
-  const { snapshot, workflowSidebar, workflowSidebarLoading, detailsLoaded, loading, error } = useAutomation();
+function automationChange(sequence: number): AutomationChange {
+  return {
+    protocolVersion: AUTOMATION_CHANGE_PROTOCOL_VERSION,
+    sequence,
+    detectedAt: sequence,
+    domain: "workflow",
+    entityId: "workflow-state",
+    operation: "patch",
+    payload: {},
+  };
+}
+
+function Observer({ loadDetails = false }: { loadDetails?: boolean }): ReactElement {
+  const { snapshot, workflowSidebar, workflowSidebarLoading, detailsLoaded, loading, error, ensureDetailsLoaded } = useAutomation();
+  useEffect(() => {
+    if (loadDetails) void ensureDetailsLoaded().catch(() => undefined);
+  }, [ensureDetailsLoaded, loadDetails]);
   const visibleWorkflows = detailsLoaded ? snapshot.workflowStore.workflows : workflowSidebar.workflows;
   return (
     <div
@@ -46,7 +65,7 @@ describe("AutomationProvider progressive Workflow loading", () => {
     container.remove();
   });
 
-  it("requests full details only after sidebar summaries settle", async () => {
+  it("keeps full details deferred until a feature requests them", async () => {
     const sidebar = deferred<WorkflowSidebarSnapshot>();
     const snapshot = deferred<AppSnapshot>();
     const api = {
@@ -88,6 +107,13 @@ describe("AutomationProvider progressive Workflow loading", () => {
 
     expect(container.textContent).toContain("Visible first");
     expect(container.firstElementChild?.getAttribute("data-sidebar-loading")).toBe("false");
+    expect(container.firstElementChild?.getAttribute("data-details-loading")).toBe("false");
+    expect(api.getSnapshot).not.toHaveBeenCalled();
+
+    await act(async () => {
+      root.render(<AutomationProvider><Observer loadDetails /></AutomationProvider>);
+    });
+
     expect(container.firstElementChild?.getAttribute("data-details-loading")).toBe("true");
     expect(api.getSnapshot).toHaveBeenCalledOnce();
 
@@ -136,6 +162,9 @@ describe("AutomationProvider progressive Workflow loading", () => {
       await sidebar.promise;
     });
     await act(async () => {
+      root.render(<AutomationProvider><Observer loadDetails /></AutomationProvider>);
+    });
+    await act(async () => {
       snapshot.reject(new Error("details unavailable"));
       await snapshot.promise.catch(() => undefined);
     });
@@ -144,5 +173,46 @@ describe("AutomationProvider progressive Workflow loading", () => {
     expect(container.firstElementChild?.getAttribute("data-details-loaded")).toBe("false");
     expect(container.firstElementChild?.getAttribute("data-details-loading")).toBe("false");
     expect(container.firstElementChild?.getAttribute("data-error")).toBe("details unavailable");
+  });
+
+  it("forces a fresh snapshot after an un-appliable change during detail loading", async () => {
+    const firstSnapshot = deferred<AppSnapshot>();
+    let changeListener: ((change: AutomationChange) => void) | undefined;
+    const getSnapshot = vi.fn<() => Promise<AppSnapshot>>()
+      .mockReturnValueOnce(firstSnapshot.promise)
+      .mockResolvedValue(DEFAULT_SNAPSHOT);
+    const api = {
+      getWorkflowSidebar: vi.fn(async () => ({ workflows: [] })),
+      getSnapshot,
+      getHealth: vi.fn(async () => ({ state: "initializing" as const })),
+      onSnapshot: vi.fn(() => () => undefined),
+      onChange: vi.fn((listener: (change: AutomationChange) => void) => {
+        changeListener = listener;
+        return () => undefined;
+      }),
+    };
+    Object.defineProperty(window, "sessionSearch", {
+      configurable: true,
+      value: { automation: api },
+    });
+
+    await act(async () => {
+      root.render(<AutomationProvider><Observer loadDetails /></AutomationProvider>);
+    });
+    expect(getSnapshot).toHaveBeenCalledOnce();
+
+    act(() => {
+      changeListener?.(automationChange(1));
+      changeListener?.(automationChange(3));
+    });
+    expect(getSnapshot).toHaveBeenCalledOnce();
+
+    await act(async () => {
+      firstSnapshot.resolve(DEFAULT_SNAPSHOT);
+      await firstSnapshot.promise;
+      await Promise.resolve();
+    });
+
+    expect(getSnapshot).toHaveBeenCalledTimes(2);
   });
 });

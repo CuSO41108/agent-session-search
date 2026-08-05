@@ -192,6 +192,27 @@ describe("session bulk delete UI", () => {
     await act(async () => buttonByText(container, "关闭").click());
     expect(onCancel).toHaveBeenCalledTimes(1);
   });
+
+  it("lets a running bulk deletion continue in the background", async () => {
+    const onCancel = vi.fn();
+    await act(async () => root.render(createElement(BulkDeleteDialog, {
+      mode: "selection",
+      preview: { requestedCount: 2, matchedCount: 2, expandedCount: 2, deletableCount: 2, sourceCounts: [], skipped: [] },
+      dateValue: "",
+      favoriteCount: 0,
+      busy: true,
+      language: "zh",
+      onDateChange: vi.fn(),
+      onPreview: vi.fn(),
+      onConfirm: vi.fn(),
+      onCancel,
+    })));
+
+    const backgroundButton = buttonByText(container, "转到后台");
+    expect(backgroundButton.disabled).toBe(false);
+    await act(async () => backgroundButton.click());
+    expect(onCancel).toHaveBeenCalledOnce();
+  });
 });
 
 function buttonByText(container: HTMLElement, text: string): HTMLButtonElement {

@@ -68,6 +68,7 @@ function createService(): RemoteSessionsIpcService {
     })),
     upload: vi.fn(async () => ({ status: "uploaded" as const, remoteSession: {} as never })),
     list: vi.fn(async () => []),
+    loadSyncSnapshot: vi.fn(async () => ({ status: { kind: "ready" as const, setupSql: "select 1" }, items: [] })),
     listSyncItems: vi.fn(async () => []),
     getDetail: vi.fn(async () => ({} as RemoteSessionDetailSnapshot)),
     previewAttachment: vi.fn(async () => ({ kind: "image" as const, data: "data:image/png;base64,eA==" })),
@@ -111,6 +112,7 @@ describe("Remote sessions IPC", () => {
     await handlers.get(REMOTE_SESSIONS_IPC.upload.channel)?.(event, "session-key", true);
     await handlers.get(REMOTE_SESSIONS_IPC.list.channel)?.(event);
     await handlers.get(REMOTE_SESSIONS_IPC.list.channel)?.(event, " query ");
+    await handlers.get(REMOTE_SESSIONS_IPC.loadSyncSnapshot.channel)?.(event);
     await handlers.get(REMOTE_SESSIONS_IPC.listSyncItems.channel)?.(event);
     await handlers.get(REMOTE_SESSIONS_IPC.getDetail.channel)?.(event, " remote-1 ");
     await handlers.get(REMOTE_SESSIONS_IPC.previewAttachment.channel)?.(
@@ -195,6 +197,7 @@ describe("Remote sessions IPC", () => {
     await api.uploadRemoteSession("session-2", true);
     await api.listRemoteSessions();
     await api.listRemoteSessions("query");
+    await api.loadRemoteSessionSyncSnapshot();
     await api.listSessionSyncItems();
     await api.getRemoteSessionDetail("remote-1");
     await api.chooseRemoteRestoreProject();
@@ -213,6 +216,7 @@ describe("Remote sessions IPC", () => {
       [REMOTE_SESSIONS_IPC.upload.channel, "session-2", true],
       [REMOTE_SESSIONS_IPC.list.channel, undefined],
       [REMOTE_SESSIONS_IPC.list.channel, "query"],
+      [REMOTE_SESSIONS_IPC.loadSyncSnapshot.channel],
       [REMOTE_SESSIONS_IPC.listSyncItems.channel],
       [REMOTE_SESSIONS_IPC.getDetail.channel, "remote-1"],
       [REMOTE_SESSIONS_IPC.chooseProject.channel],

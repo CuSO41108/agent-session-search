@@ -33,9 +33,11 @@ describe("index progress publisher", () => {
     expect(published).toEqual([0, 10, 10]);
   });
 
-  it("re-prunes disabled optional sources after every serialized index run", () => {
+  it("prunes disabled optional sources inside the serialized background worker", () => {
     const source = readFileSync(new URL("./index.ts", import.meta.url), "utf8");
 
-    expect(source).toContain("afterRun: () => pruneDisabledOptionalSources(getSettings()),");
+    expect(source).toContain("disabledSources: disabledOptionalSources(settings),");
+    expect(source).toContain('ipcMain.handle("sources:settle-disabled"');
+    expect(source).not.toContain("afterRun: () => pruneDisabledOptionalSources");
   });
 });

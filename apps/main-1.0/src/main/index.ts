@@ -15,7 +15,7 @@ import {
   type MenuItemConstructorOptions,
 } from "electron";
 import Store from "electron-store";
-import { cpSync, existsSync } from "node:fs";
+import { existsSync } from "node:fs";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -29,10 +29,9 @@ import {
   type CodexRequestExport,
   type CodexRequestFidelity,
 } from "../core/codex-request-export";
-import { indexMigratedSessionFile, syncDefaultSessionsInBatches, type IndexStatus } from "../core/indexer";
+import { indexMigratedSessionFile, type IndexStatus } from "../core/indexer";
 import { createIndexRunCoordinator } from "../core/index-run-coordinator";
 import { createIndexProgressPublisher } from "./index-progress";
-import { createSessionIndexFailureLogger } from "./session-index-failure-log";
 import {
   formatSessionJson,
   formatSessionMarkdown,
@@ -92,8 +91,19 @@ import { buildCombinedSupabaseSetupSql, supabaseSqlEditorUrl } from "../core/sup
 import { buildSshArgs, readUserSshConfig } from "../core/ssh-config";
 import { listWslDistributions } from "../core/wsl";
 import { SessionBulkDeleteService } from "./services/session-bulk-delete-service";
+import { LocalSessionIndexService } from "./services/local-session-index-service";
+import { retrySqliteWrite } from "./sqlite-write-retry";
+import type {
+  SessionIndexWorkerInput,
+  SessionIndexWorkerResult,
+} from "./session-index-worker-protocol";
 import { liveSessionDeleteKey, type SessionBulkDeleteRequest } from "../core/session-bulk-delete";
-import { AUTO_INDEX_REFRESH_INTERVAL_MS, INITIAL_INDEX_DELAY_MS } from "../core/refresh-policy";
+import {
+  AUTO_INDEX_REFRESH_INTERVAL_MS,
+  INITIAL_INDEX_DELAY_MS,
+  INITIAL_PROVIDER_RESTORE_DELAY_MS,
+  INITIAL_SESSION_SYNC_QUEUE_START_DELAY_MS,
+} from "../core/refresh-policy";
 import { globalShortcutLabel, normalizeGlobalShortcut } from "../core/shortcuts";
 import {
   canDeleteSessionLocally,
@@ -114,6 +124,7 @@ import { registerMemoriesIpc, type MemoriesIpcService } from "./ipc/memories";
 import { registerDiscoveryIpc, type DiscoveryIpcService } from "./ipc/discovery";
 import { registerRulesIpc, type RulesIpcService } from "./ipc/rules";
 import { registerSkillsIpc } from "./ipc/skills";
+import { bootstrapApplicationPaths } from "./app-path-bootstrap";
 import {
   AppUpdateService,
   InstalledRuntimeMonitor,
@@ -203,39 +214,26 @@ function ensureAgentRecallMcpPreference(): boolean {
   return setup.status();
 }
 
-function migrateLegacyUserData(): void {
-  const target = app.getPath("userData");
-  if (existsSync(target)) return;
-
-  const parent = path.dirname(target);
-  const legacyNames = [
-    ["Agent", "Session", "Search"].join("-"),
-    ["agent", "session", "search"].join("-"),
-  ];
-  for (const legacyName of legacyNames) {
-    const legacy = path.join(parent, legacyName);
-    if (!existsSync(legacy)) continue;
-    try {
-      cpSync(legacy, target, { recursive: true, errorOnExist: false });
-    } catch (error) {
-      console.warn(`Could not migrate existing user data to ${PRODUCT_NAME}:`, error);
-    }
-    return;
-  }
+if (process.env.AGENT_RECALL_USE_MOCK_KEYCHAIN === "1") {
+  app.commandLine.appendSwitch("use-mock-keychain");
 }
-
 app.setName(PRODUCT_NAME);
 app.setAppUserModelId("dev.zszz3.agent-recall");
-migrateLegacyUserData();
+bootstrapApplicationPaths({
+  app,
+  productName: PRODUCT_NAME,
+  legacyProductNames: [
+    ["Agent", "Session", "Search"].join("-"),
+    ["agent", "session", "search"].join("-"),
+  ],
+});
 
 let mainWindow: BrowserWindow | null = null;
 let quickSearchWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
 let store: SessionStore;
 let indexStatus: IndexStatus = { running: false, indexed: 0, skipped: 0, total: 0, lastIndexedAt: null, error: null };
-const indexRunCoordinator = createIndexRunCoordinator<IndexStatus>({
-  afterRun: () => pruneDisabledOptionalSources(getSettings()),
-});
+const indexRunCoordinator = createIndexRunCoordinator<IndexStatus>();
 const indexProgressPublisher = createIndexProgressPublisher(
   (status) => mainWindow?.webContents.send("index-status", status),
   { minIntervalMs: 200 },
@@ -246,6 +244,10 @@ let remoteWatchManager: RemoteWatchManager | null = null;
 let remoteEnvironmentLifecycle: RemoteEnvironmentLifecycle | null = null;
 let wslSessionIndexer: WslSessionIndexer | null = null;
 let quotaService: QuotaService;
+let localSessionIndexService: LocalSessionIndexService | null = null;
+let localSessionWorkerQueue: Promise<void> = Promise.resolve();
+let localSessionWorkersStopping = false;
+let pendingDisabledSourcePrune: { key: string; promise: Promise<void> } | null = null;
 const remoteDetailLoads = new Map<string, Promise<void>>();
 
 const settingsStore = new Store<AppSettings>({
@@ -367,6 +369,7 @@ const skillService = new SkillService({
   getStore: () => store,
   getSettings,
   getHookSetup: loadSkillUsageHookSetup,
+  homeDir: app.getPath("home"),
   copyText: (text) => clipboard.writeText(text),
   revealPath: (targetPath) => revealInFileManager(targetPath),
   now: () => Date.now(),
@@ -517,9 +520,41 @@ function visibleProjectOptions(): { excludeSubagents: boolean } {
   return { excludeSubagents: true };
 }
 
-function pruneDisabledOptionalSources(settings: AppSettings): void {
-  const disabledSources = OPTIONAL_SOURCE_SETTINGS.flatMap((item) => (settings[item.key] ? [] : item.sources));
-  store.deleteSessionsBySource(disabledSources);
+function disabledOptionalSources(settings: AppSettings): SessionSource[] {
+  return OPTIONAL_SOURCE_SETTINGS.flatMap((item) => (settings[item.key] ? [] : item.sources));
+}
+
+function runLocalSessionWorker(
+  input: SessionIndexWorkerInput,
+  handlers: Parameters<LocalSessionIndexService["run"]>[1] = {},
+  onStart?: () => void,
+): Promise<SessionIndexWorkerResult> {
+  const request = localSessionWorkerQueue.then(() => {
+    if (localSessionWorkersStopping) throw new Error("Local session workers are stopping.");
+    onStart?.();
+    localSessionIndexService ??= new LocalSessionIndexService(path.join(__dirname, "session-index-worker.js"));
+    return localSessionIndexService.run(input, handlers);
+  });
+  localSessionWorkerQueue = request.then(() => undefined, () => undefined);
+  return request;
+}
+
+function requestDisabledOptionalSourcePrune(settings: AppSettings): Promise<void> {
+  const sources = disabledOptionalSources(settings);
+  if (sources.length === 0) return Promise.resolve();
+  const key = [...sources].sort().join("\0");
+  if (pendingDisabledSourcePrune?.key === key) return pendingDisabledSourcePrune.promise;
+  const promise = runLocalSessionWorker({
+    type: "prune-sources",
+    dbPath: path.join(app.getPath("userData"), "session-search.sqlite"),
+    userDataPath: app.getPath("userData"),
+    sources,
+  }).then(() => undefined);
+  pendingDisabledSourcePrune = { key, promise };
+  void promise.finally(() => {
+    if (pendingDisabledSourcePrune?.promise === promise) pendingDisabledSourcePrune = null;
+  }).catch(() => undefined);
+  return promise;
 }
 
 function enabledRemoteOptionalSources(settings: AppSettings): SessionSource[] {
@@ -1111,15 +1146,15 @@ function ensureRemoteEnvironmentLifecycle(): RemoteEnvironmentLifecycle {
 function runIndexSync(): Promise<IndexStatus> {
   return indexRunCoordinator.request(() => {
     const settings = getSettings();
-    pruneDisabledOptionalSources(settings);
-    indexStatus = { ...indexStatus, running: true, error: null };
-    indexProgressPublisher.publish(indexStatus, true);
-    const indexFailureLogger = createSessionIndexFailureLogger(app.getPath("userData"));
-
-    return syncDefaultSessionsInBatches(store, {
+    return runLocalSessionWorker({
+      type: "index",
+      dbPath: path.join(app.getPath("userData"), "session-search.sqlite"),
+      userDataPath: app.getPath("userData"),
       batchSize: 50,
       timeBudgetMs: 8,
+      disabledSources: disabledOptionalSources(settings),
       loadOptions: {
+        homeDir: app.getPath("home"),
         includeTclaude: settings.includeTclaude,
         includeTcodex: settings.includeTcodex,
         includeCodeBuddyCli: settings.includeCodeBuddyCli,
@@ -1133,15 +1168,19 @@ function runIndexSync(): Promise<IndexStatus> {
         includeTrae: settings.includeTrae,
         includeQoder: settings.includeQoder,
       },
-      indexFailureLogPath: indexFailureLogger.logPath,
-      logIndexFailure: indexFailureLogger.write,
+    }, {
       onEnvironmentsChanged: emitEnvironmentsUpdated,
       onProgress: (status) => {
         indexStatus = { ...status, lastIndexedAt: indexStatus.lastIndexedAt };
         indexProgressPublisher.publish(indexStatus);
       },
+    }, () => {
+      indexStatus = { ...indexStatus, running: true, error: null };
+      indexProgressPublisher.publish(indexStatus, true);
     })
-      .then((status) => {
+      .then((result) => {
+        if (result.type !== "index") throw new Error("Local session index worker returned an invalid result.");
+        const status = result.status;
         indexStatus = status;
         indexProgressPublisher.publish(indexStatus, true);
         void maybeAutoBackfillSummaries();
@@ -1176,6 +1215,7 @@ const loadCachedLiveSessionSnapshot = createCachedLiveSessionSnapshotLoader({
           (environment, remoteCommand) => environment.kind === "wsl"
             ? runRemoteCommand(environment, remoteCommand, { maxBuffer: 512 * 1024, timeout: 10_000 })
             : sshCommandService.run(environment, remoteCommand, { maxBuffer: 512 * 1024, timeout: 10_000 }),
+          { includePasswordAuthenticated: options?.fresh === true },
         ))
         .then((sessions) => ({ sessions, error: null as string | null }))
         .catch((error) => ({
@@ -1736,8 +1776,13 @@ function registerIpc(): void {
   ipcMain.handle("search:sessions", (_event, options: SearchOptions) => store.searchSessions(visibleSearchOptions(options)));
   ipcMain.handle("search:session-page", (_event, options: SearchOptions) => store.searchSessionPage(visibleSearchOptions(options)));
   ipcMain.handle("session:get", (_event, sessionKey: string) => {
-    store.markOpened(sessionKey);
-    return store.getSession(sessionKey);
+    const session = store.getSession(sessionKey);
+    if (session) {
+      void retrySqliteWrite(() => store.markOpened(sessionKey)).catch((error) => {
+        console.warn("[session-open] Could not update the access time.", error);
+      });
+    }
+    return session;
   });
   ipcMain.handle("session:messages", async (_event, sessionKey: string, offset?: number, limit?: number) => {
     const pageOffset = offset ?? 0;
@@ -1952,10 +1997,10 @@ function registerIpc(): void {
   ipcMain.handle("ssh-config:list-hosts", () => readUserSshConfig());
   ipcMain.handle("wsl:list-distributions", () => listWslDistributions());
   ipcMain.handle("environment:save", (_event, input: EnvironmentUpsertInput) =>
-    ensureRemoteEnvironmentLifecycle().saveEnvironment(input),
+    retrySqliteWrite(() => ensureRemoteEnvironmentLifecycle().saveEnvironment(input)),
   );
   ipcMain.handle("environment:delete", (_event, environmentId: string) =>
-    ensureRemoteEnvironmentLifecycle().deleteEnvironment(environmentId),
+    retrySqliteWrite(() => ensureRemoteEnvironmentLifecycle().deleteEnvironment(environmentId)),
   );
   ipcMain.handle("environment:refresh", (_event, environmentId: string) =>
     ensureRemoteEnvironmentLifecycle().refreshEnvironment(environmentId),
@@ -1966,7 +2011,7 @@ function registerIpc(): void {
     return diagnoseRemoteEnvironment(requireSshEnvironment(environmentId), { runSsh: runSshHealthCommand });
   });
   ipcMain.handle("title:set", (_event, sessionKey: string, title: string | null) =>
-    setSessionCustomTitleAndSyncTerminal(sessionKey, title, {
+    retrySqliteWrite(() => setSessionCustomTitleAndSyncTerminal(sessionKey, title, {
       getSession: (key) => store.getSession(key),
       setCustomTitle: (key, customTitle) => store.setCustomTitle(key, customTitle),
       loadLiveSessions: () =>
@@ -1983,13 +2028,17 @@ function registerIpc(): void {
         }),
       setLiveTerminalTitle: (pid, displayTitle) => setLiveSessionTerminalTitle(pid, displayTitle),
       onSyncError: (error) => console.warn("[terminal-title] Could not synchronize live terminal title.", error),
-    }),
+    })),
   );
-  ipcMain.handle("tag:add", (_event, sessionKey: string, tagName: string) => store.addTag(sessionKey, tagName));
-  ipcMain.handle("tag:remove", (_event, sessionKey: string, tagName: string) => store.removeTag(sessionKey, tagName));
-  ipcMain.handle("tag:delete", (_event, tagName: string) => store.deleteTag(tagName));
-  ipcMain.handle("favorite:set", (_event, sessionKey: string, favorited: boolean) => store.setFavorited(sessionKey, favorited));
-  ipcMain.handle("hide:set", (_event, sessionKey: string, hidden: boolean) => store.setHidden(sessionKey, hidden));
+  ipcMain.handle("tag:add", (_event, sessionKey: string, tagName: string) =>
+    retrySqliteWrite(() => store.addTag(sessionKey, tagName)));
+  ipcMain.handle("tag:remove", (_event, sessionKey: string, tagName: string) =>
+    retrySqliteWrite(() => store.removeTag(sessionKey, tagName)));
+  ipcMain.handle("tag:delete", (_event, tagName: string) => retrySqliteWrite(() => store.deleteTag(tagName)));
+  ipcMain.handle("favorite:set", (_event, sessionKey: string, favorited: boolean) =>
+    retrySqliteWrite(() => store.setFavorited(sessionKey, favorited)));
+  ipcMain.handle("hide:set", (_event, sessionKey: string, hidden: boolean) =>
+    retrySqliteWrite(() => store.setHidden(sessionKey, hidden)));
   const sessionBulkDeleteService = new SessionBulkDeleteService(store);
   ipcMain.handle("session:bulk-delete-preview", (_event, request: SessionBulkDeleteRequest) =>
     sessionBulkDeleteService.preview(request));
@@ -2028,7 +2077,9 @@ function registerIpc(): void {
   ipcMain.handle("quick-search:open-session", (_event, sessionKey: string) => {
     const session = store.getSession(sessionKey);
     if (!session) throw new Error("Session was not found.");
-    store.markOpened(sessionKey);
+    void retrySqliteWrite(() => store.markOpened(sessionKey)).catch((error) => {
+      console.warn("[quick-search] Could not update the access time.", error);
+    });
     quickSearchWindow?.hide();
     showWindow();
     mainWindow?.webContents.send("open-session", sessionKey);
@@ -2052,9 +2103,14 @@ function registerIpc(): void {
     settingsStore.set(providerService.removeStoredKeys(next));
     if ("autoCheckUpdates" in settings) await appUpdateService.setAutoCheckEnabled(next.autoCheckUpdates);
     if ("showInDock" in settings) applyDockVisibility(next.showInDock);
-    pruneDisabledOptionalSources(next);
+    if (OPTIONAL_SOURCE_SETTINGS.some((item) => previous[item.key] && !next[item.key])) {
+      void requestDisabledOptionalSourcePrune(next).catch((error) => {
+        console.warn("[session-sources] Could not remove disabled sources.", error);
+      });
+    }
     return providerService.addStoredKeys(next);
   });
+  ipcMain.handle("sources:settle-disabled", () => requestDisabledOptionalSourcePrune(getSettings()));
   registerSkillsIpc(ipcMain, skillService);
   registerRulesIpc(ipcMain, createRulesSyncService());
   registerMemoriesIpc(ipcMain, createMemoriesSyncService());
@@ -2261,7 +2317,9 @@ const applicationReady = hasSingleInstanceLock
         console.error(`Failed to configure session search MCP: ${error instanceof Error ? error.message : String(error)}`);
       }
       providerService.migrateLegacyKeys();
-      pruneDisabledOptionalSources(getSettings());
+      void requestDisabledOptionalSourcePrune(getSettings()).catch((error) => {
+        console.warn("[session-sources] Could not remove disabled sources during startup.", error);
+      });
       registerIpc();
       quotaService.start();
       createApplicationMenu();
@@ -2281,13 +2339,20 @@ const applicationReady = hasSingleInstanceLock
       if (!registerAppGlobalShortcut(shortcut)) {
         console.error(`Global shortcut ${globalShortcutLabel(shortcut)} could not be registered.`);
       }
-      ensureRemoteEnvironmentLifecycle().startEnabledEnvironments();
-      void providerService.restoreCodexChatProxy();
-      setTimeout(() => void runIndexSync(), INITIAL_INDEX_DELAY_MS);
+      const initialIndexSettled = new Promise<void>((resolve) => {
+        setTimeout(() => {
+          void runIndexSync().then(() => resolve(), () => resolve());
+        }, INITIAL_INDEX_DELAY_MS);
+      });
       startAutoIndexRefresh();
-      skillService.startUsageRefresh();
-      remoteSessionService.startQueue();
-      appUpdateService.scheduleInitialCheck();
+      void initialIndexSettled.then(() => skillService.startUsageRefresh());
+      setTimeout(() => {
+        void initialIndexSettled.then(() => remoteSessionService.startQueue());
+      }, INITIAL_SESSION_SYNC_QUEUE_START_DELAY_MS);
+      setTimeout(() => {
+        void initialIndexSettled.then(() => providerService.restoreCodexChatProxy());
+      }, INITIAL_PROVIDER_RESTORE_DELAY_MS);
+      void initialIndexSettled.then(() => appUpdateService.scheduleInitialCheck());
     })
   : Promise.resolve();
 
@@ -2312,6 +2377,8 @@ app.on("before-quit", () => {
   installedRuntimeMonitor?.stop();
   void appUpdateService.clearRunningProcess();
   stopAutoIndexRefresh();
+  localSessionWorkersStopping = true;
+  localSessionIndexService?.stop();
   skillService.stopUsageRefresh();
   remoteSessionService.stopQueue();
   quotaService?.stop();

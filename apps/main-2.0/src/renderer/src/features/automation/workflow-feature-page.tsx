@@ -7,11 +7,11 @@ import { workflowService } from "../../../../automation/engine/renderer/src/app/
 import type { LanguageMode } from "../../language";
 import { localize } from "../../language";
 import { AutomationPageState } from "./automation-page-state";
-import { useAutomation, useAutomationStoreSnapshot } from "./automation-provider";
+import { useAutomationDetails, useAutomationStoreSnapshot } from "./automation-provider";
 import type { WorkflowImportPreview } from "../../../../automation/contracts";
 
 export function WorkflowFeaturePage({ language }: { language: LanguageMode }): ReactElement {
-  const { api, setSnapshot, workflowSidebar, workflowSidebarLoading, detailsLoaded, loading, error, refresh } = useAutomation();
+  const { api, setSnapshot, workflowSidebar, workflowSidebarLoading, detailsLoaded, loading, error, refresh } = useAutomationDetails();
   const snapshot = useAutomationStoreSnapshot();
   const snapshotRef = useRef(snapshot);
   const workflows = useMemo(() => workflowService(), []);
