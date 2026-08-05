@@ -70,7 +70,7 @@ describe("live session detection", () => {
     ]);
   });
 
-  it("guards unresolved Windows CLI families and preserves backslashes in command paths", async () => {
+  it("does not invent live session ids for unresolved Windows CLI families", async () => {
     const snapshot = await loadLiveSessionSnapshot({
       platform: "win32",
       runner: async (command) => {
@@ -82,10 +82,21 @@ describe("live session detection", () => {
       },
     });
 
-    expect(snapshot.sessions).toEqual([
-      { family: "claude", rawId: "*", pid: 321 },
-      { family: "codex", rawId: "*", pid: 322 },
-    ]);
+    expect(snapshot.sessions).toEqual([]);
+  });
+
+  it("does not invent live session ids when macOS cannot map plain CLI processes", async () => {
+    const snapshot = await loadLiveSessionSnapshot({
+      platform: "darwin",
+      homeDir: path.join(os.tmpdir(), "agent-recall-missing-live-session-fixtures"),
+      runner: async (command) => {
+        if (command === "/bin/ps") return "321 /opt/homebrew/bin/claude\n322 /opt/homebrew/bin/codex";
+        if (command === "lsof") return "";
+        return "";
+      },
+    });
+
+    expect(snapshot.sessions).toEqual([]);
   });
 
   it("maps a plain running Codex process through its open session file", () => {
@@ -287,7 +298,6 @@ describe("live session detection", () => {
 
     expect(snapshot.sessions).toEqual([
       { family: "claude", rawId: "claude-existing-session", pid: 602 },
-      { family: "claude", rawId: "*", pid: 601 },
     ]);
 
     fs.rmSync(root, { recursive: true, force: true });
@@ -376,7 +386,6 @@ describe("live session detection", () => {
       expect(snapshot.sessions).toEqual([
         { family: "codex", rawId: firstSessionId, pid: 603 },
         { family: "codex", rawId: thirdSessionId, pid: 603 },
-        { family: "codex", rawId: "*", pid: 604 },
       ]);
       expect(lsofCalls.sort()).toEqual(["-p 603", "-p 604"]);
     } finally {
