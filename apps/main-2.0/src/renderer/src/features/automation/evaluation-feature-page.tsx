@@ -2,7 +2,7 @@ import type { ReactElement } from "react";
 import { EvaluationPage } from "../../../../automation/engine/renderer/src/pages/evaluation/EvaluationPage";
 import type { LanguageMode } from "../../language";
 import { AutomationPageState } from "./automation-page-state";
-import { useAutomation } from "./automation-provider";
+import { useAutomationDetails } from "./automation-provider";
 
 export function EvaluationFeaturePage({
   language,
@@ -11,7 +11,7 @@ export function EvaluationFeaturePage({
   language: LanguageMode;
   onNavigationGuardChange?: (guard: (() => Promise<boolean>) | null) => void;
 }): ReactElement {
-  const { api, snapshot, loading, error, refresh } = useAutomation();
+  const { api, snapshot, loading, error, refresh } = useAutomationDetails();
   return (
     <div className="automation-page automation-evaluation-page" data-page="evaluation">
       <AutomationPageState loading={loading} error={error} language={language} onRetry={() => void refresh()}>

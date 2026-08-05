@@ -49,7 +49,7 @@ export function useWorkbenchOverview(language: LanguageMode) {
   const [statsRefreshing, setStatsRefreshing] = useState(false);
   const [statsFeedback, setStatsFeedback] = useState<StatsFeedback>(null);
   const [quotas, setQuotas] = useState<UsageQuotaSnapshot>(EMPTY_QUOTAS);
-  const [quotaLoading, setQuotaLoading] = useState(false);
+  const [quotaLoading, setQuotaLoading] = useState(true);
   const [quotaFeedback, setQuotaFeedback] = useState<QuotaFeedback>(null);
   const [liveSessions, setLiveSessions] = useState<LiveSessionSnapshot>(EMPTY_LIVE_SESSIONS);
   const sessionsLoadSequence = useRef(0);
@@ -178,29 +178,38 @@ export function useWorkbenchOverview(language: LanguageMode) {
   }, []);
 
   useEffect(() => {
-    void loadStats().catch((error) => {
-      setStatsFeedback({ kind: "error", message: error instanceof Error ? error.message : String(error) });
-    });
-  }, [loadStats]);
-
-  useEffect(() => {
-    void loadQuotas();
+    const initialTimer = window.setTimeout(() => void loadQuotas(), 100);
     const timer = window.setInterval(() => void loadQuotas("background"), QUOTA_REFRESH_INTERVAL_MS);
     const unsubscribe = window.sessionSearch.onQuotaUpdated(setQuotas);
     return () => {
+      window.clearTimeout(initialTimer);
       window.clearInterval(timer);
       unsubscribe();
     };
   }, [loadQuotas]);
 
   useEffect(() => {
-    void refreshLiveSessions();
+    const initialTimer = window.setTimeout(() => void refreshLiveSessions(), 300);
     const timer = window.setInterval(
       () => void refreshLiveSessions(),
       LIVE_SESSION_REFRESH_INTERVAL_MS,
     );
-    return () => window.clearInterval(timer);
+    return () => {
+      window.clearTimeout(initialTimer);
+      window.clearInterval(timer);
+    };
   }, [refreshLiveSessions]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      void loadStats().catch((error) => {
+        setStatsFeedback({ kind: "error", message: error instanceof Error ? error.message : String(error) });
+      });
+    }, 0);
+    return () => {
+      window.clearTimeout(timer);
+    };
+  }, [loadStats]);
 
   useEffect(() => {
     void loadSessions().catch((error) => {

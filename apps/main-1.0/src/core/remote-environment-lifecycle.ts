@@ -25,6 +25,10 @@ interface RequestSyncOptions {
   propagateErrors?: boolean;
 }
 
+export interface StartEnabledRemoteEnvironmentsOptions {
+  includePasswordAuthenticated?: boolean;
+}
+
 interface ReconcileResult {
   handledStaleCompletion: boolean;
   syncLatest: boolean;
@@ -94,9 +98,16 @@ export class RemoteEnvironmentLifecycle {
     await this.waitForIdleOrThrow(environmentId);
   }
 
-  startEnabledEnvironments(): void {
+  startEnabledEnvironments(options: StartEnabledRemoteEnvironmentsOptions = {}): void {
     for (const environment of this.store.listEnvironments()) {
-      if (isEnabledRemoteEnvironment(environment)) void this.requestSync(environment).catch(() => undefined);
+      if (
+        isEnabledRemoteEnvironment(environment)
+        && (environment.kind !== "ssh"
+          || environment.authMode !== "password"
+          || options.includePasswordAuthenticated === true)
+      ) {
+        void this.requestSync(environment).catch(() => undefined);
+      }
     }
   }
 

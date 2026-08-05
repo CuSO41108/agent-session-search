@@ -153,6 +153,8 @@ export class EvaluationStore {
         agentId: String(row.agent_id),
         repetitions: Number(row.repetitions),
         evaluatorIds: evaluators.rows.map((item) => item.evaluator_id),
+        skillName: row.skill_name != null ? String(row.skill_name) : null,
+        skillHash: row.skill_hash != null ? String(row.skill_hash) : null,
         createdAt: timestamp(row.created_at),
         updatedAt: timestamp(row.updated_at),
       };
@@ -163,13 +165,15 @@ export class EvaluationStore {
     await this.database.transaction(async (transaction) => {
       await transaction.query(
         `insert into agent_recall.evaluation_experiments (
-          id, name, dataset_id, agent_id, repetitions, created_at, updated_at
-        ) values ($1, $2, $3, $4, $5, $6, $7)
+          id, name, dataset_id, agent_id, repetitions, skill_name, skill_hash, created_at, updated_at
+        ) values ($1, $2, $3, $4, $5, $6, $7, $8, $9)
         on conflict (id) do update set
           name = excluded.name,
           dataset_id = excluded.dataset_id,
           agent_id = excluded.agent_id,
           repetitions = excluded.repetitions,
+          skill_name = excluded.skill_name,
+          skill_hash = excluded.skill_hash,
           updated_at = excluded.updated_at`,
         [
           value.id,
@@ -177,6 +181,8 @@ export class EvaluationStore {
           value.datasetId,
           value.agentId,
           value.repetitions,
+          value.skillName ?? null,
+          value.skillHash ?? null,
           new Date(value.createdAt),
           new Date(value.updatedAt),
         ],
@@ -263,9 +269,9 @@ export class EvaluationStore {
     await this.database.transaction(async (transaction) => {
       await transaction.query(
         `insert into agent_recall.evaluation_runs (
-          id, experiment_id, status, agent_revision_id, started_at, finished_at,
+          id, experiment_id, status, agent_revision_id, skill_hash, started_at, finished_at,
           average_score, minimum_score, pass_rate, total_duration_ms, error
-        ) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+        ) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
         on conflict (id) do update set
           status = excluded.status,
           finished_at = excluded.finished_at,
@@ -273,12 +279,14 @@ export class EvaluationStore {
           minimum_score = excluded.minimum_score,
           pass_rate = excluded.pass_rate,
           total_duration_ms = excluded.total_duration_ms,
-          error = excluded.error`,
+          error = excluded.error,
+          skill_hash = coalesce(agent_recall.evaluation_runs.skill_hash, excluded.skill_hash)`,
         [
           value.id,
           value.experimentId,
           value.status,
           value.agentRevisionId ?? null,
+          value.skillHash ?? null,
           new Date(value.startedAt),
           value.finishedAt === undefined ? null : new Date(value.finishedAt),
           value.averageScore ?? null,
@@ -518,6 +526,7 @@ function mapRunSummary(row: Row): EvaluationRunSummary {
     experimentId: String(row.experiment_id),
     status: row.status as EvaluationRun["status"],
     ...(row.agent_revision_id ? { agentRevisionId: String(row.agent_revision_id) } : {}),
+    ...(row.skill_hash ? { skillHash: String(row.skill_hash) } : {}),
     startedAt: timestamp(row.started_at),
     ...(row.finished_at ? { finishedAt: timestamp(row.finished_at) } : {}),
     ...(row.average_score !== null && row.average_score !== undefined

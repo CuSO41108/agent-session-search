@@ -3,7 +3,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { createRequire } from "node:module";
 import { cleanTitle, cursorTimestampFromRow, getAdapter, isMeaningfulUserMessage } from "./format-adapters";
-import { scanCompleteJsonl } from "./codex-jsonl-stream";
+import { scanCompleteJsonl, scanCompleteJsonlAsync } from "./codex-jsonl-stream";
 import {
   CodexRolloutAccumulator,
   dedupeCodexTraceEvents,
@@ -33,6 +33,9 @@ const require = createRequire(import.meta.url);
 const { DatabaseSync } = require("node:sqlite") as { DatabaseSync: new (path: string, options?: { readOnly?: boolean }) => import("node:sqlite").DatabaseSync };
 
 const CODEX_APP_ORIGINATORS = new Set(["Codex Desktop", "codex_work_desktop"]);
+const CODEX_FUNCTION_OUTPUT_MARKER = Buffer.from('"type":"function_call_output"');
+const CODEX_CUSTOM_TOOL_OUTPUT_MARKER = Buffer.from('"type":"custom_tool_call_output"');
+const CODEX_INLINE_IMAGE_MARKER = Buffer.from('"image_url":"data:image/');
 const TCLAUDE_DIR = ".tclaude";
 const TCODEX_DIR = ".tcodex";
 const CODEBUDDY_DIR = ".codebuddy";
@@ -60,6 +63,9 @@ export interface SessionLoadOptions {
   shouldSkipFile?: (filePath: string, stat: VirtualSessionFileStat, dependencyMtimeMs?: number) => boolean;
   onSkippedFile?: (filePath: string, stat: VirtualSessionFileStat) => void;
   incrementalCodexSessions?: ReadonlyMap<string, { offset: number; loaded: LoadedSession }>;
+  loadIncrementalCodexSession?: (
+    filePath: string,
+  ) => { offset: number; loaded: LoadedSession } | undefined;
 }
 
 export interface VirtualSessionFileStat {
@@ -86,6 +92,7 @@ export function parseCodexSessionMetaLine(parsed: unknown): {
   originator?: string;
   isSubagent: boolean;
   parentSessionId: string | null;
+  agentPath?: string | null;
   historyMode?: CodexHistoryMode;
 } | null {
   if (!parsed || typeof parsed !== "object") return null;
@@ -97,6 +104,9 @@ export function parseCodexSessionMetaLine(parsed: unknown): {
     const structuredParent = structuredSource?.subagent?.thread_spawn?.parent_thread_id;
     const legacyParent = line.payload.thread_source === "subagent" ? line.payload.parent_thread_id : undefined;
     const parentSessionId = structuredParent || legacyParent || null;
+    const agentPath = line.payload.agent_path
+      || structuredSource?.subagent?.thread_spawn?.agent_path
+      || (parentSessionId === null ? "/root" : null);
     return {
       id: line.payload.id,
       projectPath: line.payload.cwd || "",
@@ -106,6 +116,7 @@ export function parseCodexSessionMetaLine(parsed: unknown): {
       originator: line.payload.originator,
       isSubagent: parentSessionId !== null,
       parentSessionId,
+      agentPath,
       historyMode: (line.payload as { history_mode?: unknown }).history_mode === "paginated" ? "paginated" : "legacy",
     };
   }
@@ -118,6 +129,7 @@ export function parseCodexSessionMetaLine(parsed: unknown): {
       gitBranch: line.git?.branch,
       isSubagent: false,
       parentSessionId: null,
+      agentPath: "/root",
       historyMode: "legacy",
     };
   }
@@ -143,6 +155,7 @@ function findCodexSessionMeta(rows: unknown[]): NonNullable<ReturnType<typeof pa
       originator: result.originator || parsed.originator,
       isSubagent: result.isSubagent || parsed.isSubagent,
       parentSessionId: result.parentSessionId || parsed.parentSessionId,
+      agentPath: result.agentPath || parsed.agentPath,
       historyMode: result.historyMode === "paginated" || parsed.historyMode === "paginated" ? "paginated" : "legacy",
     };
   }
@@ -495,7 +508,7 @@ function extractCodexResponseTrace(
   ) {
     const output = payloadType === "tool_search_output"
       ? { status: unknownField(payload, "status"), tools: unknownField(payload, "tools") }
-      : unknownField(payload, "output");
+      : parseMaybeJson(unknownField(payload, "output"));
     const safeOutput = sanitizeCodexTraceValue(output);
     const eventType =
       payloadType === "function_call_output" ? "codex.function_call"
@@ -691,6 +704,8 @@ function extractCodexMessages(rows: unknown[]): {
   messageProvenance: Array<{ messageIndex: number; sourceRecordId: string | null }>;
   historyMode: CodexHistoryMode;
   activeTurnIds: string[];
+  agentPath: string | null;
+  pendingInterAgentCommunication: { triggerTurn: boolean } | null;
 } {
   const adapter = getAdapter("codex");
   const rollout = new CodexRolloutAccumulator();
@@ -751,6 +766,8 @@ function extractCodexMessages(rows: unknown[]): {
     messageProvenance,
     historyMode: rollout.historyMode,
     activeTurnIds: rollout.getActiveTurnIds(),
+    agentPath: rollout.agentPath,
+    pendingInterAgentCommunication: rollout.getPendingInterAgentCommunication(),
   };
 }
 
@@ -1229,6 +1246,10 @@ export function loadCodexSessionRows(
     historyMode: meta.historyMode ?? extracted.historyMode,
     messageProvenance: extracted.messageProvenance,
     activeTurnIds: extracted.activeTurnIds,
+    ...(extracted.agentPath === undefined || extracted.agentPath === "/root" ? {} : { agentPath: extracted.agentPath }),
+    ...(extracted.pendingInterAgentCommunication
+      ? { pendingInterAgentCommunication: extracted.pendingInterAgentCommunication }
+      : {}),
   });
 }
 
@@ -1500,21 +1521,43 @@ function createLoadedCodexSession(
   };
 }
 
-function scanCodexSessionFile(filePath: string, base?: { offset: number; loaded: LoadedSession }): {
+interface ScannedCodexSession {
   meta: NonNullable<ReturnType<typeof parseCodexSessionMetaLine>>;
   messages: SessionMessage[];
   tokenEvents: TokenUsageEvent[];
   traceEvents: SessionTraceEvent[];
   codexIncrementalState: NonNullable<LoadedSession["codexIncrementalState"]>;
   committedOffset: number;
-} | null {
-  if (base && safeStat(filePath).size < base.offset) return scanCodexSessionFile(filePath);
+}
+
+function isCodexInlineImageOutput(line: Buffer): boolean {
+  return (
+    (
+      line.indexOf(CODEX_FUNCTION_OUTPUT_MARKER) >= 0
+      || line.indexOf(CODEX_CUSTOM_TOOL_OUTPUT_MARKER) >= 0
+    )
+    && line.indexOf(CODEX_INLINE_IMAGE_MARKER) >= 0
+  );
+}
+
+function shouldParseCodexJsonlLine(line: Buffer): boolean {
+  return !(line.length > 512 * 1024 && isCodexInlineImageOutput(line));
+}
+
+function createCodexScanAccumulator(base?: { offset: number; loaded: LoadedSession }): {
+  onRecord(row: unknown): void;
+  finish(committedOffset: number): ScannedCodexSession | null;
+  hasInvalidRollback(): boolean;
+} {
   const adapter = getAdapter("codex");
   const allMessages: SessionMessage[] = [...(base?.loaded.messages ?? [])];
   const allTraceEvents: TraceEventDraft[] = [...(base?.loaded.traceEvents ?? [])];
   const rollout = new CodexRolloutAccumulator(base ? {
     historyMode: base.loaded.codexIncrementalState?.historyMode ?? "legacy",
     activeTurnIds: base.loaded.codexIncrementalState?.activeTurnIds ?? [],
+    agentPath: base.loaded.codexIncrementalState?.agentPath
+      ?? (base.loaded.session.isSubagent ? null : "/root"),
+    pendingInterAgentCommunication: base.loaded.codexIncrementalState?.pendingInterAgentCommunication,
     sourceTurnIds: [
       ...allMessages.map((message) => message.sourceTurnId),
       ...allTraceEvents.map((event) => event.sourceTurnId),
@@ -1523,11 +1566,11 @@ function scanCodexSessionFile(filePath: string, base?: { offset: number; loaded:
   } : undefined);
   const messageProvenance = new Map<SessionMessage, string | null>();
   const provenanceMessages = new Map<string, SessionMessage>();
+  const sourceRecordIdByMessageIndex = new Map(
+    base?.loaded.codexIncrementalState?.messageProvenance.map((entry) => [entry.messageIndex, entry.sourceRecordId]) ?? [],
+  );
   for (const message of allMessages) {
-    const sourceRecordId =
-      base?.loaded.codexIncrementalState?.messageProvenance.find(
-        (entry) => entry.messageIndex === message.index,
-      )?.sourceRecordId ?? null;
+    const sourceRecordId = sourceRecordIdByMessageIndex.get(message.index) ?? null;
     messageProvenance.set(message, sourceRecordId);
     if (sourceRecordId) provenanceMessages.set(sourceRecordId, message);
   }
@@ -1549,116 +1592,126 @@ function scanCodexSessionFile(filePath: string, base?: { offset: number; loaded:
     originator: base.loaded.session.source === "codex-app" ? "Codex Desktop" : undefined,
     isSubagent: base.loaded.session.isSubagent ?? false,
     parentSessionId: base.loaded.session.parentSessionId ?? null,
+    agentPath: base.loaded.codexIncrementalState?.agentPath
+      ?? (base.loaded.session.isSubagent ? null : "/root"),
     historyMode: base.loaded.codexIncrementalState?.historyMode ?? "legacy",
   } : null;
   let invalidRollback = false;
-  let committedOffset = base?.offset ?? 0;
 
-  try {
-    const result = scanCompleteJsonl(filePath, {
-      startOffset: base?.offset,
-      onRecord: (row) => {
-        const parsedMeta = parseCodexSessionMetaLine(row);
-        if (parsedMeta) {
-          meta = meta ? {
-            ...meta,
-            projectPath: meta.projectPath || parsedMeta.projectPath,
-            ts: meta.ts || parsedMeta.ts,
-            title: meta.title || parsedMeta.title,
-            gitBranch: meta.gitBranch || parsedMeta.gitBranch,
-            originator: meta.originator || parsedMeta.originator,
-            isSubagent: meta.isSubagent || parsedMeta.isSubagent,
-            parentSessionId: meta.parentSessionId || parsedMeta.parentSessionId,
-            historyMode: meta.historyMode === "paginated" || parsedMeta.historyMode === "paginated" ? "paginated" : "legacy",
-          } : parsedMeta;
-        }
+  return {
+    onRecord: (row) => {
+      const parsedMeta = parseCodexSessionMetaLine(row);
+      if (parsedMeta) {
+        meta = meta ? {
+          ...meta,
+          projectPath: meta.projectPath || parsedMeta.projectPath,
+          ts: meta.ts || parsedMeta.ts,
+          title: meta.title || parsedMeta.title,
+          gitBranch: meta.gitBranch || parsedMeta.gitBranch,
+          originator: meta.originator || parsedMeta.originator,
+          isSubagent: meta.isSubagent || parsedMeta.isSubagent,
+          parentSessionId: meta.parentSessionId || parsedMeta.parentSessionId,
+          agentPath: meta.agentPath || parsedMeta.agentPath,
+          historyMode: meta.historyMode === "paginated" || parsedMeta.historyMode === "paginated" ? "paginated" : "legacy",
+        } : parsedMeta;
+      }
 
-        if (isRecord(row)) {
-          const payload = objectField(row, "payload");
-          if (row.type === "event_msg" && payload?.type === "thread_rolled_back") {
-            const numTurns = payload.num_turns;
-            if (!Number.isSafeInteger(numTurns) || (numTurns as number) <= 0 || (numTurns as number) > turns.length) {
-              invalidRollback = true;
-            } else {
-              const removedTurns = turns.splice(turns.length - (numTurns as number), numTurns as number);
-              rollout.discardActiveTurnIds(removedTurns.flatMap((turn) => [...turn.sourceTurnIds]));
-              currentTurn = turns.at(-1) ?? null;
-            }
-            return;
+      if (isRecord(row)) {
+        const payload = objectField(row, "payload");
+        if (row.type === "event_msg" && payload?.type === "thread_rolled_back") {
+          const numTurns = payload.num_turns;
+          if (!Number.isSafeInteger(numTurns) || (numTurns as number) <= 0 || (numTurns as number) > turns.length) {
+            invalidRollback = true;
+          } else {
+            const removedTurns = turns.splice(turns.length - (numTurns as number), numTurns as number);
+            rollout.discardActiveTurnIds(removedTurns.flatMap((turn) => [...turn.sourceTurnIds]));
+            currentTurn = turns.at(-1) ?? null;
           }
+          return;
         }
+      }
 
-        const rolloutRecord = rollout.consume(row);
-        if (
-          isRecord(row)
-          && (
-            row.type === "turn_context"
-            || (row.type === "event_msg" && stringField(objectField(row, "payload"), "type") === "token_count")
-          )
-        ) {
-          tokenRows.push({ row, sourceTurnId: rolloutRecord.sourceTurnId });
-        }
-        const parsedMessage = adapter.parseLine(row);
-        let message = parsedMessage
-          && !(rollout.historyMode === "paginated" && parsedMessage.role === "user")
-          && (parsedMessage.role !== "user" || isMeaningfulUserMessage(parsedMessage.content))
-          ? {
-              ...parsedMessage,
-              index: 0,
-              sourceTurnId: rolloutRecord.message?.sourceTurnId ?? null,
-              phase: parsedMessage.role === "assistant" ? rolloutRecord.message?.phase ?? null : null,
-            }
-          : null;
-        if (rolloutRecord.completedMessage) {
-          const completed = rolloutRecord.completedMessage;
-          const existing = provenanceMessages.get(completed.replacesSourceRecordId);
-          if (existing) {
-            Object.assign(existing, {
-              role: completed.role,
-              content: completed.content,
-              timestamp: completed.timestamp,
-              sourceTurnId: completed.sourceTurnId,
-              phase: completed.phase,
-            });
-            messageProvenance.set(existing, completed.sourceRecordId);
-            provenanceMessages.delete(completed.replacesSourceRecordId);
-            provenanceMessages.set(completed.sourceRecordId, existing);
-            message = null;
-          } else if (completed.role !== "user" || isMeaningfulUserMessage(completed.content)) {
-            message = {
-              role: completed.role,
-              content: completed.content,
-              timestamp: completed.timestamp,
-              index: 0,
-              sourceTurnId: completed.sourceTurnId,
-              phase: completed.phase,
-            };
+      const rolloutRecord = rollout.consume(row);
+      if (
+        isRecord(row)
+        && (
+          row.type === "turn_context"
+          || (row.type === "event_msg" && stringField(objectField(row, "payload"), "type") === "token_count")
+        )
+      ) {
+        tokenRows.push({ row, sourceTurnId: rolloutRecord.sourceTurnId });
+      }
+      const parsedMessage = adapter.parseLine(row);
+      let message = parsedMessage
+        && !(rollout.historyMode === "paginated" && parsedMessage.role === "user")
+        && (parsedMessage.role !== "user" || isMeaningfulUserMessage(parsedMessage.content))
+        ? {
+            ...parsedMessage,
+            index: 0,
+            sourceTurnId: rolloutRecord.message?.sourceTurnId ?? null,
+            phase: parsedMessage.role === "assistant" ? rolloutRecord.message?.phase ?? null : null,
           }
+        : null;
+      if (rolloutRecord.completedMessage) {
+        const completed = rolloutRecord.completedMessage;
+        const existing = provenanceMessages.get(completed.replacesSourceRecordId);
+        if (existing) {
+          Object.assign(existing, {
+            role: completed.role,
+            content: completed.content,
+            timestamp: completed.timestamp,
+            sourceTurnId: completed.sourceTurnId,
+            phase: completed.phase,
+          });
+          messageProvenance.set(existing, completed.sourceRecordId);
+          provenanceMessages.delete(completed.replacesSourceRecordId);
+          provenanceMessages.set(completed.sourceRecordId, existing);
+          message = null;
+        } else if (completed.role !== "user" || isMeaningfulUserMessage(completed.content)) {
+          message = {
+            role: completed.role,
+            content: completed.content,
+            timestamp: completed.timestamp,
+            index: 0,
+            sourceTurnId: completed.sourceTurnId,
+            phase: completed.phase,
+          };
         }
-        const traces = isRecord(row)
-          ? [
-              ...extractCodexResponseTrace(row, rolloutRecord.sourceTurnId),
-              ...extractCodexEventTrace(row, rolloutRecord.sourceTurnId),
-              ...rolloutRecord.traceEvents,
-            ]
-          : [];
-        if (message) {
-          allMessages.push(message);
-          messageProvenance.set(
-            message,
-            rolloutRecord.completedMessage?.sourceRecordId
-              ?? rolloutRecord.message?.sourceRecordId
-              ?? null,
-          );
-          const sourceRecordId = messageProvenance.get(message);
-          if (sourceRecordId) provenanceMessages.set(sourceRecordId, message);
-        }
-        allTraceEvents.push(...traces);
+      }
+      const traces = isRecord(row)
+        ? [
+            ...extractCodexResponseTrace(row, rolloutRecord.sourceTurnId),
+            ...extractCodexEventTrace(row, rolloutRecord.sourceTurnId),
+            ...rolloutRecord.traceEvents,
+          ]
+        : [];
+      if (message) {
+        allMessages.push(message);
+        messageProvenance.set(
+          message,
+          rolloutRecord.completedMessage?.sourceRecordId
+            ?? rolloutRecord.message?.sourceRecordId
+            ?? null,
+        );
+        const sourceRecordId = messageProvenance.get(message);
+        if (sourceRecordId) provenanceMessages.set(sourceRecordId, message);
+      }
+      allTraceEvents.push(...traces);
 
-        const payload = isRecord(row) ? objectField(row, "payload") : null;
-        const startsTurn = isRecord(row) && row.type === "event_msg" && payload?.type === "task_started";
-        let target: StreamedCodexTurn;
-        if (startsTurn) {
+      const payload = isRecord(row) ? objectField(row, "payload") : null;
+      const startsTurn = isRecord(row) && row.type === "event_msg" && payload?.type === "task_started";
+      let target: StreamedCodexTurn;
+      if (startsTurn) {
+        currentTurn = {
+          messages: [],
+          traceEvents: [],
+          hasUserMessage: false,
+          sourceTurnIds: new Set(),
+        };
+        turns.push(currentTurn);
+        target = currentTurn;
+      } else if (message?.role === "user") {
+        if (!currentTurn || currentTurn.hasUserMessage) {
           currentTurn = {
             messages: [],
             traceEvents: [],
@@ -1666,63 +1719,90 @@ function scanCodexSessionFile(filePath: string, base?: { offset: number; loaded:
             sourceTurnIds: new Set(),
           };
           turns.push(currentTurn);
-          target = currentTurn;
-        } else if (message?.role === "user") {
-          if (!currentTurn || currentTurn.hasUserMessage) {
-            currentTurn = {
-              messages: [],
-              traceEvents: [],
-              hasUserMessage: false,
-              sourceTurnIds: new Set(),
-            };
-            turns.push(currentTurn);
-          }
-          currentTurn.hasUserMessage = true;
-          target = currentTurn;
-        } else {
-          target = currentTurn ?? preamble;
         }
-        if (message) target.messages.push(message);
-        target.traceEvents.push(...traces);
-        if (rolloutRecord.sourceTurnId) target.sourceTurnIds.add(rolloutRecord.sourceTurnId);
-      },
+        currentTurn.hasUserMessage = true;
+        target = currentTurn;
+      } else {
+        target = currentTurn ?? preamble;
+      }
+      if (message) target.messages.push(message);
+      target.traceEvents.push(...traces);
+      if (rolloutRecord.sourceTurnId) target.sourceTurnIds.add(rolloutRecord.sourceTurnId);
+    },
+    finish: (committedOffset) => {
+      if (!meta) return null;
+
+      const visibleMessages = invalidRollback
+        ? allMessages
+        : [...preamble.messages, ...turns.flatMap((turn) => turn.messages)];
+      const visibleTraces = invalidRollback
+        ? allTraceEvents
+        : [...preamble.traceEvents, ...turns.flatMap((turn) => turn.traceEvents)];
+      const pendingInterAgentCommunication = rollout.getPendingInterAgentCommunication();
+      const tokenEvents = new Map<string, TokenUsageEvent>();
+      for (const event of base?.loaded.tokenEvents ?? []) putTokenEvent(tokenEvents, event);
+      const newTokenRows = base
+        ? tokenRows.map((tokenRow) => ({ ...tokenRow, row: stripCodexCumulativeUsage(tokenRow.row) }))
+        : tokenRows;
+      for (const event of extractCodexTokenEvents(newTokenRows)) {
+        putTokenEvent(tokenEvents, event);
+      }
+      return {
+        meta,
+        messages: visibleMessages.map((message, index) => ({ ...message, index })),
+        tokenEvents: [...tokenEvents.values()],
+        traceEvents: dedupeCodexTraceEvents(visibleTraces),
+        codexIncrementalState: {
+          historyMode: rollout.historyMode,
+          messageProvenance: visibleMessages.map((message, messageIndex) => ({
+            messageIndex,
+            sourceRecordId: messageProvenance.get(message) ?? null,
+          })),
+          activeTurnIds: rollout.getActiveTurnIds(),
+          ...(rollout.agentPath === undefined || rollout.agentPath === "/root" ? {} : { agentPath: rollout.agentPath }),
+          ...(pendingInterAgentCommunication
+            ? { pendingInterAgentCommunication }
+            : {}),
+        },
+        committedOffset,
+      };
+    },
+    hasInvalidRollback: () => invalidRollback,
+  };
+}
+
+function scanCodexSessionFile(filePath: string, base?: { offset: number; loaded: LoadedSession }): ScannedCodexSession | null {
+  if (base && safeStat(filePath).size < base.offset) return scanCodexSessionFile(filePath);
+  const accumulator = createCodexScanAccumulator(base);
+  try {
+    const result = scanCompleteJsonl(filePath, {
+      startOffset: base?.offset,
+      shouldSkipLinePrefix: isCodexInlineImageOutput,
+      shouldParseLine: shouldParseCodexJsonlLine,
+      onRecord: accumulator.onRecord,
     });
-    committedOffset = result.committedOffset;
+    if (base && accumulator.hasInvalidRollback()) return scanCodexSessionFile(filePath);
+    return accumulator.finish(result.committedOffset);
   } catch {
     return null;
   }
-  if (base && invalidRollback) return scanCodexSessionFile(filePath);
-  if (!meta) return null;
+}
 
-  const visibleMessages = invalidRollback
-    ? allMessages
-    : [...preamble.messages, ...turns.flatMap((turn) => turn.messages)];
-  const visibleTraces = invalidRollback
-    ? allTraceEvents
-    : [...preamble.traceEvents, ...turns.flatMap((turn) => turn.traceEvents)];
-  const tokenEvents = new Map<string, TokenUsageEvent>();
-  for (const event of base?.loaded.tokenEvents ?? []) putTokenEvent(tokenEvents, event);
-  const newTokenRows = base
-    ? tokenRows.map((tokenRow) => ({ ...tokenRow, row: stripCodexCumulativeUsage(tokenRow.row) }))
-    : tokenRows;
-  for (const event of extractCodexTokenEvents(newTokenRows)) {
-    putTokenEvent(tokenEvents, event);
+async function scanCodexSessionFileAsync(filePath: string, base?: { offset: number; loaded: LoadedSession }): Promise<ScannedCodexSession | null> {
+  if (base && safeStat(filePath).size < base.offset) return scanCodexSessionFileAsync(filePath);
+  const accumulator = createCodexScanAccumulator(base);
+  try {
+    const result = await scanCompleteJsonlAsync(filePath, {
+      startOffset: base?.offset,
+      shouldSkipLinePrefix: isCodexInlineImageOutput,
+      shouldParseLine: shouldParseCodexJsonlLine,
+      onRecord: accumulator.onRecord,
+    });
+    if (base && accumulator.hasInvalidRollback()) return scanCodexSessionFileAsync(filePath);
+    return accumulator.finish(result.committedOffset);
+  } catch {
+    return null;
   }
-  return {
-    meta,
-    messages: visibleMessages.map((message, index) => ({ ...message, index })),
-    tokenEvents: [...tokenEvents.values()],
-    traceEvents: dedupeCodexTraceEvents(visibleTraces),
-    codexIncrementalState: {
-      historyMode: rollout.historyMode,
-      messageProvenance: visibleMessages.map((message, messageIndex) => ({
-        messageIndex,
-        sourceRecordId: messageProvenance.get(message) ?? null,
-      })),
-      activeTurnIds: rollout.getActiveTurnIds(),
-    },
-    committedOffset,
-  };
 }
 
 function stripCodexCumulativeUsage(row: unknown): unknown {
@@ -1758,7 +1838,8 @@ export function* loadCodexSessionsIterator(
   for (const filePath of walkJsonlFiles(sessionsDir)) {
     const stat = safeStat(filePath);
     if (shouldSkipFile(options, filePath, stat, indexStat.mtimeMs)) continue;
-    const incrementalBase = options.incrementalCodexSessions?.get(filePath);
+    const incrementalBase = options.loadIncrementalCodexSession?.(filePath)
+      ?? options.incrementalCodexSessions?.get(filePath);
     const scanned = scanCodexSessionFile(
       filePath,
       incrementalBase && stat.size > incrementalBase.offset ? incrementalBase : undefined,
@@ -1772,6 +1853,43 @@ export function* loadCodexSessionsIterator(
       stat: { ...stat, size: scanned.committedOffset },
     }, scanned.codexIncrementalState);
     yield loaded;
+  }
+}
+
+export async function* loadCodexSessionsAsyncIterator(
+  codexDir = path.join(os.homedir(), ".codex"),
+  sourceOverride?: SessionSource,
+  options: SessionLoadOptions = {},
+): AsyncGenerator<LoadedSession> {
+  const sessionsDir = path.join(codexDir, "sessions");
+  if (!fs.existsSync(sessionsDir)) return;
+
+  const titleMap = new Map<string, { title: string; updatedAt: string }>();
+  const indexPath = path.join(codexDir, "session_index.jsonl");
+  const indexStat = fs.existsSync(indexPath) ? safeStat(indexPath) : { mtimeMs: 0, size: 0 };
+  if (fs.existsSync(indexPath)) {
+    for (const row of readJsonl(indexPath) as Array<{ id?: string; thread_name?: string; updated_at?: string }>) {
+      if (row.id && row.thread_name) titleMap.set(row.id, { title: row.thread_name, updatedAt: row.updated_at || "" });
+    }
+  }
+
+  for (const filePath of walkJsonlFiles(sessionsDir)) {
+    const stat = safeStat(filePath);
+    if (shouldSkipFile(options, filePath, stat, indexStat.mtimeMs)) continue;
+    const incrementalBase = await options.loadIncrementalCodexSession?.(filePath)
+      ?? options.incrementalCodexSessions?.get(filePath);
+    const scanned = await scanCodexSessionFileAsync(
+      filePath,
+      incrementalBase && stat.size > incrementalBase.offset ? incrementalBase : undefined,
+    );
+    if (!scanned) continue;
+    const indexedTitle = titleMap.get(scanned.meta.id);
+    yield createLoadedCodexSession(filePath, scanned.meta, scanned.messages, scanned.tokenEvents, scanned.traceEvents, {
+      title: indexedTitle?.title,
+      updatedAt: indexedTitle?.updatedAt,
+      sourceOverride,
+      stat: { ...stat, size: scanned.committedOffset },
+    }, scanned.codexIncrementalState);
   }
 }
 
@@ -3381,5 +3499,35 @@ export function* loadDefaultSessionsIterator(options: SessionLoadOptions = {}): 
   if (options.includeQoder) yield* loadQoderSessionsIterator(path.join(homeDir, QODER_DIR), options);
   if (options.includeTclaude) yield* loadClaudeCliSessionsIterator(path.join(homeDir, TCLAUDE_DIR), "tclaude-cli", options);
   if (options.includeTcodex) yield* loadCodexSessionsIterator(path.join(homeDir, TCODEX_DIR), "tcodex-cli", options);
+  if (options.includeCodeBuddyCli) yield* loadCodeBuddyCliSessionsIterator(path.join(homeDir, CODEBUDDY_DIR), options);
+}
+
+export async function* loadDefaultSessionsAsyncIterator(options: SessionLoadOptions = {}): AsyncGenerator<LoadedSession> {
+  const homeDir = options.homeDir ?? os.homedir();
+  yield* loadClaudeCliSessionsIterator(path.join(homeDir, ".claude"), "claude-cli", options);
+  yield* loadClaudeAppSessionsIterator(
+    path.join(homeDir, "Library", "Application Support", "Claude", "claude-code-sessions"),
+    path.join(homeDir, ".claude"),
+    options,
+  );
+  yield* loadCodexSessionsAsyncIterator(path.join(homeDir, ".codex"), undefined, options);
+  if (options.includePi) {
+    yield* loadPiSessionsIterator(path.join(homeDir, PI_SESSIONS_DIR), options);
+  }
+  if (options.includeOpenClaw) {
+    yield* loadOpenClawSessionsIterator(path.join(homeDir, ".openclaw"), options);
+    yield* loadOpenClawSessionsIterator(path.join(homeDir, ".clawdbot"), options);
+  }
+  if (options.includeHermes) yield* loadHermesSessions();
+  if (options.includeOpenCode) yield* loadOpenCodeSessions();
+  if (options.includeZcode) yield* loadZcodeSessions(path.join(homeDir, ".zcode"));
+  if (options.includeCodeWizCli) yield* loadCodeWizSessions(path.join(homeDir, CODEWIZ_SHARE_DIR));
+  if (options.includeCursorAgent) yield* loadCursorAgentSessionsIterator(path.join(homeDir, ".cursor"), options);
+  if (options.includeTrae) {
+    for (const dirName of TRAE_DIR_NAMES) yield* loadTraeSessionsIterator(path.join(homeDir, dirName), options);
+  }
+  if (options.includeQoder) yield* loadQoderSessionsIterator(path.join(homeDir, QODER_DIR), options);
+  if (options.includeTclaude) yield* loadClaudeCliSessionsIterator(path.join(homeDir, TCLAUDE_DIR), "tclaude-cli", options);
+  if (options.includeTcodex) yield* loadCodexSessionsAsyncIterator(path.join(homeDir, TCODEX_DIR), "tcodex-cli", options);
   if (options.includeCodeBuddyCli) yield* loadCodeBuddyCliSessionsIterator(path.join(homeDir, CODEBUDDY_DIR), options);
 }

@@ -3,9 +3,14 @@ import type {
   WorkflowRunState,
   WorkflowStatus,
 } from "../../../../automation/contracts";
+import type { WorkflowSidebarItem } from "../../../../automation/engine/shared/workflow/draft";
 
 export interface WorkbenchWorkflowItem {
-  workflow: WorkflowDraftState;
+  workflow: {
+    workflowId: string;
+    title: string;
+  };
+  nodeCount: number;
   status: WorkflowStatus;
   updatedAt: number;
 }
@@ -32,11 +37,36 @@ export function selectWorkbenchWorkflows(
       const activeRun = workflowRuns.find((run) => run.status === "waiting_for_user" || run.status === "running");
       const latestRun = activeRun ?? workflowRuns[0];
       return {
-        workflow,
+        workflow: {
+          workflowId: workflow.workflowId,
+          title: workflow.title,
+        },
+        nodeCount: workflow.definition.nodes.length,
         status: activeRun?.status ?? workflow.status,
         updatedAt: Math.max(workflow.updatedAt, latestRun?.finishedAt ?? latestRun?.startedAt ?? 0),
       };
     })
+    .sort((left, right) => {
+      const priority = STATUS_PRIORITY[left.status] - STATUS_PRIORITY[right.status];
+      return priority || right.updatedAt - left.updatedAt;
+    })
+    .slice(0, Math.max(0, limit));
+}
+
+export function selectWorkbenchWorkflowSummaries(
+  workflows: WorkflowSidebarItem[],
+  limit = 5,
+): WorkbenchWorkflowItem[] {
+  return workflows
+    .map((workflow) => ({
+      workflow: {
+        workflowId: workflow.workflowId,
+        title: workflow.title,
+      },
+      nodeCount: workflow.nodeCount,
+      status: workflow.status,
+      updatedAt: workflow.updatedAt,
+    }))
     .sort((left, right) => {
       const priority = STATUS_PRIORITY[left.status] - STATUS_PRIORITY[right.status];
       return priority || right.updatedAt - left.updatedAt;

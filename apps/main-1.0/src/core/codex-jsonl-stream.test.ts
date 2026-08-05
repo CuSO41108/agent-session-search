@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, test, vi } from "vitest";
-import { scanCompleteJsonl } from "./codex-jsonl-stream";
+import { scanCompleteJsonl, scanCompleteJsonlAsync } from "./codex-jsonl-stream";
 import { loadCodexSessionFile } from "./session-loader";
 
 const roots: string[] = [];
@@ -54,6 +54,28 @@ describe("scanCompleteJsonl", () => {
     expect(result.startOffset).toBe(Buffer.byteLength(first));
     expect(result.committedOffset).toBe(Buffer.byteLength(`${first}${appended}`));
     expect(result.malformedLines).toBe(1);
+  });
+
+  test("skips oversized records from their prefix without buffering the whole line", async () => {
+    const first = { id: 1 };
+    const last = { id: 2 };
+    const oversized = JSON.stringify({ type: "skip", payload: "x".repeat(2 * 1024 * 1024) });
+    const filePath = fixture(`${JSON.stringify(first)}\n${oversized}\n${JSON.stringify(last)}\n`);
+    const records: unknown[] = [];
+    let heartbeat = false;
+    setImmediate(() => {
+      heartbeat = true;
+    });
+
+    const result = await scanCompleteJsonlAsync(filePath, {
+      chunkSize: 4 * 1024,
+      shouldSkipLinePrefix: (prefix) => prefix.includes(Buffer.from('"type":"skip"')),
+      onRecord: (record) => records.push(record),
+    });
+
+    expect(records).toEqual([first, last]);
+    expect(result.committedOffset).toBe(result.fileSize);
+    expect(heartbeat).toBe(true);
   });
 
   test("loads a Codex session without reading the whole source into one string", () => {

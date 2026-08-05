@@ -6,7 +6,8 @@ import type { SkillDiffSnapshot } from "../../core/skill-diff";
 import type { RemoteSkill, SkillSyncBatchResult, SkillSyncInstallResult, SkillSyncSnapshot, SkillSyncUploadOutcome } from "../../core/skill-sync";
 import type { SkillUsageRefreshStatus } from "../../core/skill-usage";
 import type { SkillTriggerLink } from "../../core/session-store";
-import type { SkillEvalDetail, SkillEvalOverview } from "../services/skill-service";
+import type { SkillEvalDetail, SkillEvalOverview, SkillEvalSuite, CreateSkillEvalSuiteInput, UpdateSkillEvalSuiteInput, SkillEvalSuiteCase } from "../services/skill-service";
+import type { EvaluationRun, EvaluationRunSummary } from "../../automation/contracts";
 import { SKILLS_IPC } from "../../shared/ipc/skills";
 import { combineIpcDisposers, registerIpcHandler, type IpcMainRegistrar } from "./register-ipc-handler";
 
@@ -39,6 +40,15 @@ export interface SkillsIpcService {
   getSkillEvalDetail(skill: string): Promise<SkillEvalDetail>;
   getSkillFindings(skill: string): Promise<import("../../core/skill-eval-findings").SkillFinding[]>;
   getSkillFindingCounts(): Promise<{ skill: string; low: number; medium: number }[]>;
+  getSkillEvalSuites(skill: string): Promise<SkillEvalSuite[]>;
+  createSkillEvalSuite(input: CreateSkillEvalSuiteInput): Promise<SkillEvalSuite>;
+  updateSkillEvalSuite(input: UpdateSkillEvalSuiteInput): Promise<SkillEvalSuite>;
+  deleteSkillEvalSuite(experimentId: string): Promise<void>;
+  getSkillEvalSuiteCases(experimentId: string): Promise<SkillEvalSuiteCase[]>;
+  runSkillEvalSuite(experimentId: string): Promise<{ runId: string }>;
+  getSkillEvalSuiteRuns(experimentId: string): Promise<EvaluationRunSummary[]>;
+  getSkillEvalRun(runId: string): Promise<EvaluationRun | null>;
+  cancelSkillEvalRun(runId: string): void;
 }
 
 export function registerSkillsIpc(ipc: IpcMainRegistrar, service: SkillsIpcService): () => void {
@@ -71,5 +81,14 @@ export function registerSkillsIpc(ipc: IpcMainRegistrar, service: SkillsIpcServi
     registerIpcHandler(ipc, SKILLS_IPC.getEvalDetail, (_event, skill) => service.getSkillEvalDetail(skill)),
     registerIpcHandler(ipc, SKILLS_IPC.getEvalFindings, (_event, skill) => service.getSkillFindings(skill)),
     registerIpcHandler(ipc, SKILLS_IPC.getEvalFindingCounts, () => service.getSkillFindingCounts()),
+    registerIpcHandler(ipc, SKILLS_IPC.listEvalSuites, (_event, skill) => service.getSkillEvalSuites(skill)),
+    registerIpcHandler(ipc, SKILLS_IPC.createEvalSuite, (_event, input) => service.createSkillEvalSuite(input)),
+    registerIpcHandler(ipc, SKILLS_IPC.updateEvalSuite, (_event, input) => service.updateSkillEvalSuite(input)),
+    registerIpcHandler(ipc, SKILLS_IPC.deleteEvalSuite, (_event, experimentId) => service.deleteSkillEvalSuite(experimentId)),
+    registerIpcHandler(ipc, SKILLS_IPC.getEvalSuiteCases, (_event, experimentId) => service.getSkillEvalSuiteCases(experimentId)),
+    registerIpcHandler(ipc, SKILLS_IPC.runEvalSuite, (_event, experimentId) => service.runSkillEvalSuite(experimentId)),
+    registerIpcHandler(ipc, SKILLS_IPC.getEvalSuiteRuns, (_event, experimentId) => service.getSkillEvalSuiteRuns(experimentId)),
+    registerIpcHandler(ipc, SKILLS_IPC.getEvalRun, (_event, runId) => service.getSkillEvalRun(runId)),
+    registerIpcHandler(ipc, SKILLS_IPC.cancelEvalRun, (_event, runId) => service.cancelSkillEvalRun(runId)),
   ]);
 }

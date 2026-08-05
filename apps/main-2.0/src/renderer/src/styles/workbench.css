@@ -641,7 +641,12 @@
   flex-direction: column;
 }
 
+.workbench-quota-pair[data-count="2"] .workbench-quota:first-child {
+  padding-right: 10px;
+}
+
 .workbench-quota + .workbench-quota {
+  padding-left: 10px;
   border-left: 1px solid var(--border-subtle);
 }
 

@@ -82,6 +82,7 @@ describe("remote session sync model", () => {
     expect(sql).toContain("agent-session-remote");
     expect(sql).toContain("storage.buckets");
     expect(sql).toContain("to anon");
+    expect(sql).toContain("'codewiz'");
     expect(sql).toContain("'cursor'");
     expect(sql).toContain("'hermes'");
     expect(sql).toContain(`${REMOTE_SESSION_TABLE}_source_agent_check`);
@@ -107,6 +108,22 @@ describe("remote session sync model", () => {
     expect(bucketRequest?.headers.get("authorization")).toBe("Bearer anon-key");
   });
 
+  it("omits large search text when listing sessions for sync comparison", async () => {
+    let requestUrl = "";
+    const client = new SupabaseRemoteSessionClient({
+      url: "https://example.supabase.co",
+      anonKey: "anon-key",
+      fetchImpl: async (url) => {
+        requestUrl = String(url);
+        return new Response("[]", { status: 200 });
+      },
+    });
+
+    await expect(client.listRemoteSessionsForSync()).resolves.toEqual([]);
+    expect(requestUrl).toContain("select=id,source_session_key");
+    expect(requestUrl).not.toContain("search_text");
+  });
+
   it("marks database setup failures as SQL-remediable", async () => {
     const missingTableClient = new SupabaseRemoteSessionClient({
       url: "https://example.supabase.co",
@@ -122,11 +139,11 @@ describe("remote session sync model", () => {
     const missingBucketClient = new SupabaseRemoteSessionClient({
       url: "https://example.supabase.co",
       anonKey: "anon-key",
-      fetchImpl: async () => {
+      fetchImpl: async (url) => {
         requestCount += 1;
-        return requestCount === 1
-          ? new Response("[]", { status: 200 })
-          : new Response(JSON.stringify({ message: "Bucket not found" }), { status: 404 });
+        return String(url).includes("/storage/v1/bucket/")
+          ? new Response(JSON.stringify({ message: "Bucket not found" }), { status: 404 })
+          : new Response("[]", { status: 200 });
       },
     });
 
@@ -224,7 +241,25 @@ describe("remote session sync model", () => {
     expect(parsePortableSession(portable).sourceAgent).toBe("hermes");
   });
 
-  it("builds upload payloads for indexed SSH remote sessions", () => {
+  it("builds and parses remote upload payloads for CodeWiz sessions", () => {
+    const codeWizSession: SessionSearchResult = {
+      ...SESSION,
+      sessionKey: "codewiz:abc",
+      rawId: "abc",
+      source: "codewiz-cli",
+      filePath: "/home/.codewiz/sessions.db#abc",
+      displayTitle: "CodeWiz review",
+    };
+    const portable = remotePortableSessionFrom(codeWizSession, MESSAGES);
+    const detail = buildRemoteSessionSnapshot(codeWizSession, MESSAGES, [], 10_000);
+    const { payload } = buildRemoteSessionPayload({ session: codeWizSession, detail, portable, now: 11_000 });
+
+    expect(portable.sourceAgent).toBe("codewiz");
+    expect(payload.source_agent).toBe("codewiz");
+    expect(parsePortableSession(portable).sourceAgent).toBe("codewiz");
+  });
+
+  it("builds upload payloads for indexed SSH remote sessions", async () => {
     const remoteSession: SessionSearchResult = {
       ...SESSION,
       sessionKey: "codex:ssh:abc",
@@ -241,7 +276,7 @@ describe("remote session sync model", () => {
       getTraceEvents: () => [],
     };
 
-    const { payload, portable } = buildRemoteSessionUploadFromStore(store, remoteSession.sessionKey, 12_000);
+    const { payload, portable } = await buildRemoteSessionUploadFromStore(store, remoteSession.sessionKey, 12_000);
 
     expect(portable).toMatchObject({
       sourceSessionKey: "codex:ssh:abc",
@@ -253,7 +288,7 @@ describe("remote session sync model", () => {
     expect(payload.source_environment_label).toBe("SSH dev");
   });
 
-  it("builds upload payloads for sessions without a project path", () => {
+  it("builds upload payloads for sessions without a project path", async () => {
     const session = { ...SESSION, projectPath: "" };
     const store = {
       getSession: () => session,
@@ -261,13 +296,13 @@ describe("remote session sync model", () => {
       getTraceEvents: () => [],
     };
 
-    const { payload, portable } = buildRemoteSessionUploadFromStore(store, session.sessionKey, 12_000);
+    const { payload, portable } = await buildRemoteSessionUploadFromStore(store, session.sessionKey, 12_000);
 
     expect(portable.projectPath).toBe("");
     expect(payload.project_path).toBe("");
   });
 
-  it("adds managed attachments to schema 2 snapshots without exposing local paths", () => {
+  it("adds managed attachments to schema 2 snapshots without exposing local paths", async () => {
     const directory = mkdtempSync(path.join(tmpdir(), "agent-recall-remote-attachment-"));
     try {
       const cachePath = path.join(directory, "shot.png");
@@ -293,7 +328,7 @@ describe("remote session sync model", () => {
         }),
       };
 
-      const built = buildRemoteSessionUploadFromStore(store, SESSION.sessionKey, 12_000);
+      const built = await buildRemoteSessionUploadFromStore(store, SESSION.sessionKey, 12_000);
 
       expect(built.detail.schemaVersion).toBe(2);
       expect(built.attachmentObjects).toHaveLength(1);
@@ -308,7 +343,7 @@ describe("remote session sync model", () => {
     }
   });
 
-  it("uploads complete source artifacts separately while keeping the visible snapshot filtered", () => {
+  it("uploads complete source artifacts separately while keeping the visible snapshot filtered", async () => {
     const discardedBranch = "discarded branch that is not visible in the indexed conversation";
     const rawTranscript = Buffer.from([
       JSON.stringify({ role: "user", content: "Login is broken" }),
@@ -327,7 +362,7 @@ describe("remote session sync model", () => {
       }],
     };
 
-    const built = buildRemoteSessionUploadFromStore(store, SESSION.sessionKey, 12_000);
+    const built = await buildRemoteSessionUploadFromStore(store, SESSION.sessionKey, 12_000);
 
     expect(built.detail.schemaVersion).toBe(3);
     expect(built.detail.messages.map((message) => message.content)).not.toContain(discardedBranch);
@@ -349,9 +384,9 @@ describe("remote session sync model", () => {
     expect(parseDetailSnapshot(JSON.parse(built.detailJson)).sourceArchive?.entries).toHaveLength(1);
   });
 
-  it("compresses large source artifacts before upload without changing their content revision", () => {
+  it("compresses large source artifacts before upload without changing their content revision", async () => {
     const rawTranscript = Buffer.alloc(5 * 1024 * 1024 + 137, "complete-source-archive");
-    const built = buildRemoteSessionUploadFromStore({
+    const built = await buildRemoteSessionUploadFromStore({
       getSession: () => SESSION,
       getAllMessages: () => MESSAGES,
       getTraceEvents: () => [],
@@ -395,7 +430,7 @@ describe("remote session sync model", () => {
     expect(remoteSessionContentHash(relocatedDetail, built.portable)).toBe(built.payload.content_hash);
   });
 
-  it("builds refresh revisions without preparing storage upload objects", () => {
+  it("builds refresh revisions without preparing storage upload objects", async () => {
     const store = {
       getSession: () => SESSION,
       getAllMessages: () => MESSAGES,
@@ -407,17 +442,17 @@ describe("remote session sync model", () => {
         mimeType: "application/x-ndjson",
       }],
     };
-    const upload = buildRemoteSessionUploadFromStore(store, SESSION.sessionKey, 12_000);
-    const revision = buildRemoteSessionRevisionFromStore(store, SESSION.sessionKey);
+    const upload = await buildRemoteSessionUploadFromStore(store, SESSION.sessionKey, 12_000);
+    const revision = await buildRemoteSessionRevisionFromStore(store, SESSION.sessionKey);
 
     expect(revision.payload.content_hash).toBe(upload.payload.content_hash);
     expect(revision.sourceObjects).toEqual([]);
     expect(revision.attachmentObjects).toEqual([]);
   });
 
-  it("still splits binary source artifacts into independently verified objects", () => {
+  it("still splits binary source artifacts into independently verified objects", async () => {
     const rawTranscript = Buffer.alloc(5 * 1024 * 1024 + 137, 0xab);
-    const built = buildRemoteSessionUploadFromStore({
+    const built = await buildRemoteSessionUploadFromStore({
       getSession: () => SESSION,
       getAllMessages: () => MESSAGES,
       getTraceEvents: () => [],
@@ -444,7 +479,7 @@ describe("remote session sync model", () => {
     })));
   });
 
-  it("changes the remote revision when only hidden raw source data changes", () => {
+  it("changes the remote revision when only hidden raw source data changes", async () => {
     const build = (raw: string) => buildRemoteSessionUploadFromStore({
       getSession: () => SESSION,
       getAllMessages: () => MESSAGES,
@@ -457,11 +492,12 @@ describe("remote session sync model", () => {
       }],
     }, SESSION.sessionKey, 12_000);
 
-    expect(build("visible\nhidden-a").payload.content_hash)
-      .not.toBe(build("visible\nhidden-b").payload.content_hash);
+    const first = await build("visible\nhidden-a");
+    const second = await build("visible\nhidden-b");
+    expect(first.payload.content_hash).not.toBe(second.payload.content_hash);
   });
 
-  it("ignores volatile Cursor layout data and reuses the previously uploaded archive", () => {
+  it("ignores volatile Cursor layout data and reuses the previously uploaded archive", async () => {
     const store = (layout: string) => ({
       getSession: () => ({ ...SESSION, source: "cursor-agent" as const }),
       getAllMessages: () => MESSAGES,
@@ -474,8 +510,8 @@ describe("remote session sync model", () => {
         mimeType: "application/json",
       }],
     });
-    const first = buildRemoteSessionUploadFromStore(store("100,200"), SESSION.sessionKey, 12_000);
-    const second = buildRemoteSessionUploadFromStore(store("110,210,310"), SESSION.sessionKey, 13_000);
+    const first = await buildRemoteSessionUploadFromStore(store("100,200"), SESSION.sessionKey, 12_000);
+    const second = await buildRemoteSessionUploadFromStore(store("110,210,310"), SESSION.sessionKey, 13_000);
 
     expect(first.detail.sourceArchive?.entries[0].sha256)
       .not.toBe(second.detail.sourceArchive?.entries[0].sha256);
@@ -483,7 +519,7 @@ describe("remote session sync model", () => {
       .toBe(second.detail.sourceArchive?.entries[0].revisionSha256);
     expect(first.payload.content_hash).toBe(second.payload.content_hash);
 
-    const reused = buildRemoteSessionUploadFromStore(
+    const reused = await buildRemoteSessionUploadFromStore(
       store("110,210,310"),
       SESSION.sessionKey,
       13_000,
@@ -496,7 +532,7 @@ describe("remote session sync model", () => {
     expect(reused.payload.content_hash).toBe(first.payload.content_hash);
   });
 
-  it("uploads cached messages without new source objects and keeps a previous source archive", () => {
+  it("uploads cached messages without new source objects and keeps a previous source archive", async () => {
     const sourceArchive = {
       schemaVersion: 1 as const,
       entries: [{
@@ -517,7 +553,7 @@ describe("remote session sync model", () => {
       getSessionSourceArtifacts: () => [],
     };
 
-    const built = buildRemoteSessionUploadFromStore(
+    const built = await buildRemoteSessionUploadFromStore(
       store,
       SESSION.sessionKey,
       12_000,
@@ -583,6 +619,34 @@ describe("remote session sync model", () => {
     expect(Object.fromEntries(buildSessionSyncItems(locals, remotes, bindings).map((item) => [item.local?.sessionKey ?? item.remote?.sourceSessionKey, item.state]))).toEqual({
       "local-only": "local-only", synced: "synced", "local-newer": "local-newer", "remote-newer": "remote-newer", conflict: "conflict", "remote-only": "remote-only",
     });
+  });
+
+  it("classifies lightweight sync overviews without rebuilding full revisions", () => {
+    const remote = {
+      id: "remote-overview", sourceSessionKey: SESSION.sessionKey, sourceAgent: "codex" as const,
+      sourceSource: SESSION.source, sourceEnvironmentId: "local", sourceEnvironmentKind: "local",
+      sourceEnvironmentLabel: "Local", title: SESSION.displayTitle, projectPath: SESSION.projectPath,
+      startedAt: "x", updatedAt: SESSION.lastActivityAt, contentHash: "base", revisionVersion: 2,
+      messageCount: SESSION.messageCount, traceEventCount: 0, aiSummary: SESSION.aiSummary, tags: SESSION.tags,
+      searchText: "", detailObjectKey: "d", portableObjectKey: "p", detailSha256: "dh",
+      portableSha256: "ph", createdAt: 1, syncedAt: 4_000,
+    };
+    const binding = {
+      localSessionKey: SESSION.sessionKey, remoteSessionId: remote.id, lastLocalRevision: "base",
+      lastRemoteRevision: "base", lastSyncedAt: 4_000, direction: "upload" as const,
+    };
+    const stateFor = (
+      session: SessionSearchResult,
+      remoteOverrides: Partial<typeof remote> = {},
+      bindings = [binding],
+    ) => buildSessionSyncItems([{ session, revision: null }], [{ ...remote, ...remoteOverrides }], bindings)[0].state;
+
+    expect(stateFor(SESSION)).toBe("synced");
+    expect(stateFor({ ...SESSION, displayTitle: "Renamed locally" })).toBe("local-newer");
+    expect(stateFor({ ...SESSION, environmentKind: "ssh", fileMtimeMs: 5_000 })).toBe("local-newer");
+    expect(stateFor(SESSION, { contentHash: "cloud-change" })).toBe("remote-newer");
+    expect(stateFor({ ...SESSION, fileMtimeMs: 5_000 }, { contentHash: "cloud-change" })).toBe("conflict");
+    expect(stateFor(SESSION, {}, [])).toBe("synced");
   });
 
   it("uses an explicit restore binding without duplicating the same remote session", () => {
@@ -696,7 +760,7 @@ describe("remote session sync model", () => {
     expect(parsePortableSession(PORTABLE)).toMatchObject({ isSubagent: false, parentSessionId: null });
   });
 
-  it("bundles indexed descendant agents into a parent remote upload", () => {
+  it("bundles indexed descendant agents into a parent remote upload", async () => {
     const child: SessionSearchResult = {
       ...SESSION,
       sessionKey: "codex:child",
@@ -734,7 +798,7 @@ describe("remote session sync model", () => {
       searchSessions: () => [...sessions.values()],
     };
 
-    const { portable, detail, sourceObjects } = buildRemoteSessionUploadFromStore(store, SESSION.sessionKey, 12_000);
+    const { portable, detail, sourceObjects } = await buildRemoteSessionUploadFromStore(store, SESSION.sessionKey, 12_000);
 
     expect(portable.sourceSessionId).toBe("abc");
     expect(portable.subagents).toHaveLength(2);
@@ -751,7 +815,7 @@ describe("remote session sync model", () => {
     expect(detail.sourceArchive?.entries.map((entry) => entry.sourceSessionId)).toEqual(["abc", "child", "grandchild"]);
   });
 
-  it("does not silently truncate source data after 200 descendant agents", () => {
+  it("does not silently truncate source data after 200 descendant agents", async () => {
     const children = Array.from({ length: 205 }, (_, index): SessionSearchResult => ({
       ...SESSION,
       sessionKey: `codex:child-${index}`,
@@ -775,7 +839,7 @@ describe("remote session sync model", () => {
       searchSessions: () => sessions,
     };
 
-    const built = buildRemoteSessionUploadFromStore(store, SESSION.sessionKey, 12_000);
+    const built = await buildRemoteSessionUploadFromStore(store, SESSION.sessionKey, 12_000);
 
     expect(built.portable.subagents).toHaveLength(205);
     expect(built.sourceObjects).toHaveLength(206);
@@ -907,6 +971,27 @@ describe("remote session sync model", () => {
 
     await expect(client.uploadSession(payload, detailJson, portableJson)).rejects.toThrow("temporary gateway failure");
     expect(storageWrites).toBe(0);
+  });
+
+  it("explains how to repair an outdated source agent constraint", async () => {
+    const detail = buildRemoteSessionSnapshot(SESSION, MESSAGES, [], 10_000);
+    const { payload, detailJson, portableJson } = buildRemoteSessionPayload({ session: SESSION, detail, portable: PORTABLE, now: 11_000 });
+    const client = new SupabaseRemoteSessionClient({
+      url: "https://example.supabase.co",
+      anonKey: "anon",
+      fetchImpl: async (url, init) => {
+        if (String(url).includes("/storage/v1/object/")) return new Response("{}", { status: 200 });
+        if (init?.method !== "POST") return new Response("[]", { status: 200 });
+        return new Response(JSON.stringify({
+          code: "23514",
+          message: `new row for relation "${REMOTE_SESSION_TABLE}" violates check constraint "${REMOTE_SESSION_TABLE}_source_agent_check"`,
+        }), { status: 400 });
+      },
+    });
+
+    await expect(client.uploadSession(payload, detailJson, portableJson)).rejects.toThrow(
+      "Copy and run the latest setup SQL, then try again.",
+    );
   });
 
   it("uploads source chunks with bounded concurrency", async () => {

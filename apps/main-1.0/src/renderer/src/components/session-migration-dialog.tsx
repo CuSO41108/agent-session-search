@@ -35,7 +35,7 @@ export function SessionMigrationDialog({
       <div className="command-dialog migration-dialog" onMouseDown={(event) => event.stopPropagation()}>
         <div className="dialog-title">
           <span>{l("Migrate session to…", "迁移会话到…")}</span>
-          <button type="button" className="icon-button" onClick={onClose} disabled={busy} aria-label={l("Close", "关闭")}>
+          <button type="button" className="icon-button" onClick={onClose} aria-label={busy ? l("Continue in background", "转到后台") : l("Close", "关闭")}>
             <X size={16} />
           </button>
         </div>

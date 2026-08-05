@@ -35,6 +35,7 @@ import { PostgresSessionSearchRepository } from "./postgres/session-search-repos
 import { PostgresSessionStatsRepository } from "./postgres/session-stats-repository";
 import {
   PostgresSessionTurnRepository,
+  type SessionImportTurn,
   type TraceEventQueryOptions,
 } from "./postgres/session-turn-repository";
 import {
@@ -87,7 +88,10 @@ export type {
   SubagentSessionNode,
   SubagentSessionSummary,
 } from "./session-family";
-export type { TraceEventQueryOptions } from "./postgres/session-turn-repository";
+export type {
+  SessionImportTurn,
+  TraceEventQueryOptions,
+} from "./postgres/session-turn-repository";
 export type {
   SkillPerformanceSignals,
   SkillSyncBinding,
@@ -577,6 +581,15 @@ export class SessionStore {
   async listSessionTurns(sessionKey: string): Promise<SessionTurnSummary[]> {
     await this.ready;
     return this.turns.listSessionTurns(sessionKey);
+  }
+
+  async listSessionImportTurns(
+    sessionKey: string,
+    afterTurnIndex: number | null,
+    limit: number,
+  ): Promise<SessionImportTurn[]> {
+    await this.ready;
+    return this.turns.listSessionImportTurns(sessionKey, afterTurnIndex, limit);
   }
 
   async getSessionTurn(sessionKey: string, turnId: string): Promise<SessionTurnDetail | null> {

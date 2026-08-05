@@ -213,6 +213,64 @@ export function listSkillUsageSources(options: SkillUsageOptions = {}): SkillUsa
   return sources.sort((a, b) => a.path.localeCompare(b.path));
 }
 
+export async function listSkillUsageSourcesAsync(options: SkillUsageOptions = {}): Promise<SkillUsageSource[]> {
+  const homeDir = options.homeDir ?? os.homedir();
+  const sources: SkillUsageSource[] = [];
+  const hookLogPath = resolveUsagePath(options);
+
+  await addJsonlSourcesAsync(sources, path.join(homeDir, ".claude", "projects"), "claude", "claude", "claude-session");
+  if (options.includeTclaude !== false) {
+    await addJsonlSourcesAsync(sources, path.join(homeDir, ".tclaude", "projects"), "claude", "tclaude", "claude-session");
+  }
+
+  const hookStat = await safeStatAsync(hookLogPath);
+  if (hookStat) {
+    sources.push({ agent: "claude", provider: "claude", kind: "claude-hook", path: hookLogPath, ...hookStat });
+    for (const source of sources) {
+      if (source.kind === "claude-session" && source.provider === "claude") source.hookLogPath = hookLogPath;
+    }
+  }
+
+  for (const codexSessionsDir of resolveCodexSessionDirs(options)) {
+    await addJsonlSourcesAsync(sources, codexSessionsDir, "codex", "codex", "codex-session");
+  }
+  if (options.includeTcodex !== false) {
+    await addJsonlSourcesAsync(sources, path.join(homeDir, ".tcodex", "sessions"), "codex", "tcodex", "codex-session");
+  }
+  if (options.includeCodeBuddyCli !== false) {
+    await addJsonlSourcesAsync(sources, path.join(homeDir, ".codebuddy", "projects"), "codex", "codebuddy", "codebuddy-session");
+  }
+  if (options.includeCursorAgent !== false) await addCursorSourcesAsync(sources, path.join(homeDir, ".cursor", "projects"));
+  if (options.includeOpenClaw !== false) {
+    await addOpenClawSourcesAsync(sources, path.join(homeDir, ".openclaw", "agents"));
+    await addOpenClawSourcesAsync(sources, path.join(homeDir, ".clawdbot", "agents"));
+  }
+  if (options.includeQoder !== false) {
+    await addJsonlSourcesAsync(
+      sources,
+      path.join(homeDir, ".qoder", "cache", "projects"),
+      "qoder",
+      "qoder",
+      "qoder-session",
+      "/conversation-history/",
+    );
+  }
+  if (options.includeHermes !== false) {
+    await addDatabaseSourceAsync(sources, path.join(homeDir, ".hermes", "state.db"), "hermes", "hermes-db");
+  }
+  if (options.includeOpenCode !== false) {
+    await addDatabaseSourceAsync(sources, path.join(homeDir, ".local", "share", "opencode", "opencode.db"), "opencode", "opencode-db");
+  }
+  if (options.includeCodeWizCli !== false) {
+    await addDatabaseSourceAsync(sources, path.join(homeDir, ".local", "share", "codewiz", "opencode.db"), "codewiz", "codewiz-db");
+  }
+  if (options.includeZcode !== false) {
+    await addDatabaseSourceAsync(sources, path.join(homeDir, ".zcode", "cli", "db", "db.sqlite"), "zcode", "zcode-db");
+  }
+
+  return sources.sort((a, b) => a.path.localeCompare(b.path));
+}
+
 export function readSkillUsageSourceEvents(source: SkillUsageSource): SkillUsageEvent[] {
   // The hook source no longer emits independent events: its skill_hash data is
   // merged into claude-session events at read time via enrichEventsWithHookHash.
@@ -771,6 +829,22 @@ function addJsonlSources(
   }
 }
 
+async function addJsonlSourcesAsync(
+  sources: SkillUsageSource[],
+  dir: string,
+  agent: SkillUsageAgent,
+  provider: SkillUsageProvider,
+  kind: SkillUsageSourceKind,
+  requiredPathPart?: string,
+): Promise<void> {
+  for await (const filePath of walkJsonlFilesAsync(dir)) {
+    const normalized = filePath.replace(/\\/g, "/");
+    if (requiredPathPart && !normalized.includes(requiredPathPart)) continue;
+    const stat = await safeStatAsync(filePath);
+    if (stat) sources.push({ agent, provider, kind, path: filePath, ...stat });
+  }
+}
+
 function addDatabaseSource(
   sources: SkillUsageSource[],
   filePath: string,
@@ -778,6 +852,16 @@ function addDatabaseSource(
   kind: SkillUsageSourceKind,
 ): void {
   const stat = safeStat(filePath);
+  if (stat) sources.push({ agent: "codex", provider, kind, path: filePath, ...stat });
+}
+
+async function addDatabaseSourceAsync(
+  sources: SkillUsageSource[],
+  filePath: string,
+  provider: SkillUsageProvider,
+  kind: SkillUsageSourceKind,
+): Promise<void> {
+  const stat = await safeStatAsync(filePath);
   if (stat) sources.push({ agent: "codex", provider, kind, path: filePath, ...stat });
 }
 
@@ -790,11 +874,29 @@ function addCursorSources(sources: SkillUsageSource[], projectsDir: string): voi
   }
 }
 
+async function addCursorSourcesAsync(sources: SkillUsageSource[], projectsDir: string): Promise<void> {
+  for await (const filePath of walkJsonlFilesAsync(projectsDir)) {
+    const normalized = filePath.replace(/\\/g, "/");
+    if (!normalized.includes("/agent-transcripts/")) continue;
+    const stat = await safeStatAsync(filePath);
+    if (stat) sources.push({ agent: "codex", provider: "cursor", kind: "cursor-session", path: filePath, ...stat });
+  }
+}
+
 function addOpenClawSources(sources: SkillUsageSource[], agentsDir: string): void {
   for (const filePath of walkJsonlFiles(agentsDir)) {
     const normalized = filePath.replace(/\\/g, "/");
     if (!normalized.includes("/sessions/") || normalized.endsWith(".trajectory.jsonl")) continue;
     const stat = safeStat(filePath);
+    if (stat) sources.push({ agent: "codex", provider: "openclaw", kind: "openclaw-session", path: filePath, ...stat });
+  }
+}
+
+async function addOpenClawSourcesAsync(sources: SkillUsageSource[], agentsDir: string): Promise<void> {
+  for await (const filePath of walkJsonlFilesAsync(agentsDir)) {
+    const normalized = filePath.replace(/\\/g, "/");
+    if (!normalized.includes("/sessions/") || normalized.endsWith(".trajectory.jsonl")) continue;
+    const stat = await safeStatAsync(filePath);
     if (stat) sources.push({ agent: "codex", provider: "openclaw", kind: "openclaw-session", path: filePath, ...stat });
   }
 }
@@ -814,6 +916,21 @@ function walkJsonlFiles(dir: string): string[] {
     else if (entry.isFile() && entry.name.endsWith(".jsonl")) files.push(entryPath);
   }
   return files;
+}
+
+async function* walkJsonlFilesAsync(dir: string): AsyncGenerator<string> {
+  let entries: fs.Dirent[];
+  try {
+    entries = await fs.promises.readdir(dir, { withFileTypes: true });
+  } catch {
+    return;
+  }
+
+  for (const entry of entries) {
+    const entryPath = path.join(dir, entry.name);
+    if (entry.isDirectory()) yield* walkJsonlFilesAsync(entryPath);
+    else if (entry.isFile() && entry.name.endsWith(".jsonl")) yield entryPath;
+  }
 }
 
 function forEachJsonlLine(filePath: string, visit: (line: string) => void): boolean {
@@ -860,6 +977,15 @@ function recordField(value: Record<string, unknown>, key: string): Record<string
 function safeStat(filePath: string): { mtimeMs: number; fileSize: number } | null {
   try {
     const stat = fs.statSync(filePath);
+    return stat.isFile() ? { mtimeMs: stat.mtimeMs, fileSize: stat.size } : null;
+  } catch {
+    return null;
+  }
+}
+
+async function safeStatAsync(filePath: string): Promise<{ mtimeMs: number; fileSize: number } | null> {
+  try {
+    const stat = await fs.promises.stat(filePath);
     return stat.isFile() ? { mtimeMs: stat.mtimeMs, fileSize: stat.size } : null;
   } catch {
     return null;

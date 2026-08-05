@@ -36,6 +36,12 @@ export interface EvaluationExperiment {
   agentId: string;
   evaluatorIds: string[];
   repetitions: number;
+  // Skill regression binding (phase four). Null for generic experiments created
+  // before skill binding existed. skill_hash is the SKILL.md hash at the
+  // time of the most recent run, refreshed before every run so each run is
+  // attributed to the version that actually executed it.
+  skillName?: string | null;
+  skillHash?: string | null;
   createdAt: number;
   updatedAt: number;
 }
@@ -70,6 +76,9 @@ export interface EvaluationRun {
   experimentId: string;
   status: "pending" | "running" | "completed" | "failed" | "cancelled";
   agentRevisionId?: string;
+  // SKILL.md fingerprint of the version that executed; null for generic
+  // (non-skill) experiments and runs recorded before attribution existed.
+  skillHash?: string | null;
   startedAt: number;
   finishedAt?: number;
   averageScore?: number;

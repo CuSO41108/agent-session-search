@@ -1181,6 +1181,27 @@ select:focus-visible {
   gap: 1px;
 }
 
+.tree-project-more {
+  display: flex;
+  width: calc(100% - 36px);
+  min-height: 24px;
+  align-items: center;
+  gap: 7px;
+  margin-left: 36px;
+  padding: 0 7px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-faint);
+  font-size: 12px;
+  text-align: left;
+}
+
+.tree-project-more:hover {
+  background: var(--panel-hover);
+  color: var(--text);
+}
+
 .tree-env-row {
   padding-left: 0;
 }

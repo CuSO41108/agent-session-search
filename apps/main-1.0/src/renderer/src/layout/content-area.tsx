@@ -1,5 +1,5 @@
 import type { ComponentProps, MouseEvent as ReactMouseEvent, ReactElement, ReactNode } from "react";
-import { ChevronDown } from "lucide-react";
+import { ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight } from "lucide-react";
 import type { SearchOptions, SessionMatchHit, SessionSearchResult, SessionSortBy } from "../../../core/types";
 import type { SavedSearch } from "../../../core/store/saved-searches";
 import { localize, type LanguageMode } from "../language";
@@ -41,9 +41,9 @@ export type ContentAreaProps = {
   bulkSelectionActive: boolean;
   bulkSelectedKeys: Set<string>;
   onToggleBulk: (sessionKey: string) => void;
-  hasMoreSessions: boolean;
-  onLoadMore: () => void;
-  loadMoreCount: number;
+  currentPage: number;
+  totalPages: number;
+  onPageChange: (page: number) => void;
 };
 
 export function ContentArea(props: ContentAreaProps): ReactElement {
@@ -77,9 +77,9 @@ export function ContentArea(props: ContentAreaProps): ReactElement {
     bulkSelectionActive,
     bulkSelectedKeys,
     onToggleBulk,
-    hasMoreSessions,
-    onLoadMore,
-    loadMoreCount,
+    currentPage,
+    totalPages,
+    onPageChange,
   } = props;
   const t = (en: string, zh: string) => localize(language, en, zh);
 
@@ -111,7 +111,7 @@ export function ContentArea(props: ContentAreaProps): ReactElement {
 
       {resultsHeader}
 
-      <div className="results">
+      <div key={currentPage} className="results">
         <GroupedResults
           sessions={sessions}
           groupMode={groupMode}
@@ -129,14 +129,42 @@ export function ContentArea(props: ContentAreaProps): ReactElement {
           bulkSelectedKeys={bulkSelectedKeys}
           onToggleBulk={onToggleBulk}
         />
-        {sessions.length === 0 && !hasMoreSessions ? <div className="empty">{t("No sessions found.", "没有找到会话。")}</div> : null}
-        {hasMoreSessions ? (
-          <button className="load-more-sessions" onClick={onLoadMore}>
-            <ChevronDown size={14} />
-            {t(`Load ${loadMoreCount} more`, `再加载 ${loadMoreCount} 个`)}
-          </button>
-        ) : null}
+        {sessions.length === 0 ? <div className="empty">{t("No sessions found.", "没有找到会话。")}</div> : null}
       </div>
+      {totalPages > 1 ? (
+        <nav className="session-pagination" aria-label={t("Session pages", "会话分页")}>
+          <button type="button" className="pagination-button" onClick={() => onPageChange(1)} disabled={currentPage === 1} title={t("First page", "第一页")} aria-label={t("First page", "第一页")}><ChevronsLeft size={14} /></button>
+          <button type="button" className="pagination-button" onClick={() => onPageChange(currentPage - 1)} disabled={currentPage === 1} title={t("Previous page", "上一页")} aria-label={t("Previous page", "上一页")}><ChevronLeft size={14} /></button>
+          <div className="pagination-pages">
+            {paginationItems(currentPage, totalPages).map((item) => (
+              <button
+                key={item}
+                type="button"
+                className={`pagination-button ${item === currentPage ? "active" : ""}`}
+                data-page={item}
+                aria-current={item === currentPage ? "page" : undefined}
+                aria-label={t(`Page ${item}`, `第 ${item} 页`)}
+                onClick={() => onPageChange(item)}
+              >
+                {item}
+              </button>
+            ))}
+          </div>
+          <button type="button" className="pagination-button" onClick={() => onPageChange(currentPage + 1)} disabled={currentPage === totalPages} title={t("Next page", "下一页")} aria-label={t("Next page", "下一页")}><ChevronRight size={14} /></button>
+          <button type="button" className="pagination-button" onClick={() => onPageChange(totalPages)} disabled={currentPage === totalPages} title={t("Last page", "最后一页")} aria-label={t("Last page", "最后一页")}><ChevronsRight size={14} /></button>
+          <form className="pagination-jump" onSubmit={(event) => { event.preventDefault(); const value = Number(new FormData(event.currentTarget).get("page")); if (Number.isInteger(value)) onPageChange(Math.min(totalPages, Math.max(1, value))); }}>
+            <input key={`${currentPage}-${totalPages}`} name="page" type="number" min={1} max={totalPages} defaultValue={currentPage} aria-label={t("Page number", "页码")} />
+            <span>/ {totalPages}</span>
+            <button type="submit">{t("Go", "跳转")}</button>
+          </form>
+        </nav>
+      ) : null}
     </section>
   );
+}
+
+function paginationItems(currentPage: number, totalPages: number): number[] {
+  const startPage = Math.max(1, currentPage - 2);
+  const endPage = Math.min(totalPages, currentPage + 2);
+  return Array.from({ length: endPage - startPage + 1 }, (_, index) => startPage + index);
 }

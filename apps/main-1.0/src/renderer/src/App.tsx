@@ -27,7 +27,7 @@ import { LIVE_SESSION_REFRESH_INTERVAL_MS, QUOTA_REFRESH_INTERVAL_MS } from "../
 import type { AppSettings, AppSettingsUpdate } from "../../core/platform";
 import type { MigrationTargetSettings } from "../../core/migration-targets";
 import type { RemoteHealthReport } from "../../core/remote-health";
-import type { RemoteSessionDetailSnapshot, RemoteSessionListItem } from "../../core/remote-session-sync";
+import type { RemoteSessionDetailSnapshot } from "../../core/remote-session-sync";
 import type { SessionFamily } from "../../core/session-family";
 import { canDeleteSessionLocally } from "../../core/session-environment";
 import type { SessionSyncHookStatus } from "../../core/session-sync-queue";
@@ -77,11 +77,7 @@ import { coalesceIndexStatusForRender } from "./index-status";
 import { reduceIndexFeedback } from "./index-status-feedback";
 import { readInitialTheme, THEME_STORAGE_KEY, type ThemeMode } from "./theme";
 import { loadSkillsPanelData } from "./skills-load";
-import {
-  applyRemoteSessionDeletion,
-  applyRemoteSessionUpload,
-  EMPTY_REMOTE_SESSIONS_CACHE,
-} from "./remote-sessions-cache";
+import { createLatestTaskQueue, type LatestTaskQueue } from "./latest-task-queue";
 import type {
   ActionStatus,
   ContextMenuState,
@@ -108,6 +104,7 @@ import type { RulesSyncSnapshot } from "../../core/rules-sync";
 import type { MemoriesSyncSnapshot } from "../../core/memories-sync";
 import { AiAssistantDialog } from "./components/ai-assistant-dialog";
 import { RemoteSessionsDialog } from "./features/remote-sessions/remote-sessions-dialog";
+import { useRemoteSessionsCache } from "./features/remote-sessions/use-remote-sessions-cache";
 import { SupabaseSetupGuide } from "./components/supabase-setup-guide";
 import { useClampedContextMenuStyle } from "./context-menu-position";
 import { Sidebar } from "./layout/sidebar";
@@ -160,6 +157,7 @@ const OPTIONAL_SOURCE_SETTINGS = OPTIONAL_SESSION_SOURCE_DESCRIPTORS.map((descri
   pendingKey: descriptor.pendingKey,
   filter: descriptor.id,
 }));
+const OPTIONAL_SOURCE_REFRESH_SETTLE_MS = 120;
 
 function emptyPendingPersonalSources(): Record<PendingSourceKey, boolean> {
   return Object.fromEntries(
@@ -167,7 +165,6 @@ function emptyPendingPersonalSources(): Record<PendingSourceKey, boolean> {
   ) as Record<PendingSourceKey, boolean>;
 }
 
-const INITIAL_SESSION_LIMIT = 30;
 const SESSION_PAGE_SIZE = 30;
 
 function formatDateInput(date: Date): string {
@@ -294,10 +291,10 @@ export function App(): ReactElement {
   const [dateRange, setDateRange] = useState<DateRangeFilter>("all");
   const [sortBy, setSortBy] = useState<SessionSortBy>("smart");
   const [liveStatus, setLiveStatus] = useState<LiveStatusFilter>("all");
-  const [sessionLimit, setSessionLimit] = useState(INITIAL_SESSION_LIMIT);
+  const [sessionPage, setSessionPage] = useState(1);
   const [sessionTotalCount, setSessionTotalCount] = useState(0);
-  const [hasMoreSessions, setHasMoreSessions] = useState(false);
   const [results, setResults] = useState<SessionSearchResult[]>([]);
+  const [resultsScopeKey, setResultsScopeKey] = useState<string | null>(null);
   const [tags, setTags] = useState<string[]>([]);
   const [projects, setProjects] = useState<ProjectSummary[]>([]);
   const [projectTags, setProjectTags] = useState<ProjectTagEntry[]>([]);
@@ -309,7 +306,7 @@ export function App(): ReactElement {
   const [statsTrendLoading, setStatsTrendLoading] = useState(false);
   const [statsFeedback, setStatsFeedback] = useState<StatsFeedback>(null);
   const [quotas, setQuotas] = useState<UsageQuotaSnapshot>(EMPTY_QUOTAS);
-  const [quotaLoading, setQuotaLoading] = useState(false);
+  const [quotaLoading, setQuotaLoading] = useState(true);
   const [quotaFeedback, setQuotaFeedback] = useState<QuotaFeedback>(null);
   const [liveSessions, setLiveSessions] = useState<LiveSessionSnapshot>(EMPTY_LIVE_SESSIONS);
   const [indexStatus, setIndexStatus] = useState<IndexStatus | null>(null);
@@ -325,7 +322,9 @@ export function App(): ReactElement {
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
   const [dialog, setDialog] = useState<DialogState>(null);
   const [migrationDialog, setMigrationDialog] = useState<SessionMigrationDialogState>(null);
+  const migrationDialogRef = useRef<SessionMigrationDialogState>(null);
   const [migrationProgress, setMigrationProgress] = useState<SessionMigrationProgress | null>(null);
+  const [migrationBusy, setMigrationBusy] = useState(false);
   const [deleteTagName, setDeleteTagName] = useState<string | null>(null);
   const [deleteSessionCandidate, setDeleteSessionCandidate] = useState<SessionSearchResult | null>(null);
   const [deleteSessionCascadeCount, setDeleteSessionCascadeCount] = useState<number | null>(null);
@@ -366,7 +365,7 @@ export function App(): ReactElement {
   const [apiConfigOpen, setApiConfigOpen] = useState(false);
   const [aiAssistantOpen, setAiAssistantOpen] = useState(false);
   const [remoteSessionsOpen, setRemoteSessionsOpen] = useState(false);
-  const [remoteSessionsCache, setRemoteSessionsCache] = useState(EMPTY_REMOTE_SESSIONS_CACHE);
+  const remoteSessions = useRemoteSessionsCache();
   const [installedSkills, setInstalledSkills] = useState<InstalledSkillsSnapshot>(EMPTY_SKILLS);
   const [skillSyncSnapshot, setSkillSyncSnapshot] = useState<SkillSyncSnapshot>(EMPTY_SKILL_SYNC);
   const [skillsLoading, setSkillsLoading] = useState(false);
@@ -387,21 +386,42 @@ export function App(): ReactElement {
   const metadataLoadSeqRef = useRef(0);
   const statsLoadSeqRef = useRef(0);
   const statsTrendLoadSeqRef = useRef(0);
+  const indexStatusEventVersionRef = useRef(0);
+  const indexRunningRef = useRef(false);
+  const completedIndexRefreshKeyRef = useRef<string | null>(null);
+  const completedIndexRefreshPromiseRef = useRef<Promise<void>>(Promise.resolve());
   const detailLoadSeqRef = useRef(0);
-  const remoteSessionsLoadSeqRef = useRef(0);
-  const remoteSessionsLoadPromiseRef = useRef<Promise<void> | null>(null);
+  const appSettingsRef = useRef<AppSettings | null>(null);
+  const settingsUpdateQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const optionalSourceRefreshGenerationRef = useRef(0);
+  const optionalSourceIndexRefreshKeysRef = useRef(new Set<PendingSourceKey>());
+  const [optionalSourceRefreshQueue] = useState(() =>
+    createLatestTaskQueue<void>({ settleMs: OPTIONAL_SOURCE_REFRESH_SETTLE_MS }));
+  const favoriteSaveQueuesRef = useRef(new Map<string, LatestTaskQueue<void>>());
+  const favoriteSaveVersionsRef = useRef(new Map<string, number>());
   const searchRef = useRef<HTMLInputElement>(null);
   const environmentIdRef = useRef(environmentId);
   const projectPathRef = useRef(projectPath);
   const projectEnvironmentIdRef = useRef(projectEnvironmentId);
+  const loadRef = useRef<() => Promise<void>>(() => Promise.resolve());
+  const loadSidebarMetadataRef = useRef<() => Promise<void>>(() => Promise.resolve());
+  const loadStatsRef = useRef<() => Promise<void>>(() => Promise.resolve());
+  const [refreshQueues] = useState(() => ({
+    sessions: createLatestTaskQueue<void>(),
+    metadata: createLatestTaskQueue<void>(),
+    stats: createLatestTaskQueue<void>(),
+  }));
   environmentIdRef.current = environmentId;
   projectPathRef.current = projectPath;
   projectEnvironmentIdRef.current = projectEnvironmentId;
+  appSettingsRef.current = appSettings;
+  migrationDialogRef.current = migrationDialog;
   const t = useCallback((en: string, zh: string) => localize(language, en, zh), [language]);
   const searchScopeKey = useMemo(
     () => JSON.stringify([query, source, environmentId, tag ?? "", projectPath ?? "", projectEnvironmentId ?? "", visibility, dateRange, sortBy, liveStatus]),
     [query, source, environmentId, tag, projectPath, projectEnvironmentId, visibility, dateRange, sortBy, liveStatus],
   );
+  const previousSearchScopeKeyRef = useRef(searchScopeKey);
   const liveSessionKeys = useMemo(
     () => new Set(liveSessions.sessions.map((session) => `${session.family}:${session.rawId}`)),
     [liveSessions],
@@ -431,8 +451,9 @@ export function App(): ReactElement {
     return page.sessions;
   }, [environmentId, projectPath, projectEnvironmentId, dateRange, query, source, tag, visibility, sortBy, liveStatus, liveDetectionFailed, liveSearchKeys, t]);
 
-  const load = useCallback(async () => {
+  const load = useCallback((): Promise<void> => {
     const requestId = ++loadSeqRef.current;
+    const requestScopeKey = searchScopeKey;
     const searchScope = resolveSearchScope(environmentId, projectPath, projectEnvironmentId);
     const { dateFrom, dateTo } = resolveDateRange(dateRange);
     const options: SearchOptions = {
@@ -445,52 +466,89 @@ export function App(): ReactElement {
       sortBy,
       dateFrom,
       dateTo,
-      limit: sessionLimit,
+      limit: SESSION_PAGE_SIZE,
+      offset: (sessionPage - 1) * SESSION_PAGE_SIZE,
       liveStatus: liveStatus === "all" ? undefined : liveStatus,
       liveSessionKeys: liveDetectionFailed ? [] : liveSearchKeys,
     };
-    const page = searchScope.projectEnvironmentConflict
-      ? { sessions: [], totalCount: 0, hasMore: false }
-      : await window.sessionSearch.searchSessionPage(options);
-    if (requestId !== loadSeqRef.current) return;
-    // Applying results re-renders the (unvirtualized) list, so mark it as a
-    // transition to keep it interruptible and avoid blocking active typing.
-    startTransition(() => {
-      setResults(page.sessions);
-      setSessionTotalCount(page.totalCount);
-      setHasMoreSessions(page.hasMore);
-      setSelectedKey((current) =>
-        current && !page.sessions.some((session) => session.sessionKey === current) ? null : current,
-      );
+    return refreshQueues.sessions.request(async () => {
+      const page = searchScope.projectEnvironmentConflict
+        ? { sessions: [], totalCount: 0, hasMore: false }
+        : await window.sessionSearch.searchSessionPage(options);
+      if (requestId !== loadSeqRef.current) return;
+      const lastPage = Math.max(1, Math.ceil(page.totalCount / SESSION_PAGE_SIZE));
+      if (sessionPage > lastPage) {
+        setSessionPage(lastPage);
+        return;
+      }
+      startTransition(() => {
+        setResults(page.sessions);
+        setResultsScopeKey(requestScopeKey);
+        setSessionTotalCount(page.totalCount);
+        setSelectedKey((current) =>
+          current && !page.sessions.some((session) => session.sessionKey === current) ? null : current,
+        );
+      });
     });
-  }, [query, source, environmentId, tag, projectPath, projectEnvironmentId, visibility, dateRange, sortBy, sessionLimit, liveStatus, liveDetectionFailed, liveSearchKeys]);
+  }, [query, source, environmentId, tag, projectPath, projectEnvironmentId, visibility, dateRange, sortBy, sessionPage, liveStatus, liveDetectionFailed, liveSearchKeys, refreshQueues.sessions, searchScopeKey]);
 
   useEffect(() => {
     setBulkSelectionActive(false);
     setBulkSelectedKeys(new Set());
   }, [searchScopeKey]);
 
-  const loadSidebarMetadata = useCallback(async () => {
+  const loadSidebarMetadata = useCallback((): Promise<void> => {
     const requestId = ++metadataLoadSeqRef.current;
-    const [nextTags, nextProjects, nextEnvironments, nextProjectTags] = await Promise.all([
-      window.sessionSearch.listTags(),
-      window.sessionSearch.listProjects(),
-      window.sessionSearch.listEnvironments(),
-      window.sessionSearch.listTagsByProject(),
-    ]);
-    if (requestId !== metadataLoadSeqRef.current) return;
-    setTags(nextTags);
-    setProjects(nextProjects);
-    setEnvironments(nextEnvironments);
-    setProjectTags(nextProjectTags);
-  }, []);
+    return refreshQueues.metadata.request(async () => {
+      const nextEnvironments = await window.sessionSearch.listEnvironments();
+      if (requestId !== metadataLoadSeqRef.current) return;
+      setEnvironments(nextEnvironments);
+      const nextTags = await window.sessionSearch.listTags();
+      if (requestId !== metadataLoadSeqRef.current) return;
+      setTags(nextTags);
+      const nextProjects = await window.sessionSearch.listProjects();
+      if (requestId !== metadataLoadSeqRef.current) return;
+      setProjects(nextProjects);
+      const nextProjectTags = await window.sessionSearch.listTagsByProject();
+      if (requestId !== metadataLoadSeqRef.current) return;
+      setProjectTags(nextProjectTags);
+    });
+  }, [refreshQueues.metadata]);
 
-  const loadStats = useCallback(async () => {
+  const loadStats = useCallback((): Promise<void> => {
     const requestId = ++statsLoadSeqRef.current;
-    const nextStats = await window.sessionSearch.getStats({ period: statsPeriod });
-    if (requestId !== statsLoadSeqRef.current) return;
-    setStats(nextStats);
-  }, [statsPeriod]);
+    return refreshQueues.stats.request(async () => {
+      const nextStats = await window.sessionSearch.getStats({ period: statsPeriod });
+      if (requestId !== statsLoadSeqRef.current) return;
+      setStats(nextStats);
+    });
+  }, [refreshQueues.stats, statsPeriod]);
+
+  loadRef.current = load;
+  loadSidebarMetadataRef.current = loadSidebarMetadata;
+  loadStatsRef.current = loadStats;
+
+  const refreshAfterCompletedIndex = useCallback((status: IndexStatus): Promise<void> => {
+    const refreshKey = JSON.stringify([
+      status.lastIndexedAt,
+      status.indexed,
+      status.skipped,
+      status.total,
+      status.error,
+    ]);
+    if (completedIndexRefreshKeyRef.current === refreshKey) return completedIndexRefreshPromiseRef.current;
+    completedIndexRefreshKeyRef.current = refreshKey;
+    const refreshPromise = (async () => {
+      await loadRef.current();
+      await loadSidebarMetadataRef.current();
+      await loadStatsRef.current();
+    })().catch((error) => {
+      if (completedIndexRefreshKeyRef.current === refreshKey) completedIndexRefreshKeyRef.current = null;
+      throw error;
+    });
+    completedIndexRefreshPromiseRef.current = refreshPromise;
+    return refreshPromise;
+  }, []);
 
   const fetchStatsTrend = useCallback(async () => {
     if (statsPeriod === "allTime") return;
@@ -597,45 +655,19 @@ export function App(): ReactElement {
     }
   }, [t]);
 
-  const loadRemoteSessionsCache = useCallback((): Promise<void> => {
-    if (remoteSessionsLoadPromiseRef.current) return remoteSessionsLoadPromiseRef.current;
-    const requestId = ++remoteSessionsLoadSeqRef.current;
-    const request = (async () => {
-      setRemoteSessionsCache((current) => ({ ...current, loading: true, error: null }));
-      try {
-        const status = await window.sessionSearch.getRemoteSessionStatus();
-        const items = status.kind === "ready" ? await window.sessionSearch.listSessionSyncItems() : [];
-        if (requestId !== remoteSessionsLoadSeqRef.current) return;
-        setRemoteSessionsCache({ status, items, loading: false, error: null });
-      } catch (error) {
-        if (requestId !== remoteSessionsLoadSeqRef.current) return;
-        setRemoteSessionsCache((current) => ({
-          ...current,
-          loading: false,
-          error: error instanceof Error ? error.message : String(error),
-        }));
-      }
-    })();
-    remoteSessionsLoadPromiseRef.current = request;
-    void request.finally(() => {
-      if (remoteSessionsLoadPromiseRef.current === request) remoteSessionsLoadPromiseRef.current = null;
-    });
-    return request;
-  }, []);
-
-  const cacheRemoteSessionUpload = useCallback((localSessionKey: string, remote: RemoteSessionListItem) => {
-    setRemoteSessionsCache((current) => ({
-      ...current,
-      items: applyRemoteSessionUpload(current.items, localSessionKey, remote),
-    }));
-  }, []);
-
-  const cacheRemoteSessionDeletion = useCallback((remoteIds: string[]) => {
-    setRemoteSessionsCache((current) => ({
-      ...current,
-      items: applyRemoteSessionDeletion(current.items, remoteIds),
-    }));
-  }, []);
+  const continueRemoteSessionsInBackground = useCallback((): void => {
+    const message = t(
+      "Remote sessions are continuing to load in the background.",
+      "已转到后台，远程会话会继续加载。",
+    );
+    void remoteSessions.ensureLoaded();
+    setRemoteSessionsOpen(false);
+    setActionStatus({ kind: "success", message });
+    window.setTimeout(() => {
+      setActionStatus((current) =>
+        current?.kind === "success" && current.message === message ? null : current);
+    }, 2400);
+  }, [remoteSessions.ensureLoaded, t]);
 
   useEffect(() => {
     skillSyncSnapshotRef.current = skillSyncSnapshot;
@@ -713,20 +745,46 @@ export function App(): ReactElement {
       const remainingSkillIds: string[] = [];
       const failureDetails: string[] = [];
       try {
-        for (const skill of uploadable) {
-          try {
-            const result = await window.sessionSearch.uploadSkillToSync(skill.path, false);
-            if (result.status === "uploaded") uploaded += 1;
-            else if (result.status === "skipped") skipped += 1;
-            else {
-              conflicts += 1;
-              remainingSkillIds.push(skill.id);
-              failureDetails.push(t(`${skill.name}: confirm before replacing the existing remote source.`, `${skill.name}：需要确认是否替换现有远程来源。`));
+        const outcomes = new Array<{ skill: InstalledSkill; result?: SkillSyncUploadOutcome; error?: unknown }>(uploadable.length);
+        let nextIndex = 0;
+        let completed = 0;
+        const worker = async (): Promise<void> => {
+          while (true) {
+            const index = nextIndex;
+            nextIndex += 1;
+            const skill = uploadable[index];
+            if (!skill) return;
+            try {
+              outcomes[index] = { skill, result: await window.sessionSearch.uploadSkillToSync(skill.path, false) };
+            } catch (error) {
+              outcomes[index] = { skill, error };
             }
-          } catch (error) {
+            completed += 1;
+            setSkillsFeedback({
+              kind: "running",
+              message: t(
+                `Uploading selected skills: ${completed}/${uploadable.length}...`,
+                `正在上传所选 Skills：${completed}/${uploadable.length}...`,
+              ),
+            });
+          }
+        };
+        await Promise.all(Array.from({ length: Math.min(2, uploadable.length) }, () => worker()));
+        for (const outcome of outcomes) {
+          const { skill, result, error } = outcome;
+          if (error) {
             failed += 1;
             remainingSkillIds.push(skill.id);
             failureDetails.push(`${skill.name}: ${error instanceof Error ? error.message : String(error)}`);
+            continue;
+          }
+          if (!result) continue;
+          if (result.status === "uploaded") uploaded += 1;
+          else if (result.status === "skipped") skipped += 1;
+          else {
+            conflicts += 1;
+            remainingSkillIds.push(skill.id);
+            failureDetails.push(t(`${skill.name}: confirm before replacing the existing remote source.`, `${skill.name}：需要确认是否替换现有远程来源。`));
           }
         }
         await loadSkills({ silent: true });
@@ -796,37 +854,62 @@ export function App(): ReactElement {
   }, []);
 
   useEffect(() => {
-    setSessionLimit(INITIAL_SESSION_LIMIT);
-    setHasMoreSessions(false);
-  }, [searchScopeKey]);
-
-  useEffect(() => {
-    // Typing is debounced inside SearchBox, so the search can run immediately
-    // here; filter and sort changes then respond without an extra delay.
+    const scopeChanged = previousSearchScopeKeyRef.current !== searchScopeKey;
+    previousSearchScopeKeyRef.current = searchScopeKey;
+    if (scopeChanged) {
+      if (sessionPage !== 1) {
+        setSessionPage(1);
+        return;
+      }
+    }
     void load();
-  }, [load]);
+  }, [load, searchScopeKey, sessionPage]);
 
   useEffect(() => {
-    void loadSidebarMetadata();
-  }, [loadSidebarMetadata]);
-
-  useEffect(() => {
-    void loadStats();
-  }, [loadStats]);
-
-  useEffect(() => {
-    void loadQuotas();
+    const initialTimer = window.setTimeout(() => void loadQuotas(), 100);
     const timer = window.setInterval(() => void loadQuotas("background"), QUOTA_REFRESH_INTERVAL_MS);
     const unsubscribe = window.sessionSearch.onQuotaUpdated((snapshot) => setQuotas(snapshot));
     return () => {
+      window.clearTimeout(initialTimer);
       window.clearInterval(timer);
       unsubscribe();
     };
   }, [loadQuotas]);
 
   useEffect(() => {
-    void loadRemoteSessionsCache();
-  }, [loadRemoteSessionsCache]);
+    const timer = window.setTimeout(() => {
+      void loadSidebarMetadata().catch(() => undefined);
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [loadSidebarMetadata]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      void loadStats().catch((error) => {
+        setStatsFeedback({ kind: "error", message: error instanceof Error ? error.message : String(error) });
+      });
+    }, 50);
+    return () => window.clearTimeout(timer);
+  }, [loadStats]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => void refreshLiveSessions(), 300);
+    return () => {
+      window.clearTimeout(timer);
+    };
+  }, [refreshLiveSessions]);
+
+  useEffect(() => {
+    if (!remoteSessionsOpen || remoteSessions.cache.initialized) return;
+    let timeoutId: number | null = null;
+    const frameId = window.requestAnimationFrame(() => {
+      timeoutId = window.setTimeout(() => void remoteSessions.ensureLoaded(), 0);
+    });
+    return () => {
+      window.cancelAnimationFrame(frameId);
+      if (timeoutId !== null) window.clearTimeout(timeoutId);
+    };
+  }, [remoteSessions.cache.initialized, remoteSessions.ensureLoaded, remoteSessionsOpen]);
 
   useEffect(() => {
     if (skillsOpen) void loadSkills({ refreshUsage: true, silent: true });
@@ -924,7 +1007,6 @@ export function App(): ReactElement {
   }, [t]);
 
   useEffect(() => {
-    void refreshLiveSessions();
     const timer = window.setInterval(() => void refreshLiveSessions(), LIVE_SESSION_REFRESH_INTERVAL_MS);
     return () => window.clearInterval(timer);
   }, [refreshLiveSessions]);
@@ -1007,16 +1089,28 @@ export function App(): ReactElement {
   }, []);
 
   useEffect(() => {
-    const offIndex = window.sessionSearch.onIndexStatus((nextStatus) => {
+    let active = true;
+    const snapshotEventVersion = indexStatusEventVersionRef.current;
+    const applyIndexStatus = (nextStatus: IndexStatus): void => {
+      indexRunningRef.current = nextStatus.running;
       setIndexStatus((current) => coalesceIndexStatusForRender(current, nextStatus));
       setRefreshFeedback((current) => reduceIndexFeedback(current, { type: "index-status", status: nextStatus }));
+    };
+    const offIndex = window.sessionSearch.onIndexStatus((nextStatus) => {
+      indexStatusEventVersionRef.current += 1;
+      applyIndexStatus(nextStatus);
       if (!nextStatus.running) {
         setSessionFamilyRefreshVersion((current) => current + 1);
-        void load();
-        void loadSidebarMetadata();
-        void loadStats();
+        void refreshAfterCompletedIndex(nextStatus).catch((error) => {
+          setStatsFeedback({ kind: "error", message: error instanceof Error ? error.message : String(error) });
+        });
       }
     });
+    void window.sessionSearch.getIndexStatus()
+      .then((nextStatus) => {
+        if (active && indexStatusEventVersionRef.current === snapshotEventVersion) applyIndexStatus(nextStatus);
+      })
+      .catch(() => undefined);
     const offFocus = window.sessionSearch.onFocusSearch(() => searchRef.current?.focus());
     const offOpenSettings = window.sessionSearch.onOpenSettings(() => {
       setSkillsOpen(false);
@@ -1048,9 +1142,10 @@ export function App(): ReactElement {
         }
         return current;
       });
-      void load();
+      if (!indexRunningRef.current) void loadRef.current();
     });
     return () => {
+      active = false;
       offIndex();
       offFocus();
       offOpenSettings();
@@ -1059,7 +1154,7 @@ export function App(): ReactElement {
       offOpenSession();
       offEnvironments();
     };
-  }, [load, loadSidebarMetadata, loadStats]);
+  }, [refreshAfterCompletedIndex]);
 
   useEffect(() => {
     void window.sessionSearch.getAppUpdateStatus(false).then(setAppUpdateStatus).catch(() => undefined);
@@ -1072,10 +1167,12 @@ export function App(): ReactElement {
     });
   }, [language]);
 
+  const resultsMatchSearchScope = resultsScopeKey === searchScopeKey;
   const displayedResults = useMemo(
-    () => filterSessionsByLiveStatus(results, liveSessionKeys, liveStatus, liveDetectionFailed),
-    [results, liveSessionKeys, liveStatus, liveDetectionFailed],
+    () => filterSessionsByLiveStatus(resultsMatchSearchScope ? results : [], liveSessionKeys, liveStatus, liveDetectionFailed),
+    [resultsMatchSearchScope, results, liveSessionKeys, liveStatus, liveDetectionFailed],
   );
+  const displayedSessionTotalCount = resultsMatchSearchScope ? sessionTotalCount : 0;
   const selected = useMemo(
     () => displayedResults.find((session) => session.sessionKey === selectedKey) || null,
     [displayedResults, selectedKey],
@@ -1105,9 +1202,9 @@ export function App(): ReactElement {
       if (event.key === "Escape") {
         if (sshDialogOpen) setSshDialogOpen(false);
         else if (wslDialogOpen) setWslDialogOpen(false);
-        else if (migrationDialog) setMigrationDialog(null);
+        else if (migrationDialog) closeMigrationDialog();
         else if (dialog) setDialog(null);
-        else if (bulkDeleteDialog && !bulkDeleteBusy) setBulkDeleteDialog(null);
+        else if (bulkDeleteDialog) setBulkDeleteDialog(null);
         else if (deleteSessionCandidate && !deletingSession) setDeleteSessionCandidate(null);
         else if (deleteTagName) setDeleteTagName(null);
         else if (contextMenu) setContextMenu(null);
@@ -1348,11 +1445,9 @@ export function App(): ReactElement {
   }
 
   async function refreshAfterAction(options: { metadata?: boolean; stats?: boolean } = {}): Promise<void> {
-    await Promise.all([
-      load(),
-      options.metadata ? loadSidebarMetadata() : Promise.resolve(),
-      options.stats ? loadStats() : Promise.resolve(),
-    ]);
+    await load();
+    if (options.metadata) await loadSidebarMetadata();
+    if (options.stats) await loadStats();
     if (detail) {
       const fresh = await window.sessionSearch.getSession(detail.sessionKey);
       if (fresh) setDetail(fresh);
@@ -1387,9 +1482,44 @@ export function App(): ReactElement {
     await refreshAfterAction({ metadata: true });
   }
 
+  function applyFavoriteState(sessionKey: string, favorited: boolean): void {
+    setResults((current) => current
+      .map((session) => session.sessionKey === sessionKey ? { ...session, favorited } : session)
+      .filter((session) => visibility !== "favorites" || session.favorited));
+    setDetail((current) => current?.sessionKey === sessionKey ? { ...current, favorited } : current);
+    setContextMenu((current) => current?.session.sessionKey === sessionKey
+      ? { ...current, session: { ...current.session, favorited } }
+      : current);
+  }
+
   async function toggleFavorite(session: SessionSearchResult): Promise<void> {
-    await window.sessionSearch.setFavorited(session.sessionKey, !session.favorited);
-    await refreshAfterAction();
+    const nextFavorited = !session.favorited;
+    const version = (favoriteSaveVersionsRef.current.get(session.sessionKey) ?? 0) + 1;
+    favoriteSaveVersionsRef.current.set(session.sessionKey, version);
+    applyFavoriteState(session.sessionKey, nextFavorited);
+    let queue = favoriteSaveQueuesRef.current.get(session.sessionKey);
+    if (!queue) {
+      queue = createLatestTaskQueue<void>();
+      favoriteSaveQueuesRef.current.set(session.sessionKey, queue);
+    }
+    try {
+      await queue.request(() => window.sessionSearch.setFavorited(session.sessionKey, nextFavorited));
+      if (favoriteSaveVersionsRef.current.get(session.sessionKey) === version) {
+        await refreshAfterAction();
+      }
+    } catch (error) {
+      if (favoriteSaveVersionsRef.current.get(session.sessionKey) === version) {
+        const fresh = await window.sessionSearch.getSession(session.sessionKey).catch(() => null);
+        if (fresh) applyFavoriteState(session.sessionKey, fresh.favorited);
+        await refreshAfterAction().catch(() => undefined);
+        setActionStatus({ kind: "error", message: error instanceof Error ? error.message : String(error) });
+      }
+    } finally {
+      if (favoriteSaveVersionsRef.current.get(session.sessionKey) === version) {
+        favoriteSaveVersionsRef.current.delete(session.sessionKey);
+        favoriteSaveQueuesRef.current.delete(session.sessionKey);
+      }
+    }
   }
 
   async function summarizeDetail(session: SessionSearchResult): Promise<void> {
@@ -1464,7 +1594,7 @@ export function App(): ReactElement {
       if (removed) {
         if (detail?.sessionKey === session.sessionKey) closeDetail();
         setSelectedKey((current) => (current === session.sessionKey ? null : current));
-        await Promise.all([load(), loadSidebarMetadata(), loadStats()]);
+        await refreshAfterAction({ metadata: true, stats: true });
         const message = session.sourceAvailable === false
           ? t("Cached session deleted.", "会话缓存已删除。")
           : session.source === "zcode-cli"
@@ -1482,13 +1612,10 @@ export function App(): ReactElement {
       const rawMessage = error instanceof Error ? error.message : String(error);
       const message = rawMessage === "A related session is currently live. Stop it before deleting this session tree."
         ? t(rawMessage, "关联会话正在运行，请先停止后再删除整棵会话树。")
-        : rawMessage === "Live session detection failed. Deletion is disabled."
-        ? t(rawMessage, "Live 会话检测失败，删除操作已禁用。")
         : rawMessage;
-      if (
-        rawMessage === "A related session is currently live. Stop it before deleting this session tree."
-        || rawMessage === "Live session detection failed. Deletion is disabled."
-      ) setDeleteSessionBlockedMessage(message);
+      if (rawMessage === "A related session is currently live. Stop it before deleting this session tree.") {
+        setDeleteSessionBlockedMessage(message);
+      }
       setActionStatus({ kind: "error", message });
     } finally {
       setDeletingSession(false);
@@ -1537,9 +1664,28 @@ export function App(): ReactElement {
   }
 
   async function freshLiveKeysForBulkDelete(): Promise<string[]> {
-    const snapshot = await window.sessionSearch.getLiveSessions(true);
-    if (snapshot.error) throw new Error(t("Live session detection failed. Deletion is disabled.", "Live 会话检测失败，删除操作已禁用。"));
-    return snapshot.sessions.map(liveSessionDeleteKey);
+    try {
+      const snapshot = await window.sessionSearch.getLiveSessions(true);
+      if (snapshot.error) {
+        setActionStatus({
+          kind: "error",
+          message: t(
+            "Could not verify running sessions. Confirm that related sessions have stopped before deleting.",
+            "无法确认正在运行的会话，请在删除前确认相关会话已经停止。",
+          ),
+        });
+      }
+      return snapshot.sessions.map(liveSessionDeleteKey);
+    } catch {
+      setActionStatus({
+        kind: "error",
+        message: t(
+          "Could not verify running sessions. Confirm that related sessions have stopped before deleting.",
+          "无法确认正在运行的会话，请在删除前确认相关会话已经停止。",
+        ),
+      });
+      return [];
+    }
   }
 
   async function previewSelectedSessions(): Promise<void> {
@@ -1629,7 +1775,7 @@ export function App(): ReactElement {
         return next;
       });
       setBulkDeleteDialog(null);
-      await Promise.all([load(), loadSidebarMetadata(), loadStats()]);
+      await refreshAfterAction({ metadata: true, stats: true });
       setActionStatus({
         kind: result.failed.length > 0 ? "error" : "success",
         message: result.failed.length > 0
@@ -1675,16 +1821,17 @@ export function App(): ReactElement {
     }
   }
 
-  async function uploadRemoteSession(session: SessionSearchResult): Promise<void> {
-    await runAction(
-      t("Uploading remote session", "正在上传远程会话"),
-      () => window.sessionSearch.uploadRemoteSession(session.sessionKey),
-      (result) => {
-        if (result.status === "skipped") return t("Remote session is already up to date.", "远程会话已是最新。");
-        if (result.status === "updated") return t("Remote session updated.", "远程会话已更新。");
-        return t("Remote session uploaded.", "远程会话已上传。");
-      },
-    );
+  function uploadRemoteSession(session: SessionSearchResult): void {
+    remoteSessions.queueUploads([{
+      itemId: session.sessionKey,
+      sessionKey: session.sessionKey,
+      title: session.displayTitle,
+    }]);
+    const message = t("Session upload started in the background.", "会话已开始在后台上传。");
+    setActionStatus({ kind: "success", message });
+    window.setTimeout(() => {
+      setActionStatus((current) => current?.kind === "success" && current.message === message ? null : current);
+    }, 1800);
   }
 
   async function exportMarkdown(sessionKey: string): Promise<void> {
@@ -1734,29 +1881,41 @@ export function App(): ReactElement {
     setMigrationDialog({ kind: "select", session });
   }
 
+  function closeMigrationDialog(): void {
+    migrationDialogRef.current = null;
+    setMigrationDialog(null);
+  }
+
   async function runMigration(target: SessionMigrationProgress["target"]): Promise<void> {
     if (!migrationDialog || migrationDialog.kind !== "select") return;
     const session = migrationDialog.session;
+    setMigrationBusy(true);
     setContextMenu(null);
     setMigrationProgress(null);
     setActionStatus({ kind: "running", message: t("Preparing migration...", "正在准备迁移...") });
     try {
       const result: SessionMigrationResult = await window.sessionSearch.migrateSession(session.sessionKey, target);
-      await Promise.all([load(), loadSidebarMetadata(), loadStats()]);
+      await refreshAfterAction({ metadata: true, stats: true });
       await refreshLiveSessions();
       const strategyLabel = migrationStrategyLabel(result.strategy, language);
       const message = t(
         `Migrated to ${migrationAgentLabel(result.target)} (${strategyLabel}): ${result.targetSessionId}`,
         `已迁移到 ${migrationAgentLabel(result.target)}（${strategyLabel}）：${result.targetSessionId}`,
       );
-      setActionStatus({ kind: "success", message: result.warning ? `${message}\n${result.warning}` : message });
-      setMigrationDialog(result.launched ? null : { kind: "launch-failed", session, result });
-      window.setTimeout(() => {
-        setActionStatus((current) => (current?.kind === "success" && current.message.startsWith(message) ? null : current));
-      }, 2200);
+      const dialogStillOpen = migrationDialogRef.current?.kind === "select";
+      const backgroundLaunchFailure = !result.launched && !dialogStillOpen;
+      const detail = result.warning || (!result.launched ? result.resumeCommand : "");
+      setActionStatus({ kind: backgroundLaunchFailure ? "error" : "success", message: detail ? `${message}\n${detail}` : message });
+      if (dialogStillOpen) setMigrationDialog(result.launched ? null : { kind: "launch-failed", session, result });
+      if (!backgroundLaunchFailure) {
+        window.setTimeout(() => {
+          setActionStatus((current) => (current?.kind === "success" && current.message.startsWith(message) ? null : current));
+        }, 2200);
+      }
     } catch (error) {
       setActionStatus({ kind: "error", message: error instanceof Error ? error.message : String(error) });
     } finally {
+      setMigrationBusy(false);
       setMigrationProgress(null);
     }
   }
@@ -1770,13 +1929,10 @@ export function App(): ReactElement {
     setStatsFeedback({ kind: "running", message: t("Refreshing usage...", "正在刷新用量...") });
     try {
       const status = await window.sessionSearch.refreshIndex();
+      indexRunningRef.current = status.running;
       setIndexStatus(status);
-      await Promise.all([
-        load(),
-        loadSidebarMetadata(),
-        loadStats(),
-        statsPeriod === "allTime" ? Promise.resolve() : fetchStatsTrend(),
-      ]);
+      await refreshAfterCompletedIndex(status);
+      if (statsPeriod !== "allTime") await fetchStatsTrend();
       const successMessage = t(
         `Index and usage refreshed: ${status.indexed} updated, ${status.skipped} skipped, ${status.total} total.`,
         `索引和用量已更新：更新 ${status.indexed} 个，跳过 ${status.skipped} 个，共 ${status.total} 个。`,
@@ -1801,14 +1957,6 @@ export function App(): ReactElement {
       setRefreshFeedback((current) => reduceIndexFeedback(current, { type: "manual-error", message }));
       setStatsFeedback({ kind: "error", message });
     }
-  }
-
-  async function updateDefaultTerminal(defaultTerminal: AppSettings["defaultTerminal"]): Promise<void> {
-    await updateSettings({ defaultTerminal });
-  }
-
-  async function updateGlobalShortcut(globalShortcut: AppSettings["globalShortcut"]): Promise<void> {
-    await updateSettings({ globalShortcut });
   }
 
   async function checkAppUpdate(): Promise<void> {
@@ -1848,55 +1996,77 @@ export function App(): ReactElement {
     }
   }
 
-  async function updateSettings(next: AppSettingsUpdate): Promise<void> {
-    const newlyEnabledSources = OPTIONAL_SOURCE_SETTINGS.filter((item) => next[item.key] === true && !appSettings?.[item.key]);
+  function scheduleOptionalSourceRefresh(): void {
+    optionalSourceRefreshGenerationRef.current += 1;
+    setSettingsFeedback({ kind: "success", message: t("Loading sessions in the background...", "正在后台加载会话...") });
+    void optionalSourceRefreshQueue.request(async () => {
+      const generation = optionalSourceRefreshGenerationRef.current;
+      const shouldRefreshIndex = optionalSourceIndexRefreshKeysRef.current.size > 0;
+      optionalSourceIndexRefreshKeysRef.current.clear();
+      try {
+        if (shouldRefreshIndex) {
+          const status = await window.sessionSearch.refreshIndex();
+          if (status.error) throw new Error(status.error);
+        } else {
+          await window.sessionSearch.settleDisabledSources();
+        }
+        await refreshAfterAction({ metadata: true, stats: true });
+        if (optionalSourceRefreshGenerationRef.current !== generation) return;
+        setPendingPersonalSources(emptyPendingPersonalSources());
+        const message = t("Sources ready.", "来源已就绪。");
+        setSettingsFeedback({ kind: "success", message });
+        window.setTimeout(() => {
+          setSettingsFeedback((current) =>
+            current?.kind === "success" && current.message === message ? null : current);
+        }, 1600);
+      } catch (error) {
+        if (optionalSourceRefreshGenerationRef.current !== generation) return;
+        setPendingPersonalSources(emptyPendingPersonalSources());
+        setSettingsFeedback({ kind: "error", message: error instanceof Error ? error.message : String(error) });
+      }
+    }).catch(() => undefined);
+  }
+
+  function updateSettings(next: AppSettingsUpdate): Promise<void> {
+    const request = settingsUpdateQueueRef.current.then(() => performSettingsUpdate(next));
+    settingsUpdateQueueRef.current = request.catch(() => undefined);
+    return request;
+  }
+
+  async function performSettingsUpdate(next: AppSettingsUpdate): Promise<void> {
+    const currentSettings = appSettingsRef.current;
+    const changedSources = OPTIONAL_SOURCE_SETTINGS.filter((item) => item.key in next && next[item.key] !== currentSettings?.[item.key]);
     const quotaVisibilityChanged =
-      ("hideCodexQuota" in next && next.hideCodexQuota !== appSettings?.hideCodexQuota) ||
-      ("hideClaudeQuota" in next && next.hideClaudeQuota !== appSettings?.hideClaudeQuota);
+      ("hideCodexQuota" in next && next.hideCodexQuota !== currentSettings?.hideCodexQuota) ||
+      ("hideClaudeQuota" in next && next.hideClaudeQuota !== currentSettings?.hideClaudeQuota);
+    const remoteSyncConfigurationChanged =
+      ("remoteSyncEnabled" in next && next.remoteSyncEnabled !== currentSettings?.remoteSyncEnabled) ||
+      ("remoteSyncSupabaseUrl" in next && next.remoteSyncSupabaseUrl !== currentSettings?.remoteSyncSupabaseUrl) ||
+      ("remoteSyncSupabaseAnonKey" in next && next.remoteSyncSupabaseAnonKey !== currentSettings?.remoteSyncSupabaseAnonKey);
     setSettingsFeedback({ kind: "running", message: t("Saving settings...", "正在保存设置...") });
     try {
       const nextSettings = await window.sessionSearch.setSettings(next);
+      appSettingsRef.current = nextSettings;
       setAppSettings(nextSettings);
+      if (remoteSyncConfigurationChanged) remoteSessions.invalidate();
       if ("remoteSyncEnabled" in next) {
-        setSessionHookStatus(await window.sessionSearch.getSessionSyncHookStatus());
+        void window.sessionSearch.getSessionSyncHookStatus().then(setSessionHookStatus).catch(() => setSessionHookStatus(null));
       }
       if (quotaVisibilityChanged) void loadQuotas();
 
-      if (newlyEnabledSources.length > 0) {
-        // Keep the toggle responsive: scan optional sources in the background
-        // and only reveal their sidebar filters once that scan finishes.
+      if (changedSources.length > 0) {
         setPendingPersonalSources((current) => {
           const pending = { ...current };
-          for (const item of newlyEnabledSources) pending[item.pendingKey] = true;
+          for (const item of changedSources) pending[item.pendingKey] = nextSettings[item.key];
           return pending;
         });
-        setSettingsFeedback({ kind: "success", message: t("Loading sessions in the background...", "正在后台加载会话...") });
-        void window.sessionSearch
-          .refreshIndex()
-          .then(async () => {
-            setPendingPersonalSources((current) => {
-              const pending = { ...current };
-              for (const item of newlyEnabledSources) pending[item.pendingKey] = false;
-              return pending;
-            });
-            await Promise.all([load(), loadSidebarMetadata(), loadStats()]);
-            setSettingsFeedback({ kind: "success", message: t("Sources ready.", "来源已就绪。") });
-            window.setTimeout(() => {
-              setSettingsFeedback((current) => (current?.kind === "success" ? null : current));
-            }, 1600);
-          })
-          .catch((error) => {
-            setPendingPersonalSources((current) => {
-              const pending = { ...current };
-              for (const item of newlyEnabledSources) pending[item.pendingKey] = false;
-              return pending;
-            });
-            setSettingsFeedback({ kind: "error", message: error instanceof Error ? error.message : String(error) });
-          });
+        for (const item of changedSources) {
+          if (nextSettings[item.key]) optionalSourceIndexRefreshKeysRef.current.add(item.pendingKey);
+          else optionalSourceIndexRefreshKeysRef.current.delete(item.pendingKey);
+        }
+        scheduleOptionalSourceRefresh();
         return;
       }
-
-      await Promise.all([load(), loadSidebarMetadata(), loadStats()]);
       setSettingsFeedback({ kind: "success", message: t("Settings saved.", "设置已保存。") });
       window.setTimeout(() => {
         setSettingsFeedback((current) => (current?.kind === "success" ? null : current));
@@ -2234,10 +2404,10 @@ export function App(): ReactElement {
                 onChange={toggleLoadedSelection}
                 aria-label={t("Select loaded sessions", "选择已加载会话")}
               /> : null}
-              <span>{t(`${sessionTotalCount} sessions`, `${sessionTotalCount} 个会话`)}</span>
+              <span>{t(`${displayedSessionTotalCount} sessions`, `${displayedSessionTotalCount} 个会话`)}</span>
               {bulkSelectionActive ? <strong>{t(`${bulkSelectedKeys.size} selected`, `已选 ${bulkSelectedKeys.size} 个`)}</strong> : null}
-              {bulkSelectionActive && bulkSelectedKeys.size > 0 && bulkSelectedKeys.size < sessionTotalCount ? (
-                <button type="button" onClick={() => void selectAllMatchingSessions()}>{t(`Select all ${sessionTotalCount}`, `选择全部 ${sessionTotalCount} 个`)}</button>
+              {bulkSelectionActive && bulkSelectedKeys.size > 0 && bulkSelectedKeys.size < displayedSessionTotalCount ? (
+                <button type="button" onClick={() => void selectAllMatchingSessions()}>{t(`Select all ${displayedSessionTotalCount}`, `选择全部 ${displayedSessionTotalCount} 个`)}</button>
               ) : null}
               {bulkSelectionActive && bulkSelectedKeys.size > 0 ? (
                 <button type="button" className="bulk-delete-button" onClick={() => void previewSelectedSessions()}><Trash2 size={13} />{t("Delete", "删除")}</button>
@@ -2265,9 +2435,9 @@ export function App(): ReactElement {
         bulkSelectionActive={bulkSelectionActive}
         bulkSelectedKeys={bulkSelectedKeys}
         onToggleBulk={toggleBulkSession}
-        hasMoreSessions={hasMoreSessions}
-        onLoadMore={() => setSessionLimit((current) => current + SESSION_PAGE_SIZE)}
-        loadMoreCount={SESSION_PAGE_SIZE}
+        currentPage={sessionPage}
+        totalPages={Math.max(1, Math.ceil(displayedSessionTotalCount / SESSION_PAGE_SIZE))}
+        onPageChange={(page) => setSessionPage(page)}
       />
 
       {detail ? (
@@ -2392,13 +2562,7 @@ export function App(): ReactElement {
           onRename={() => beginRename(contextMenu.session)}
           onAddTag={() => beginAddTag(contextMenu.session)}
           onSelectMultiple={() => beginBulkSelection(contextMenu.session.sessionKey)}
-          onFavorite={() =>
-            void runAction(
-              contextMenu.session.favorited ? t("Removing favorite", "正在取消收藏") : t("Adding favorite", "正在加入收藏"),
-              () => window.sessionSearch.setFavorited(contextMenu.session.sessionKey, !contextMenu.session.favorited),
-              contextMenu.session.favorited ? t("Removed from favorites.", "已取消收藏。") : t("Added to favorites.", "已加入收藏。"),
-            )
-          }
+          onFavorite={() => void toggleFavorite(contextMenu.session)}
           onHide={() =>
             void runAction(
               t("Updating visibility", "正在更新可见性"),
@@ -2444,10 +2608,10 @@ export function App(): ReactElement {
           session={migrationDialog.session}
           targets={migrationTargetsForSession(migrationDialog.session, appSettings ?? DEFAULT_MIGRATION_TARGET_SETTINGS)}
           language={language}
-          busy={actionStatus?.kind === "running"}
+          busy={migrationBusy}
           progress={migrationProgress}
           onSelect={(target) => void runMigration(target)}
-          onClose={() => setMigrationDialog(null)}
+          onClose={closeMigrationDialog}
         />
       ) : null}
 
@@ -2456,7 +2620,7 @@ export function App(): ReactElement {
           session={migrationDialog.session}
           result={migrationDialog.result}
           language={language}
-          onClose={() => setMigrationDialog(null)}
+          onClose={closeMigrationDialog}
         />
       ) : null}
 
@@ -2513,7 +2677,7 @@ export function App(): ReactElement {
           onDateChange={(dateValue) => setBulkDeleteDialog((current) => current ? { ...current, dateValue, request: null, preview: null } : current)}
           onPreview={() => void previewDateCleanup()}
           onConfirm={() => void confirmBulkDelete()}
-          onCancel={() => { if (!bulkDeleteBusy) setBulkDeleteDialog(null); }}
+          onCancel={() => setBulkDeleteDialog(null)}
         />
       ) : null}
 
@@ -2522,7 +2686,7 @@ export function App(): ReactElement {
           settings={appSettings}
           language={language}
           feedback={settingsFeedback}
-          onSettingsChange={(next) => void updateSettings(next)}
+          onSettingsChange={updateSettings}
           onApplyToCodex={(apiConfig) => void applyApiConfigToCodex(apiConfig)}
           onApplyToClaude={(claudeApiConfig) => void applyApiConfigToClaude(claudeApiConfig)}
           onClose={() => setApiConfigOpen(false)}
@@ -2544,14 +2708,12 @@ export function App(): ReactElement {
           theme={theme}
           language={language}
           feedback={settingsFeedback}
-          onSettingsChange={(next) => void updateSettings(next)}
+          onSettingsChange={updateSettings}
           onCheckAppUpdate={() => void checkAppUpdate()}
           onInstallAppUpdate={() => void installAppUpdate()}
           onSkipAppUpdate={(untilNextVersion) => void skipAppUpdate(untilNextVersion)}
           onThemeChange={setTheme}
           onLanguageChange={setLanguage}
-          onDefaultTerminalChange={(terminal) => void updateDefaultTerminal(terminal)}
-          onGlobalShortcutChange={(shortcut) => void updateGlobalShortcut(shortcut)}
           skillHookInstalled={skillHookInstalled}
           skillHookBusy={skillHookBusy}
           onSkillHookChange={(enabled) => void toggleSkillUsageHook(enabled)}
@@ -2644,11 +2806,12 @@ export function App(): ReactElement {
 
       {remoteSessionsOpen ? (
         <RemoteSessionsDialog
-          cache={remoteSessionsCache}
+          cache={remoteSessions.cache}
           language={language}
-          onRefresh={loadRemoteSessionsCache}
-          onRemoteSessionUploaded={cacheRemoteSessionUpload}
-          onRemoteSessionsDeleted={cacheRemoteSessionDeletion}
+          onRefresh={remoteSessions.refresh}
+          onQueueUploads={remoteSessions.queueUploads}
+          onQueueDeletions={remoteSessions.queueDeletions}
+          onContinueInBackground={continueRemoteSessionsInBackground}
           onRestored={(result) => {
             const message = result.launched
               ? t(
@@ -2670,7 +2833,7 @@ export function App(): ReactElement {
                 }, 1800);
               }
             }, 0);
-            void Promise.all([load(), loadSidebarMetadata()]);
+            void refreshAfterAction({ metadata: true });
           }}
           onOpenDetail={openRemoteDetail}
           onClose={() => setRemoteSessionsOpen(false)}

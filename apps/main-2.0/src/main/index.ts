@@ -95,7 +95,13 @@ import { SessionStore } from "../core/session-store";
 import { buildCombinedSupabaseSetupSql, supabaseSqlEditorUrl } from "../core/supabase-setup";
 import { readUserSshConfig } from "../core/ssh-config";
 import { listWslDistributions } from "../core/wsl";
-import { AUTO_INDEX_REFRESH_INTERVAL_MS, INITIAL_INDEX_DELAY_MS } from "../core/refresh-policy";
+import {
+  AUTO_INDEX_REFRESH_INTERVAL_MS,
+  INITIAL_INDEX_DELAY_MS,
+  INITIAL_OPENVIKING_RUNTIME_DELAY_MS,
+  INITIAL_PROVIDER_RESTORE_DELAY_MS,
+  INITIAL_SESSION_SYNC_QUEUE_START_DELAY_MS,
+} from "../core/refresh-policy";
 import { globalShortcutLabel, normalizeGlobalShortcut } from "../core/shortcuts";
 import { remoteSessionKey } from "../core/session-environment";
 import { OPTIONAL_SESSION_SOURCE_DESCRIPTORS } from "../core/session-sources";
@@ -291,6 +297,9 @@ function ensureAgentRecallMcpPreference(): boolean {
   return setup.status();
 }
 
+if (process.env.AGENT_RECALL_USE_MOCK_KEYCHAIN === "1") {
+  app.commandLine.appendSwitch("use-mock-keychain");
+}
 app.setName(PRODUCT_NAME);
 app.setAppUserModelId("dev.zszz3.agent-recall-v2");
 bootstrapApplicationPaths({
@@ -555,6 +564,10 @@ const skillService = new SkillService({
   getStore: () => store,
   getSettings,
   getHookSetup: loadSkillUsageHookSetup,
+  getEvaluationService: () => {
+    if (!automationService) throw new Error("Runtime is not ready.");
+    return automationService.evaluations;
+  },
   libraryRoot: path.join(app.getPath("userData"), "skills"),
   skillsShCachePath: path.join(app.getPath("userData"), "cache", "skills-sh.json"),
   homeDir: app.getPath("home"),
@@ -1559,6 +1572,7 @@ const loadCachedLiveSessionSnapshot = createCachedLiveSessionSnapshotLoader({
           (environment, remoteCommand) => environment.kind === "wsl"
             ? runRemoteCommand(environment, remoteCommand, { maxBuffer: 512 * 1024, timeout: 10_000 })
             : sshCommandService.run(environment, remoteCommand, { maxBuffer: 512 * 1024, timeout: 10_000 }),
+          { includePasswordAuthenticated: options?.fresh === true },
         ))
         .then((sessions) => ({ sessions, error: null as string | null }))
         .catch((error) => ({
@@ -2571,13 +2585,6 @@ app.whenReady().then(async () => {
   );
   quotaService = createQuotaService();
   initializeOpenVikingMemory();
-  try {
-    await refreshOpenVikingHookManifest();
-    reconcileOpenVikingMemoryHooks(getSettings());
-    await startConfiguredOpenVikingRuntime(getSettings());
-  } catch (error) {
-    console.error(`Failed to configure OpenViking memory hooks: ${error instanceof Error ? error.message : String(error)}`);
-  }
   // Publish the live endpoint so standalone MCP clients use the same store.
   try {
     writeDatabaseUrlPointer(postgresRuntime.connectionUrl);
@@ -2610,13 +2617,31 @@ app.whenReady().then(async () => {
   if (!registerAppGlobalShortcut(shortcut)) {
     console.error(`Global shortcut ${globalShortcutLabel(shortcut)} could not be registered.`);
   }
-  void ensureRemoteEnvironmentLifecycle().startEnabledEnvironments();
-  void providerService.restoreCodexChatProxy();
-  setTimeout(() => void runIndexSync(), INITIAL_INDEX_DELAY_MS);
+  const initialIndexSettled = new Promise<void>((resolve) => {
+    setTimeout(() => {
+      void runIndexSync().then(() => resolve(), () => resolve());
+    }, INITIAL_INDEX_DELAY_MS);
+  });
   startAutoIndexRefresh();
-  skillService.startUsageRefresh();
-  remoteSessionService.startQueue();
-  appUpdateService.scheduleInitialCheck();
+  void initialIndexSettled.then(() => skillService.startUsageRefresh());
+  setTimeout(() => {
+    void initialIndexSettled.then(() => remoteSessionService.startQueue());
+  }, INITIAL_SESSION_SYNC_QUEUE_START_DELAY_MS);
+  setTimeout(() => {
+    void initialIndexSettled.then(() => providerService.restoreCodexChatProxy());
+  }, INITIAL_PROVIDER_RESTORE_DELAY_MS);
+  setTimeout(() => {
+    void initialIndexSettled.then(async () => {
+      try {
+        await refreshOpenVikingHookManifest();
+        reconcileOpenVikingMemoryHooks(getSettings());
+        await startConfiguredOpenVikingRuntime(getSettings());
+      } catch (error) {
+        console.error(`Failed to configure OpenViking memory hooks: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    });
+  }, INITIAL_OPENVIKING_RUNTIME_DELAY_MS);
+  void initialIndexSettled.then(() => appUpdateService.scheduleInitialCheck());
 }).catch(async (error) => {
   console.error(`Failed to start AgentRecall: ${error instanceof Error ? error.message : String(error)}`);
   await postgresDatabase?.close().catch(() => undefined);

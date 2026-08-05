@@ -523,16 +523,22 @@ export class PostgresOpenVikingMemoryRepository {
       const task = result.rows[0];
       if (!task) throw new Error("OpenViking import task was not found.");
       if (task.state === "completed") return;
-      for (const turn of task.payload.primary) {
+      if (task.payload.primary.length > 0) {
         await client.query(
           `
             insert into agent_recall.openviking_imported_turns (
               workspace_id, source_turn_id, fingerprint, imported_at
             )
-            values ($1, $2, $3, $4)
+            select $1, checkpoints.source_turn_id, checkpoints.fingerprint, $2
+            from unnest($3::text[], $4::text[]) as checkpoints(source_turn_id, fingerprint)
             on conflict do nothing
           `,
-          [task.workspace_id, turn.sourceTurnId, turn.fingerprint, now],
+          [
+            task.workspace_id,
+            now,
+            task.payload.primary.map((turn) => turn.sourceTurnId),
+            task.payload.primary.map((turn) => turn.fingerprint),
+          ],
         );
       }
       await client.query(

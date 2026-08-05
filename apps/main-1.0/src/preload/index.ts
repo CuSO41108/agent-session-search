@@ -99,6 +99,7 @@ const api = {
   bulkDeleteSessions: (request: SessionBulkDeleteRequest): Promise<SessionBulkDeleteResult> =>
     ipcRenderer.invoke("session:bulk-delete", request),
   refreshIndex: (): Promise<IndexStatus> => ipcRenderer.invoke("index:refresh"),
+  settleDisabledSources: (): Promise<void> => ipcRenderer.invoke("sources:settle-disabled"),
   getIndexStatus: (): Promise<IndexStatus> => ipcRenderer.invoke("index:status"),
   ...createAppUpdateApi(ipcRenderer),
   getSettings: (): Promise<AppSettings> => ipcRenderer.invoke("settings:get"),

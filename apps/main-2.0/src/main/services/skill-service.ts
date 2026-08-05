@@ -58,7 +58,7 @@ import {
   type SkillVersionBasePayload,
 } from "../../core/skill-sync";
 import {
-  listSkillUsageSources,
+  listSkillUsageSourcesAsync,
   readSkillUsageSourceEventsAsync,
   usageForSkill,
   type SkillUsageEvent,
@@ -72,12 +72,72 @@ import {
   INITIAL_SKILL_USAGE_REFRESH_DELAY_MS,
 } from "../../core/refresh-policy";
 import type { ProjectSummary } from "../../core/types";
+import type { EvaluationRun, EvaluationRunSummary } from "../../automation/contracts";
 import { evaluateSkillFindings, type SkillFinding } from "../../core/skill-eval-findings";
+import type { EvaluationService } from "./evaluation-service";
 
 export interface SkillUsageHookSetup {
   installSkillUsageHook(options?: Record<string, unknown>): { status: string; detail?: string };
   uninstallSkillUsageHook(options?: Record<string, unknown>): { status: string; detail?: string };
   skillUsageHookStatus(options?: Record<string, unknown>): { installed: boolean };
+}
+
+// Skill regression evaluation (phase four): user-defined cases bound to a skill
+// version. Cases are the specification ("given this input, expect this output");
+// runs collected through the automation engine are the evidence.
+
+export interface SkillEvalSuiteCase {
+  input: string;
+  expectedOutput?: string;
+}
+
+export interface CreateSkillEvalSuiteInput {
+  skill: string;
+  name: string;
+  agentId: string;
+  evaluatorIds: string[];
+  // When true the service provisions (or reuses) the built-in LLM judge bound
+  // to the execution agent's channel, so users never need to configure a
+  // judge runtime before their first run.
+  useBuiltinJudge: boolean;
+  repetitions: number;
+  cases: SkillEvalSuiteCase[];
+}
+
+export interface UpdateSkillEvalSuiteInput {
+  id: string;
+  name: string;
+  agentId: string;
+  evaluatorIds: string[];
+  useBuiltinJudge: boolean;
+  repetitions: number;
+  cases: SkillEvalSuiteCase[];
+}
+
+export interface SkillEvalSuiteLastRun {
+  id: string;
+  startedAt: number;
+  status: string;
+  passRate: number | null;
+  averageScore: number | null;
+}
+
+export interface SkillEvalSuite {
+  id: string;
+  name: string;
+  skill: string;
+  // SKILL.md hash captured at the most recent run; null before the first run.
+  skillHash: string | null;
+  // Current installed SKILL.md hash; null when the skill is no longer readable.
+  currentHash: string | null;
+  drifted: boolean;
+  agentId: string;
+  evaluatorIds: string[];
+  repetitions: number;
+  caseCount: number;
+  createdAt: number;
+  updatedAt: number;
+  lastRun: SkillEvalSuiteLastRun | null;
 }
 
 // Evidence-ladder state for a skill in the Eval overview. "unobserved" means
@@ -162,7 +222,7 @@ export interface SkillServiceOperations {
   listInstalledSkills: typeof listInstalledSkills;
   skillProjectDirsFromIndexedProjects: typeof skillProjectDirsFromIndexedProjects;
   usageForSkill: typeof usageForSkill;
-  listSkillUsageSources: typeof listSkillUsageSources;
+  listSkillUsageSources: typeof listSkillUsageSourcesAsync;
   readSkillUsageSourceEvents: typeof readSkillUsageSourceEventsAsync;
   isSyncableSkill: typeof isSyncableSkill;
   portableSkillLocation: typeof portableSkillLocation;
@@ -181,6 +241,9 @@ export interface SkillServiceDependencies {
   getStore(): SkillStorePort;
   getSettings(): AppSettings;
   getHookSetup(): SkillUsageHookSetup;
+  // Phase four: skill regression suites execute through the automation engine's
+  // evaluation service. Absent when the runtime is not up yet.
+  getEvaluationService?: () => EvaluationService;
   createSyncClient?(options: { url: string; anonKey: string }): SkillSyncClientPort;
   copyText(text: string): void;
   revealPath(path: string): Promise<void>;
@@ -206,7 +269,7 @@ const defaultOperations: SkillServiceOperations = {
   listInstalledSkills,
   skillProjectDirsFromIndexedProjects,
   usageForSkill,
-  listSkillUsageSources,
+  listSkillUsageSources: listSkillUsageSourcesAsync,
   readSkillUsageSourceEvents: readSkillUsageSourceEventsAsync,
   isSyncableSkill,
   portableSkillLocation,
@@ -241,6 +304,7 @@ export class SkillService {
   private importCandidatesCache: InstalledSkillsSnapshot | null = null;
   private initialUsageTimer: ReturnType<typeof setTimeout> | null = null;
   private autoUsageTimer: ReturnType<typeof setInterval> | null = null;
+  private usageRefreshPromise: Promise<SkillUsageRefreshStatus> | null = null;
 
   constructor(private readonly dependencies: SkillServiceDependencies) {
     this.operations = { ...defaultOperations, ...dependencies.operations };
@@ -355,9 +419,19 @@ export class SkillService {
   }
 
   async refreshUsage(): Promise<SkillUsageRefreshStatus> {
+    if (this.usageRefreshPromise) return this.usageRefreshPromise;
+    const request = this.performUsageRefresh();
+    this.usageRefreshPromise = request;
+    void request.finally(() => {
+      if (this.usageRefreshPromise === request) this.usageRefreshPromise = null;
+    }).catch(() => undefined);
+    return request;
+  }
+
+  private async performUsageRefresh(): Promise<SkillUsageRefreshStatus> {
     const store = this.dependencies.getStore();
     const settings = this.dependencies.getSettings();
-    const sources = this.operations.listSkillUsageSources({
+    const sources = await this.operations.listSkillUsageSources({
       homeDir: this.dependencies.homeDir,
       includeTclaude: settings.includeTclaude,
       includeTcodex: settings.includeTcodex,
@@ -817,6 +891,308 @@ export class SkillService {
       }
     }
     return results;
+  }
+
+  // ── Skill regression evaluation (phase four) ─────────────────────────
+  // User-defined cases bound to a skill version. Runs execute through the
+  // automation engine; each run is re-attributed to the then-current skill
+  // hash so drift detection is a plain hash comparison.
+
+  async getSkillEvalSuites(skillName: string): Promise<SkillEvalSuite[]> {
+    this.requireEvalEnabled();
+    const name = skillName.trim();
+    if (!name) throw new Error("A skill name is required.");
+    const evaluations = this.requireEvaluationService();
+    const [experiments, datasets, currentHash] = await Promise.all([
+      evaluations.listExperiments(),
+      evaluations.listDatasets(),
+      this.currentSkillHash(name),
+    ]);
+    const datasetById = new Map(datasets.map((item) => [item.id, item]));
+    const bound = experiments.filter(
+      (item) => (item.skillName ?? "").trim().toLowerCase() === name.toLowerCase(),
+    );
+    // Independent per-suite run lookups are issued concurrently to keep the
+    // card snappy when a skill has many suites.
+    const lastRuns = await Promise.all(
+      bound.map(async (experiment) => {
+        const runsPage = await evaluations.listRuns({ experimentId: experiment.id, limit: 1 });
+        return runsPage.items[0] ?? null;
+      }),
+    );
+    const suites: SkillEvalSuite[] = bound.map((experiment, index) => {
+      const last = lastRuns[index];
+      return {
+        id: experiment.id,
+        name: experiment.name,
+        skill: name,
+        skillHash: experiment.skillHash ?? null,
+        currentHash,
+        drifted: Boolean(
+          experiment.skillHash && currentHash && experiment.skillHash !== currentHash),
+        agentId: experiment.agentId,
+        evaluatorIds: experiment.evaluatorIds,
+        repetitions: experiment.repetitions,
+        caseCount: datasetById.get(experiment.datasetId)?.items.length ?? 0,
+        createdAt: experiment.createdAt,
+        updatedAt: experiment.updatedAt,
+        lastRun: last
+          ? {
+              id: last.id,
+              startedAt: last.startedAt,
+              status: last.status,
+              passRate: last.passRate ?? null,
+              averageScore: last.averageScore ?? null,
+            }
+          : null,
+      };
+    });
+    return suites.sort((a, b) => b.updatedAt - a.updatedAt);
+  }
+
+  async createSkillEvalSuite(input: CreateSkillEvalSuiteInput): Promise<SkillEvalSuite> {
+    this.requireEvalEnabled();
+    const name = input.skill.trim();
+    if (!name) throw new Error("A skill name is required.");
+    if (!input.name.trim()) throw new Error("A suite name is required.");
+    if (!input.agentId.trim()) throw new Error("An execution Agent is required.");
+    if (input.cases.length === 0) throw new Error("At least one case is required.");
+    const evaluations = this.requireEvaluationService();
+    const evaluatorIds = await this.resolveSuiteEvaluators(
+      evaluations,
+      input.agentId.trim(),
+      input.evaluatorIds,
+      input.useBuiltinJudge,
+    );
+    const now = this.dependencies.now();
+    const dataset = await evaluations.saveDataset({
+      id: `dataset-${now}`,
+      name: input.name.trim(),
+      description: name,
+      items: input.cases.map((value, index) => ({
+        id: `case-${now}-${index}`,
+        input: value.input,
+        ...(value.expectedOutput !== undefined ? { expectedOutput: value.expectedOutput } : {}),
+        metadata: {},
+        sequence: index,
+      })),
+      createdAt: now,
+      updatedAt: now,
+    });
+    const currentHash = await this.currentSkillHash(name);
+    const experiment = await evaluations.saveExperiment({
+      id: `experiment-${now}`,
+      name: input.name.trim(),
+      datasetId: dataset.id,
+      agentId: input.agentId,
+      evaluatorIds,
+      repetitions: Math.max(1, Math.min(5, Math.floor(input.repetitions))),
+      skillName: name,
+      skillHash: currentHash,
+      createdAt: now,
+      updatedAt: now,
+    });
+    return {
+      id: experiment.id,
+      name: experiment.name,
+      skill: name,
+      skillHash: experiment.skillHash ?? null,
+      currentHash,
+      drifted: false,
+      agentId: experiment.agentId,
+      evaluatorIds: experiment.evaluatorIds,
+      repetitions: experiment.repetitions,
+      caseCount: dataset.items.length,
+      createdAt: experiment.createdAt,
+      updatedAt: experiment.updatedAt,
+      lastRun: null,
+    };
+  }
+
+  async getSkillEvalSuiteCases(experimentId: string): Promise<SkillEvalSuiteCase[]> {
+    this.requireEvalEnabled();
+    const id = experimentId.trim();
+    if (!id) throw new Error("An evaluation suite id is required.");
+    const evaluations = this.requireEvaluationService();
+    const experiment = (await evaluations.listExperiments()).find((item) => item.id === id);
+    if (!experiment) throw new Error(`Evaluation suite not found: ${id}`);
+    const dataset = (await evaluations.listDatasets()).find((item) => item.id === experiment.datasetId);
+    if (!dataset) throw new Error(`Evaluation dataset not found: ${experiment.datasetId}`);
+    return dataset.items.map((item) => ({
+      input: item.input,
+      ...(item.expectedOutput !== undefined && item.expectedOutput !== null
+        ? { expectedOutput: item.expectedOutput }
+        : {}),
+    }));
+  }
+
+  async updateSkillEvalSuite(input: UpdateSkillEvalSuiteInput): Promise<SkillEvalSuite> {
+    this.requireEvalEnabled();
+    const id = input.id.trim();
+    if (!id) throw new Error("An evaluation suite id is required.");
+    if (!input.name.trim()) throw new Error("A suite name is required.");
+    if (!input.agentId.trim()) throw new Error("An execution Agent is required.");
+    if (input.cases.length === 0) throw new Error("At least one case is required.");
+    const evaluations = this.requireEvaluationService();
+    const experiment = (await evaluations.listExperiments()).find((item) => item.id === id);
+    if (!experiment) throw new Error(`Evaluation suite not found: ${id}`);
+    const dataset = (await evaluations.listDatasets()).find((item) => item.id === experiment.datasetId);
+    if (!dataset) throw new Error(`Evaluation dataset not found: ${experiment.datasetId}`);
+    const evaluatorIds = await this.resolveSuiteEvaluators(
+      evaluations,
+      input.agentId.trim(),
+      input.evaluatorIds,
+      input.useBuiltinJudge,
+    );
+    const now = this.dependencies.now();
+    // Item ids are preserved positionally so past runs stay joinable by
+    // dataset item; only appended cases get fresh ids.
+    await evaluations.saveDataset({
+      ...dataset,
+      name: input.name.trim(),
+      description: experiment.skillName ?? dataset.description,
+      items: input.cases.map((value, index) => ({
+        id: dataset.items[index]?.id ?? `case-${now}-${index}`,
+        input: value.input,
+        ...(value.expectedOutput !== undefined ? { expectedOutput: value.expectedOutput } : {}),
+        metadata: dataset.items[index]?.metadata ?? {},
+        sequence: index,
+      })),
+      updatedAt: now,
+    });
+    await evaluations.saveExperiment({
+      ...experiment,
+      name: input.name.trim(),
+      agentId: input.agentId.trim(),
+      evaluatorIds,
+      repetitions: Math.max(1, Math.min(5, Math.floor(input.repetitions))),
+      updatedAt: now,
+    });
+    const skill = (experiment.skillName ?? "").trim();
+    const suites = skill ? await this.getSkillEvalSuites(skill) : [];
+    const updated = suites.find((item) => item.id === id);
+    if (!updated) throw new Error(`Evaluation suite not found: ${id}`);
+    return updated;
+  }
+
+  async deleteSkillEvalSuite(experimentId: string): Promise<void> {
+    this.requireEvalEnabled();
+    const id = experimentId.trim();
+    if (!id) throw new Error("An evaluation suite id is required.");
+    const evaluations = this.requireEvaluationService();
+    const experiment = (await evaluations.listExperiments()).find((item) => item.id === id);
+    if (!experiment) throw new Error(`Evaluation suite not found: ${id}`);
+    const runs = await evaluations.listRuns({ experimentId: id, limit: 100 });
+    for (const run of runs.items) await evaluations.deleteRun(run.id);
+    await evaluations.deleteExperiment(id);
+    const datasetShared = (await evaluations.listExperiments()).some(
+      (item) => item.datasetId === experiment.datasetId,
+    );
+    if (!datasetShared) await evaluations.deleteDataset(experiment.datasetId);
+  }
+
+  // A suite holds at most one built-in judge, and it must match the execution
+  // agent's channel. Custom evaluators pass through untouched; a stale
+  // built-in id from a previous channel is replaced, not kept.
+  private async resolveSuiteEvaluators(
+    evaluations: EvaluationService,
+    agentId: string,
+    selectedIds: string[],
+    useBuiltinJudge: boolean,
+  ): Promise<string[]> {
+    const evaluatorIds = selectedIds.filter((item) => !item.startsWith("builtin-judge-"));
+    if (useBuiltinJudge) {
+      const builtin = await evaluations.ensureBuiltinJudge(agentId);
+      if (!evaluatorIds.includes(builtin.id)) evaluatorIds.unshift(builtin.id);
+    }
+    if (evaluatorIds.length === 0) throw new Error("At least one evaluator is required.");
+    return evaluatorIds;
+  }
+
+  // Starts the suite run in the background and returns its id immediately;
+  // clients poll getSkillEvalRun for progress and may cancel at any time.
+  async runSkillEvalSuite(experimentId: string): Promise<{ runId: string }> {
+    this.requireEvalEnabled();
+    const id = experimentId.trim();
+    if (!id) throw new Error("An evaluation suite id is required.");
+    const evaluations = this.requireEvaluationService();
+    const experiment = (await evaluations.listExperiments()).find((item) => item.id === id);
+    if (!experiment) throw new Error(`Evaluation suite not found: ${id}`);
+    const skill = (experiment.skillName ?? "").trim();
+    if (!skill) throw new Error("This evaluation suite is not bound to a skill.");
+    const installedSnapshot = await this.listSkills();
+    const installed = installedSnapshot.skills.find(
+      (item) => item.name.trim().toLowerCase() === skill.toLowerCase(),
+    );
+    if (!installed) throw new Error(`Skill is not installed: ${skill}`);
+    // Attribute the upcoming run to the version that actually executes it:
+    // refresh skill_hash to the current SKILL.md fingerprint before delegating.
+    const currentHash = await this.currentSkillHash(skill);
+    if (experiment.skillHash !== currentHash) {
+      await evaluations.saveExperiment({
+        ...experiment,
+        skillHash: currentHash,
+        updatedAt: this.dependencies.now(),
+      });
+    }
+    // Sync the built-in judge to its managed definition right before use, so
+    // suites created under an older rubric pick up the current one.
+    if (experiment.evaluatorIds.some((id) => id.startsWith("builtin-judge-"))) {
+      await evaluations.ensureBuiltinJudge(experiment.agentId);
+    }
+    // Attribute the run to the version that actually executes it.
+    const runId = await evaluations.startExperiment(id, { skillHash: currentHash });
+    return { runId };
+  }
+
+  async getSkillEvalRun(runId: string): Promise<EvaluationRun | null> {
+    this.requireEvalEnabled();
+    const id = runId.trim();
+    if (!id) throw new Error("A run id is required.");
+    return (await this.requireEvaluationService().getRun(id)) ?? null;
+  }
+
+  // Newest-first summaries of a suite's runs, for the run history drill-down.
+  async getSkillEvalSuiteRuns(experimentId: string): Promise<EvaluationRunSummary[]> {
+    this.requireEvalEnabled();
+    const id = experimentId.trim();
+    if (!id) throw new Error("An evaluation suite id is required.");
+    const evaluations = this.requireEvaluationService();
+    const experiment = (await evaluations.listExperiments()).find((item) => item.id === id);
+    if (!experiment) throw new Error(`Evaluation suite not found: ${id}`);
+    if (!(experiment.skillName ?? "").trim()) {
+      throw new Error("This evaluation suite is not bound to a skill.");
+    }
+    const page = await evaluations.listRuns({ experimentId: id, limit: 10 });
+    return page.items;
+  }
+
+  cancelSkillEvalRun(runId: string): void {
+    this.requireEvalEnabled();
+    const id = runId.trim();
+    if (!id) throw new Error("A run id is required.");
+    this.requireEvaluationService().cancelRun(id);
+  }
+
+  // Same invariant as skillMarkdownHash in bin/skill-usage-record.cjs and
+  // getSkillEvalDetail above: sha256 over the raw SKILL.md bytes.
+  private async currentSkillHash(skillName: string): Promise<string | null> {
+    const installedSnapshot = await this.listSkills();
+    const installed = installedSnapshot.skills.find(
+      (item) => item.name.trim().toLowerCase() === skillName.toLowerCase(),
+    );
+    if (!installed) return null;
+    try {
+      return createHash("sha256").update(fs.readFileSync(installed.path)).digest("hex");
+    } catch {
+      return null;
+    }
+  }
+
+  private requireEvaluationService(): EvaluationService {
+    const evaluations = this.dependencies.getEvaluationService?.();
+    if (!evaluations) throw new Error("Runtime is not ready yet.");
+    return evaluations;
   }
 
   installUsageHook(): string {

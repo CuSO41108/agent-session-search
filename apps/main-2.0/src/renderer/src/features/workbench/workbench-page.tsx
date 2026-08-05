@@ -24,6 +24,7 @@ import type {
   McpServerDefinition,
 } from "../../../../automation/contracts";
 import { formatRelativeTime } from "../../../../core/format-session";
+import { toolCountLabel } from "../../../../automation/engine/renderer/src/pages/mcp/mcp-tools";
 import type { InstalledSkill } from "../../../../core/skill-manager";
 import type { OpenVikingMemorySnapshot } from "../../../../core/openviking-memory";
 import type { TeamChatRoomSummary } from "../../../../shared/team-chat";
@@ -150,6 +151,7 @@ export interface WorkbenchPageProps {
   onShowWorkflows: () => void;
   runtimes: AgentRuntime[];
   runtimeChannels: AgentChannel[];
+  runtimeOverviewAvailable: boolean;
   mcpServers: McpServerDefinition[] | null;
   chatRooms: TeamChatRoomSummary[] | null;
   memoryEnabled: boolean;
@@ -195,6 +197,7 @@ export function WorkbenchPage({
   onShowWorkflows,
   runtimes,
   runtimeChannels,
+  runtimeOverviewAvailable,
   mcpServers,
   chatRooms,
   memoryEnabled,
@@ -506,7 +509,7 @@ export function WorkbenchPage({
                 <button key={item.workflow.workflowId} className="workbench-workflow-row" type="button" onClick={() => onOpenWorkflow(item.workflow.workflowId)}>
                   <span className={`workbench-workflow-status is-${item.status}`}><i />{workflowStatusLabel(item.status, language)}</span>
                   <strong title={item.workflow.title}>{item.workflow.title || l("Untitled workflow", "未命名工作流")}</strong>
-                  <small>{item.workflow.definition.nodes.length} {l("nodes", "个节点")} · {formatRelativeTime(item.updatedAt)}</small>
+                  <small>{item.nodeCount} {l("nodes", "个节点")} · {formatRelativeTime(item.updatedAt)}</small>
                   <ArrowRight size={13} />
                 </button>
               ))}
@@ -603,10 +606,12 @@ export function WorkbenchPage({
           <WorkbenchFeatureCard
             icon={<Cpu size={18} />}
             title="Runtime"
-            metric={l(
-              `${runtimeChannels.length} configs · ${availableRuntimeCount}/${runtimes.length} executors available`,
-              `${runtimeChannels.length} 个配置 · ${availableRuntimeCount}/${runtimes.length} 个执行器可用`,
-            )}
+            metric={runtimeOverviewAvailable
+              ? l(
+                `${runtimeChannels.length} configs · ${availableRuntimeCount}/${runtimes.length} executors available`,
+                `${runtimeChannels.length} 个配置 · ${availableRuntimeCount}/${runtimes.length} 个执行器可用`,
+              )
+              : l("Runtime status loads on demand", "Runtime 状态将在打开时加载")}
             description={l(
               "Manage the model executors shared by Chat, Workflow, and AI exploration.",
               "管理 Chat、Workflow 与 AI 探索共用的模型执行器。",
@@ -616,7 +621,9 @@ export function WorkbenchPage({
               title: channel.label,
               detail: `${channel.agentId} · ${channel.models.length} ${l("models", "个模型")}`,
             }))}
-            empty={l("No Runtime configs yet.", "还没有 Runtime 配置。")}
+            empty={runtimeOverviewAvailable
+              ? l("No Runtime configs yet.", "还没有 Runtime 配置。")
+              : l("Open Runtime to load configs without delaying startup.", "打开 Runtime 后加载配置，避免拖慢应用启动。")}
             action={l("Open Runtime", "打开 Runtime")}
             onOpen={onShowRuntimes}
           />
@@ -643,7 +650,7 @@ export function WorkbenchPage({
             rows={(mcpServers ?? []).slice(0, 3).map((server) => ({
               id: server.id,
               title: server.name,
-              detail: `${server.status} · ${server.tools.length} tools`,
+              detail: `${server.status} · ${toolCountLabel(server, l("tools", "个工具"))}`,
             }))}
             empty={mcpServers === null
               ? l("Loading MCP servers…", "正在加载 MCP…")

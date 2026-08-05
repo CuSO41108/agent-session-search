@@ -488,6 +488,54 @@ describe("indexer", () => {
     }
   });
 
+  it("indexes Codex tool output containing NUL bytes", async () => {
+    const store = createInMemoryStore();
+    const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "agent-recall-v2-codex-nul-"));
+    try {
+      const filePath = writeCodexSession(homeDir, "codex-nul", "original question", "NUL Output");
+      fs.appendFileSync(
+        filePath,
+        [
+          "",
+          JSON.stringify({
+            type: "response_item",
+            timestamp: "2026-06-01T10:02:00Z",
+            payload: {
+              type: "custom_tool_call",
+              name: "exec",
+              call_id: "nul-output-1",
+              input: "printf output",
+            },
+          }),
+          JSON.stringify({
+            type: "response_item",
+            timestamp: "2026-06-01T10:03:00Z",
+            payload: {
+              type: "custom_tool_call_output",
+              call_id: "nul-output-1",
+              output: "before\u0000after",
+            },
+          }),
+          "",
+        ].join("\n"),
+      );
+
+      await expect(syncDefaultSessionsInBatches(store, {
+        batchSize: 1,
+        loadOptions: { homeDir },
+      })).resolves.toMatchObject({ indexed: 1, skipped: 0, total: 1, error: null });
+      await expect(store.getTraceEvents("codex:codex-nul")).resolves.toEqual([
+        expect.objectContaining({
+          callId: "nul-output-1",
+          attributes: expect.objectContaining({ output: "before␀after" }),
+        }),
+      ]);
+    } finally {
+      await store.close();
+      fs.rmSync(homeDir, { recursive: true, force: true });
+    }
+  });
+
   it("restores an active Codex turn when lifecycle records arrive in separate scans", async () => {
     const store = createInMemoryStore();
     const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "agent-recall-v2-codex-lifecycle-tail-"));

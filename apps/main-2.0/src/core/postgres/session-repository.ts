@@ -31,6 +31,7 @@ import {
   SESSION_SELECT_SQL,
   hydrateSession,
   numberValue,
+  postgresJsonValue,
   postgresText,
   timeValue,
   tokenUsageFromEvents,
@@ -466,7 +467,7 @@ async function insertRawEvents(
           payload jsonb
         )
       `,
-      [sessionKey, JSON.stringify(batch.map((event) => ({
+      [sessionKey, JSON.stringify(batch.map((event) => postgresJsonValue({
         event_index: event.eventIndex,
         event_id: event.eventId,
         kind: event.kind,
@@ -662,22 +663,22 @@ export class PostgresSessionRepository {
             remainingAttachmentBytes - (materialized.sizeBytes ?? 0),
           );
         }
-        attachmentRows.push({ ...materialized, messageIndex: message.index });
+        attachmentRows.push(postgresJsonValue({ ...materialized, messageIndex: message.index }));
         const { cachePath: _cachePath, ...publicAttachment } = materialized;
         return publicAttachment;
       });
-      return {
+      return postgresJsonValue({
         ...message,
         content: postgresText(message.content),
         ...(attachments?.length ? { attachments } : {}),
-      };
+      });
     });
-    const persistedTokenEvents = tokenEvents.map((event) => ({
+    const persistedTokenEvents = tokenEvents.map((event) => postgresJsonValue({
       ...event,
       dedupeKey: postgresText(event.dedupeKey),
       sourceTurnId: event.sourceTurnId ? postgresText(event.sourceTurnId).trim() || null : null,
     }));
-    const persistedTraceEvents = traceEvents.map((event) => ({
+    const persistedTraceEvents = traceEvents.map((event) => postgresJsonValue({
       ...event,
       title: postgresText(event.title),
       detail: postgresText(event.detail),

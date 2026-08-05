@@ -7,7 +7,7 @@ import type {
   EvaluationRun,
 } from "../../automation/contracts";
 import type { EvaluationStore } from "../../automation/engine/main/evaluation-store";
-import { EvaluationService } from "./evaluation-service";
+import { BUILTIN_JUDGE_PROMPT, EvaluationService } from "./evaluation-service";
 
 function agent(overrides: Partial<ConfiguredAgent> = {}): ConfiguredAgent {
   return {
@@ -26,7 +26,11 @@ function agent(overrides: Partial<ConfiguredAgent> = {}): ConfiguredAgent {
   };
 }
 
-function fixture(options: { dataset?: EvaluationDataset; agents?: ConfiguredAgent[] } = {}) {
+function fixture(options: {
+  dataset?: EvaluationDataset;
+  agents?: ConfiguredAgent[];
+  executeAgent?: ReturnType<typeof vi.fn>;
+} = {}) {
   const experiment: EvaluationExperiment = {
     id: "experiment-1",
     name: "Regression",
@@ -62,13 +66,17 @@ function fixture(options: { dataset?: EvaluationDataset; agents?: ConfiguredAgen
     saveDataset: vi.fn(),
     deleteDataset: vi.fn(),
     listEvaluators: vi.fn(async () => [evaluator]),
-    saveEvaluator: vi.fn(),
+    saveEvaluator: vi.fn(async (value: EvaluationEvaluator) => value),
     deleteEvaluator: vi.fn(),
     listExperiments: vi.fn(async () => [experiment]),
     saveExperiment: vi.fn(),
     deleteExperiment: vi.fn(),
     listRuns: vi.fn(async () => []),
     saveRun,
+    getRun: vi.fn(async (id: string) => {
+      const saved = saveRun.mock.calls.map((call) => call[0]).filter((run) => run.id === id);
+      return saved[saved.length - 1];
+    }),
     deleteRun: vi.fn(),
     close: vi.fn(),
   } as unknown as EvaluationStore;
@@ -76,7 +84,7 @@ function fixture(options: { dataset?: EvaluationDataset; agents?: ConfiguredAgen
     agent(),
     agent({ id: "judge-agent", name: "Judge", channelId: "judge-channel", currentRevisionId: undefined }),
   ];
-  const executeAgent = vi.fn(async (agentId: string) => ({
+  const executeAgent = options.executeAgent ?? vi.fn(async (agentId: string) => ({
     output: agentId === "judge-agent" ? '{"score":0.9,"reason":"clear"}' : "subject output",
     durationMs: 5,
   }));
@@ -102,7 +110,7 @@ describe("EvaluationService", () => {
 
     const run = await service.runExperiment("experiment-1");
 
-    expect(executeAgent).toHaveBeenNthCalledWith(1, "target-agent", "Explain the result");
+    expect(executeAgent).toHaveBeenNthCalledWith(1, "target-agent", "Explain the result", undefined);
     expect(executeAgent).toHaveBeenNthCalledWith(2, "judge-agent", expect.stringContaining("subject output"));
     expect(saveRun).toHaveBeenCalledWith(expect.objectContaining({
       experimentId: "experiment-1",
@@ -141,5 +149,124 @@ describe("EvaluationService", () => {
 
     await expect(service.runExperiment("experiment-1")).resolves.toMatchObject({ passRate: 1 });
     expect(executeAgent).toHaveBeenCalledWith("judge-agent", expect.any(String));
+  });
+
+  describe("ensureBuiltinJudge", () => {
+    it("provisions an llm_judge bound to the execution agent's channel", async () => {
+      const { service, store } = fixture();
+
+      const judge = await service.ensureBuiltinJudge("target-agent");
+
+      expect(judge.id).toBe("builtin-judge-codex-main");
+      expect(judge).toMatchObject({
+        kind: "llm_judge",
+        runtimeId: "codex-main",
+        enabled: true,
+      });
+      expect(judge.prompt).toContain("{{input}}");
+      expect(judge.prompt).toContain("{{output}}");
+      expect(store.saveEvaluator).toHaveBeenCalledWith(expect.objectContaining({ id: "builtin-judge-codex-main" }));
+    });
+
+    it("reuses an existing built-in judge matching the managed definition", async () => {
+      const { service, store } = fixture();
+      const existing: EvaluationEvaluator = {
+        id: "builtin-judge-codex-main",
+        name: "Built-in Judge (codex-main)",
+        kind: "llm_judge",
+        prompt: BUILTIN_JUDGE_PROMPT,
+        runtimeId: "codex-main",
+        threshold: 0.6,
+        enabled: true,
+        createdAt: 1,
+        updatedAt: 1,
+      };
+      (store.listEvaluators as ReturnType<typeof vi.fn>).mockResolvedValue([existing]);
+
+      const judge = await service.ensureBuiltinJudge("target-agent");
+
+      expect(judge).toBe(existing);
+      expect(store.saveEvaluator).not.toHaveBeenCalled();
+    });
+
+    it("syncs a drifted built-in judge back to the managed definition", async () => {
+      const { service, store } = fixture();
+      const stale: EvaluationEvaluator = {
+        id: "builtin-judge-codex-main",
+        name: "Built-in Judge (codex-main)",
+        kind: "llm_judge",
+        prompt: "old english-only rubric",
+        runtimeId: "codex-main",
+        threshold: 0.6,
+        enabled: true,
+        createdAt: 1,
+        updatedAt: 1,
+      };
+      (store.listEvaluators as ReturnType<typeof vi.fn>).mockResolvedValue([stale]);
+
+      const judge = await service.ensureBuiltinJudge("target-agent");
+
+      expect(judge.prompt).toBe(BUILTIN_JUDGE_PROMPT);
+      expect(judge.createdAt).toBe(1);
+      expect(store.saveEvaluator).toHaveBeenCalledWith(expect.objectContaining({
+        id: "builtin-judge-codex-main",
+        prompt: BUILTIN_JUDGE_PROMPT,
+      }));
+    });
+
+    it("rejects an unknown execution agent", async () => {
+      const { service } = fixture();
+      await expect(service.ensureBuiltinJudge("missing-agent")).rejects.toThrow(/Evaluation Agent not found/);
+    });
+  });
+
+  describe("run lifecycle", () => {
+    it("startExperiment persists a running row immediately and completes in the background", async () => {
+      const { service, store } = fixture();
+
+      const runId = await service.startExperiment("experiment-1", { skillHash: "hash-a" });
+
+      expect(runId).toMatch(/^eval-run-/);
+      const savedRuns = (store.saveRun as ReturnType<typeof vi.fn>).mock.calls.map((call) => call[0]);
+      expect(savedRuns[0]).toMatchObject({ id: runId, status: "running", skillHash: "hash-a", results: [] });
+      await vi.waitFor(() => {
+        const calls = (store.saveRun as ReturnType<typeof vi.fn>).mock.calls.map((call) => call[0]);
+        expect(calls.some((run) => run.id === runId && run.status === "completed")).toBe(true);
+      });
+      const final = await service.getRun(runId);
+      expect(final?.status).toBe("completed");
+      expect(final?.results).toHaveLength(1);
+      // Attribution rides along every snapshot, so the last one carries it too.
+      const lastSaved = savedRuns[savedRuns.length - 1];
+      expect(lastSaved.skillHash).toBe("hash-a");
+    });
+
+    it("cancelRun aborts the active run, which finalizes as cancelled", async () => {
+      const { service, store } = fixture({
+        executeAgent: vi.fn(async (agentId: string, _prompt: string, signal?: AbortSignal) => {
+          if (agentId !== "target-agent") {
+            return { output: '{"score":0.9,"reason":"clear"}', durationMs: 1 };
+          }
+          // Block until the abort signal fires, like a real agent conversation.
+          return new Promise<never>((_resolve, reject) => {
+            signal?.addEventListener("abort", () => reject(new Error("Run cancelled")));
+          });
+        }),
+      });
+
+      const runId = await service.startExperiment("experiment-1");
+      service.cancelRun(runId);
+
+      await vi.waitFor(() => {
+        const calls = (store.saveRun as ReturnType<typeof vi.fn>).mock.calls.map((call) => call[0]);
+        expect(calls.some((run) => run.id === runId && run.status === "cancelled")).toBe(true);
+      });
+    });
+
+    it("startExperiment validates the experiment before persisting anything", async () => {
+      const { service, store } = fixture();
+      await expect(service.startExperiment("missing")).rejects.toThrow(/experiment not found/i);
+      expect(store.saveRun).not.toHaveBeenCalled();
+    });
   });
 });

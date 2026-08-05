@@ -1452,6 +1452,27 @@ select:focus-visible {
   gap: 1px;
 }
 
+.tree-project-more {
+  display: flex;
+  width: calc(100% - 36px);
+  min-height: 24px;
+  align-items: center;
+  gap: 7px;
+  margin-left: 36px;
+  padding: 0 7px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-faint);
+  font-size: 12px;
+  text-align: left;
+}
+
+.tree-project-more:hover {
+  background: var(--panel-hover);
+  color: var(--text);
+}
+
 .tree-env-row {
   padding-left: 0;
 }
@@ -2157,6 +2178,86 @@ select:focus-visible {
   border-color: var(--border-strong);
   background: var(--panel-hover);
   color: var(--text);
+}
+
+.session-pagination {
+  display: flex;
+  min-height: 42px;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  flex: 0 0 auto;
+  padding-top: 8px;
+}
+
+.pagination-button,
+.pagination-jump button {
+  display: inline-flex;
+  min-width: 30px;
+  height: 30px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel);
+  color: var(--text-muted);
+}
+
+.pagination-pages {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.pagination-button.active {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--accent-contrast);
+}
+
+.pagination-button:not(:disabled):not(.active):hover,
+.pagination-jump button:hover {
+  border-color: var(--border-strong);
+  background: var(--panel-hover);
+  color: var(--text);
+}
+
+.pagination-button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.pagination-jump {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.pagination-jump input {
+  appearance: textfield;
+  -moz-appearance: textfield;
+  width: 46px;
+  height: 30px;
+  padding: 0 6px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel);
+  color: var(--text);
+  text-align: center;
+}
+
+.pagination-jump input::-webkit-inner-spin-button,
+.pagination-jump input::-webkit-outer-spin-button {
+  margin: 0;
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+.pagination-jump button {
+  padding: 0 9px;
+  font-size: 12px;
 }
 
 .session-row {
@@ -6272,6 +6373,41 @@ select:focus-visible {
   padding: 14px;
 }
 
+.orphan-delete-dialog {
+  width: min(380px, calc(100vw - 32px));
+}
+
+.orphan-delete-dialog .dialog-title {
+  margin-bottom: 8px;
+  font-size: 14px;
+}
+
+.orphan-delete-dialog .dialog-copy {
+  margin: 8px 0 10px;
+  font-size: 12.5px;
+  line-height: 1.42;
+}
+
+.orphan-delete-dialog .bulk-delete-summary {
+  margin: 0 0 10px;
+}
+
+.orphan-delete-dialog .dialog-copy.danger-copy,
+.orphan-delete-dialog .delete-confirmation-field {
+  margin: 0 0 10px;
+}
+
+.orphan-delete-dialog .dialog-actions {
+  margin-top: 12px;
+}
+
+.orphan-delete-dialog .dialog-actions button {
+  min-width: 68px;
+  min-height: 30px;
+  padding: 0 11px;
+  font-size: 12px;
+}
+
 .bulk-delete-date {
   display: grid;
   gap: 8px;
@@ -7189,6 +7325,20 @@ body.overlay-open .sidebar {
   background: var(--panel-subtle);
 }
 
+.remote-session-list-more {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 16px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.remote-session-list-more button {
+  min-height: 30px;
+}
+
 .settings-feedback.inline.remote-session-feedback {
   flex: 0 0 auto;
   min-height: 32px;
@@ -7197,9 +7347,38 @@ body.overlay-open .sidebar {
   background: var(--panel-bg);
 }
 
+.remote-operation-status {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+  padding: 7px 14px;
+  border-bottom: 1px solid var(--border-subtle);
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.remote-operation-status.running {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 6%, transparent);
+}
+
+.remote-operation-status.success {
+  color: var(--success-text);
+  background: color-mix(in srgb, var(--success-text) 6%, transparent);
+}
+
+.remote-operation-status.error {
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 6%, transparent);
+}
+
 .remote-session-row {
   position: relative;
   display: grid;
+  content-visibility: auto;
+  contain-intrinsic-size: auto 96px;
   grid-template-columns: 20px minmax(0, 1fr) 280px;
   align-items: center;
   gap: 10px;
@@ -7220,6 +7399,32 @@ body.overlay-open .sidebar {
   border-color: var(--accent-line);
   background: var(--accent-soft);
   box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.remote-session-row.busy {
+  border-color: color-mix(in srgb, var(--accent) 28%, var(--border));
+}
+
+.remote-session-task-status {
+  margin-top: 5px;
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: 11.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.remote-session-task-status.queued,
+.remote-session-task-status.running {
+  color: var(--accent);
+}
+
+.remote-session-task-status.succeeded {
+  color: var(--success-text);
+}
+
+.remote-session-task-status.failed {
+  color: var(--danger);
 }
 
 .remote-session-select {
@@ -7733,6 +7938,36 @@ body.overlay-open .sidebar {
   color: var(--text-muted);
   font-size: 13px;
   text-align: center;
+}
+
+.remote-refreshing-status {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 30px;
+  padding: 0 14px;
+  border-bottom: 1px solid var(--border-subtle);
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.remote-loading-state > span + span {
+  color: var(--text-dim);
+}
+
+.remote-loading-dismiss {
+  height: 30px;
+  padding: 0 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: 7px;
+  background: var(--panel-bg);
+  color: var(--text);
+}
+
+.remote-loading-dismiss:hover {
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+  color: var(--accent-bright);
 }
 
 .setup-copy-button {
