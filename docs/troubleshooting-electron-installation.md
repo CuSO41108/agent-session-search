@@ -16,34 +16,28 @@ dyld: Library not loaded: @rpath/Electron Framework.framework/Electron Framework
 
 ## 根本原因
 
-npm 的 `extract-zip` 模块在提取大型 Electron 二进制文件时，可能无法完全解压 `Electron.app/Contents/Frameworks` 目录，导致框架文件缺失。
+缺少 `path.txt` 通常表示 Electron 的安装脚本没有完整执行。若同时缺少 `Electron.app/Contents/Frameworks`，则说明运行时压缩包的提取过程被中断或结果不完整。仅凭这两个现象无法断定是某个特定 npm 模块的兼容性问题。
 
 ## 解决方案
 
 ### 推荐：使用 npm 重新安装
 
-最可靠的解决方案是让 V2 启动器自动重新下载和验证 Electron：
+最可靠的解决方案是重新安装 V2，再让启动器执行 Electron 完整性校验：
 
 ```bash
 # 1. 卸载
 npm uninstall -g agent-recall-v2
 
-# 2. 清空 npm 缓存（可选但推荐）
-npm cache clean --force
-
-# 3. 重新安装，使用可靠镜像源
+# 2. 重新安装；镜像只用于加速 Electron 下载
 export ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/
-npm install -g https://github.com/zszz3/AgentRecall/releases/latest/download/agent-recall-v2.tgz \
+npm install -g https://github.com/zszz3/AgentRecall/releases/download/v2-latest/agent-recall-v2.tgz \
   --registry=https://registry.npmmirror.com
 
-# 4. 验证安装
-agent-recall-v2 --version
-
-# 5. 实际启动测试（观察是否正常启动，不是仅检查 --version）
-agent-recall-v2 &
-sleep 3
-# 应该看到应用窗口或相关输出，按 Ctrl+C 退出
+# 3. 实际启动；确认应用窗口或菜单栏图标出现
+agent-recall-v2
 ```
+
+`agent-recall-v2 --version` 只输出包版本，不能证明 Electron 运行时完整。启动命令会在拉起 Electron 后退出终端进程；请从应用菜单正常退出，不要使用 `$!`、`kill` 或 `Ctrl+C` 判断应用是否启动成功。
 
 ### 手动修复（如果重新安装不可行）
 
@@ -59,52 +53,91 @@ if [ ! -d "$ELECTRON_DIR" ]; then
   exit 1
 fi
 
-# 3. 找到 Electron 缓存的 zip 文件
-ZIP_FILE=$(find ~/Library/Caches/electron -name "electron-v*-darwin-arm64.zip" \
-  -o -name "electron-v*-darwin-x64.zip" | sort -V | tail -1)
+# 3. 从已安装包读取精确的 Electron 版本
+ELECTRON_VERSION="$(node -e 'process.stdout.write(require(process.argv[1]).version)' \
+  "$ELECTRON_DIR/package.json")"
+
+# 4. 使用与 Electron 安装脚本一致的架构判断
+ELECTRON_ARCH="$(node -p 'process.arch')"
+if [ "$ELECTRON_ARCH" = "x64" ] && \
+  [ "$(sysctl -in sysctl.proc_translated 2>/dev/null || true)" = "1" ]; then
+  ELECTRON_ARCH="arm64"
+fi
+
+# 5. 只选择版本和架构完全匹配的缓存文件
+CACHE_ROOT="${electron_config_cache:-$HOME/Library/Caches/electron}"
+ZIP_NAME="electron-v${ELECTRON_VERSION}-darwin-${ELECTRON_ARCH}.zip"
+ZIP_FILE="$(find "$CACHE_ROOT" -type f -name "$ZIP_NAME" -print -quit 2>/dev/null || true)"
 
 if [ -z "$ZIP_FILE" ]; then
-  echo "未找到缓存的 Electron zip 文件"
-  echo "建议重新安装：npm uninstall -g agent-recall-v2 && npm install -g agent-recall-v2"
+  echo "未找到匹配的缓存文件：$ZIP_NAME"
+  echo "请使用上面的 v2-latest 安装命令重新安装"
   exit 1
 fi
 
 echo "使用缓存: $ZIP_FILE"
 
-# 4. 清除不完整的提取内容
-rm -rf "$ELECTRON_DIR/dist"
+# 6. 先解压到临时目录，不覆盖现有运行时
+REPAIR_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/agent-recall-electron.XXXXXX")"
+trap 'rm -rf "$REPAIR_ROOT"' EXIT
+unzip -q "$ZIP_FILE" -d "$REPAIR_ROOT/dist"
 
-# 5. 用 unzip 重新提取（macOS 自带命令，比 extract-zip npm 模块更可靠）
-unzip -q "$ZIP_FILE" -d "$ELECTRON_DIR/dist"
+REPAIR_BINARY="$REPAIR_ROOT/dist/Electron.app/Contents/MacOS/Electron"
+REPAIR_DEFAULT_APP="$REPAIR_ROOT/dist/Electron.app/Contents/Resources/default_app.asar"
+REPAIR_VERSION_FILE="$REPAIR_ROOT/dist/version"
 
-if [ ! -d "$ELECTRON_DIR/dist/Electron.app/Contents/Frameworks" ]; then
-  echo "错误：Frameworks 目录仍然缺失，解压可能失败"
+if [ ! -x "$REPAIR_BINARY" ] || [ ! -f "$REPAIR_DEFAULT_APP" ] || [ ! -f "$REPAIR_VERSION_FILE" ]; then
+  echo "错误：缓存中的 Electron 运行时文件不完整"
   exit 1
 fi
 
-# 6. 创建 path.txt（不能用 echo，会追加换行符）
-printf '%s' 'Electron.app/Contents/MacOS/Electron' > "$ELECTRON_DIR/path.txt"
-
-# 7. 验证文件内容（确保没有换行）
-if [ "$(cat "$ELECTRON_DIR/path.txt" | wc -l)" -ne 0 ]; then
-  echo "警告：path.txt 包含换行符，请手动修复"
+REPAIRED_VERSION="$("$REPAIR_BINARY" --version 2>/dev/null | sed 's/^v//')"
+ARCHIVE_VERSION="$(tr -d '\r\n' < "$REPAIR_VERSION_FILE")"
+if [ "$REPAIRED_VERSION" != "$ELECTRON_VERSION" ] || [ "$ARCHIVE_VERSION" != "$ELECTRON_VERSION" ]; then
+  echo "错误：Electron 版本不匹配，期望 $ELECTRON_VERSION，实际 $REPAIRED_VERSION"
   exit 1
 fi
 
-echo "✓ 修复完成"
-
-# 8. 实际运行时验证（不仅是 --version，而是真实启动）
-echo "启动应用验证..."
-agent-recall-v2 &
-RECALL_PID=$!
-sleep 3
-if ps -p $RECALL_PID > /dev/null 2>&1; then
-  echo "✓ 应用成功启动"
-  kill $RECALL_PID 2>/dev/null
-else
-  echo "✗ 应用启动失败，可能需要重新安装"
+# 7. 验证通过后再替换现有运行时
+DIST_BACKUP="$ELECTRON_DIR/.dist-backup-$$"
+if [ -d "$ELECTRON_DIR/dist" ]; then
+  mv "$ELECTRON_DIR/dist" "$DIST_BACKUP"
+fi
+if ! mv "$REPAIR_ROOT/dist" "$ELECTRON_DIR/dist"; then
+  if [ -d "$DIST_BACKUP" ]; then
+    mv "$DIST_BACKUP" "$ELECTRON_DIR/dist"
+  fi
+  echo "错误：无法替换 Electron 运行时"
   exit 1
 fi
+if ! printf '%s' 'Electron.app/Contents/MacOS/Electron' > "$ELECTRON_DIR/path.txt"; then
+  rm -rf "$ELECTRON_DIR/dist"
+  if [ -d "$DIST_BACKUP" ]; then
+    mv "$DIST_BACKUP" "$ELECTRON_DIR/dist"
+  fi
+  echo "错误：无法写入 path.txt"
+  exit 1
+fi
+
+# 8. 让 Electron 包按正常方式解析并启动二进制验证
+if ! ELECTRON_BINARY="$(node -e 'process.stdout.write(require(process.argv[1]))' "$ELECTRON_DIR")" || \
+  ! "$ELECTRON_BINARY" --version; then
+  rm -rf "$ELECTRON_DIR/dist"
+  if [ -d "$DIST_BACKUP" ]; then
+    mv "$DIST_BACKUP" "$ELECTRON_DIR/dist"
+  fi
+  echo "错误：修复后的 Electron 运行时仍无法启动"
+  exit 1
+fi
+
+if [ -f "$ELECTRON_DIR/dist/electron.d.ts" ]; then
+  mv "$ELECTRON_DIR/dist/electron.d.ts" "$ELECTRON_DIR/electron.d.ts"
+fi
+rm -rf "$DIST_BACKUP"
+
+trap - EXIT
+rm -rf "$REPAIR_ROOT"
+echo "✓ Electron 运行时修复完成，请运行 agent-recall-v2 验证应用界面"
 ```
 
 ## 验证步骤
@@ -112,47 +145,35 @@ fi
 完成修复后，确认以下内容：
 
 ```bash
-# 1. 检查 Frameworks 目录是否存在
-ls -la "$(npm root -g)/agent-recall-v2/node_modules/electron/dist/Electron.app/Contents/"
+ELECTRON_DIR="$(npm root -g)/agent-recall-v2/node_modules/electron"
+ELECTRON_BINARY="$(node -e 'process.stdout.write(require(process.argv[1]))' "$ELECTRON_DIR")"
 
-# 输出应包含：
-# Frameworks
-# Info.plist
-# MacOS
-# PkgInfo
-# Resources
+# Electron 二进制能够加载 Frameworks 并输出版本
+"$ELECTRON_BINARY" --version
 
-# 2. 检查 path.txt 内容（应无换行符）
-cat "$(npm root -g)/agent-recall-v2/node_modules/electron/path.txt" | od -c
-
-# 3. 测试实际启动（关键验证，不仅是 --version）
-agent-recall-v2 &
-# 应看到应用启动，按 Ctrl+C 退出
+# 启动 AgentRecall V2，确认窗口或菜单栏图标出现
+agent-recall-v2
 ```
+
+AgentRecall V2 会将 Electron 作为独立进程启动，因此 CLI 返回后应用仍会继续运行。验证完成后请从应用菜单退出。
 
 ## 缓存位置
 
-Electron 二进制缓存位置：
-- **macOS**: `~/Library/Caches/electron/`
-- **Linux**: `~/.cache/electron/`
-- **Windows**: `%APPDATA%\electron\cache\`
+macOS 默认将 Electron 二进制缓存到 `~/Library/Caches/electron/`。如果设置了 `electron_config_cache`，则使用该环境变量指定的目录。
 
 ## 已知限制
 
-- 此问题仅在 npm 全局安装时出现，本地项目安装不受影响
+- 本文命令面向 npm 全局安装的 `agent-recall-v2`；源码开发环境应在仓库内重新执行安装与构建命令
 - V2 启动器已包含缺失 `path.txt`、检查缓存完整性等修复流程，不建议直接修改 node_modules 中的 Electron 代码
 - 镜像源配置（`ELECTRON_MIRROR`）仅加速下载，不能预防解压失败
 
 ## 推荐阅读
 
 - [AgentRecall Install.md](../Install.md) - 完整安装指南
-- npm extract-zip 模块问题跟踪
-- Electron 官方 macOS 支持文档
 
 ## 后续步骤
 
 如果以上方案均不可行，建议：
 
 1. 报告问题到 [AgentRecall Issues](https://github.com/zszz3/AgentRecall/issues)，包含完整的错误日志
-2. 尝试使用旧版本（如 v0.4.x）验证问题是否版本特定
-3. 检查 macOS 系统更新和 xcode-select 工具链完整性
+2. 附上 `node --version`、`npm --version`、`uname -m`、缓存文件名和完整错误日志
