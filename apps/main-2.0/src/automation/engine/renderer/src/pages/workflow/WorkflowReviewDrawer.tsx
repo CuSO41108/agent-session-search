@@ -1,6 +1,7 @@
 import { useEffect, type ReactNode } from "react";
 import { AlertTriangle, Bot, CheckCircle2, CircleStop, CircleX, RefreshCw, ShieldAlert, Sparkles, X } from "lucide-react";
 import type { WorkflowV2GenerationReviewState } from "../../../../shared/workflow-v2/generation-review";
+import { WorkflowReviewTrace } from "./WorkflowReviewTrace";
 
 interface WorkflowReviewDrawerProps {
   open: boolean;
@@ -73,6 +74,14 @@ export function WorkflowReviewDrawer({ open, review, reviewerControls, canReview
           </div>
           <div className="workflow-review-controls-shell">{reviewerControls}</div>
         </section>
+
+        {review?.trace?.length ? <section className="workflow-review-section">
+          <div className="workflow-review-section-heading">
+            <div><span>Review process</span><p>Reviewer requests, responses, tool activity, and runtime events in execution order.</p></div>
+            <em>{review.trace.length}</em>
+          </div>
+          <WorkflowReviewTrace trace={review.trace} />
+        </section> : null}
 
         <section className="workflow-review-section">
           <div className="workflow-review-section-heading">

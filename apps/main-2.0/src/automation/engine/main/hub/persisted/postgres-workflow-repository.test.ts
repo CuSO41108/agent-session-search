@@ -47,6 +47,10 @@ describe("PostgresWorkflowRepository portable metadata", () => {
       requiredLevel: "high" as const,
       passed: true,
       reviewedAt: 20,
+      trace: [
+        { id: "node-review-request", kind: "request" as const, at: 18, content: "Review this node" },
+        { id: "node-review-response", kind: "response" as const, at: 19, content: "Accepted" },
+      ],
     }];
     await repository.replace(database, {
       activeWorkflowId: "wf-imported",
@@ -55,7 +59,7 @@ describe("PostgresWorkflowRepository portable metadata", () => {
         configuredAgentId: "agent", modelId: "model", reviewerConfiguredAgentId: "reviewer", reviewerModelId: "reviewer-model",
         objective: "Objective", reply: "", runContextDocument: "", contextDocument: "", messages: [], runProgress: [], runIds: ["run-child"],
         definition,
-        sourceType: "user", topologyLocked: false, origin, generationReview: { status: "approved", reviewerConfiguredAgentId: "reviewer", reviewerModelId: "reviewer-model", reviewedRevision: 3, updatedAt: 10 },
+        sourceType: "user", topologyLocked: false, origin, generationReview: { status: "approved", reviewerConfiguredAgentId: "reviewer", reviewerModelId: "reviewer-model", reviewedRevision: 3, trace: [{ id: "global-review-request", kind: "request", at: 8, content: "Review this workflow" }], updatedAt: 10 },
         createdAt: 1, updatedAt: 2,
       }],
       runs: [{
@@ -74,7 +78,7 @@ describe("PostgresWorkflowRepository portable metadata", () => {
     });
 
     const loaded = await repository.load(database, "wf-imported");
-    expect((loaded.workflows as Array<Record<string, unknown>>)[0]).toMatchObject({ origin, confirmedRevision: 3, reviewerConfiguredAgentId: "reviewer", reviewerModelId: "reviewer-model", generationReview: { status: "approved" } });
+    expect((loaded.workflows as Array<Record<string, unknown>>)[0]).toMatchObject({ origin, confirmedRevision: 3, reviewerConfiguredAgentId: "reviewer", reviewerModelId: "reviewer-model", generationReview: { status: "approved", trace: [{ kind: "request", content: "Review this workflow" }] } });
     expect((loaded.runs as Array<Record<string, unknown>>)[0]).toMatchObject({
       runId: "run-child",
       parentRunId: "run-parent",

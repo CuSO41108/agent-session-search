@@ -1048,7 +1048,7 @@ export class WorkflowRuntime {
         error: "Workflow V2 durable run state identity does not match the requested run.",
       };
     }
-    const plan = input.workflow.workflowV2Plan;
+    const plan = input.run.workflowV2Plan;
     if (!plan) {
       return { ok: false, workflowId: input.workflow.workflowId, runId: input.run.runId, error: "Workflow V2 plan was not found." };
     }
@@ -1170,7 +1170,7 @@ export class WorkflowRuntime {
         contextDocument: input.run.contextDocument,
         finalReport: [input.run.finalReport, `Superseded by a full rerun requested from ${targetNode.title}.`].filter(Boolean).join("\n\n"),
       });
-      return this.runWorkflow({ workflowId: input.workflow.workflowId, contextDocument: input.run.contextDocument, triggerSource: "rerun", parentRunId: input.run.runId });
+      return this.runWorkflow({ workflowId: input.workflow.workflowId, contextDocument: input.run.contextDocument, triggerSource: "rerun", reviewEnabled: plan.definition.reviewEnabled === true, parentRunId: input.run.runId });
     }
 
     const snapshot = this.deps.snapshot();

@@ -134,8 +134,8 @@ const evaluationRunListSchema = z.object({
   limit: z.number().int().min(1).max(100).optional(),
 }).strict();
 const workflowIdSchema = z.object({ workflowId: idSchema });
-const workflowRequestSchema = workflowIdSchema.passthrough();
-const workflowReviewSchema = workflowIdSchema.extend({ expectedRevision: z.number().int().nonnegative() }).passthrough();
+const workflowRequestSchema = workflowIdSchema.extend({ reviewEnabled: z.boolean().optional() }).passthrough();
+const workflowReviewSchema = workflowIdSchema.extend({ expectedRevision: z.number().int().nonnegative(), reviewEnabled: z.boolean().optional() }).passthrough();
 const workflowNodeSchema = workflowIdSchema.extend({ runId: idSchema, nodeId: idSchema }).passthrough();
 const workflowStopSchema = workflowIdSchema.extend({ runId: idSchema }).passthrough();
 const workflowReviseSchema = workflowNodeSchema.extend({

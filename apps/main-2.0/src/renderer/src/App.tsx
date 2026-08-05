@@ -1773,7 +1773,11 @@ export function App(): ReactElement {
               />
             ) : null}
 
-            {activePage === "workflows" ? <WorkflowFeaturePage language={language} /> : null}
+            {activePage === "workflows" ? <WorkflowFeaturePage
+              language={language}
+              globalReviewEnabled={Boolean(appSettings?.workflowGlobalReviewEnabled)}
+              runtimeReviewEnabled={Boolean(appSettings?.workflowRuntimeReviewEnabled)}
+            /> : null}
 
             {activePage === "team-chat" ? (
               <TeamChatPage language={language} preferredRoomId={preferredTeamChatRoomId} />

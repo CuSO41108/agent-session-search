@@ -47,7 +47,7 @@ import type {
   WorkflowV2ExecutionLeaseState,
   WorkflowV2ProgressReport,
 } from "../../../shared/workflow-v2/supervision";
-import type { WorkflowV2ReviewerInput, WorkflowV2ReviewerResponse } from "../../../shared/workflow-v2/review";
+import type { WorkflowV2ReviewerInput, WorkflowV2ReviewerResponse, WorkflowV2ReviewTraceEntry } from "../../../shared/workflow-v2/review";
 import { isWorkflowV2InterventionAction } from "../../../shared/workflow-v2/review";
 import {
   createWorkflowV2ExecutionLease,
@@ -179,6 +179,67 @@ class WorkflowV2OneShotInputRequestSignal extends Error {
   constructor(readonly task: TaskRun, readonly question: string) {
     super("One-shot workflow node requested user input.");
   }
+}
+
+class WorkflowV2ReviewerExecutionError extends Error {
+  constructor(message: string, readonly reviewTrace: WorkflowV2ReviewTraceEntry[]) {
+    super(message);
+  }
+}
+
+function workflowV2ReviewerTaskTrace(
+  task: TaskRun,
+  infrastructureAttempt: number,
+  options: { includeResponse: boolean; error?: string },
+): WorkflowV2ReviewTraceEntry[] {
+  const trace: WorkflowV2ReviewTraceEntry[] = [{
+    id: `${task.id}:request`,
+    kind: "request",
+    at: task.createdAt,
+    content: task.prompt,
+    infrastructureAttempt,
+  }];
+  for (const message of task.messages) {
+    for (const event of message.events ?? []) {
+      const kind = event.type === "meta" ? "system" : event.type;
+      const metadata: Record<string, unknown> = {
+        ...(event.metadata ?? {}),
+        ...(event.requestId ? { requestId: event.requestId } : {}),
+        ...(event.requestState ? { requestState: event.requestState } : {}),
+        ...(event.decision ? { decision: event.decision } : {}),
+        ...(event.fromAgentId ? { fromAgentId: event.fromAgentId } : {}),
+        ...(event.toAgentId ? { toAgentId: event.toAgentId } : {}),
+      };
+      trace.push({
+        id: event.id || `${task.id}:event:${trace.length}`,
+        kind,
+        at: event.timestamp,
+        content: event.content || event.type.replaceAll("_", " "),
+        ...(event.name ? { name: event.name } : {}),
+        ...(Object.keys(metadata).length > 0 ? { metadata } : {}),
+        infrastructureAttempt,
+      });
+    }
+  }
+  if (options.includeResponse) {
+    trace.push({
+      id: `${task.id}:response`,
+      kind: "response",
+      at: task.updatedAt,
+      content: taskArtifact(task),
+      infrastructureAttempt,
+    });
+  }
+  if (options.error) {
+    trace.push({
+      id: `${task.id}:error`,
+      kind: "error",
+      at: Date.now(),
+      content: options.error,
+      infrastructureAttempt,
+    });
+  }
+  return trace;
 }
 export class WorkflowV2RunExecutor {
   constructor(
@@ -1398,6 +1459,7 @@ export class WorkflowV2RunExecutor {
 
     const reviewNodeOutput = async (reviewInput: WorkflowV2ReviewerInput): Promise<WorkflowV2ReviewerResponse> => {
       let lastError: unknown;
+      const reviewTrace: WorkflowV2ReviewTraceEntry[] = [];
       for (let infrastructureAttempt = 1; infrastructureAttempt <= 2; infrastructureAttempt += 1) {
         const task = await startModelTask(`reviewer:${reviewInput.executorNodeId}`, {
           prompt: workflowV2ReviewerPrompt(reviewInput),
@@ -1410,16 +1472,26 @@ export class WorkflowV2RunExecutor {
           detail: infrastructureAttempt === 1 ? "Independent quality review running" : "Retrying independent quality review",
           taskId: task.id,
         });
+        let completedTraceCaptured = false;
         try {
           const completedTask = await waitForTask(task.id, reviewInput.executorNodeId);
-          return parseWorkflowV2ReviewerResponse(taskArtifact(completedTask), reviewInput);
+          reviewTrace.push(...workflowV2ReviewerTaskTrace(completedTask, infrastructureAttempt, { includeResponse: true }));
+          completedTraceCaptured = true;
+          return { ...parseWorkflowV2ReviewerResponse(taskArtifact(completedTask), reviewInput), trace: structuredClone(reviewTrace) };
         } catch (error) {
           lastError = error;
+          const message = error instanceof Error ? error.message : String(error);
+          if (completedTraceCaptured) {
+            reviewTrace.push({ id: `${task.id}:parse-error`, kind: "error", at: Date.now(), content: message, infrastructureAttempt });
+          } else {
+            const failedTask = this.deps.snapshot().tasks.find((item) => item.id === task.id) ?? task;
+            reviewTrace.push(...workflowV2ReviewerTaskTrace(failedTask, infrastructureAttempt, { includeResponse: false, error: message }));
+          }
         } finally {
           latestSnapshot = await this.deps.deleteTask(task.id);
         }
       }
-      throw lastError instanceof Error ? lastError : new Error(String(lastError));
+      throw new WorkflowV2ReviewerExecutionError(lastError instanceof Error ? lastError.message : String(lastError), reviewTrace);
     };
 
     const hookMemory = new Map<string, unknown>();

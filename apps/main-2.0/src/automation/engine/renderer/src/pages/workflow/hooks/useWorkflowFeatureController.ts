@@ -12,6 +12,7 @@ interface UseWorkflowFeatureControllerOptions {
   draft: WorkflowDraftController;
   runner: WorkflowRunnerController;
   language: "en" | "zh";
+  globalReviewEnabled: boolean;
   onChooseWorkDir: () => Promise<void>;
   onRefresh: () => Promise<void>;
   onReadOutputFile?: WorkflowController["onReadOutputFile"];
@@ -31,6 +32,7 @@ export function useWorkflowFeatureController({
   draft,
   runner,
   language,
+  globalReviewEnabled,
   onChooseWorkDir,
   onRefresh,
   onReadOutputFile,
@@ -73,6 +75,7 @@ export function useWorkflowFeatureController({
       reviewerConfiguredAgentId: draft.workflowReviewerConfiguredAgentId,
       reviewerModelId: draft.workflowReviewerModelId,
       generationReview: activeWorkflow?.generationReview,
+      reviewFeatureEnabled: globalReviewEnabled,
       runtimes: snapshot.runtimes,
       channels: snapshot.channels,
       configuredAgents: snapshot.configuredAgents,
@@ -213,7 +216,7 @@ export function useWorkflowFeatureController({
       },
     onReviewWorkflow: async () => {
         if (!draft.workflowId || !activeWorkflow) return;
-        setSnapshot(await workflows.reviewWorkflow({ workflowId: draft.workflowId, expectedRevision: activeWorkflow.revision }));
+        setSnapshot(await workflows.reviewWorkflow({ workflowId: draft.workflowId, expectedRevision: activeWorkflow.revision, reviewEnabled: globalReviewEnabled }));
     },
     onInterruptWorkflowReview: async () => {
       if (!draft.workflowId) return;
@@ -273,6 +276,7 @@ export function useWorkflowFeatureController({
       onResolveRuntimeApproval,
       onRefresh,
       runner,
+      globalReviewEnabled,
       setSnapshot,
       snapshot.channels,
       snapshot.configuredAgents,

@@ -1343,7 +1343,7 @@ export class AgentHub {
     const workflow = this.workflowStore.workflows.get(input.workflowId);
     if (!workflow) return this.snapshot();
     if (workflow.revision !== input.expectedRevision) return this.snapshot();
-    if (workflow.definition.reviewEnabled !== true) return this.snapshot();
+    if (!(input.reviewEnabled ?? workflow.definition.reviewEnabled === true)) return this.snapshot();
     const reviewer = this.resolveConfiguredAgent(workflow.reviewerConfiguredAgentId, workflow.reviewerModelId);
     if (!reviewer?.runtime?.available) {
       this.workflowStore.workflows.set(workflow.workflowId, this.cloneWorkflowDraft({ ...workflow, generationReview: { status: "failed", reviewerConfiguredAgentId: workflow.reviewerConfiguredAgentId, reviewerModelId: workflow.reviewerModelId, reviewedRevision: workflow.revision, error: "The selected Workflow Reviewer Agent is unavailable.", updatedAt: Date.now() }, updatedAt: Date.now() }));
@@ -1353,7 +1353,7 @@ export class AgentHub {
     const executionMode = this.selectExecutionMode(reviewer.runtimeAgentId, "workflow", "oneshot");
     await this.workflowGenerationReviewCoordinator.run({
         workflow,
-        askReviewer: (prompt, signal) => this.askWorkflowAgent({ planningWorkflowId: workflow.workflowId, prompt, configuredAgentId: workflow.reviewerConfiguredAgentId, runtimeId: reviewer.runtimeAgentId, executionMode, continuationPolicy: this.defaultContinuationPolicy(reviewer.runtimeAgentId, "workflow", executionMode), runtimeConfig: { model: workflow.reviewerModelId, ...(reviewer.reasoningEffort ? { reasoningEffort: reviewer.reasoningEffort } : {}) }, workDir: workflow.workDir || this.workDir }, undefined, signal),
+        askReviewer: (prompt, onEvent, signal) => this.askWorkflowAgent({ planningWorkflowId: workflow.workflowId, prompt, configuredAgentId: workflow.reviewerConfiguredAgentId, runtimeId: reviewer.runtimeAgentId, executionMode, continuationPolicy: this.defaultContinuationPolicy(reviewer.runtimeAgentId, "workflow", executionMode), runtimeConfig: { model: workflow.reviewerModelId, ...(reviewer.reasoningEffort ? { reasoningEffort: reviewer.reasoningEffort } : {}) }, workDir: workflow.workDir || this.workDir }, onEvent, signal),
         publish: (next) => { this.workflowStore.workflows.set(next.workflowId, next); this.emitWorkflow(); },
         current: () => this.workflowStore.workflows.get(workflow.workflowId),
         flush: () => this.flushPersistence(),
@@ -1378,7 +1378,7 @@ export class AgentHub {
       if (existing) {
         if (existing.sourceType === "official") {
           const refreshedDefinition = {
-            ...bundledDefinition,
+            ...preserveOfficialWorkflowNodeRoutes(bundledDefinition, existing.definition),
             ...(existing.definition.reviewEnabled !== undefined ? { reviewEnabled: existing.definition.reviewEnabled } : {}),
           };
           const bundledContentChanged = existing.title !== def.title
@@ -1552,9 +1552,13 @@ export class AgentHub {
     return this.snapshot();
   }
 
-  workflowReadiness(workflowId: string): WorkflowReadinessResult {
+  workflowReadiness(workflowId: string, reviewEnabled?: boolean): WorkflowReadinessResult {
     const workflow = this.workflowStore.workflows.get(workflowId);
-    return workflow ? inspectWorkflowReadiness({ workflow, configuredAgents: this.configuredAgents.values(), channels: this.channels, mcpServers: this.mcpServers }) : { ready: false, issues: [] };
+    if (!workflow) return { ready: false, issues: [] };
+    const readinessWorkflow = reviewEnabled === undefined
+      ? workflow
+      : { ...workflow, definition: { ...workflow.definition, reviewEnabled } };
+    return inspectWorkflowReadiness({ workflow: readinessWorkflow, configuredAgents: this.configuredAgents.values(), channels: this.channels, mcpServers: this.mcpServers });
   }
 
   portableWorkflowReadiness(file: WorkflowPortableFileV1): WorkflowReadinessResult {
@@ -1644,7 +1648,7 @@ export class AgentHub {
     if (definition.edges.length > MAX_WORKFLOW_EDGE_COUNT) {
       return { ok: false, workflowId: current.workflowId, revision: current.revision, error: `Workflow V2 definition exceeds ${MAX_WORKFLOW_EDGE_COUNT} edges.` };
     }
-    if (current.topologyLocked && !isLockedWorkflowReviewSettingUpdate(input, current.definition, definition)) {
+    if (current.topologyLocked && !isLockedWorkflowConfigurationUpdate(input, current.definition, definition)) {
       return { ok: false, workflowId: current.workflowId, revision: current.revision, error: "Official workflow topology is locked." };
     }
     const validation = validateWorkflowV2Definition(definition, { configuredAgentIds: this.configuredAgents.keys() });
@@ -1686,7 +1690,7 @@ export class AgentHub {
 
   runWorkflow(input: RunWorkflowRequest): WorkflowOperationResult {
     if (this.workflowStore.workflows.has(input.workflowId)) {
-      const readiness = this.workflowReadiness(input.workflowId);
+      const readiness = this.workflowReadiness(input.workflowId, input.reviewEnabled);
       if (!readiness.ready) return { ok: false, workflowId: input.workflowId, error: readiness.issues[0]?.message ?? "Workflow requires configuration before running." };
     }
     return this.workflowRunService.run(input);
@@ -3489,17 +3493,48 @@ export function getDefaultWorkDir(): string {
   return process.cwd();
 }
 
-function isLockedWorkflowReviewSettingUpdate(
+function isLockedWorkflowConfigurationUpdate(
   input: UpdateWorkflowRequest,
   currentDefinition: WorkflowV2Definition,
   nextDefinition: WorkflowV2Definition,
 ): boolean {
   const allowedRequestKeys = new Set(["workflowId", "expectedRevision", "definition"]);
   if (!input.definition || Object.entries(input).some(([key, value]) => value !== undefined && !allowedRequestKeys.has(key))) return false;
-  if (typeof nextDefinition.reviewEnabled !== "boolean" || nextDefinition.reviewEnabled === (currentDefinition.reviewEnabled === true)) return false;
+  let configurationChanged = nextDefinition.reviewEnabled !== currentDefinition.reviewEnabled;
   const currentTopology = structuredClone(currentDefinition);
   const nextTopology = structuredClone(nextDefinition);
   delete currentTopology.reviewEnabled;
   delete nextTopology.reviewEnabled;
-  return isDeepStrictEqual(currentTopology, nextTopology);
+  for (let index = 0; index < currentTopology.nodes.length; index += 1) {
+    const currentNode = currentTopology.nodes[index];
+    const nextNode = nextTopology.nodes[index];
+    if (!currentNode || !nextNode || currentNode.id !== nextNode.id) return false;
+    if (currentNode.execModel === "llm" && nextNode.execModel === "llm") {
+      if (currentNode.configuredAgentId !== nextNode.configuredAgentId || currentNode.modelId !== nextNode.modelId) configurationChanged = true;
+      delete currentNode.configuredAgentId;
+      delete currentNode.modelId;
+      delete nextNode.configuredAgentId;
+      delete nextNode.modelId;
+    }
+  }
+  return configurationChanged && isDeepStrictEqual(currentTopology, nextTopology);
+}
+
+function preserveOfficialWorkflowNodeRoutes(
+  bundledDefinition: WorkflowV2Definition,
+  existingDefinition: WorkflowV2Definition,
+): WorkflowV2Definition {
+  const existingNodes = new Map(existingDefinition.nodes.map((node) => [node.id, node]));
+  return {
+    ...bundledDefinition,
+    nodes: bundledDefinition.nodes.map((node) => {
+      const existingNode = existingNodes.get(node.id);
+      if (node.execModel !== "llm" || existingNode?.execModel !== "llm") return node;
+      return {
+        ...node,
+        ...(existingNode.configuredAgentId ? { configuredAgentId: existingNode.configuredAgentId } : {}),
+        ...(existingNode.modelId ? { modelId: existingNode.modelId } : {}),
+      };
+    }),
+  };
 }

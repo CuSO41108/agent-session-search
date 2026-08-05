@@ -26,15 +26,15 @@ export function startWorkflowRun(input: { request: RunWorkflowRequest; deps: Wor
     return { ok: false, workflowId: workflow.workflowId, error: "The requested approval mode does not match the confirmed workflow policy." };
   }
   const effectiveApprovalMode = configuredApprovalMode === "user_choice" ? requestedApprovalMode : configuredApprovalMode;
-  const runPlan = effectiveApprovalMode && workflow.workflowV2Plan.definition.transactionPolicy
-    ? {
-        ...workflow.workflowV2Plan,
-        definition: {
-          ...workflow.workflowV2Plan.definition,
-          transactionPolicy: { ...workflow.workflowV2Plan.definition.transactionPolicy, approvalMode: effectiveApprovalMode },
-        },
-      }
-    : workflow.workflowV2Plan;
+  const effectiveReviewEnabled = input.request.reviewEnabled ?? workflow.workflowV2Plan.definition.reviewEnabled === true;
+  const runDefinition = {
+    ...workflow.workflowV2Plan.definition,
+    reviewEnabled: effectiveReviewEnabled,
+    ...(effectiveApprovalMode && workflow.workflowV2Plan.definition.transactionPolicy
+      ? { transactionPolicy: { ...workflow.workflowV2Plan.definition.transactionPolicy, approvalMode: effectiveApprovalMode } }
+      : {}),
+  };
+  const runPlan = { ...workflow.workflowV2Plan, definition: runDefinition };
   const planError = workflowV2PlanValidationError({ ...workflow, workflowV2Plan: runPlan }, runPlan);
   if (planError) return { ok: false, workflowId: workflow.workflowId, error: planError };
   const initialContextDocument = input.request.contextDocument ?? workflow.contextDocument;
@@ -47,6 +47,7 @@ export function startWorkflowRun(input: { request: RunWorkflowRequest; deps: Wor
     ...(input.request.parentRunId ? { parentRunId: input.request.parentRunId } : {}),
     ...(configurationSnapshot ? { configurationSnapshot } : {}),
     ...(effectiveApprovalMode ? { transactionApprovalMode: effectiveApprovalMode } : {}),
+    reviewEnabled: effectiveReviewEnabled,
   };
   const started = input.deps.startWorkflowRun(startRequest);
   if (!started.ok || !started.runId) return started;

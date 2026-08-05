@@ -23,6 +23,7 @@ export function startWorkflowRunState(input: {
   if (input.request.transactionApprovalMode && workflowV2Plan.definition.transactionPolicy) {
     workflowV2Plan.definition.transactionPolicy.approvalMode = input.request.transactionApprovalMode;
   }
+  if (input.request.reviewEnabled !== undefined) workflowV2Plan.definition.reviewEnabled = input.request.reviewEnabled;
 
   return {
     nextRun: {

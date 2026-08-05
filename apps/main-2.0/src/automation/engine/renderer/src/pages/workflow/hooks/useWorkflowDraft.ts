@@ -218,6 +218,12 @@ export function useWorkflowDraft({
       ...structuredClone(workflow.definition),
       nodes: workflow.definition.nodes.map((node) => (node.id === nodeId ? { ...node, ...update } as WorkflowV2Node : node)),
     };
+    if (workflow.topologyLocked) {
+      const result = await workflows.updateWorkflow({ workflowId: workflow.workflowId, expectedRevision: workflow.revision, definition });
+      if (!result.ok) throw new Error(result.error ?? "Workflow node route could not be updated.");
+      setSnapshot(await workflows.selectWorkflow(workflow.workflowId));
+      return;
+    }
     const next = await workflows.patchDraft({
       workflowId: workflow.workflowId,
       objective: workflow.objective,

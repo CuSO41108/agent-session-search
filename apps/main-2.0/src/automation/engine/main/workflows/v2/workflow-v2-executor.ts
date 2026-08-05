@@ -15,6 +15,7 @@ import type {
   WorkflowV2ReviewerResponse,
   WorkflowV2ReviewRetryPolicy,
   WorkflowV2ReviewAttemptRecord,
+  WorkflowV2ReviewTraceEntry,
 } from "../../../shared/workflow-v2/review";
 import { createWorkflowV2RunState, type WorkflowV2RunState } from "../../../shared/workflow-v2/state";
 import {
@@ -429,10 +430,12 @@ export async function executeWorkflowV2Plan(input: ExecuteWorkflowV2PlanInput): 
               continue;
             }
             const reviewError = error instanceof Error ? error.message : String(error);
+            const reviewTrace = reviewTraceFromError(error);
             const intervention = createIntervention(nodeId, "review_escalation", `Independent Reviewer is unavailable: ${reviewError}`, now(), undefined, undefined, {
               source: "review_escalation",
               allowedActions: ["rerun_all", "accept_last_result"],
               lastCandidate: authoritativeWorkerOutput,
+              ...(reviewTrace ? { reviewTrace } : {}),
             });
             runState = transitionWorkflowV2NodeState(runState, { nodeId, status: "paused", now: now(), error: intervention.reason, intervention });
             input.onNodeStateTransition?.({ nodeId, status: "paused", intervention });
@@ -447,6 +450,7 @@ export async function executeWorkflowV2Plan(input: ExecuteWorkflowV2PlanInput): 
             requiredLevel: reviewerInput.reviewLevel,
             passed: resolution.action === "accept",
             reviewedAt: now(),
+            ...(reviewerResponse.trace?.length ? { trace: structuredClone(reviewerResponse.trace) } : {}),
           };
           runState = transitionWorkflowV2NodeState(runState, {
             nodeId,
@@ -758,7 +762,7 @@ function createIntervention(
     decision: WorkflowV2HumanIntervention["supervisorDecision"];
     resumeConversation?: WorkflowV2HumanIntervention["resumeConversation"];
   },
-  override?: Pick<WorkflowV2HumanIntervention, "source" | "allowedActions" | "scriptApproval" | "lastCandidate">,
+  override?: Pick<WorkflowV2HumanIntervention, "source" | "allowedActions" | "scriptApproval" | "lastCandidate" | "reviewTrace">,
 ): WorkflowV2HumanIntervention {
   return {
     nodeId,
@@ -772,7 +776,13 @@ function createIntervention(
     ...(supervision?.resumeConversation ? { resumeConversation: structuredClone(supervision.resumeConversation) } : {}),
     ...(override?.scriptApproval ? { scriptApproval: structuredClone(override.scriptApproval) } : {}),
     ...(override?.lastCandidate ? { lastCandidate: structuredClone(override.lastCandidate) } : {}),
+    ...(override?.reviewTrace ? { reviewTrace: structuredClone(override.reviewTrace) } : {}),
   };
+}
+
+function reviewTraceFromError(error: unknown): WorkflowV2ReviewTraceEntry[] | undefined {
+  if (typeof error !== "object" || error === null || !("reviewTrace" in error) || !Array.isArray(error.reviewTrace)) return undefined;
+  return structuredClone(error.reviewTrace) as WorkflowV2ReviewTraceEntry[];
 }
 
 function createSkippedOutput(nodeId: string, reason: string): WorkflowV2WorkerOutput {

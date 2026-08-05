@@ -9,6 +9,29 @@ export type WorkflowV2ReviewRiskLevel = "low" | "medium" | "high";
 export type WorkflowV2ReviewConfidence = "high" | "medium" | "low";
 export type WorkflowV2QualityLevel = Exclude<WorkflowV2ReviewLevel, "none">;
 
+export type WorkflowV2ReviewTraceKind =
+  | "request"
+  | "response"
+  | "tool_call"
+  | "tool_result"
+  | "system"
+  | "handoff"
+  | "approval_request"
+  | "approval_response"
+  | "user_input_request"
+  | "user_input_response"
+  | "error";
+
+export interface WorkflowV2ReviewTraceEntry {
+  id: string;
+  kind: WorkflowV2ReviewTraceKind;
+  at: number;
+  content: string;
+  name?: string;
+  metadata?: Record<string, unknown>;
+  infrastructureAttempt?: number;
+}
+
 export interface WorkflowV2ReviewDimensionResult {
   key: string;
   qualityLevel: WorkflowV2QualityLevel;
@@ -41,6 +64,7 @@ export interface WorkflowV2ReviewerInput {
 export interface WorkflowV2ReviewerResponse {
   reviewerNodeId: string;
   verdict: WorkflowV2ReviewVerdict;
+  trace?: WorkflowV2ReviewTraceEntry[];
 }
 
 export type WorkflowV2ReviewAction = "accept" | "retry" | "fail" | "skip" | "pause" | "escalate";
@@ -63,6 +87,7 @@ export interface WorkflowV2ReviewAttemptRecord {
   requiredLevel: WorkflowV2QualityLevel;
   passed: boolean;
   reviewedAt: number;
+  trace?: WorkflowV2ReviewTraceEntry[];
 }
 
 export type WorkflowV2InterventionAction = "continue" | "skip" | "escalate" | "replan" | "increase_review_strength" | "approve_once" | "reject" | "rerun_all" | "accept_last_result";
@@ -91,6 +116,7 @@ export interface WorkflowV2HumanIntervention {
   allowedActions: WorkflowV2InterventionAction[];
   requestedAt: number;
   reviewVerdict?: WorkflowV2ReviewVerdict;
+  reviewTrace?: WorkflowV2ReviewTraceEntry[];
   lastCandidate?: WorkflowV2WorkerOutput;
   progressReport?: WorkflowV2ProgressReport;
   supervisorDecision?: WorkflowV2SupervisorDecision;
@@ -134,6 +160,7 @@ export function isWorkflowV2HumanIntervention(value: unknown): value is Workflow
     return false;
   }
   if (value.reviewVerdict !== undefined && !isWorkflowV2ReviewVerdict(value.reviewVerdict)) return false;
+  if (value.reviewTrace !== undefined && (!Array.isArray(value.reviewTrace) || !value.reviewTrace.every(isWorkflowV2ReviewTraceEntry))) return false;
   if (value.lastCandidate !== undefined && !isWorkflowV2WorkerOutput(value.lastCandidate)) return false;
   if (value.progressReport !== undefined && !isWorkflowV2ProgressReport(value.progressReport)) return false;
   if (value.supervisorDecision !== undefined && !isWorkflowV2SupervisorDecision(value.supervisorDecision)) {
@@ -181,6 +208,31 @@ export function isWorkflowV2InterventionAction(value: unknown): value is Workflo
     || value === "rerun_all"
     || value === "accept_last_result"
   );
+}
+
+export function isWorkflowV2ReviewTraceEntry(value: unknown): value is WorkflowV2ReviewTraceEntry {
+  if (!isRecord(value) || typeof value.id !== "string" || !value.id.trim()) return false;
+  if (!isReviewTraceKind(value.kind)) return false;
+  if (typeof value.at !== "number" || !Number.isFinite(value.at) || value.at < 0) return false;
+  if (typeof value.content !== "string") return false;
+  if (value.name !== undefined && typeof value.name !== "string") return false;
+  if (value.metadata !== undefined && !isRecord(value.metadata)) return false;
+  return value.infrastructureAttempt === undefined
+    || (Number.isSafeInteger(value.infrastructureAttempt) && Number(value.infrastructureAttempt) > 0);
+}
+
+function isReviewTraceKind(value: unknown): value is WorkflowV2ReviewTraceKind {
+  return value === "request"
+    || value === "response"
+    || value === "tool_call"
+    || value === "tool_result"
+    || value === "system"
+    || value === "handoff"
+    || value === "approval_request"
+    || value === "approval_response"
+    || value === "user_input_request"
+    || value === "user_input_response"
+    || value === "error";
 }
 
 function isQualityLevel(value: unknown): value is WorkflowV2QualityLevel {

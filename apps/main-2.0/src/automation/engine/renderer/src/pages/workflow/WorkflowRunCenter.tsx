@@ -9,6 +9,7 @@ import type { WorkflowNodeConversation } from "../../../../shared/workflow-v2/co
 import type { WorkflowNodeMessage } from "../../../../shared/workflow/run";
 import type { WorkflowRecoveryAction } from "../../../../shared/workflow-v2/transaction";
 import type { WorkflowV2InterventionAction } from "../../../../shared/workflow-v2/review";
+import { WorkflowReviewTrace } from "./WorkflowReviewTrace";
 
 interface WorkflowRunCenterProps {
   runs: WorkflowRunState[];
@@ -481,7 +482,15 @@ function WorkflowRunCenterOpen({ runs, conversations = [], artifacts = [], loadi
                               <strong>{language === "zh" ? "候选结果" : "Candidate result"}</strong>
                               <pre>{JSON.stringify(review.candidate, null, 2)}</pre>
                               {review.verdict.dimensionResults.map((dimension) => <span key={dimension.key}><b>{dimension.key}: {dimension.qualityLevel}</b>{dimension.reason}{dimension.evidence.length ? ` · ${dimension.evidence.join("; ")}` : ""}</span>)}
+                              {review.trace?.length ? <details className="workflow-run-center-review-trace">
+                                <summary>{language === "zh" ? "审查全过程" : "Full review process"} · {review.trace.length}</summary>
+                                <WorkflowReviewTrace trace={review.trace} language={language} />
+                              </details> : null}
                             </details>)}</div>
+                          </details> : null}
+                          {progress?.intervention?.reviewTrace?.length ? <details className="workflow-run-center-node-outputs" open>
+                            <summary>{language === "zh" ? "失败的审查全过程" : "Failed review process"} · {progress.intervention.reviewTrace.length}</summary>
+                            <WorkflowReviewTrace trace={progress.intervention.reviewTrace} language={language} />
                           </details> : null}
                           {progress?.acceptance ? <details className="workflow-run-center-node-outputs" open={progress.acceptance.outcome !== "clean"}>
                             <summary>{language === "zh" ? "节点验收" : "Node acceptance"} · {progress.acceptance.outcome}</summary>

@@ -1,5 +1,5 @@
 import { memo, useEffect, useRef, useState, type MouseEvent, type ReactElement } from "react";
-import { Bot, CheckCircle2, CircleStop, FileInput, GitBranch, History, Maximize2, Pencil, Play, RefreshCw, Send, Settings2, ShieldAlert, Wand2, X } from "lucide-react";
+import { Bot, CheckCircle2, CircleStop, FileInput, GitBranch, History, Maximize2, Pencil, Play, RefreshCw, Send, ShieldAlert, Wand2, X } from "lucide-react";
 import { DEFAULT_MODEL_ID } from "../../../../shared/models";
 import { WORKFLOW_TOTAL_QUESTION_COUNT } from "../../../../shared/workflow-agent";
 import { validateWorkflowV2Definition } from "../../../../shared/workflow-v2/validation";
@@ -98,7 +98,7 @@ export function WorkflowPage({ controller: source }: { controller: WorkflowContr
   const reviewerConfiguredAgentId = source.reviewerConfiguredAgentId;
   const reviewerModelId = source.reviewerModelId ?? DEFAULT_MODEL_ID;
   const generationReview = source.generationReview;
-  const reviewEnabled = definition.reviewEnabled === true;
+  const reviewFeatureEnabled = source.reviewFeatureEnabled === true;
   const runtimes = source.runtimes;
   const channels = source.channels;
   const configuredAgents = source.configuredAgents ?? [];
@@ -156,19 +156,14 @@ export function WorkflowPage({ controller: source }: { controller: WorkflowContr
   const [runCenterOpen, setRunCenterOpen] = useState(false);
   const [selectedHistoryRunId, setSelectedHistoryRunId] = useState<string | undefined>(undefined);
   const [transactionApprovalMode, setTransactionApprovalMode] = useState<"batch" | "per_operation">("batch");
-  const [settingsOpen, setSettingsOpen] = useState(false);
-  const [reviewSettingDraft, setReviewSettingDraft] = useState(reviewEnabled);
-  const [settingsSaving, setSettingsSaving] = useState(false);
-  const [settingsError, setSettingsError] = useState<string>();
 
   useEffect(() => {
     if (generationReview?.status === "reviewing") setReviewDrawerOpen(true);
   }, [generationReview?.status]);
 
   useEffect(() => {
-    setReviewSettingDraft(reviewEnabled);
-    if (!reviewEnabled) setReviewDrawerOpen(false);
-  }, [reviewEnabled]);
+    if (!reviewFeatureEnabled) setReviewDrawerOpen(false);
+  }, [reviewFeatureEnabled]);
 
   useEffect(() => {
     setRunCenterOpen(false);
@@ -320,11 +315,19 @@ export function WorkflowPage({ controller: source }: { controller: WorkflowContr
     const nodeAgentConfig = configuredAgentById(nodeAgentId, configuredAgents);
     const nodeAgentName = nodeAgentConfig?.name || nodeAgentId || "Unconfigured";
     const nodeModelId = node.execModel === "llm" ? node.modelId ?? nodeAgentConfig?.modelId ?? "-" : "script";
-    const canConfigureNodeAgent = node.execModel === "llm" && canEditDefinition;
+    const canConfigureNodeAgent = node.execModel === "llm" && !runOwnsInput && !running;
     const nodeAgentRow =
       node.execModel === "llm" ? (
         <div className="workflow-node-agent-row" title={`Agent: ${nodeAgentName} · Model: ${nodeModelId}`}>
-          {canConfigureNodeAgent ? <WorkflowNodeAgentSelect nodeTitle={node.title} {...(node.configuredAgentId ? { configuredAgentId: node.configuredAgentId } : {})} configuredAgents={configuredAgents} onSelect={(selectedAgentId) => source.onUpdateNode(node.id, { configuredAgentId: selectedAgentId, modelId: undefined } as Partial<WorkflowV2Node>)} /> : <><span className="workflow-node-agent-name">{nodeAgentName}</span><span className="workflow-node-agent-model">{nodeModelId}</span></>}
+          {canConfigureNodeAgent ? <WorkflowNodeAgentSelect
+            nodeTitle={node.title}
+            {...(node.configuredAgentId ? { configuredAgentId: node.configuredAgentId } : {})}
+            {...(node.modelId ? { modelId: node.modelId } : {})}
+            configuredAgents={configuredAgents}
+            channels={channels}
+            onSelect={(selectedAgentId) => source.onUpdateNode(node.id, { configuredAgentId: selectedAgentId, modelId: undefined } as Partial<WorkflowV2Node>)}
+            onSelectModel={(selectedModelId) => source.onUpdateNode(node.id, { modelId: selectedModelId } as Partial<WorkflowV2Node>)}
+          /> : <><span className="workflow-node-agent-name">{nodeAgentName}</span><span className="workflow-node-agent-model">{nodeModelId}</span></>}
         </div>
       ) : null;
 
@@ -397,26 +400,9 @@ export function WorkflowPage({ controller: source }: { controller: WorkflowContr
             >
               {workDir || workflowText.noWorkDir}
             </button>
-            {graphVisible && onUpdateDefinition ? <button type="button" className="icon-btn" title="Workflow settings" aria-label="Workflow settings" onClick={() => { setReviewSettingDraft(reviewEnabled); setSettingsError(undefined); setSettingsOpen(true); }} disabled={running}><Settings2 size={15} /></button> : null}
           </div>
         </div>
       </header>
-
-      {settingsOpen ? <div className="workflow-revision-backdrop" role="presentation" onClick={() => setSettingsOpen(false)}>
-        <section className="workflow-revision-dialog workflow-settings-dialog" role="dialog" aria-modal="true" aria-label="Workflow settings" onClick={(event) => event.stopPropagation()}>
-          <header><div><strong>Workflow settings</strong></div><button className="icon-btn" onClick={() => setSettingsOpen(false)} aria-label="Close Workflow settings"><X size={15} /></button></header>
-          <label className="workflow-review-setting-toggle"><input type="checkbox" checked={reviewSettingDraft} onChange={(event) => setReviewSettingDraft(event.currentTarget.checked)} /><span><strong>Enable Review</strong></span></label>
-          {settingsError ? <p className="is-error">{settingsError}</p> : null}
-          <footer><button className="control-btn" onClick={() => setSettingsOpen(false)} disabled={settingsSaving}>Cancel</button><button className="send-btn" disabled={settingsSaving || reviewSettingDraft === reviewEnabled} onClick={() => {
-            setSettingsSaving(true);
-            setSettingsError(undefined);
-            void Promise.resolve(onUpdateDefinition!({ ...structuredClone(definition), reviewEnabled: reviewSettingDraft }))
-              .then(() => setSettingsOpen(false))
-              .catch((error) => setSettingsError(error instanceof Error ? error.message : String(error)))
-              .finally(() => setSettingsSaving(false));
-          }}>{settingsSaving ? "Saving..." : "Save settings"}</button></footer>
-        </section>
-      </div> : null}
 
       <WorkflowRunCenter
         runs={runs}
@@ -456,7 +442,7 @@ export function WorkflowPage({ controller: source }: { controller: WorkflowContr
         </button>
       ) : null}
 
-      {graphVisible && reviewEnabled && onReviewWorkflow ? <WorkflowReviewDrawer
+      {graphVisible && reviewFeatureEnabled && onReviewWorkflow ? <WorkflowReviewDrawer
         open={reviewDrawerOpen}
         {...(generationReview ? { review: generationReview } : {})}
         reviewerControls={<ChatControls
@@ -693,7 +679,7 @@ export function WorkflowPage({ controller: source }: { controller: WorkflowContr
               <span>Stop workflow</span>
             </button>
           ) : graphVisible ? <div className="workflow-command-cluster">
-            {reviewEnabled && onReviewWorkflow ? (
+            {reviewFeatureEnabled && onReviewWorkflow ? (
               <button
                 className={`control-btn workflow-review-trigger is-${generationReview?.status ?? "not_reviewed"}`}
                 onClick={() => setReviewDrawerOpen(true)}

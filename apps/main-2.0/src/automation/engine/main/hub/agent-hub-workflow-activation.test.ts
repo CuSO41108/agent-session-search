@@ -36,9 +36,37 @@ describe("AgentHub workflow materialization", () => {
     expect(reviewUpdate).toMatchObject({ ok: true, revision: bundledWorkflow.revision + 1 });
     const reviewEnabledWorkflow = hub.snapshot().workflowStore.workflows.find((workflow) => workflow.workflowId === "bundled-test")!;
     expect(reviewEnabledWorkflow.definition.reviewEnabled).toBe(true);
-    const changedTopology = structuredClone(reviewEnabledWorkflow.definition);
+
+    const routedDefinition = structuredClone(reviewEnabledWorkflow.definition);
+    const routedNode = routedDefinition.nodes[0]!;
+    if (routedNode.execModel !== "llm") throw new Error("Bundled test node must be an LLM node.");
+    routedNode.modelId = "gpt-5.4";
+    const routeUpdate = hub.updateWorkflow({
+      workflowId: "bundled-test",
+      expectedRevision: reviewEnabledWorkflow.revision,
+      definition: routedDefinition,
+    });
+    expect(routeUpdate).toMatchObject({ ok: true, revision: reviewEnabledWorkflow.revision + 1 });
+    const routedWorkflow = hub.snapshot().workflowStore.workflows.find((workflow) => workflow.workflowId === "bundled-test")!;
+    expect(routedWorkflow.definition.nodes[0]).toMatchObject({ modelId: "gpt-5.4", prompt: "Answer." });
+
+    const bundledNode = structuredClone(bundledWorkflow.definition.nodes[0]!);
+    if (bundledNode.execModel !== "llm") throw new Error("Bundled test node must be an LLM node.");
+    hub.ensureBundledWorkflows([{
+      workflowId: "bundled-test",
+      title: "Bundled test",
+      objective: "Test bundled workflow",
+      definition: {
+        ...structuredClone(bundledWorkflow.definition),
+        nodes: [{ ...bundledNode, prompt: "Updated official prompt." }],
+      },
+    }]);
+    const refreshedWorkflow = hub.snapshot().workflowStore.workflows.find((workflow) => workflow.workflowId === "bundled-test")!;
+    expect(refreshedWorkflow.definition.nodes[0]).toMatchObject({ modelId: "gpt-5.4", prompt: "Updated official prompt." });
+
+    const changedTopology = structuredClone(refreshedWorkflow.definition);
     changedTopology.nodes[0]!.title = "Changed locked title";
-    expect(hub.updateWorkflow({ workflowId: "bundled-test", expectedRevision: reviewEnabledWorkflow.revision, definition: changedTopology })).toMatchObject({
+    expect(hub.updateWorkflow({ workflowId: "bundled-test", expectedRevision: refreshedWorkflow.revision, definition: changedTopology })).toMatchObject({
       ok: false,
       error: "Official workflow topology is locked.",
     });

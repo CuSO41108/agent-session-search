@@ -1,4 +1,5 @@
 import type { WorkflowV2ScriptRiskLevel } from "./definition";
+import type { WorkflowV2ReviewTraceEntry } from "./review";
 
 export type WorkflowV2GenerationReviewStatus = "not_reviewed" | "reviewing" | "approved" | "changes_requested" | "failed";
 export type WorkflowV2GenerationReviewVerdict = "approve" | "revise";
@@ -26,5 +27,6 @@ export interface WorkflowV2GenerationReviewState {
   reviewedRevision?: number;
   result?: WorkflowV2GenerationReviewResult;
   error?: string;
+  trace?: WorkflowV2ReviewTraceEntry[];
   updatedAt: number;
 }

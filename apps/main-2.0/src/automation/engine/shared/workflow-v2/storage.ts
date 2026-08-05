@@ -3,7 +3,7 @@ import type { WorkflowV2Plan } from "./planning";
 import type { WorkflowV2ScriptParameterDef } from "./definition";
 import type { WorkflowV2ReviewVerdict } from "./review";
 import type { WorkflowV2InterventionAction } from "./review";
-import { isWorkflowV2InterventionAction, isWorkflowV2ReviewVerdict } from "./review";
+import { isWorkflowV2InterventionAction, isWorkflowV2ReviewTraceEntry, isWorkflowV2ReviewVerdict } from "./review";
 import type { WorkflowV2RunState } from "./state";
 import type { WorkflowV2ExecutionLeaseState, WorkflowV2ProgressReport } from "./supervision";
 import { isWorkflowV2ProgressReport } from "./supervision";
@@ -280,7 +280,8 @@ function isReviewAttemptRecord(value: unknown): boolean {
     && isWorkflowV2ReviewVerdict(value.verdict)
     && (value.requiredLevel === "low" || value.requiredLevel === "medium" || value.requiredLevel === "high")
     && typeof value.passed === "boolean"
-    && isNonNegativeFinite(value.reviewedAt);
+    && isNonNegativeFinite(value.reviewedAt)
+    && (value.trace === undefined || (Array.isArray(value.trace) && value.trace.every(isWorkflowV2ReviewTraceEntry)));
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

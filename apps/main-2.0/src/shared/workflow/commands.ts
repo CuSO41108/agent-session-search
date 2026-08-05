@@ -134,6 +134,7 @@ export interface StartWorkflowRunRequest {
   triggerSource?: WorkflowRunTriggerSource;
   configurationSnapshot?: WorkflowRunConfigurationSnapshot;
   transactionApprovalMode?: "batch" | "per_operation";
+  reviewEnabled?: boolean;
   parentRunId?: string;
 }
 
@@ -146,6 +147,7 @@ export interface RunWorkflowRequest {
   contextDocument?: string;
   triggerSource?: WorkflowRunTriggerSource;
   transactionApprovalMode?: "batch" | "per_operation";
+  reviewEnabled?: boolean;
   parentRunId?: string;
 }
 
@@ -157,6 +159,7 @@ export interface ConfirmWorkflowRequest {
 export interface ReviewWorkflowRequest {
   workflowId: string;
   expectedRevision: number;
+  reviewEnabled?: boolean;
 }
 
 export interface InterruptWorkflowReviewRequest {

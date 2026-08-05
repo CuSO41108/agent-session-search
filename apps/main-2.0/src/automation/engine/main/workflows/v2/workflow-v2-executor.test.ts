@@ -1012,6 +1012,10 @@ describe("workflow-v2 executor", () => {
             qualityLevel: "high",
             dimensionResults: [{ key: "quality", qualityLevel: "high", reason: "Complete and correct.", evidence: ["Reviewed candidate"] }],
           },
+          trace: [
+            { id: "review-request", kind: "request", at: 5_201, content: "Review the candidate" },
+            { id: "review-response", kind: "response", at: 5_202, content: "Accepted" },
+          ],
         };
       },
       onNodeAccepted: async () => { acceptanceOrder.push("materialize"); },
@@ -1024,6 +1028,7 @@ describe("workflow-v2 executor", () => {
     expect(result.runState.nodes.draft?.reviewHistory?.[0]?.candidate.proposals).toEqual([
       { kind: "continue", reason: "executor self-assessment" },
     ]);
+    expect(result.runState.nodes.draft?.reviewHistory?.[0]?.trace?.map((entry) => entry.kind)).toEqual(["request", "response"]);
     expect(acceptanceOrder).toEqual(["review", "materialize"]);
   });
 
