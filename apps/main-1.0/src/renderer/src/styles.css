@@ -2180,6 +2180,58 @@ select:focus-visible {
   color: var(--text);
 }
 
+.session-pagination {
+  display: flex;
+  min-height: 42px;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  flex: 0 0 auto;
+  padding-top: 8px;
+}
+
+.pagination-button,
+.pagination-jump button {
+  display: inline-flex;
+  min-width: 30px;
+  height: 30px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel);
+  color: var(--text-muted);
+}
+
+.pagination-button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.pagination-jump {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.pagination-jump input {
+  width: 46px;
+  height: 30px;
+  padding: 0 6px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel);
+  color: var(--text);
+  text-align: center;
+}
+
+.pagination-jump button {
+  padding: 0 9px;
+  font-size: 12px;
+}
+
 .session-row {
   position: relative;
   display: grid;

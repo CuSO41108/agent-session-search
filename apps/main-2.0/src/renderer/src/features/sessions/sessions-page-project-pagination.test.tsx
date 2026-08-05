@@ -56,8 +56,8 @@ function createModel(projects: Array<ProjectSummary & { tags: string[] }>): Sess
     remoteSessionsOpen: false,
     selected: null,
     sessions: [],
-    hasMoreSessions: false,
-    pageSize: 30,
+    currentPage: 1,
+    totalPages: 1,
     liveSessionKeys: new Set(),
     liveDetectionFailed: false,
     bulkSelectionActive: false,
@@ -89,7 +89,7 @@ const actions: SessionsPageActions = {
   renameSession: noop,
   toggleFavorite: noop,
   openContextMenu: noop,
-  loadMore: noop,
+  goToPage: noop,
   toggleBulkSession: noop,
   toggleLoadedSelection: noop,
   exitBulkSelection: noop,
@@ -147,5 +147,38 @@ describe("SessionsPage project pagination", () => {
     expect(container.querySelectorAll(".tree-proj-row")).toHaveLength(31);
     expect(container.querySelector('[title="/projects/project-64"]')).not.toBeNull();
     expect(container.querySelector('[title="/projects/project-30"]')).toBeNull();
+  });
+
+  it("jumps directly to the requested Session page", async () => {
+    const model = createModel([]);
+    model.sessionTotalCount = 120;
+    model.totalPages = 4;
+    const goToPage = vi.fn();
+
+    await act(async () => root.render(createElement(SessionsPage, {
+      model,
+      actions: { ...actions, goToPage },
+    })));
+
+    const input = container.querySelector<HTMLInputElement>('input[name="page"]');
+    const form = container.querySelector<HTMLFormElement>(".pagination-jump");
+    if (!input || !form) throw new Error("Expected the Session pagination controls to render.");
+    input.value = "3";
+    await act(async () => form.dispatchEvent(new SubmitEvent("submit", { bubbles: true, cancelable: true })));
+
+    expect(goToPage).toHaveBeenCalledWith(3);
+  });
+
+  it("resets the Session result scroll container when the page changes", async () => {
+    const model = createModel([]);
+    model.sessionTotalCount = 60;
+    model.totalPages = 2;
+
+    await act(async () => root.render(createElement(SessionsPage, { model, actions })));
+    const firstResults = container.querySelector(".results");
+    model.currentPage = 2;
+    await act(async () => root.render(createElement(SessionsPage, { model, actions })));
+
+    expect(container.querySelector(".results")).not.toBe(firstResults);
   });
 });

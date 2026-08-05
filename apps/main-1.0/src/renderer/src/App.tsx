@@ -165,7 +165,6 @@ function emptyPendingPersonalSources(): Record<PendingSourceKey, boolean> {
   ) as Record<PendingSourceKey, boolean>;
 }
 
-const INITIAL_SESSION_LIMIT = 30;
 const SESSION_PAGE_SIZE = 30;
 
 function formatDateInput(date: Date): string {
@@ -292,9 +291,8 @@ export function App(): ReactElement {
   const [dateRange, setDateRange] = useState<DateRangeFilter>("all");
   const [sortBy, setSortBy] = useState<SessionSortBy>("smart");
   const [liveStatus, setLiveStatus] = useState<LiveStatusFilter>("all");
-  const [sessionLimit, setSessionLimit] = useState(INITIAL_SESSION_LIMIT);
+  const [sessionPage, setSessionPage] = useState(1);
   const [sessionTotalCount, setSessionTotalCount] = useState(0);
-  const [hasMoreSessions, setHasMoreSessions] = useState(false);
   const [results, setResults] = useState<SessionSearchResult[]>([]);
   const [resultsScopeKey, setResultsScopeKey] = useState<string | null>(null);
   const [tags, setTags] = useState<string[]>([]);
@@ -468,7 +466,8 @@ export function App(): ReactElement {
       sortBy,
       dateFrom,
       dateTo,
-      limit: sessionLimit,
+      limit: SESSION_PAGE_SIZE,
+      offset: (sessionPage - 1) * SESSION_PAGE_SIZE,
       liveStatus: liveStatus === "all" ? undefined : liveStatus,
       liveSessionKeys: liveDetectionFailed ? [] : liveSearchKeys,
     };
@@ -477,17 +476,21 @@ export function App(): ReactElement {
         ? { sessions: [], totalCount: 0, hasMore: false }
         : await window.sessionSearch.searchSessionPage(options);
       if (requestId !== loadSeqRef.current) return;
+      const lastPage = Math.max(1, Math.ceil(page.totalCount / SESSION_PAGE_SIZE));
+      if (sessionPage > lastPage) {
+        setSessionPage(lastPage);
+        return;
+      }
       startTransition(() => {
         setResults(page.sessions);
         setResultsScopeKey(requestScopeKey);
         setSessionTotalCount(page.totalCount);
-        setHasMoreSessions(page.hasMore);
         setSelectedKey((current) =>
           current && !page.sessions.some((session) => session.sessionKey === current) ? null : current,
         );
       });
     });
-  }, [query, source, environmentId, tag, projectPath, projectEnvironmentId, visibility, dateRange, sortBy, sessionLimit, liveStatus, liveDetectionFailed, liveSearchKeys, refreshQueues.sessions, searchScopeKey]);
+  }, [query, source, environmentId, tag, projectPath, projectEnvironmentId, visibility, dateRange, sortBy, sessionPage, liveStatus, liveDetectionFailed, liveSearchKeys, refreshQueues.sessions, searchScopeKey]);
 
   useEffect(() => {
     setBulkSelectionActive(false);
@@ -854,14 +857,13 @@ export function App(): ReactElement {
     const scopeChanged = previousSearchScopeKeyRef.current !== searchScopeKey;
     previousSearchScopeKeyRef.current = searchScopeKey;
     if (scopeChanged) {
-      setHasMoreSessions(false);
-      if (sessionLimit !== INITIAL_SESSION_LIMIT) {
-        setSessionLimit(INITIAL_SESSION_LIMIT);
+      if (sessionPage !== 1) {
+        setSessionPage(1);
         return;
       }
     }
     void load();
-  }, [load, searchScopeKey, sessionLimit]);
+  }, [load, searchScopeKey, sessionPage]);
 
   useEffect(() => {
     const initialTimer = window.setTimeout(() => void loadQuotas(), 100);
@@ -1171,7 +1173,6 @@ export function App(): ReactElement {
     [resultsMatchSearchScope, results, liveSessionKeys, liveStatus, liveDetectionFailed],
   );
   const displayedSessionTotalCount = resultsMatchSearchScope ? sessionTotalCount : 0;
-  const displayedHasMoreSessions = resultsMatchSearchScope && hasMoreSessions;
   const selected = useMemo(
     () => displayedResults.find((session) => session.sessionKey === selectedKey) || null,
     [displayedResults, selectedKey],
@@ -2418,9 +2419,9 @@ export function App(): ReactElement {
         bulkSelectionActive={bulkSelectionActive}
         bulkSelectedKeys={bulkSelectedKeys}
         onToggleBulk={toggleBulkSession}
-        hasMoreSessions={displayedHasMoreSessions}
-        onLoadMore={() => setSessionLimit((current) => current + SESSION_PAGE_SIZE)}
-        loadMoreCount={SESSION_PAGE_SIZE}
+        currentPage={sessionPage}
+        totalPages={Math.max(1, Math.ceil(displayedSessionTotalCount / SESSION_PAGE_SIZE))}
+        onPageChange={(page) => setSessionPage(page)}
       />
 
       {detail ? (
