@@ -1611,13 +1611,10 @@ export function App(): ReactElement {
       const rawMessage = error instanceof Error ? error.message : String(error);
       const message = rawMessage === "A related session is currently live. Stop it before deleting this session tree."
         ? t(rawMessage, "关联会话正在运行，请先停止后再删除整棵会话树。")
-        : rawMessage === "Live session detection failed. Deletion is disabled."
-        ? t(rawMessage, "Live 会话检测失败，删除操作已禁用。")
         : rawMessage;
-      if (
-        rawMessage === "A related session is currently live. Stop it before deleting this session tree."
-        || rawMessage === "Live session detection failed. Deletion is disabled."
-      ) setDeleteSessionBlockedMessage(message);
+      if (rawMessage === "A related session is currently live. Stop it before deleting this session tree.") {
+        setDeleteSessionBlockedMessage(message);
+      }
       setActionStatus({ kind: "error", message });
     } finally {
       setDeletingSession(false);
@@ -1666,9 +1663,28 @@ export function App(): ReactElement {
   }
 
   async function freshLiveKeysForBulkDelete(): Promise<string[]> {
-    const snapshot = await window.sessionSearch.getLiveSessions(true);
-    if (snapshot.error) throw new Error(t("Live session detection failed. Deletion is disabled.", "Live 会话检测失败，删除操作已禁用。"));
-    return snapshot.sessions.map(liveSessionDeleteKey);
+    try {
+      const snapshot = await window.sessionSearch.getLiveSessions(true);
+      if (snapshot.error) {
+        setActionStatus({
+          kind: "error",
+          message: t(
+            "Could not verify running sessions. Confirm that related sessions have stopped before deleting.",
+            "无法确认正在运行的会话，请在删除前确认相关会话已经停止。",
+          ),
+        });
+      }
+      return snapshot.sessions.map(liveSessionDeleteKey);
+    } catch {
+      setActionStatus({
+        kind: "error",
+        message: t(
+          "Could not verify running sessions. Confirm that related sessions have stopped before deleting.",
+          "无法确认正在运行的会话，请在删除前确认相关会话已经停止。",
+        ),
+      });
+      return [];
+    }
   }
 
   async function previewSelectedSessions(): Promise<void> {

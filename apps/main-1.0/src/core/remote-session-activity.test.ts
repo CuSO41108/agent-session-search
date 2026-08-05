@@ -177,7 +177,6 @@ describe("remote live session detection", () => {
         { family: "claude", rawId: "remote-claude-resume", pid: 703, environmentId: "ssh-devbox" },
         { family: "claude", rawId: "child-id", pid: 704, environmentId: "ssh-devbox" },
         { family: "claude", rawId: "fallback-session", pid: 705, environmentId: "ssh-devbox" },
-        { family: "claude", rawId: "*", pid: 705, environmentId: "ssh-devbox" },
       ]);
     } finally {
       fs.rmSync(root, { recursive: true, force: true });

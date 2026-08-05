@@ -241,13 +241,11 @@ for pid, tokens in process_rows():
   command_index = codex_command_index(tokens)
   if command_index is not None:
     args = tokens[command_index + 1:]
-    resumed_id = None
     if "resume" in args:
       resume_index = args.index("resume")
       if resume_index + 1 < len(args):
         raw_id = args[resume_index + 1].strip()
         if raw_id and not raw_id.startswith("-"):
-          resumed_id = raw_id
           emit_session("codex", raw_id, pid)
     if "app-server" in args:
       for file_name in open_files(pid):
@@ -256,8 +254,6 @@ for pid, tokens in process_rows():
         match = SESSION_ID_PATTERN.search(file_name)
         if match and agent_is_working(Path(file_name)):
           emit_session("codex", match.group(1), pid)
-    elif resumed_id is None and normalized_executable(tokens[command_index]) == "codex":
-      emit_session("codex", "*", pid)
 
   command_index = claude_command_index(tokens)
   if command_index is None:
@@ -275,7 +271,6 @@ for pid, tokens in process_rows():
   fallback_id = fallback_claude_session_id(pid)
   if fallback_id:
     emit_session("claude", fallback_id, pid)
-  emit_session("claude", "*", pid)
 `;
 
 const remoteScriptPayload = deflateRawSync(Buffer.from(REMOTE_CODEX_ACTIVITY_SCRIPT, "utf8")).toString("base64");
