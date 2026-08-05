@@ -195,12 +195,16 @@ describe("SessionsPage project pagination", () => {
     })));
 
     expect([...container.querySelectorAll<HTMLElement>(".pagination-pages [data-page]")].map((button) => Number(button.dataset.page)))
-      .toEqual([1, 4, 5, 6, 7, 8, 12]);
-    expect(container.querySelectorAll(".pagination-ellipsis")).toHaveLength(2);
+      .toEqual([4, 5, 6, 7, 8]);
     expect(container.querySelector('[data-page="6"]')?.getAttribute("aria-current")).toBe("page");
+    expect(container.querySelector('[aria-label="第一页"]')).not.toBeNull();
+    expect(container.querySelector('[aria-label="最后一页"]')).not.toBeNull();
 
     await act(async () => container.querySelector<HTMLButtonElement>('[data-page="8"]')?.click());
     expect(goToPage).toHaveBeenCalledWith(8);
+
+    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="第一页"]')?.click());
+    expect(goToPage).toHaveBeenCalledWith(1);
 
     model.currentPage = 12;
     await act(async () => root.render(createElement(SessionsPage, {
@@ -208,7 +212,6 @@ describe("SessionsPage project pagination", () => {
       actions: { ...actions, goToPage },
     })));
     expect([...container.querySelectorAll<HTMLElement>(".pagination-pages [data-page]")].map((button) => Number(button.dataset.page)))
-      .toEqual([1, 10, 11, 12]);
-    expect(container.querySelectorAll(".pagination-ellipsis")).toHaveLength(1);
+      .toEqual([10, 11, 12]);
   });
 });

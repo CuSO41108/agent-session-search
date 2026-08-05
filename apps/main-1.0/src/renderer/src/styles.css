@@ -2222,15 +2222,6 @@ select:focus-visible {
   color: var(--text);
 }
 
-.pagination-ellipsis {
-  display: inline-flex;
-  width: 22px;
-  height: 30px;
-  align-items: center;
-  justify-content: center;
-  color: var(--text-muted);
-}
-
 .pagination-button:disabled {
   opacity: 0.45;
   cursor: not-allowed;
