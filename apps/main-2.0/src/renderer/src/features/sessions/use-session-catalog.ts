@@ -24,8 +24,7 @@ import { resolveSearchScope } from "../search/search-scope";
 
 export type SessionVisibility = "default" | "favorites" | "hidden";
 
-export const INITIAL_SESSION_LIMIT = 30;
-export const SESSION_PAGE_SIZE = 30;
+const SESSION_PAGE_SIZE = 30;
 
 export function useSessionCatalog({
   active,
@@ -55,10 +54,9 @@ export function useSessionCatalog({
   const [liveStatus, setLiveStatus] = useState<LiveStatusFilter>("all");
   const [pagination, setPagination] = useState({
     scopeKey: "",
-    limit: INITIAL_SESSION_LIMIT,
+    page: 1,
   });
   const [sessionTotalCount, setSessionTotalCount] = useState(0);
-  const [hasMoreSessions, setHasMoreSessions] = useState(false);
   const [results, setResults] = useState<SessionSearchResult[]>([]);
   const [resultsScopeKey, setResultsScopeKey] = useState<string | null>(null);
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
@@ -101,9 +99,10 @@ export function useSessionCatalog({
       liveStatus,
     ],
   );
-  const sessionLimit = pagination.scopeKey === searchScopeKey
-    ? pagination.limit
-    : INITIAL_SESSION_LIMIT;
+  const sessionPage = pagination.scopeKey === searchScopeKey
+    ? pagination.page
+    : 1;
+  const sessionOffset = (sessionPage - 1) * SESSION_PAGE_SIZE;
 
   const load = useCallback(async () => {
     const requestId = ++loadSeqRef.current;
@@ -129,7 +128,8 @@ export function useSessionCatalog({
       sortBy,
       dateFrom,
       dateTo,
-      limit: sessionLimit,
+      limit: SESSION_PAGE_SIZE,
+      offset: sessionOffset,
       liveStatus: liveStatus === "all" ? undefined : liveStatus,
       liveSessionKeys: liveDetectionFailed ? [] : liveSearchKeys,
     };
@@ -137,12 +137,16 @@ export function useSessionCatalog({
       ? { sessions: [], totalCount: 0, hasMore: false }
       : await window.sessionSearch.searchSessionPage(options);
     if (requestId !== loadSeqRef.current) return;
+    const lastPage = Math.max(1, Math.ceil(page.totalCount / SESSION_PAGE_SIZE));
+    if (sessionPage > lastPage) {
+      setPagination({ scopeKey: requestScopeKey, page: lastPage });
+      return;
+    }
 
     startTransition(() => {
       setResults(page.sessions);
       setResultsScopeKey(requestScopeKey);
       setSessionTotalCount(page.totalCount);
-      setHasMoreSessions(page.hasMore);
       setSelectedKey((current) =>
         current &&
         !page.sessions.some((session) => session.sessionKey === current)
@@ -161,7 +165,7 @@ export function useSessionCatalog({
     dateRange,
     customDateRange,
     sortBy,
-    sessionLimit,
+    sessionOffset,
     liveStatus,
     liveDetectionFailed,
     liveSearchKeys,
@@ -302,13 +306,11 @@ export function useSessionCatalog({
     );
   }, [displayedResults]);
 
-  const loadMore = useCallback((): void => {
-    setPagination((current) => ({
+  const goToPage = useCallback((page: number): void => {
+    setPagination({
       scopeKey: searchScopeKey,
-      limit: (current.scopeKey === searchScopeKey
-        ? current.limit
-        : INITIAL_SESSION_LIMIT) + SESSION_PAGE_SIZE,
-    }));
+      page: Math.max(1, Math.floor(page)),
+    });
   }, [searchScopeKey]);
 
   return {
@@ -331,7 +333,6 @@ export function useSessionCatalog({
     liveStatus,
     setLiveStatus,
     sessionTotalCount: resultsMatchSearchScope ? sessionTotalCount : 0,
-    hasMoreSessions: resultsMatchSearchScope && hasMoreSessions,
     displayedResults,
     selectedKey,
     setSelectedKey,
@@ -341,7 +342,9 @@ export function useSessionCatalog({
     liveDetectionFailed,
     liveSearchKeys,
     load,
-    loadMore,
+    currentPage: sessionPage,
+    totalPages: Math.max(1, Math.ceil((resultsMatchSearchScope ? sessionTotalCount : 0) / SESSION_PAGE_SIZE)),
+    goToPage,
     searchAllMatching,
     clearProjectFilter,
     clearProjectScopeFilter,

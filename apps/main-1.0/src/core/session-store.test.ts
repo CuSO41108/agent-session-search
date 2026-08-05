@@ -3055,6 +3055,20 @@ describe("SessionStore", () => {
     expect(page.sessions.map((session) => session.sessionKey)).toEqual(["codex:one", "codex:two"]);
     expect(page.totalCount).toBe(3);
     expect(page.hasMore).toBe(true);
+
+    const secondPage = store.searchSessionPage({ query: "", sortBy: "created", limit: 2, offset: 2 });
+    expect(secondPage.sessions.map((session) => session.sessionKey)).toEqual(["codex:three"]);
+    expect(secondPage.totalCount).toBe(3);
+    expect(secondPage.hasMore).toBe(false);
+
+    const normalizedPage = store.searchSessionPage({ query: "", sortBy: "created", limit: 1.9, offset: 2.9 });
+    expect(normalizedPage.sessions.map((session) => session.sessionKey)).toEqual(["codex:three"]);
+    expect(normalizedPage.totalCount).toBe(3);
+
+    const emptyPage = store.searchSessionPage({ query: "", sortBy: "created", limit: 2, offset: 10 });
+    expect(emptyPage.sessions).toEqual([]);
+    expect(emptyPage.totalCount).toBe(3);
+    expect(emptyPage.hasMore).toBe(false);
   });
 
   it("applies live status filtering before page limits", () => {

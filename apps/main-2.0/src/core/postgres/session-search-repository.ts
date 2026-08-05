@@ -138,12 +138,15 @@ export class PostgresSessionSearchRepository {
       filters.push(`(best_turn.id is not null or (${metadataPredicates.join(" and ")}))`);
     }
 
-    const limit = Math.max(0, options.limit ?? 200);
-    const limitPlaceholder = bind(limit);
+    const countValues = [...values];
     const favoriteOrder = options.prioritizeFavorites === false ? "" : "sessions.favorited desc,";
     const liveOrder = !options.liveStatus && liveKeys.length > 0
       ? `case when ${LIVE_SESSION_KEY_SQL} in (${liveKeys.map((key) => bind(key)).join(", ")}) then 0 else 1 end,`
       : "";
+    const limit = Number.isFinite(options.limit) ? Math.max(0, Math.floor(options.limit as number)) : 200;
+    const offset = Number.isFinite(options.offset) ? Math.max(0, Math.floor(options.offset as number)) : 0;
+    const limitPlaceholder = bind(limit);
+    const offsetPlaceholder = bind(offset);
     const primarySort =
       options.sortBy === "created"
         ? "sessions.started_at desc"
@@ -167,28 +170,37 @@ export class PostgresSessionSearchRepository {
         null::text as best_turn_search_text,
         null::bigint as turn_match_count,
       `;
+    const filteredSessionsSql = `
+      from agent_recall.sessions sessions
+      join agent_recall.environments environments on environments.id = sessions.environment_id
+      ${bestTurnJoin}
+      where ${filters.join(" and ")}
+    `;
     const result = await this.database.query<SessionRow>(
       `
         select
           ${bestTurnColumns}
           ${SESSION_SELECT_SQL},
           count(*) over () as total_count
-        from agent_recall.sessions sessions
-        join agent_recall.environments environments on environments.id = sessions.environment_id
-        ${bestTurnJoin}
-        where ${filters.join(" and ")}
+        ${filteredSessionsSql}
         order by ${liveOrder} ${favoriteOrder} ${primarySort}, sessions.session_key
         limit ${limitPlaceholder}
+        offset ${offsetPlaceholder}
       `,
       values,
     );
     const sessions = result.rows.map((row) => hydrateSession(row, terms));
     if (clauses.length > 0) await this.attachMessageHits(sessions, clauses, terms, query);
-    const totalCount = result.rows.length > 0 ? numberValue(result.rows[0].total_count) : 0;
+    const totalCount = result.rows.length > 0
+      ? numberValue(result.rows[0].total_count)
+      : numberValue((await this.database.query<{ total_count: number | string }>(
+          `select count(*) as total_count ${filteredSessionsSql}`,
+          countValues,
+        )).rows[0]?.total_count);
     return {
       sessions,
       totalCount,
-      hasMore: totalCount > sessions.length,
+      hasMore: offset + sessions.length < totalCount,
     };
   }
 

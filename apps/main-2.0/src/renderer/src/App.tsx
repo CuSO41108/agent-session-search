@@ -75,7 +75,7 @@ import {
   migrationProgressMessage,
   migrationStrategyLabel,
 } from "./features/sessions/session-migration-copy";
-import { SESSION_PAGE_SIZE, useSessionCatalog } from "./features/sessions/use-session-catalog";
+import { useSessionCatalog } from "./features/sessions/use-session-catalog";
 import { useSessionDetail } from "./features/sessions/use-session-detail";
 import { useMainSearchShortcut } from "./features/search/use-main-search-shortcut";
 import { SettingsDialog, type SettingsSection } from "./features/settings/settings-dialog";
@@ -312,7 +312,6 @@ export function App(): ReactElement {
     liveStatus,
     setLiveStatus,
     sessionTotalCount,
-    hasMoreSessions,
     displayedResults,
     selectedKey,
     setSelectedKey,
@@ -322,7 +321,9 @@ export function App(): ReactElement {
     liveDetectionFailed,
     liveSearchKeys,
     load,
-    loadMore,
+    currentPage,
+    totalPages,
+    goToPage,
     searchAllMatching,
     clearProjectFilter,
     clearProjectScopeFilter,
@@ -1664,8 +1665,8 @@ export function App(): ReactElement {
                 remoteSessionsOpen,
                 selected,
                 sessions: displayedResults,
-                hasMoreSessions,
-                pageSize: SESSION_PAGE_SIZE,
+                currentPage,
+                totalPages,
                 liveSessionKeys,
                 liveDetectionFailed,
                 bulkSelectionActive,
@@ -1723,7 +1724,7 @@ export function App(): ReactElement {
                 renameSession: handleRowRename,
                 toggleFavorite: handleRowFavorite,
                 openContextMenu: handleRowContextMenu,
-                loadMore,
+                goToPage,
                 toggleBulkSession,
                 toggleLoadedSelection,
                 exitBulkSelection,

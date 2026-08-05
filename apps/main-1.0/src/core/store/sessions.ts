@@ -1526,11 +1526,12 @@ export class SessionsStore {
   }
 
   searchSessionPage(options: SearchOptions = {}): SessionSearchPage {
-    const limit = options.limit ?? 200;
+    const limit = Number.isFinite(options.limit) ? Math.max(0, Math.floor(options.limit as number)) : 200;
+    const offset = Number.isFinite(options.offset) ? Math.max(0, Math.floor(options.offset as number)) : 0;
     const query = normalizeExplicitAnd(options.query?.trim() || "");
     const ftsMatches = query ? this.searchFts(query) : new Map<string, string | null>();
     const liveActivityAfter = Date.now() - LIVE_SESSION_INACTIVITY_TIMEOUT_MS;
-    const rows = this.getCandidateRows(options, query, limit, liveActivityAfter);
+    const rows = this.getCandidateRows(options, query, limit, offset, liveActivityAfter);
     const tagsBySession = this.getTagsForSessions(rows.map((row) => row.session_key));
     const merged = new Map<string, SessionSearchResult>();
 
@@ -1549,20 +1550,25 @@ export class SessionsStore {
     const sortBy = options.sortBy ?? "smart";
     const sorted = [...merged.values()].sort((a, b) => {
       if (sortBy === "smart" && query) {
-        return this.smartScore(b, query) - this.smartScore(a, query);
+        return this.smartScore(b, query) - this.smartScore(a, query)
+          || this.sortValue(b, "activity") - this.sortValue(a, "activity")
+          || a.sessionKey.localeCompare(b.sessionKey);
       }
       if (sortBy === "created") {
-        return this.sortValue(a, sortBy) - this.sortValue(b, sortBy);
+        return this.sortValue(a, sortBy) - this.sortValue(b, sortBy)
+          || a.sessionKey.localeCompare(b.sessionKey);
       }
-      return this.score(b, query) - this.score(a, query) || this.sortValue(b, sortBy) - this.sortValue(a, sortBy);
+      return this.score(b, query) - this.score(a, query)
+        || this.sortValue(b, sortBy) - this.sortValue(a, sortBy)
+        || a.sessionKey.localeCompare(b.sessionKey);
     });
     const totalCount = query ? sorted.length : this.countCandidateRows(options, liveActivityAfter);
-    const sessions = sorted.slice(0, limit);
+    const sessions = query ? sorted.slice(offset, offset + limit) : sorted;
     if (query) this.attachSearchMatchDetails(sessions, query);
     return {
       sessions,
       totalCount,
-      hasMore: totalCount > sessions.length,
+      hasMore: offset + sessions.length < totalCount,
     };
   }
 
@@ -1950,7 +1956,7 @@ export class SessionsStore {
     }>;
   }
 
-  private getCandidateRows(options: SearchOptions, query: string, limit: number, liveActivityAfter: number): SessionRow[] {
+  private getCandidateRows(options: SearchOptions, query: string, limit: number, offset: number, liveActivityAfter: number): SessionRow[] {
     const { where, args } = this.sessionWhereClause(options, liveActivityAfter);
 
     if (!query) {
@@ -1960,6 +1966,7 @@ export class SessionsStore {
         : "";
       args.push(...liveSessionKeys);
       args.push(limit);
+      args.push(offset);
       return this.db
         .prepare(
           `
@@ -1967,7 +1974,7 @@ export class SessionsStore {
           FROM sessions
           WHERE ${where.join(" AND ")}
           ORDER BY ${liveOrder}${sessionSortSql(options.sortBy)}
-          LIMIT ?
+          LIMIT ? OFFSET ?
         `,
         )
         .all(...args) as unknown as SessionRow[];
@@ -2554,8 +2561,8 @@ function normalizeExplicitAnd(query: string): string {
 }
 
 function sessionSortSql(sortBy: SessionSortBy = "activity"): string {
-  if (sortBy === "created") return "timestamp ASC";
-  return `favorited DESC, ${sessionActivitySql("sessions")} DESC`;
+  if (sortBy === "created") return "timestamp ASC, sessions.session_key ASC";
+  return `favorited DESC, ${sessionActivitySql("sessions")} DESC, sessions.session_key ASC`;
 }
 
 function sessionActivitySql(sessionTable: string): string {

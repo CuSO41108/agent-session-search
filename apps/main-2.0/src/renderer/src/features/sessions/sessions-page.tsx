@@ -8,7 +8,10 @@ import type {
 import {
   CalendarDays,
   ChevronDown,
+  ChevronLeft,
   ChevronRight,
+  ChevronsLeft,
+  ChevronsRight,
   Cloud,
   EyeOff,
   Folder,
@@ -97,8 +100,8 @@ export interface SessionsPageModel {
   remoteSessionsOpen: boolean;
   selected: SessionSearchResult | null;
   sessions: SessionSearchResult[];
-  hasMoreSessions: boolean;
-  pageSize: number;
+  currentPage: number;
+  totalPages: number;
   liveSessionKeys: Set<string>;
   liveDetectionFailed: boolean;
   bulkSelectionActive: boolean;
@@ -129,7 +132,7 @@ export interface SessionsPageActions {
   renameSession(session: SessionSearchResult): void;
   toggleFavorite(session: SessionSearchResult): void;
   openContextMenu(event: ReactMouseEvent, session: SessionSearchResult): void;
-  loadMore(): void;
+  goToPage(page: number): void;
   toggleBulkSession(sessionKey: string): void;
   toggleLoadedSelection(): void;
   exitBulkSelection(): void;
@@ -329,7 +332,7 @@ export function SessionsPage({
             : null}
         </div>
 
-        <div className="results">
+        <div key={model.currentPage} className="results">
           {model.sessions.map((session) => (
             <SessionRow
               key={session.sessionKey}
@@ -352,22 +355,47 @@ export function SessionsPage({
               onToggleBulk={actions.toggleBulkSession}
             />
           ))}
-          {model.sessions.length === 0 && !model.hasMoreSessions
+          {model.sessions.length === 0
             ? <div className="empty">{l("No sessions found.", "没有找到会话。")}</div>
             : null}
-          {model.hasMoreSessions ? (
-            <button className="load-more-sessions" onClick={actions.loadMore}>
-              <ChevronDown size={14} />
-              {l(
-                `Load ${model.pageSize} more`,
-                `再加载 ${model.pageSize} 个`,
-              )}
-            </button>
-          ) : null}
         </div>
+        {model.totalPages > 1 ? (
+          <nav className="session-pagination" aria-label={l("Session pages", "会话分页")}>
+            <button type="button" className="pagination-button" onClick={() => actions.goToPage(1)} disabled={model.currentPage === 1} title={l("First page", "第一页")} aria-label={l("First page", "第一页")}><ChevronsLeft size={14} /></button>
+            <button type="button" className="pagination-button" onClick={() => actions.goToPage(model.currentPage - 1)} disabled={model.currentPage === 1} title={l("Previous page", "上一页")} aria-label={l("Previous page", "上一页")}><ChevronLeft size={14} /></button>
+            <div className="pagination-pages">
+              {paginationItems(model.currentPage, model.totalPages).map((item) => (
+                <button
+                  key={item}
+                  type="button"
+                  className={`pagination-button ${item === model.currentPage ? "active" : ""}`}
+                  data-page={item}
+                  aria-current={item === model.currentPage ? "page" : undefined}
+                  aria-label={l(`Page ${item}`, `第 ${item} 页`)}
+                  onClick={() => actions.goToPage(item)}
+                >
+                  {item}
+                </button>
+              ))}
+            </div>
+            <button type="button" className="pagination-button" onClick={() => actions.goToPage(model.currentPage + 1)} disabled={model.currentPage === model.totalPages} title={l("Next page", "下一页")} aria-label={l("Next page", "下一页")}><ChevronRight size={14} /></button>
+            <button type="button" className="pagination-button" onClick={() => actions.goToPage(model.totalPages)} disabled={model.currentPage === model.totalPages} title={l("Last page", "最后一页")} aria-label={l("Last page", "最后一页")}><ChevronsRight size={14} /></button>
+            <form className="pagination-jump" onSubmit={(event) => { event.preventDefault(); const value = Number(new FormData(event.currentTarget).get("page")); if (Number.isInteger(value)) actions.goToPage(Math.min(model.totalPages, Math.max(1, value))); }}>
+              <input key={`${model.currentPage}-${model.totalPages}`} name="page" type="number" min={1} max={model.totalPages} defaultValue={model.currentPage} aria-label={l("Page number", "页码")} />
+              <span>/ {model.totalPages}</span>
+              <button type="submit">{l("Go", "跳转")}</button>
+            </form>
+          </nav>
+        ) : null}
       </section>
     </div>
   );
+}
+
+function paginationItems(currentPage: number, totalPages: number): number[] {
+  const startPage = Math.max(1, currentPage - 2);
+  const endPage = Math.min(totalPages, currentPage + 2);
+  return Array.from({ length: endPage - startPage + 1 }, (_, index) => startPage + index);
 }
 
 function SessionSidebar({

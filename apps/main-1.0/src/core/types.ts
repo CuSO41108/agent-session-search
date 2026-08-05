@@ -284,6 +284,7 @@ export interface SearchOptions {
   dateFrom?: number;
   dateTo?: number;
   limit?: number;
+  offset?: number;
   excludeSubagents?: boolean;
 }
 
