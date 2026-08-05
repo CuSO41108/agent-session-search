@@ -69,6 +69,36 @@ describe("MCP bridge", () => {
     });
   });
 
+  test("routes a bound Review submission without exposing identity inside the result", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "agent-recall-mcp-review-submit-"));
+    const submitWorkflowReview = vi.fn(() => ({ ok: true, accepted: true, workflowId: "wf-review", reviewedRevision: 2 }));
+    const hub = { submitWorkflowReview } as unknown as AgentHub;
+    bridge = await startMcpBridge(hub, { discoveryPath: path.join(dir, "bridge.json") });
+
+    const response = await bridgeRequest("/mcp/workflow/review/submit", bridge.token, {
+      workflowId: "wf-review",
+      reviewedRevision: 2,
+      verdict: "approve",
+      summary: "Ready",
+      findings: [],
+      scriptRisks: {},
+      suggestions: [],
+    });
+
+    expect(await response.json()).toMatchObject({ ok: true, accepted: true });
+    expect(submitWorkflowReview).toHaveBeenCalledWith({
+      workflowId: "wf-review",
+      reviewedRevision: 2,
+      value: {
+        verdict: "approve",
+        summary: "Ready",
+        findings: [],
+        scriptRisks: {},
+        suggestions: [],
+      },
+    });
+  });
+
   test("routes MCP Agent deletion through the application reference validator", async () => {
     const dir = await mkdtemp(path.join(os.tmpdir(), "multi-agent-chat-mcp-agent-delete-"));
     const hub = new AgentHub();

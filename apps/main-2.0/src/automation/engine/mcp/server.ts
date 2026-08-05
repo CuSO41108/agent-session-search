@@ -32,6 +32,7 @@ const TOOL_ROUTES: Record<string, string> = {
   channels_list: "/mcp/channels/list",
   models_list: "/mcp/models/list",
   workflow_create: "/mcp/workflow/create",
+  workflow_review_submit: "/mcp/workflow/review/submit",
   workflow_list: "/mcp/workflow/list",
   workflow_get: "/mcp/workflow/get",
   workflow_update: "/mcp/workflow/update",
@@ -324,6 +325,32 @@ export function mcpToolDefinitions(): McpToolDefinition[] {
         },
         ["workflowId", "title", "objective", "definition"],
       ),
+    },
+    {
+      name: "workflow_review_submit",
+      description: "Submit the current bound Workflow revision's final adversarial review. Call this exactly once after completing the review. Workflow identity and revision are injected by the managed Review session and cannot be selected by the model.",
+      inputSchema: objectSchema({
+        verdict: { type: "string", enum: ["approve", "revise"] },
+        summary: { type: "string", minLength: 1 },
+        findings: {
+          type: "array",
+          items: objectSchema({
+            severity: { type: "string", enum: ["blocking", "warning"] },
+            nodeIds: { type: "array", items: { type: "string", minLength: 1 } },
+            summary: { type: "string", minLength: 1 },
+            failurePath: { type: "string", minLength: 1 },
+            requiredChange: { type: "string", minLength: 1 },
+          }, ["severity", "nodeIds", "summary", "failurePath", "requiredChange"]),
+        },
+        scriptRisks: {
+          type: "object",
+          additionalProperties: objectSchema({
+            level: { type: "string", enum: ["safe", "read", "write", "dangerous"] },
+            rationale: { type: "string", minLength: 1 },
+          }, ["level", "rationale"]),
+        },
+        suggestions: { type: "array", items: { type: "string", minLength: 1 } },
+      }, ["verdict", "summary", "findings", "scriptRisks", "suggestions"]),
     },
     {
       name: "workflow_list",
@@ -662,6 +689,9 @@ export async function callMcpTool(name: string, args: unknown): Promise<unknown>
         workflowId: process.env.AGENT_RECALL_WORKFLOW_ID,
         runId: process.env.AGENT_RECALL_WORKFLOW_RUN_ID,
         executionId: process.env.AGENT_RECALL_WORKFLOW_NODE_EXECUTION_ID,
+      } : name === "workflow_review_submit" ? {
+        workflowId: process.env.AGENT_RECALL_WORKFLOW_ID,
+        reviewedRevision: Number(process.env.AGENT_RECALL_WORKFLOW_REVIEW_REVISION),
       } : {}),
     }),
   });

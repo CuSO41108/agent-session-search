@@ -165,6 +165,8 @@ describe("Workflow V2 AgentHub durable restore", () => {
       topologyLocked: true,
       status: "draft",
       objective: "Plan a workflow",
+      reviewerConfiguredAgentId: "default-agent",
+      reviewerModelId: "default",
     });
     expect(restored?.messages).toHaveLength(2);
     expect(restored?.messages[1]?.events).toEqual([
@@ -174,6 +176,40 @@ describe("Workflow V2 AgentHub durable restore", () => {
         requestState: "expired",
       }),
     ]);
+  });
+
+  test("preserves an explicitly unconfigured Review Agent", () => {
+    const workflowId = "workflow-without-reviewer";
+    const restored = restoreWorkflowDraft({
+      workflowId,
+      title: "Workflow without reviewer",
+      status: "draft",
+      revision: 1,
+      configuredAgentId: "generation-agent",
+      modelId: "generation-model",
+      reviewerConfiguredAgentId: "",
+      reviewerModelId: "",
+      objective: "Keep generation and review routes independent",
+      definition: definition(workflowId),
+      messages: [],
+      reply: "",
+      runProgress: [],
+      runContextDocument: "",
+      contextDocument: "",
+      runIds: [],
+      createdAt: 1,
+      updatedAt: 2,
+    }, {
+      restoreRuntimeConversation: () => undefined,
+      cloneWorkflowDraft: (draft) => structuredClone(draft),
+    });
+
+    expect(restored).toMatchObject({
+      configuredAgentId: "generation-agent",
+      modelId: "generation-model",
+      reviewerConfiguredAgentId: "",
+      reviewerModelId: "",
+    });
   });
 
   test("skips one invalid workflow without clearing valid workflow history", () => {

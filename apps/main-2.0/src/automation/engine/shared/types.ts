@@ -342,6 +342,7 @@ export interface RuntimeRequest {
   runtimeConfig: RuntimeConfig;
   runtimeConversation?: RuntimeConversation;
   planningWorkflowId?: string;
+  workflowReviewRevision?: number;
   workflowRunId?: string;
   workflowNodeId?: string;
   agentRecallMcp?: AgentRecallMcpContext;

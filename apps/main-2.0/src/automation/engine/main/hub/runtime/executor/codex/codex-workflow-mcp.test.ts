@@ -47,6 +47,25 @@ describe("codexWorkflowMcpArgs", () => {
     expect(config.requiredMcpTools).toEqual({ agent_recall: ["workflow_node_complete"] });
   });
 
+  test("requires the bound Review submission tool in Review scope", () => {
+    const config = codexWorkflowMcpConfig({
+      discoveryPath: "C:/app/mcp-bridge.json",
+      workflowId: "wf-review",
+      reviewRevision: 2,
+      managedToken: "managed-token",
+    });
+    const args = config.args.join("\n");
+
+    expect(args).toContain('mcp_servers.agent_recall.tools.workflow_review_submit.approval_mode="approve"');
+    expect(args).not.toContain("workflow_create.approval_mode");
+    expect(config.env).toMatchObject({
+      AGENT_RECALL_WORKFLOW_ID: "wf-review",
+      AGENT_RECALL_WORKFLOW_REVIEW_REVISION: "2",
+      AGENT_RECALL_WORKFLOW_MCP_SCOPE: "review",
+    });
+    expect(config.requiredMcpTools).toEqual({ agent_recall: ["workflow_review_submit"] });
+  });
+
   test("injects Workflow and Studio through one AgentRecall MCP server", () => {
     const args = codexWorkflowMcpArgs({
       discoveryPath: "C:/app/mcp-bridge.json",

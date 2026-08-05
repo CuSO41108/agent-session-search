@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { WorkflowAgentEvent, WorkflowAgentResponse, WorkflowDraftState } from "../../../shared/types";
 import type { WorkflowV2GenerationReviewState } from "../../../shared/workflow-v2/generation-review";
+import type { WorkflowV2GenerationReviewResult } from "../../../shared/workflow-v2/generation-review";
 import type { WorkflowV2ReviewTraceEntry } from "../../../shared/workflow-v2/review";
 import { parseWorkflowV2GenerationReview, workflowV2GenerationReviewPrompt } from "../../workflows/v2/workflow-v2-generation-review";
 
@@ -8,6 +9,7 @@ export async function executeWorkflowGenerationReview(input: {
   workflow: WorkflowDraftState;
   askReviewer: (prompt: string, onEvent?: (event: WorkflowAgentEvent) => void) => Promise<WorkflowAgentResponse>;
   onTrace?: (trace: WorkflowV2ReviewTraceEntry[]) => void;
+  takeSubmittedResult?: () => WorkflowV2GenerationReviewResult | undefined;
   signal?: AbortSignal;
   now?: () => number;
 }): Promise<WorkflowV2GenerationReviewState> {
@@ -16,12 +18,21 @@ export async function executeWorkflowGenerationReview(input: {
   const trace: WorkflowV2ReviewTraceEntry[] = [{ id: randomUUID(), kind: "request", at: now(), content: prompt }];
   input.onTrace?.(structuredClone(trace));
   try {
-    const response = await input.askReviewer(prompt, (event) => {
-      const entry = workflowAgentEventTraceEntry(event, now);
-      if (!entry) return;
-      trace.push(entry);
-      input.onTrace?.(structuredClone(trace));
-    });
+    let response: WorkflowAgentResponse;
+    try {
+      response = await input.askReviewer(prompt, (event) => {
+        const entry = workflowAgentEventTraceEntry(event, now);
+        if (!entry) return;
+        trace.push(entry);
+        input.onTrace?.(structuredClone(trace));
+      });
+    } catch (error) {
+      const submittedResult = input.takeSubmittedResult?.();
+      if (submittedResult) {
+        return { status: submittedResult.verdict === "approve" ? "approved" : "changes_requested", reviewerConfiguredAgentId: input.workflow.reviewerConfiguredAgentId, reviewerModelId: input.workflow.reviewerModelId, reviewedRevision: input.workflow.revision, result: submittedResult, trace, updatedAt: now() };
+      }
+      throw error;
+    }
     trace.push({
       id: randomUUID(),
       kind: "response",
@@ -30,7 +41,8 @@ export async function executeWorkflowGenerationReview(input: {
       ...(response.executionReference ? { metadata: { ...structuredClone(response.executionReference) } } : {}),
     });
     input.onTrace?.(structuredClone(trace));
-    const result = parseWorkflowV2GenerationReview({ definition: input.workflow.definition, revision: input.workflow.revision, content: response.content });
+    const result = input.takeSubmittedResult?.()
+      ?? parseWorkflowV2GenerationReview({ definition: input.workflow.definition, revision: input.workflow.revision, content: response.content });
     return { status: result.verdict === "approve" ? "approved" : "changes_requested", reviewerConfiguredAgentId: input.workflow.reviewerConfiguredAgentId, reviewerModelId: input.workflow.reviewerModelId, reviewedRevision: input.workflow.revision, result, trace, updatedAt: now() };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -69,6 +81,7 @@ export async function runWorkflowGenerationReviewLifecycle(input: {
   current: () => WorkflowDraftState | undefined;
   flush: () => Promise<void>;
   clone: (workflow: WorkflowDraftState) => WorkflowDraftState;
+  takeSubmittedResult?: () => WorkflowV2GenerationReviewResult | undefined;
   signal?: AbortSignal;
 }): Promise<void> {
   const { workflow } = input;
@@ -86,6 +99,7 @@ export async function runWorkflowGenerationReviewLifecycle(input: {
         updatedAt: Date.now(),
       }));
     },
+    ...(input.takeSubmittedResult ? { takeSubmittedResult: input.takeSubmittedResult } : {}),
     ...(input.signal ? { signal: input.signal } : {}),
   });
   if (input.signal?.aborted) return;

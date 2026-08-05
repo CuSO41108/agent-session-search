@@ -205,14 +205,8 @@ export function useWorkflowFeatureController({
       onSelectConfiguredAgent: (configuredAgentId: string) => {
         void draft.selectConfiguredAgent(configuredAgentId);
       },
-      onSelectModel: (modelId: string) => {
-        void draft.selectModel(modelId);
-      },
       onSelectReviewerConfiguredAgent: (configuredAgentId: string) => {
         void draft.selectReviewerConfiguredAgent(configuredAgentId);
-      },
-      onSelectReviewerModel: (modelId: string) => {
-        void draft.selectReviewerModel(modelId);
       },
     onReviewWorkflow: async () => {
         if (!draft.workflowId || !activeWorkflow) return;

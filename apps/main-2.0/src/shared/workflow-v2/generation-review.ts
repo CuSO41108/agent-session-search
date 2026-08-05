@@ -6,10 +6,13 @@ export type WorkflowV2GenerationReviewVerdict = "approve" | "revise";
 
 export interface WorkflowV2GenerationReviewFinding {
   severity: "blocking" | "warning";
-  nodeId?: string;
+  nodeIds: string[];
   summary: string;
   failurePath: string;
+  requiredChange: string;
 }
+
+export type WorkflowV2GenerationReviewSubmission = Omit<WorkflowV2GenerationReviewResult, "reviewedRevision">;
 
 export interface WorkflowV2GenerationReviewResult {
   verdict: WorkflowV2GenerationReviewVerdict;

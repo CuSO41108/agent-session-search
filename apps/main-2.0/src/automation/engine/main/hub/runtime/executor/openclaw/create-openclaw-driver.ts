@@ -21,7 +21,7 @@ export function createOpenClawDriver(options: RuntimeAgentExecutorFactoryOptions
     surfaceSupport: [...openClawSurfaceSupport],
     getCapabilities: getOpenClawCapabilities,
     runtimeStateCodec: openClawRuntimeStateCodec,
-    createOneShotExecutor: (context) => context.planningWorkflowId && context.workflowRunId && context.workflowNodeId
+    createOneShotExecutor: (context) => context.planningWorkflowId && (context.workflowReviewRevision || (context.workflowRunId && context.workflowNodeId))
       ? new AcpWorkflowOneShotExecutor(context, {
           executable: context.runtime.command || options.executables.openclaw,
           args: ["acp"],
@@ -30,7 +30,7 @@ export function createOpenClawDriver(options: RuntimeAgentExecutorFactoryOptions
             ...acpMcpServers(context.configuredAgentId ? options.mcpServersForAgent?.(context.configuredAgentId) ?? [] : []),
             ...acpWorkflowMcpServers({
               discoveryPath: options.workflowMcpDiscoveryPath?.(), workflowId: context.planningWorkflowId,
-              runId: context.workflowRunId, nodeId: context.workflowNodeId, executionId: context.workflowNodeExecutionId, managedToken: options.workflowMcpManagedToken?.(),
+              runId: context.workflowRunId, nodeId: context.workflowNodeId, executionId: context.workflowNodeExecutionId, reviewRevision: context.workflowReviewRevision, managedToken: options.workflowMcpManagedToken?.(),
             }),
           ],
           ...(options.requestApproval ? { requestApproval: options.requestApproval } : {}),
@@ -46,7 +46,7 @@ export function createOpenClawDriver(options: RuntimeAgentExecutorFactoryOptions
             cwd: interactiveContext.workDir,
             mcpServers: [...acpMcpServers(options.mcpServersForAgent?.(interactiveContext.configuredAgentId) ?? []), ...acpWorkflowMcpServers({
               discoveryPath: options.workflowMcpDiscoveryPath?.(), workflowId: interactiveContext.planningWorkflowId,
-              runId: interactiveContext.workflowRunId, nodeId: interactiveContext.workflowNodeId, executionId: interactiveContext.workflowNodeExecutionId, managedToken: options.workflowMcpManagedToken?.(),
+              runId: interactiveContext.workflowRunId, nodeId: interactiveContext.workflowNodeId, executionId: interactiveContext.workflowNodeExecutionId, reviewRevision: interactiveContext.workflowReviewRevision, managedToken: options.workflowMcpManagedToken?.(),
             })],
             onEvent,
             onExit,

@@ -130,9 +130,7 @@ export function WorkflowPage({ controller: source }: { controller: WorkflowContr
   const onRejectNodeCompletion = source.onRejectNodeCompletion;
   const onInterruptNodeConversation = source.onInterruptNodeConversation;
   const onSelectConfiguredAgent = source.onSelectConfiguredAgent;
-  const onSelectModel = source.onSelectModel ?? (() => undefined);
   const onSelectReviewerConfiguredAgent = source.onSelectReviewerConfiguredAgent;
-  const onSelectReviewerModel = source.onSelectReviewerModel ?? (() => undefined);
   const onReviewWorkflow = source.onReviewWorkflow;
   const onBuildDefinition = source.onBuildDefinition;
   const onSendReply = source.onSendReply;
@@ -172,11 +170,11 @@ export function WorkflowPage({ controller: source }: { controller: WorkflowContr
   const workflowStarted = messages.length > 0;
   const grillComplete = Math.max(0, messages.filter((message) => message.role === "user").length - 1) >= WORKFLOW_TOTAL_QUESTION_COUNT;
   const runtimeMap = new Map(runtimes.map((runtime) => [runtime.id, runtime]));
-  const workflowConfiguredAgent = configuredAgentById(reviewerConfiguredAgentId, configuredAgents);
+  const workflowConfiguredAgent = configuredAgentById(configuredAgentId, configuredAgents);
   const workflowChannel = resolveConfiguredAgentChannel(workflowConfiguredAgent, channels);
   const workflowRuntimeId = configuredAgentRuntimeId(workflowConfiguredAgent, workflowChannel);
   const workflowRuntime = runtimeMap.get(workflowRuntimeId) ?? fallbackRuntime(workflowRuntimeId);
-  const workflowModel = configuredAgentModel(workflowConfiguredAgent, workflowChannel, reviewerModelId);
+  const workflowModel = configuredAgentModel(workflowConfiguredAgent, workflowChannel, modelId);
   const workflowConfigTitle = [
     workflowConfiguredAgent?.name,
     workflowChannel?.label,
@@ -185,6 +183,22 @@ export function WorkflowPage({ controller: source }: { controller: WorkflowContr
   ]
     .filter(Boolean)
     .join(" · ");
+  const reviewerConfiguredAgent = configuredAgentById(reviewerConfiguredAgentId, configuredAgents);
+  const reviewerChannel = resolveConfiguredAgentChannel(reviewerConfiguredAgent, channels);
+  const reviewerRuntimeId = configuredAgentRuntimeId(reviewerConfiguredAgent, reviewerChannel);
+  const reviewerRuntime = runtimeMap.get(reviewerRuntimeId) ?? fallbackRuntime(reviewerRuntimeId);
+  const reviewerReady = Boolean(reviewerConfiguredAgent && reviewerChannel && reviewerRuntime.available);
+  const reviewDisabledReason = running
+    ? "Review is unavailable while the workflow is running."
+    : !validation.valid
+      ? validation.errors[0] ?? "The workflow definition is invalid."
+      : !reviewerConfiguredAgent
+        ? "Select a Review Agent before starting review."
+        : !reviewerChannel
+          ? "The selected Review Agent has no execution configuration."
+          : !reviewerRuntime.available
+            ? `The ${reviewerRuntime.label} runtime is unavailable.`
+            : undefined;
   const runProgressByNodeId = new Map(runProgress.map((item) => [item.nodeId, item]));
   const runProgressVisible = runProgress.length > 0;
   const contextDocumentVisible = contextDocument.trim().length > 0;
@@ -322,11 +336,8 @@ export function WorkflowPage({ controller: source }: { controller: WorkflowContr
           {canConfigureNodeAgent ? <WorkflowNodeAgentSelect
             nodeTitle={node.title}
             {...(node.configuredAgentId ? { configuredAgentId: node.configuredAgentId } : {})}
-            {...(node.modelId ? { modelId: node.modelId } : {})}
             configuredAgents={configuredAgents}
-            channels={channels}
             onSelect={(selectedAgentId) => source.onUpdateNode(node.id, { configuredAgentId: selectedAgentId, modelId: undefined } as Partial<WorkflowV2Node>)}
-            onSelectModel={(selectedModelId) => source.onUpdateNode(node.id, { modelId: selectedModelId } as Partial<WorkflowV2Node>)}
           /> : <><span className="workflow-node-agent-name">{nodeAgentName}</span><span className="workflow-node-agent-model">{nodeModelId}</span></>}
         </div>
       ) : null;
@@ -455,11 +466,12 @@ export function WorkflowPage({ controller: source }: { controller: WorkflowContr
           workDir={workDir}
           runtimes={runtimes}
           onSelectConfiguredAgent={onSelectReviewerConfiguredAgent}
-          onSelectModel={onSelectReviewerModel}
+          showModelControl={false}
           onChooseWorkDir={onChooseWorkDir}
         />}
-        canReview={validation.valid && !running}
+        canReview={validation.valid && !running && reviewerReady}
         canInterrupt={generationReview?.status === "reviewing"}
+        {...(reviewDisabledReason ? { reviewDisabledReason } : {})}
         onReview={() => void onReviewWorkflow()}
         onInterrupt={() => void source.onInterruptWorkflowReview?.()}
         onClose={() => setReviewDrawerOpen(false)}
@@ -635,16 +647,16 @@ export function WorkflowPage({ controller: source }: { controller: WorkflowContr
           />
           <div className="composer-footer">
             <ChatControls
-              configuredAgentId={reviewerConfiguredAgentId}
-              modelId={reviewerModelId}
+              configuredAgentId={configuredAgentId}
+              modelId={modelId}
               configuredAgents={configuredAgents}
               channels={channels}
               locked={composerLocked}
               running={running}
               workDir={workDir}
               runtimes={runtimes}
-              onSelectConfiguredAgent={onSelectReviewerConfiguredAgent}
-              onSelectModel={onSelectReviewerModel}
+              onSelectConfiguredAgent={onSelectConfiguredAgent}
+              showModelControl={false}
               onChooseWorkDir={onChooseWorkDir}
             />
             <div className="workflow-composer-actions">

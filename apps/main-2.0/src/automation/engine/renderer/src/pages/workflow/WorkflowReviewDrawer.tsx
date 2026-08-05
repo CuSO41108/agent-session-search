@@ -9,6 +9,7 @@ interface WorkflowReviewDrawerProps {
   reviewerControls: ReactNode;
   canReview: boolean;
   canInterrupt: boolean;
+  reviewDisabledReason?: string;
   onReview: () => void;
   onInterrupt: () => void;
   onClose: () => void;
@@ -22,7 +23,7 @@ const REVIEW_STATUS = {
   failed: { label: "Review failed", detail: "The reviewer could not complete this review.", icon: CircleX },
 } as const;
 
-export function WorkflowReviewDrawer({ open, review, reviewerControls, canReview, canInterrupt, onReview, onInterrupt, onClose }: WorkflowReviewDrawerProps) {
+export function WorkflowReviewDrawer({ open, review, reviewerControls, canReview, canInterrupt, reviewDisabledReason, onReview, onInterrupt, onClose }: WorkflowReviewDrawerProps) {
   useEffect(() => {
     if (!open) return;
     const closeOnEscape = (event: KeyboardEvent) => {
@@ -90,16 +91,19 @@ export function WorkflowReviewDrawer({ open, review, reviewerControls, canReview
           </div>
           {result?.findings.length ? (
             <div className="workflow-review-finding-list">
-              {result.findings.map((finding, index) => (
-                <article className={`workflow-review-finding is-${finding.severity}`} key={`${finding.nodeId ?? "workflow"}-${index}`}>
-                  <div className="workflow-review-finding-head">
-                    <span><AlertTriangle size={14} />{finding.severity}</span>
-                    {finding.nodeId ? <code>{finding.nodeId}</code> : <code>workflow</code>}
-                  </div>
-                  <strong>{finding.summary}</strong>
-                  <p>{finding.failurePath}</p>
-                </article>
-              ))}
+              {result.findings.map((finding, index) => {
+                const legacyNodeId = (finding as typeof finding & { nodeId?: string }).nodeId;
+                const nodeIds = finding.nodeIds ?? (legacyNodeId ? [legacyNodeId] : []);
+                return <article className={`workflow-review-finding is-${finding.severity}`} key={`${nodeIds.join(",") || "workflow"}-${index}`}>
+                    <div className="workflow-review-finding-head">
+                      <span><AlertTriangle size={14} />{finding.severity}</span>
+                      <code>{nodeIds.length ? nodeIds.join(", ") : "workflow"}</code>
+                    </div>
+                    <strong>{finding.summary}</strong>
+                    <p>{finding.failurePath}</p>
+                    {finding.requiredChange ? <p><strong>Required change:</strong> {finding.requiredChange}</p> : null}
+                  </article>;
+              })}
             </div>
           ) : <div className="workflow-review-empty"><CheckCircle2 size={17} /><span>{status === "approved" ? "No findings for this revision." : "Findings will appear here after review."}</span></div>}
         </section>
@@ -123,7 +127,7 @@ export function WorkflowReviewDrawer({ open, review, reviewerControls, canReview
       </div>
 
       <footer className="workflow-review-drawer-footer">
-        <span>{isReviewing ? "You can close this panel; review continues in the background." : "A new review replaces the result for this revision."}</span>
+        <span>{isReviewing ? "You can close this panel; review continues in the background." : reviewDisabledReason ?? "A new review replaces the result for this revision."}</span>
         {isReviewing ? <button type="button" className="control-btn danger" disabled={!canInterrupt} onClick={onInterrupt}><CircleStop size={14} /><span>Interrupt review</span></button>
           : <button type="button" className="send-btn" disabled={!canReview} onClick={onReview}><RefreshCw size={14} /><span>{result ? "Review again" : "Start review"}</span></button>}
       </footer>

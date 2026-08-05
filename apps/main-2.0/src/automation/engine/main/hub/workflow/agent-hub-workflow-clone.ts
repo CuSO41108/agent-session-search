@@ -152,7 +152,8 @@ export function cloneWorkflowDraft(input: {
       if (node.taskPacket.configuredAgentId) node.taskPacket.configuredAgentId = migrateConfiguredAgentId(node.taskPacket.configuredAgentId);
     }
   }
-  const reviewerConfiguredAgentId = migrateConfiguredAgentId(draft.reviewerConfiguredAgentId);
+  const configuredAgentId = normalizeConfiguredAgentId(migrateConfiguredAgentId(draft.configuredAgentId));
+  const reviewerConfiguredAgentId = normalizeConfiguredAgentId(migrateConfiguredAgentId(draft.reviewerConfiguredAgentId));
   return {
     workflowId: draft.workflowId || `wf_${randomUUID()}`,
     sourceType: draft.sourceType === "official" ? "official" : "user",
@@ -164,10 +165,10 @@ export function cloneWorkflowDraft(input: {
     ...(Number.isFinite(draft.confirmedRevision) && draft.confirmedRevision === draft.revision
       ? { confirmedRevision: Math.floor(draft.confirmedRevision!) }
       : {}),
-    configuredAgentId: "",
-    modelId: "",
+    configuredAgentId,
+    modelId: normalizeModelId(configuredAgentId, draft.modelId),
     reviewerConfiguredAgentId,
-    reviewerModelId: draft.reviewerModelId?.trim() || normalizeModelId(reviewerConfiguredAgentId, draft.reviewerModelId),
+    reviewerModelId: normalizeModelId(reviewerConfiguredAgentId, draft.reviewerModelId),
     objective: draft.objective,
     definition,
     ...(draft.workDir ? { workDir: draft.workDir } : {}),

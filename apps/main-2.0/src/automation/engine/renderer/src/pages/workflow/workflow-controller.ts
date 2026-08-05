@@ -104,9 +104,7 @@ export interface WorkflowController {
   onInterruptNodeConversation?: (conversationId: string) => MaybePromise;
   onResolveRuntimeApproval?: (ownerId: string, requestId: string, decision: ApprovalDecision) => MaybePromise;
   onSelectConfiguredAgent: (configuredAgentId: string) => void;
-  onSelectModel?: (modelId: string) => void;
   onSelectReviewerConfiguredAgent: (configuredAgentId: string) => void;
-  onSelectReviewerModel?: (modelId: string) => void;
   onReviewWorkflow?: () => MaybePromise;
   onInterruptWorkflowReview?: () => MaybePromise;
   onBuildDefinition: (objective?: string) => void;

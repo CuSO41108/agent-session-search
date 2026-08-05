@@ -207,6 +207,12 @@ export function restoreWorkflowDraft(
   const origin = restoreWorkflowOrigin(record.origin);
   const confirmedRevision = Number.isSafeInteger(record.confirmedRevision) && Number(record.confirmedRevision) > 0 ? Number(record.confirmedRevision) : undefined;
   const generationReview = restoreGenerationReview(record.generationReview);
+  const reviewerConfiguredAgentId = Object.hasOwn(record, "reviewerConfiguredAgentId")
+    ? asOptionalString(record.reviewerConfiguredAgentId) ?? ""
+    : asOptionalString(record.configuredAgentId) ?? "";
+  const reviewerModelId = Object.hasOwn(record, "reviewerModelId")
+    ? asOptionalString(record.reviewerModelId) ?? ""
+    : asOptionalString(record.modelId) ?? "";
   return deps.cloneWorkflowDraft({
     workflowId,
     sourceType: record.sourceType === "official" ? "official" : "user",
@@ -218,8 +224,8 @@ export function restoreWorkflowDraft(
     ...(origin ? { origin } : {}),
     configuredAgentId: asOptionalString(record.configuredAgentId) ?? "",
     modelId: asOptionalString(record.modelId) ?? "",
-    reviewerConfiguredAgentId: asOptionalString(record.reviewerConfiguredAgentId) ?? asOptionalString(record.configuredAgentId) ?? "",
-    reviewerModelId: asOptionalString(record.reviewerModelId) ?? asOptionalString(record.modelId) ?? "",
+    reviewerConfiguredAgentId,
+    reviewerModelId,
     objective: asOptionalString(record.objective) ?? definition.objective,
     definition,
     ...(asOptionalString(record.workDir) ? { workDir: asOptionalString(record.workDir) as string } : {}),

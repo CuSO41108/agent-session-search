@@ -944,18 +944,19 @@ describe("AgentHub chat sessions", () => {
     }
   });
 
-  test("keeps Workflow execution unconfigured and reports all remaining references", () => {
+  test("keeps Workflow generation and review Agents independent and reports all remaining references", () => {
     const hub = new AgentHub();
     addConfiguredAgents(hub, [configuredAgent("worker", { name: "Worker" })]);
     const workflow = hub.createWorkflowDraft({ configuredAgentId: "worker" }).workflowDraft!;
-    expect(workflow.configuredAgentId).toBe("");
+    expect(workflow.configuredAgentId).toBe("worker");
     const patched = hub.patchWorkflowDraft({
       workflowId: workflow.workflowId,
-      configuredAgentId: "worker",
-      modelId: "worker-model",
+      reviewerConfiguredAgentId: "worker",
+      reviewerModelId: "worker-model",
     }).workflowDraft!;
-    expect(patched.configuredAgentId).toBe("");
-    expect(patched.modelId).toBe("");
+    expect(patched.configuredAgentId).toBe("worker");
+    expect(patched.reviewerConfiguredAgentId).toBe("worker");
+    expect(patched.reviewerModelId).toBe("default");
 
     hub.createChat("worker");
     const task = (hub as any).createTaskState({ prompt: "Use worker", configuredAgentId: "worker" });
@@ -965,8 +966,38 @@ describe("AgentHub chat sessions", () => {
     expect(() => hub.updateConfiguredAgents(
       before.filter((agent) => agent.id !== "worker"),
       { detectDeletedManagedAgents: true },
-    )).toThrow(/Chat.*Task/);
+    )).toThrow(/Chat.*Task.*Workflow/);
     expect(hub.snapshot().configuredAgents).toEqual(before);
+  });
+
+  test("accepts one schema-valid Review tool submission for the active Revision", () => {
+    const hub = new AgentHub();
+    addConfiguredAgents(hub, [configuredAgent("reviewer", { name: "Reviewer" })]);
+    const workflow = hub.createWorkflowDraft({ reviewerConfiguredAgentId: "reviewer" }).workflowDraft!;
+    hub.patchWorkflowDraft({
+      workflowId: workflow.workflowId,
+      generationReview: {
+        status: "reviewing",
+        reviewerConfiguredAgentId: "reviewer",
+        reviewerModelId: "default",
+        reviewedRevision: workflow.revision,
+        updatedAt: 1,
+      },
+    });
+
+    const accepted = hub.submitWorkflowReview({
+      workflowId: workflow.workflowId,
+      reviewedRevision: workflow.revision,
+      value: { verdict: "approve", summary: "Ready", findings: [], scriptRisks: {}, suggestions: [] },
+    });
+    const duplicate = hub.submitWorkflowReview({
+      workflowId: workflow.workflowId,
+      reviewedRevision: workflow.revision,
+      value: { verdict: "approve", summary: "Ready", findings: [], scriptRisks: {}, suggestions: [] },
+    });
+
+    expect(accepted).toMatchObject({ ok: true, accepted: true, reviewedRevision: workflow.revision });
+    expect(duplicate).toMatchObject({ ok: false, error: expect.stringContaining("already been submitted") });
   });
 
   test("allows deleting every configured agent without forcing a default agent back", () => {
@@ -3493,7 +3524,10 @@ fs.writeFileSync(${JSON.stringify(argsPath)}, process.argv.slice(2).join("\\n") 
       available: true,
     });
     const before = hub.snapshot();
-    const created = hub.createWorkflowDraft({ reviewerConfiguredAgentId: TEST_CODEX_AGENT_ID });
+    const created = hub.createWorkflowDraft({
+      configuredAgentId: TEST_CODEX_AGENT_ID,
+      reviewerConfiguredAgentId: TEST_CODEX_AGENT_ID,
+    });
     const workflowId = created.workflowDraft?.workflowId;
     expect(workflowId).toBeTruthy();
 
@@ -3546,7 +3580,7 @@ fs.writeFileSync(${JSON.stringify(argsPath)}, process.argv.slice(2).join("\\n") 
       .not.toContain("mcp_servers.agent_recall");
   });
 
-  test("rejects a one-shot-only reviewer runtime in the Workflow planning dialog", async () => {
+  test("rejects a one-shot-only generation runtime in the Workflow planning dialog", async () => {
     const hub = new AgentHub({
       codex: "missing-codex-for-test",
       claude: "missing-claude-for-test",
@@ -3571,7 +3605,7 @@ fs.writeFileSync(${JSON.stringify(argsPath)}, process.argv.slice(2).join("\\n") 
       version: "test",
       available: true,
     });
-    const workflowId = hub.createWorkflowDraft({ reviewerConfiguredAgentId: TEST_CODEX_AGENT_ID }).workflowDraft!.workflowId;
+    const workflowId = hub.createWorkflowDraft({ configuredAgentId: TEST_CODEX_AGENT_ID }).workflowDraft!.workflowId;
 
     const snapshot = await hub.sendWorkflowDraftReply({ workflowId, reply: "Plan this task." });
 

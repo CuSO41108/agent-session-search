@@ -17,10 +17,11 @@ export function codexWorkflowMcpConfig(binding: WorkflowMcpBinding): CodexWorkfl
   if (!config) return { args: [], env: {} };
   const envNames = Object.keys(config.env);
   const scope: WorkflowMcpScope = binding.scope
-    ?? (binding.runId && binding.nodeId ? "node_execution" : "planning");
+    ?? (binding.runId && binding.nodeId ? "node_execution" : binding.reviewRevision ? "review" : "planning");
   const completionEnabled = Boolean(
     binding.workflowId && binding.runId && binding.nodeId && binding.executionId,
   );
+  const reviewSubmissionEnabled = Boolean(binding.workflowId && binding.reviewRevision);
   const workflowTools = binding.workflowId
     ? workflowMcpToolsForScope(scope)
         .filter((toolName) => toolName !== "workflow_node_complete" || completionEnabled)
@@ -43,8 +44,8 @@ export function codexWorkflowMcpConfig(binding: WorkflowMcpBinding): CodexWorkfl
       ]),
     ],
     env: config.env,
-    ...((completionEnabled || (binding.workflowId && scope === "planning")) ? {
-      requiredMcpTools: { agent_recall: [completionEnabled ? "workflow_node_complete" : "workflow_create"] },
+    ...((completionEnabled || reviewSubmissionEnabled || (binding.workflowId && scope === "planning")) ? {
+      requiredMcpTools: { agent_recall: [completionEnabled ? "workflow_node_complete" : reviewSubmissionEnabled ? "workflow_review_submit" : "workflow_create"] },
     } : {}),
   };
 }

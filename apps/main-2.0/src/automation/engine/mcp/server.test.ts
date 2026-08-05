@@ -14,6 +14,7 @@ const originalWorkflowId = process.env.AGENT_RECALL_WORKFLOW_ID;
 const originalRunId = process.env.AGENT_RECALL_WORKFLOW_RUN_ID;
 const originalNodeId = process.env.AGENT_RECALL_WORKFLOW_NODE_ID;
 const originalExecutionId = process.env.AGENT_RECALL_WORKFLOW_NODE_EXECUTION_ID;
+const originalReviewRevision = process.env.AGENT_RECALL_WORKFLOW_REVIEW_REVISION;
 const originalScope = process.env.AGENT_RECALL_WORKFLOW_MCP_SCOPE;
 describe("MCP server tools", () => {
   afterEach(() => {
@@ -33,6 +34,8 @@ describe("MCP server tools", () => {
     else process.env.AGENT_RECALL_WORKFLOW_NODE_ID = originalNodeId;
     if (originalExecutionId === undefined) delete process.env.AGENT_RECALL_WORKFLOW_NODE_EXECUTION_ID;
     else process.env.AGENT_RECALL_WORKFLOW_NODE_EXECUTION_ID = originalExecutionId;
+    if (originalReviewRevision === undefined) delete process.env.AGENT_RECALL_WORKFLOW_REVIEW_REVISION;
+    else process.env.AGENT_RECALL_WORKFLOW_REVIEW_REVISION = originalReviewRevision;
     if (originalScope === undefined) delete process.env.AGENT_RECALL_WORKFLOW_MCP_SCOPE;
     else process.env.AGENT_RECALL_WORKFLOW_MCP_SCOPE = originalScope;
     vi.restoreAllMocks();
@@ -129,6 +132,20 @@ describe("MCP server tools", () => {
     expect(definition.properties.transactionPolicy.properties.defaultMode.enum).toEqual(["strict_atomic", "controlled", "direct"]);
     expect(tool.description).toContain("script.effectMode");
     expect(tool.description).toContain("does not expose response bodies as script outputs");
+  });
+
+  test("exposes only the bound submission tool to managed Review sessions", () => {
+    process.env.AGENT_RECALL_WORKFLOW_MCP_TOKEN = "managed-token";
+    process.env.AGENT_RECALL_WORKFLOW_MCP_SCOPE = "review";
+    process.env.AGENT_RECALL_WORKFLOW_ID = "wf-review";
+    process.env.AGENT_RECALL_WORKFLOW_REVIEW_REVISION = "2";
+
+    const tools = mcpToolDefinitions();
+    expect(tools.map((tool) => tool.name)).toEqual(["workflow_review_submit"]);
+    const properties = tools[0]!.inputSchema.properties as Record<string, unknown>;
+    expect(properties).not.toHaveProperty("workflowId");
+    expect(properties).not.toHaveProperty("reviewedRevision");
+    expect((properties.verdict as { enum: string[] }).enum).toEqual(["approve", "revise"]);
   });
 
   test("uses env override for bridge discovery", () => {
@@ -291,6 +308,37 @@ describe("MCP server tools", () => {
       runId: "run-1",
       nodeId: "node-1",
       executionId: "execution-1",
+    });
+  });
+
+  test("injects the bound Workflow and Revision into Review submissions", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "agent-recall-mcp-review-submit-"));
+    const discoveryPath = path.join(dir, "bridge.json");
+    process.env.AGENT_RECALL_WORKFLOW_MCP_BRIDGE = discoveryPath;
+    process.env.AGENT_RECALL_WORKFLOW_ID = "wf-review";
+    process.env.AGENT_RECALL_WORKFLOW_REVIEW_REVISION = "2";
+    await writeFile(discoveryPath, JSON.stringify({ host: "127.0.0.1", port: 48126, token: "secret" }), "utf8");
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ ok: true, accepted: true }),
+    } as Response);
+
+    await callMcpTool("workflow_review_submit", {
+      verdict: "approve",
+      summary: "Ready",
+      findings: [],
+      scriptRisks: {},
+      suggestions: [],
+      workflowId: "model-selected-workflow",
+      reviewedRevision: 99,
+    });
+
+    const request = fetchMock.mock.calls[0]?.[1] as RequestInit;
+    expect(JSON.parse(String(request.body))).toMatchObject({
+      workflowId: "wf-review",
+      reviewedRevision: 2,
+      verdict: "approve",
     });
   });
 

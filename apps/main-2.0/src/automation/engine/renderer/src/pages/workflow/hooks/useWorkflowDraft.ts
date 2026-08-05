@@ -43,9 +43,7 @@ export interface WorkflowDraftController {
   updateWorkflowDefinition: (definition: WorkflowV2Definition) => Promise<void>;
   selectWorkflow: (workflowId: string) => Promise<void>;
   selectConfiguredAgent: (configuredAgentId: string) => Promise<void>;
-  selectModel: (modelId: string) => Promise<void>;
   selectReviewerConfiguredAgent: (configuredAgentId: string) => Promise<void>;
-  selectReviewerModel: (modelId: string) => Promise<void>;
   setWorkflowObjective: Dispatch<SetStateAction<string>>;
   setWorkflowReply: Dispatch<SetStateAction<string>>;
 }
@@ -262,17 +260,6 @@ export function useWorkflowDraft({
     setSnapshot(next);
   }, [channels, configuredAgents, ensureActiveWorkflow, setSnapshot, workflows]);
 
-  const selectModel = useCallback(async (modelId: string): Promise<void> => {
-    const workflow = await ensureActiveWorkflow();
-    if (!workflow) return;
-    const next = await workflows.patchDraft({
-      workflowId: workflow.workflowId,
-      modelId,
-      error: null,
-    });
-    setSnapshot(next);
-  }, [ensureActiveWorkflow, setSnapshot, workflows]);
-
   const updateWorkflowDefinition = useCallback(async (definition: WorkflowV2Definition): Promise<void> => {
     const workflow = await ensureActiveWorkflow();
     if (!workflow) return;
@@ -291,14 +278,10 @@ export function useWorkflowDraft({
     setSnapshot(await workflows.patchDraft({ workflowId: workflow.workflowId, reviewerConfiguredAgentId: configuredAgentId, reviewerModelId, error: null }));
   }, [channels, configuredAgents, ensureActiveWorkflow, setSnapshot, workflows]);
 
-  const selectReviewerModel = useCallback(async (reviewerModelId: string): Promise<void> => {
-    const workflow = await ensureActiveWorkflow();
-    if (!workflow) return;
-    setSnapshot(await workflows.patchDraft({ workflowId: workflow.workflowId, reviewerModelId, error: null }));
-  }, [ensureActiveWorkflow, setSnapshot, workflows]);
-
-  const workflowConfiguredAgentId = "";
-  const workflowModelId = "";
+  const workflowConfiguredAgentId = activeWorkflow?.configuredAgentId ?? "";
+  const workflowModelId = workflowConfiguredAgentId
+    ? configuredAgentModelId(workflowConfiguredAgentId, activeWorkflow?.modelId, configuredAgents, channels)
+    : "";
   const workflowReviewerConfiguredAgentId = activeWorkflow?.reviewerConfiguredAgentId ?? "";
   const workflowReviewerModelId = workflowReviewerConfiguredAgentId
     ? configuredAgentModelId(workflowReviewerConfiguredAgentId, activeWorkflow?.reviewerModelId, configuredAgents, channels)
@@ -336,9 +319,7 @@ export function useWorkflowDraft({
       updateWorkflowDefinition,
       selectWorkflow,
       selectConfiguredAgent,
-      selectModel,
       selectReviewerConfiguredAgent,
-      selectReviewerModel,
       setWorkflowObjective,
       setWorkflowReply,
     }),
@@ -350,9 +331,7 @@ export function useWorkflowDraft({
       resetWorkflowLocalDraft,
       resetWorkflowSession,
       selectConfiguredAgent,
-      selectModel,
       selectReviewerConfiguredAgent,
-      selectReviewerModel,
       selectWorkflow,
       sendWorkflowReply,
       stopWorkflowGrill,
