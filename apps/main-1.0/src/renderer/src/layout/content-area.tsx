@@ -1,5 +1,5 @@
 import type { ComponentProps, MouseEvent as ReactMouseEvent, ReactElement, ReactNode } from "react";
-import { ChevronsLeft, ChevronsRight, ChevronLeft, ChevronRight } from "lucide-react";
+import { ChevronLeft, ChevronRight } from "lucide-react";
 import type { SearchOptions, SessionMatchHit, SessionSearchResult, SessionSortBy } from "../../../core/types";
 import type { SavedSearch } from "../../../core/store/saved-searches";
 import { localize, type LanguageMode } from "../language";
@@ -133,17 +133,47 @@ export function ContentArea(props: ContentAreaProps): ReactElement {
       </div>
       {totalPages > 1 ? (
         <nav className="session-pagination" aria-label={t("Session pages", "会话分页")}>
-          <button type="button" className="pagination-button" onClick={() => onPageChange(1)} disabled={currentPage === 1} title={t("First page", "第一页")} aria-label={t("First page", "第一页")}><ChevronsLeft size={14} /></button>
           <button type="button" className="pagination-button" onClick={() => onPageChange(currentPage - 1)} disabled={currentPage === 1} title={t("Previous page", "上一页")} aria-label={t("Previous page", "上一页")}><ChevronLeft size={14} /></button>
+          <div className="pagination-pages">
+            {paginationItems(currentPage, totalPages).map((item) => typeof item === "number" ? (
+              <button
+                key={item}
+                type="button"
+                className={`pagination-button ${item === currentPage ? "active" : ""}`}
+                data-page={item}
+                aria-current={item === currentPage ? "page" : undefined}
+                aria-label={t(`Page ${item}`, `第 ${item} 页`)}
+                onClick={() => onPageChange(item)}
+              >
+                {item}
+              </button>
+            ) : <span key={item} className="pagination-ellipsis" aria-hidden="true">...</span>)}
+          </div>
+          <button type="button" className="pagination-button" onClick={() => onPageChange(currentPage + 1)} disabled={currentPage === totalPages} title={t("Next page", "下一页")} aria-label={t("Next page", "下一页")}><ChevronRight size={14} /></button>
           <form className="pagination-jump" onSubmit={(event) => { event.preventDefault(); const value = Number(new FormData(event.currentTarget).get("page")); if (Number.isInteger(value)) onPageChange(Math.min(totalPages, Math.max(1, value))); }}>
             <input key={`${currentPage}-${totalPages}`} name="page" type="number" min={1} max={totalPages} defaultValue={currentPage} aria-label={t("Page number", "页码")} />
             <span>/ {totalPages}</span>
             <button type="submit">{t("Go", "跳转")}</button>
           </form>
-          <button type="button" className="pagination-button" onClick={() => onPageChange(currentPage + 1)} disabled={currentPage === totalPages} title={t("Next page", "下一页")} aria-label={t("Next page", "下一页")}><ChevronRight size={14} /></button>
-          <button type="button" className="pagination-button" onClick={() => onPageChange(totalPages)} disabled={currentPage === totalPages} title={t("Last page", "最后一页")} aria-label={t("Last page", "最后一页")}><ChevronsRight size={14} /></button>
         </nav>
       ) : null}
     </section>
   );
+}
+
+function paginationItems(currentPage: number, totalPages: number): Array<number | string> {
+  const pages = new Set<number>([1, totalPages]);
+  for (let page = currentPage - 2; page <= currentPage + 2; page += 1) {
+    if (page >= 1 && page <= totalPages) pages.add(page);
+  }
+  const sortedPages = [...pages].sort((left, right) => left - right);
+  const items: Array<number | string> = [];
+  for (const page of sortedPages) {
+    const previous = items.at(-1);
+    const previousPage = typeof previous === "number" ? previous : undefined;
+    if (previousPage !== undefined && page - previousPage === 2) items.push(previousPage + 1);
+    else if (previousPage !== undefined && page - previousPage > 2) items.push(`ellipsis-${previousPage}-${page}`);
+    items.push(page);
+  }
+  return items;
 }

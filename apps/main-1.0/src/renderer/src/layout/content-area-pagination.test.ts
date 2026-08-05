@@ -43,6 +43,32 @@ describe("ContentArea Session pagination", () => {
     await act(async () => root.render(createElement(ContentArea, { ...props, currentPage: 2 })));
     expect(container.querySelector(".results")).not.toBe(firstResults);
   });
+
+  it("keeps two pages on each side of the current page", async () => {
+    const onPageChange = vi.fn();
+    await act(async () => root.render(createElement(ContentArea, {
+      ...paginationProps(onPageChange),
+      currentPage: 6,
+      totalPages: 12,
+    })));
+
+    expect([...container.querySelectorAll<HTMLElement>(".pagination-pages [data-page]")].map((button) => Number(button.dataset.page)))
+      .toEqual([1, 4, 5, 6, 7, 8, 12]);
+    expect(container.querySelectorAll(".pagination-ellipsis")).toHaveLength(2);
+    expect(container.querySelector('[data-page="6"]')?.getAttribute("aria-current")).toBe("page");
+
+    await act(async () => container.querySelector<HTMLButtonElement>('[data-page="4"]')?.click());
+    expect(onPageChange).toHaveBeenCalledWith(4);
+
+    await act(async () => root.render(createElement(ContentArea, {
+      ...paginationProps(onPageChange),
+      currentPage: 1,
+      totalPages: 12,
+    })));
+    expect([...container.querySelectorAll<HTMLElement>(".pagination-pages [data-page]")].map((button) => Number(button.dataset.page)))
+      .toEqual([1, 2, 3, 12]);
+    expect(container.querySelectorAll(".pagination-ellipsis")).toHaveLength(1);
+  });
 });
 
 function paginationProps(onPageChange: (page: number) => void): ContentAreaProps {

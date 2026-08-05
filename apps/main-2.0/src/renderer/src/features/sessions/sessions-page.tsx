@@ -7,8 +7,6 @@ import type {
 } from "react";
 import {
   CalendarDays,
-  ChevronsLeft,
-  ChevronsRight,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
@@ -361,20 +359,50 @@ export function SessionsPage({
         </div>
         {model.totalPages > 1 ? (
           <nav className="session-pagination" aria-label={l("Session pages", "会话分页")}>
-            <button type="button" className="pagination-button" onClick={() => actions.goToPage(1)} disabled={model.currentPage === 1} title={l("First page", "第一页")} aria-label={l("First page", "第一页")}><ChevronsLeft size={14} /></button>
             <button type="button" className="pagination-button" onClick={() => actions.goToPage(model.currentPage - 1)} disabled={model.currentPage === 1} title={l("Previous page", "上一页")} aria-label={l("Previous page", "上一页")}><ChevronLeft size={14} /></button>
+            <div className="pagination-pages">
+              {paginationItems(model.currentPage, model.totalPages).map((item) => typeof item === "number" ? (
+                <button
+                  key={item}
+                  type="button"
+                  className={`pagination-button ${item === model.currentPage ? "active" : ""}`}
+                  data-page={item}
+                  aria-current={item === model.currentPage ? "page" : undefined}
+                  aria-label={l(`Page ${item}`, `第 ${item} 页`)}
+                  onClick={() => actions.goToPage(item)}
+                >
+                  {item}
+                </button>
+              ) : <span key={item} className="pagination-ellipsis" aria-hidden="true">...</span>)}
+            </div>
+            <button type="button" className="pagination-button" onClick={() => actions.goToPage(model.currentPage + 1)} disabled={model.currentPage === model.totalPages} title={l("Next page", "下一页")} aria-label={l("Next page", "下一页")}><ChevronRight size={14} /></button>
             <form className="pagination-jump" onSubmit={(event) => { event.preventDefault(); const value = Number(new FormData(event.currentTarget).get("page")); if (Number.isInteger(value)) actions.goToPage(Math.min(model.totalPages, Math.max(1, value))); }}>
               <input key={`${model.currentPage}-${model.totalPages}`} name="page" type="number" min={1} max={model.totalPages} defaultValue={model.currentPage} aria-label={l("Page number", "页码")} />
               <span>/ {model.totalPages}</span>
               <button type="submit">{l("Go", "跳转")}</button>
             </form>
-            <button type="button" className="pagination-button" onClick={() => actions.goToPage(model.currentPage + 1)} disabled={model.currentPage === model.totalPages} title={l("Next page", "下一页")} aria-label={l("Next page", "下一页")}><ChevronRight size={14} /></button>
-            <button type="button" className="pagination-button" onClick={() => actions.goToPage(model.totalPages)} disabled={model.currentPage === model.totalPages} title={l("Last page", "最后一页")} aria-label={l("Last page", "最后一页")}><ChevronsRight size={14} /></button>
           </nav>
         ) : null}
       </section>
     </div>
   );
+}
+
+function paginationItems(currentPage: number, totalPages: number): Array<number | string> {
+  const pages = new Set<number>([1, totalPages]);
+  for (let page = currentPage - 2; page <= currentPage + 2; page += 1) {
+    if (page >= 1 && page <= totalPages) pages.add(page);
+  }
+  const sortedPages = [...pages].sort((left, right) => left - right);
+  const items: Array<number | string> = [];
+  for (const page of sortedPages) {
+    const previous = items.at(-1);
+    const previousPage = typeof previous === "number" ? previous : undefined;
+    if (previousPage !== undefined && page - previousPage === 2) items.push(previousPage + 1);
+    else if (previousPage !== undefined && page - previousPage > 2) items.push(`ellipsis-${previousPage}-${page}`);
+    items.push(page);
+  }
+  return items;
 }
 
 function SessionSidebar({

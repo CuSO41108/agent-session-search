@@ -181,4 +181,34 @@ describe("SessionsPage project pagination", () => {
 
     expect(container.querySelector(".results")).not.toBe(firstResults);
   });
+
+  it("keeps two pages on each side of the current Session page", async () => {
+    const model = createModel([]);
+    model.sessionTotalCount = 360;
+    model.currentPage = 6;
+    model.totalPages = 12;
+    const goToPage = vi.fn();
+
+    await act(async () => root.render(createElement(SessionsPage, {
+      model,
+      actions: { ...actions, goToPage },
+    })));
+
+    expect([...container.querySelectorAll<HTMLElement>(".pagination-pages [data-page]")].map((button) => Number(button.dataset.page)))
+      .toEqual([1, 4, 5, 6, 7, 8, 12]);
+    expect(container.querySelectorAll(".pagination-ellipsis")).toHaveLength(2);
+    expect(container.querySelector('[data-page="6"]')?.getAttribute("aria-current")).toBe("page");
+
+    await act(async () => container.querySelector<HTMLButtonElement>('[data-page="8"]')?.click());
+    expect(goToPage).toHaveBeenCalledWith(8);
+
+    model.currentPage = 12;
+    await act(async () => root.render(createElement(SessionsPage, {
+      model,
+      actions: { ...actions, goToPage },
+    })));
+    expect([...container.querySelectorAll<HTMLElement>(".pagination-pages [data-page]")].map((button) => Number(button.dataset.page)))
+      .toEqual([1, 10, 11, 12]);
+    expect(container.querySelectorAll(".pagination-ellipsis")).toHaveLength(1);
+  });
 });
