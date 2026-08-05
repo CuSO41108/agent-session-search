@@ -188,6 +188,7 @@ export function compileWorkflowV2Definition(
     workflowId: definition.workflowId,
     graphVersion: definition.graphVersion,
     objective: definition.objective,
+    ...(definition.reviewEnabled !== undefined ? { reviewEnabled: definition.reviewEnabled } : {}),
     nodes: definition.nodes.map((node) => compileWorkflowV2Node(node, registry)),
     edges: definition.edges.map((edge) => ({
       fromNodeId: edge.fromNodeId,

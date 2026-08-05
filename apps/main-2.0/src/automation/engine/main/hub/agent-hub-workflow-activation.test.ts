@@ -28,6 +28,21 @@ describe("AgentHub workflow materialization", () => {
     });
     expect(bundledWorkflow.workflowV2Plan).toBeUndefined();
 
+    const reviewUpdate = hub.updateWorkflow({
+      workflowId: "bundled-test",
+      expectedRevision: bundledWorkflow.revision,
+      definition: { ...structuredClone(bundledWorkflow.definition), reviewEnabled: true },
+    });
+    expect(reviewUpdate).toMatchObject({ ok: true, revision: bundledWorkflow.revision + 1 });
+    const reviewEnabledWorkflow = hub.snapshot().workflowStore.workflows.find((workflow) => workflow.workflowId === "bundled-test")!;
+    expect(reviewEnabledWorkflow.definition.reviewEnabled).toBe(true);
+    const changedTopology = structuredClone(reviewEnabledWorkflow.definition);
+    changedTopology.nodes[0]!.title = "Changed locked title";
+    expect(hub.updateWorkflow({ workflowId: "bundled-test", expectedRevision: reviewEnabledWorkflow.revision, definition: changedTopology })).toMatchObject({
+      ok: false,
+      error: "Official workflow topology is locked.",
+    });
+
     hub.patchWorkflowDraft({ workflowId: "bundled-test", reviewerConfiguredAgentId: TEST_AGENT_ID });
     const configuredWorkflow = hub.snapshot().workflowStore.workflows.find((workflow) => workflow.workflowId === "bundled-test")!;
     expect(hub.confirmWorkflow({ workflowId: "bundled-test", expectedRevision: configuredWorkflow.revision })).toMatchObject({ ok: true });
@@ -97,6 +112,12 @@ describe("AgentHub workflow materialization", () => {
         edges: [],
       },
     }]);
+    const seeded = hub.snapshot().workflowStore.workflows.find((workflow) => workflow.workflowId === "bundled-test")!;
+    expect(hub.updateWorkflow({
+      workflowId: seeded.workflowId,
+      expectedRevision: seeded.revision,
+      definition: { ...structuredClone(seeded.definition), reviewEnabled: true },
+    })).toMatchObject({ ok: true });
     const before = hub.snapshot().workflowStore.workflows.find((workflow) => workflow.workflowId === "bundled-test")!;
     hub.patchWorkflowDraft({
       workflowId: before.workflowId,
@@ -133,6 +154,7 @@ describe("AgentHub workflow materialization", () => {
       runContextDocument: "",
       definition: {
         objective: "New objective",
+        reviewEnabled: true,
         nodes: [{ id: "collect" }, { id: "report" }],
       },
     });

@@ -29,6 +29,7 @@ import { workflowStoragePlanDocument, workflowStoragePlanFor } from "../../share
 import { WorkflowRunRegistry, type ActiveWorkflowRun } from "./workflow-run-registry";
 import { WorkflowV2RunExecutor } from "./v2/workflow-v2-run-executor";
 import { materializeWorkflowV2OutputArtifacts } from "./v2/workflow-v2-output-artifacts";
+import { materializeWorkflowV2AcceptedReviewCandidate } from "./v2/workflow-v2-review-override";
 import type { WorkflowV2RecoveryOverride } from "./v2/workflow-v2-execution-contract";
 import type {
   ExecuteWorkflowV2ScriptRequest,
@@ -1203,7 +1204,7 @@ export class WorkflowRuntime {
         planNode,
         upstreamOutputs,
         executionEnvironment: workflowV2ExecutionEnvironment({ node, workDir, configuredAgentId: agentRoute.configuredAgentId, modelId: agentRoute.modelId }),
-        reviewerPolicy: workflowV2ReviewerPolicy(node),
+        reviewerPolicy: workflowV2ReviewerPolicy(node, plan.definition.reviewEnabled === true),
       });
       targetFingerprints.set(node.id, fingerprint);
       if (cacheEntry) knownOutputs.set(node.id, cacheEntry.output);
@@ -1224,11 +1225,6 @@ export class WorkflowRuntime {
         error: `Workflow V2 node ${input.nodeId} does not require recovery.`,
       };
     }
-    await store.appendEvents({
-      workflowId: input.workflow.workflowId,
-      runId: input.run.runId,
-      events: [resolutionEvent],
-    });
     const materialized = materializeWorkflowV2Recovery({
       persisted,
       targetDefinition: plan.definition,
@@ -1252,34 +1248,27 @@ export class WorkflowRuntime {
     }
     if (input.action === "accept_last_result") {
       const candidate = intervention!.lastCandidate!;
-      await materializeWorkflowV2OutputArtifacts({
+      const acceptedOutput = await materializeWorkflowV2AcceptedReviewCandidate({
         workflowId: input.workflow.workflowId,
         runId: input.run.runId,
-        workDir,
+        sourceWorkDir: workDir,
+        baselineId: persisted.transaction?.baselineId ?? `baseline:${input.workflow.workflowId}:${input.run.runId}`,
+        transactionMode: resolveWorkflowTransactionPolicy(plan.definition.transactionPolicy).policy.defaultMode,
         node: targetNode,
-        output: {
-          nodeId: candidate.nodeId,
-          summary: candidate.summary,
-          outputs: structuredClone(candidate.outputs),
-          ...(candidate.evidence ? { evidence: [...candidate.evidence] } : {}),
-          ...(candidate.risks ? { risks: [...candidate.risks] } : {}),
-          proposals: [],
-        },
+        candidate,
+        ...(store.prepareWorkspaceTransaction ? { prepareWorkspaceTransaction: (request) => store.prepareWorkspaceTransaction!(request) } : {}),
       });
       materialized.checkpoint.runState = transitionWorkflowV2NodeState(materialized.checkpoint.runState, { nodeId: input.nodeId, status: "completed_with_override", now: resolvedAt });
       materialized.checkpoint.workerOutputs = materialized.checkpoint.workerOutputs.filter((output) => output.nodeId !== input.nodeId);
-      materialized.checkpoint.workerOutputs.push({
-        nodeId: candidate.nodeId,
-        summary: candidate.summary,
-        outputs: structuredClone(candidate.outputs),
-        ...(candidate.evidence ? { evidence: [...candidate.evidence] } : {}),
-        ...(candidate.risks ? { risks: [...candidate.risks] } : {}),
-        ...(candidate.nextStepSuggestions ? { nextStepSuggestions: [...candidate.nextStepSuggestions] } : {}),
-        proposals: [],
-      });
+      materialized.checkpoint.workerOutputs.push(acceptedOutput);
       materialized.recoveryCheckpoints.delete(input.nodeId);
       materialized.resumeConversations.delete(input.nodeId);
     }
+    await store.appendEvents({
+      workflowId: input.workflow.workflowId,
+      runId: input.run.runId,
+      events: [resolutionEvent],
+    });
     const recoveryOverrides = new Map<string, WorkflowV2RecoveryOverride>();
     if (input.action === "approve_once") {
       const approval = createWorkflowV2ScriptApprovalOverride({ node: targetNode, planNode: plan.nodes.find((item) => item.nodeId === input.nodeId), intervention, resolutionReason });
@@ -1318,7 +1307,21 @@ export class WorkflowRuntime {
       workflowId: input.workflow.workflowId,
       runId: input.run.runId,
       status: "running",
-      ...(input.action === "accept_last_result" ? { progress: input.run.progress.map((item) => item.nodeId === input.nodeId ? { ...item, status: "completed_with_override" as const, detail: resolutionReason, outputs: structuredClone(intervention!.lastCandidate!.outputs) } : item) } : {}),
+      ...(input.action === "accept_last_result" ? {
+        progress: input.run.progress.map((item) => {
+          if (item.nodeId !== input.nodeId) return item;
+          const { intervention: _resolvedIntervention, ...resolvedItem } = item;
+          const candidate = intervention!.lastCandidate!;
+          return {
+            ...resolvedItem,
+            status: "completed_with_override" as const,
+            detail: resolutionReason,
+            outputs: structuredClone(candidate.outputs),
+            ...(candidate.acceptance ? { acceptance: structuredClone(candidate.acceptance) } : {}),
+            ...(candidate.scriptReceipt ? { scriptReceipt: structuredClone(candidate.scriptReceipt) } : {}),
+          };
+        }),
+      } : {}),
       contextDocument: input.run.contextDocument,
     });
     const storagePlan = workflowStoragePlanFor(input.workflow.workflowId, input.run.runId);

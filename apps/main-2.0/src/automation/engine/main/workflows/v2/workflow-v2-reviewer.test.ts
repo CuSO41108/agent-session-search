@@ -29,6 +29,7 @@ describe("Workflow V2 quality reviewer", () => {
       node,
       objective: "Deliver a verified report",
       reviewAttempt: 1,
+      upstreamOutputs: [],
       output: { nodeId: node.id, summary: "Candidate", outputs: { result: "draft" }, proposals: [] },
     });
     const response = parseWorkflowV2ReviewerResponse(JSON.stringify({
@@ -57,6 +58,7 @@ describe("Workflow V2 quality reviewer", () => {
       node,
       objective: "Deliver a verified report",
       reviewAttempt: 1,
+      upstreamOutputs: [],
       output: { nodeId: node.id, summary: "Candidate", outputs: { result: "draft" }, proposals: [] },
     });
     expect(() => parseWorkflowV2ReviewerResponse(JSON.stringify({
@@ -84,5 +86,28 @@ describe("Workflow V2 quality reviewer", () => {
     };
     expect(resolveWorkflowV2ReviewVerdict(verdict, { reviewAttempt: 2, maxReviewRetries: 2 }).action).toBe("retry");
     expect(resolveWorkflowV2ReviewVerdict(verdict, { reviewAttempt: 3, maxReviewRetries: 2 }).action).toBe("pause");
+  });
+
+  test("preserves upstream evidence and runtime-authored candidate receipts", () => {
+    const input = createWorkflowV2ReviewerInput({
+      node,
+      objective: "Deliver a verified report",
+      reviewAttempt: 1,
+      upstreamOutputs: [{ nodeId: "source", summary: "Collected sources", outputs: { sources: ["primary"] }, evidence: ["source-1"] }],
+      output: {
+        nodeId: node.id,
+        summary: "Candidate",
+        outputs: { result: "draft" },
+        proposals: [],
+        acceptance: { outcome: "degraded", issues: [{ code: "warning", severity: "warning", detail: "Needs review." }], changedPaths: ["result.md"], operationIds: ["operation-1"] },
+        scriptReceipt: { exitCode: 0, signal: null, timedOut: false, stderrSummary: "", stdoutDigest: "stdout", operationDigest: "operation", effectState: "workspace_changed" },
+      },
+    });
+
+    expect(input.upstreamResults[0]).toMatchObject({ nodeId: "source", evidence: ["source-1"] });
+    expect(input.result).toMatchObject({
+      acceptance: { outcome: "degraded", changedPaths: ["result.md"] },
+      scriptReceipt: { exitCode: 0, effectState: "workspace_changed" },
+    });
   });
 });

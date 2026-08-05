@@ -451,7 +451,11 @@ export class WorkflowV2RunPersistence {
             configuredAgentId: agentRoute.configuredAgentId,
             modelId: agentRoute.modelId,
           }),
-          reviewerPolicy: workflowV2ReviewerPolicy(node, recoveryOverride?.forceIndependentReview === true),
+          reviewerPolicy: workflowV2ReviewerPolicy(
+            node,
+            this.input.plan.definition.reviewEnabled === true,
+            recoveryOverride?.forceIndependentReview === true,
+          ),
         }),
         output: structuredClone(output),
         savedAt: Date.now(),

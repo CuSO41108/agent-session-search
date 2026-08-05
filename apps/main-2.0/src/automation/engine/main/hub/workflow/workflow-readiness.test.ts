@@ -22,6 +22,7 @@ function workflow(): Pick<WorkflowDraftState, "configuredAgentId" | "modelId" | 
       workflowId: "wf-ready",
       graphVersion: 1,
       objective: "Ready",
+      reviewEnabled: true,
       nodes: [{ id: "answer", kind: "answer", title: "Answer", execModel: "llm", executionMode: "one-shot", configuredAgentId: "agent-a", prompt: "Answer", outputFields: [{ key: "answer" }], requiredTools: ["search"] }],
       edges: [],
     },
@@ -31,6 +32,15 @@ function workflow(): Pick<WorkflowDraftState, "configuredAgentId" | "modelId" | 
 describe("workflow readiness", () => {
   test("accepts exact Agent, model, and tool identifiers", () => {
     expect(inspectWorkflowReadiness({ workflow: workflow(), configuredAgents: [agent], channels: [channel], mcpServers: [server] })).toEqual({ ready: true, issues: [] });
+  });
+
+  test("does not require a reviewer while Review is disabled", () => {
+    const draft = workflow();
+    draft.definition.reviewEnabled = false;
+    draft.reviewerConfiguredAgentId = "";
+    draft.reviewerModelId = "";
+
+    expect(inspectWorkflowReadiness({ workflow: draft, configuredAgents: [agent], channels: [channel], mcpServers: [server] })).toEqual({ ready: true, issues: [] });
   });
 
   test("treats an empty MCP allowlist as all server tools, matching runtime routing", () => {

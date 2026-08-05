@@ -267,6 +267,7 @@ export interface WorkflowV2AuthoredDefinition {
   workflowId: string;
   graphVersion: number;
   objective: string;
+  reviewEnabled?: boolean;
   nodes: WorkflowV2AuthoredNode[];
   edges: WorkflowV2Edge[];
   transactionPolicy?: WorkflowTransactionPolicy;

@@ -1,4 +1,5 @@
 import type { WorkflowV2ConstraintDef, WorkflowV2JudgeDimensionDef, WorkflowV2ReviewLevel, WorkflowV2ScriptCapability, WorkflowV2ScriptRiskLevel } from "./definition";
+import { isWorkflowV2WorkerOutput, type WorkflowV2WorkerOutput } from "./packets";
 import type { WorkflowV2ResultPacket } from "./planning";
 import type { WorkflowV2ProgressReport, WorkflowV2SupervisorDecision } from "./supervision";
 import { isWorkflowV2ProgressReport, isWorkflowV2SupervisorDecision } from "./supervision";
@@ -33,7 +34,8 @@ export interface WorkflowV2ReviewerInput {
   reviewLevel: WorkflowV2QualityLevel;
   judgeDimensions: WorkflowV2JudgeDimensionDef[];
   reviewAttempt: number;
-  result: WorkflowV2ResultPacket;
+  upstreamResults: WorkflowV2ResultPacket[];
+  result: Omit<WorkflowV2WorkerOutput, "proposals">;
 }
 
 export interface WorkflowV2ReviewerResponse {
@@ -56,7 +58,7 @@ export interface WorkflowV2ReviewRetryPolicy {
 
 export interface WorkflowV2ReviewAttemptRecord {
   reviewAttempt: number;
-  candidate: WorkflowV2ResultPacket;
+  candidate: WorkflowV2WorkerOutput;
   verdict: WorkflowV2ReviewVerdict;
   requiredLevel: WorkflowV2QualityLevel;
   passed: boolean;
@@ -89,7 +91,7 @@ export interface WorkflowV2HumanIntervention {
   allowedActions: WorkflowV2InterventionAction[];
   requestedAt: number;
   reviewVerdict?: WorkflowV2ReviewVerdict;
-  lastCandidate?: WorkflowV2ResultPacket;
+  lastCandidate?: WorkflowV2WorkerOutput;
   progressReport?: WorkflowV2ProgressReport;
   supervisorDecision?: WorkflowV2SupervisorDecision;
   scriptApproval?: WorkflowV2ScriptApprovalRequest;
@@ -132,7 +134,7 @@ export function isWorkflowV2HumanIntervention(value: unknown): value is Workflow
     return false;
   }
   if (value.reviewVerdict !== undefined && !isWorkflowV2ReviewVerdict(value.reviewVerdict)) return false;
-  if (value.lastCandidate !== undefined && !isResultPacket(value.lastCandidate)) return false;
+  if (value.lastCandidate !== undefined && !isWorkflowV2WorkerOutput(value.lastCandidate)) return false;
   if (value.progressReport !== undefined && !isWorkflowV2ProgressReport(value.progressReport)) return false;
   if (value.supervisorDecision !== undefined && !isWorkflowV2SupervisorDecision(value.supervisorDecision)) {
     return false;
@@ -183,13 +185,6 @@ export function isWorkflowV2InterventionAction(value: unknown): value is Workflo
 
 function isQualityLevel(value: unknown): value is WorkflowV2QualityLevel {
   return value === "low" || value === "medium" || value === "high";
-}
-
-function isResultPacket(value: unknown): value is WorkflowV2ResultPacket {
-  return isRecord(value)
-    && typeof value.nodeId === "string" && value.nodeId.trim().length > 0
-    && typeof value.summary === "string"
-    && isRecord(value.outputs);
 }
 
 function isWorkflowV2ScriptApprovalRequest(value: unknown): value is WorkflowV2ScriptApprovalRequest {

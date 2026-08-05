@@ -217,7 +217,7 @@ export async function executeWorkflowV2Plan(input: ExecuteWorkflowV2PlanInput): 
       }
     }));
 
-    for (const [index, { nodeId, node, planNode }] of batch.entries()) {
+    for (const [index, { nodeId, node, planNode, upstreamOutputs }] of batch.entries()) {
       const settledNode = settledBatch[index]!;
 
       if (settledNode.status === "rejected") {
@@ -395,6 +395,7 @@ export async function executeWorkflowV2Plan(input: ExecuteWorkflowV2PlanInput): 
             node,
             objective: input.plan.objective,
             output: authoritativeWorkerOutput,
+            upstreamOutputs,
             reviewAttempt,
           });
           try {
@@ -431,7 +432,7 @@ export async function executeWorkflowV2Plan(input: ExecuteWorkflowV2PlanInput): 
             const intervention = createIntervention(nodeId, "review_escalation", `Independent Reviewer is unavailable: ${reviewError}`, now(), undefined, undefined, {
               source: "review_escalation",
               allowedActions: ["rerun_all", "accept_last_result"],
-              lastCandidate: reviewerInput.result,
+              lastCandidate: authoritativeWorkerOutput,
             });
             runState = transitionWorkflowV2NodeState(runState, { nodeId, status: "paused", now: now(), error: intervention.reason, intervention });
             input.onNodeStateTransition?.({ nodeId, status: "paused", intervention });
@@ -441,7 +442,7 @@ export async function executeWorkflowV2Plan(input: ExecuteWorkflowV2PlanInput): 
           const resolution = resolveWorkflowV2ReviewVerdict(reviewerResponse.verdict, reviewRetryPolicyFor(node, reviewAttempt));
           const reviewRecord: WorkflowV2ReviewAttemptRecord = {
             reviewAttempt,
-            candidate: structuredClone(reviewerInput.result),
+            candidate: cloneWorkflowV2WorkerOutput(authoritativeWorkerOutput),
             verdict: structuredClone(resolution.verdict),
             requiredLevel: reviewerInput.reviewLevel,
             passed: resolution.action === "accept",
@@ -475,7 +476,7 @@ export async function executeWorkflowV2Plan(input: ExecuteWorkflowV2PlanInput): 
             const intervention = createIntervention(nodeId, source, resolution.reason, now(), resolution.verdict, undefined, {
               source,
               allowedActions: ["rerun_all", "accept_last_result"],
-              lastCandidate: reviewerInput.result,
+              lastCandidate: authoritativeWorkerOutput,
             });
             runState = transitionWorkflowV2NodeState(runState, {
               nodeId,
@@ -728,7 +729,11 @@ function isNodeOutputSuccessful(
 }
 
 function requiresSemanticReview(reviewEnabled: boolean, node: WorkflowV2Node, forced = false): boolean {
-  return reviewEnabled && node.reviewLevel !== undefined && node.reviewLevel !== "none" && (forced || (node.judgeDimensions?.length ?? 0) > 0);
+  return reviewEnabled
+    && node.role !== "reviewer"
+    && node.reviewLevel !== undefined
+    && node.reviewLevel !== "none"
+    && (forced || (node.judgeDimensions?.length ?? 0) > 0);
 }
 
 function exhaustedPolicyFor(node: WorkflowV2Node): "fail" | "skip" | "ask_human" {

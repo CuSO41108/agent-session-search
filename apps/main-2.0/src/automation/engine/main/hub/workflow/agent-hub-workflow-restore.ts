@@ -366,6 +366,7 @@ export function reconcileWorkflowV2RunFromDurableState(input: {
     if (output) progressItem.outputs = structuredClone(output.outputs);
     if (output?.acceptance) progressItem.acceptance = structuredClone(output.acceptance);
     if (output?.scriptReceipt) progressItem.scriptReceipt = structuredClone(output.scriptReceipt);
+    if (node.reviewHistory?.length) progressItem.reviewHistory = structuredClone(node.reviewHistory);
     if (node.intervention) {
       Object.assign(progressItem, projectWorkflowV2PausedNodeInteraction({
         nodeId,
@@ -395,14 +396,21 @@ export function reconcileWorkflowV2RunFromDurableState(input: {
   }
 
   const durableStatus = input.persisted.runState.status;
-  const status = durableStatus === "completed"
-    ? "completed"
-    : durableStatus === "failed"
-      ? "failed"
-      : "waiting_for_user";
-  const finalReport = status === "completed" || status === "failed"
-    ? input.persisted.finalReport ?? buildWorkflowV2FinalReport(input.persisted.plan, input.persisted.workerOutputs, durableStatus, input.persisted.recoveryDecisions, input.operations)
-    : undefined;
+  const hasTerminalInterventionResolution = Object.values(input.persisted.nodeControl).some((control) =>
+    control.interventionResolution?.action === "rerun_all" || control.interventionResolution?.action === "replan");
+  const preserveStoppedRun = input.run.status === "stopped" && hasTerminalInterventionResolution;
+  const status = preserveStoppedRun
+    ? "stopped"
+    : durableStatus === "completed"
+      ? "completed"
+      : durableStatus === "failed"
+        ? "failed"
+        : "waiting_for_user";
+  const finalReport = preserveStoppedRun
+    ? input.run.finalReport
+    : status === "completed" || status === "failed"
+      ? input.persisted.finalReport ?? buildWorkflowV2FinalReport(input.persisted.plan, input.persisted.workerOutputs, durableStatus, input.persisted.recoveryDecisions, input.operations)
+      : undefined;
   const lastError = status === "failed"
     ? progress.find((item) => item.status === "failed")?.detail ?? "Workflow V2 run failed before app restart."
     : undefined;
@@ -411,7 +419,11 @@ export function reconcileWorkflowV2RunFromDurableState(input: {
     status,
     progress,
     events,
-    finishedAt: status === "completed" || status === "failed" ? input.persisted.savedAt : undefined,
+    finishedAt: status === "completed" || status === "failed"
+      ? input.persisted.savedAt
+      : preserveStoppedRun
+        ? input.run.finishedAt ?? input.persisted.savedAt
+        : undefined,
     lastError,
     ...(input.persisted.transaction ? { transaction: structuredClone(input.persisted.transaction) } : {}),
     ...(input.operations ? { operations: structuredClone(input.operations) } : {}),

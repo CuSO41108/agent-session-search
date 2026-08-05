@@ -88,6 +88,7 @@ export function transitionWorkflowV2NodeState(
     nextTarget.finishedAt = now;
     nextTarget.blockedBy = [];
     delete nextTarget.lastError;
+    delete nextTarget.intervention;
   } else {
     nextTarget.status = "failed";
     nextTarget.finishedAt = now;

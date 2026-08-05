@@ -219,6 +219,21 @@ describe("Workflow V2 AgentHub durable restore", () => {
         requestedAt: 1_400,
       },
     });
+    state.nodes.draft!.reviewHistory = [{
+      reviewAttempt: 1,
+      candidate: { nodeId: "draft", summary: "Draft persisted", outputs: { draft: "const durable = true;" }, proposals: [] },
+      verdict: {
+        decision: "accept",
+        reasons: ["Evidence is sufficient."],
+        riskLevel: "low",
+        confidence: "high",
+        qualityLevel: "high",
+        dimensionResults: [{ key: "quality", qualityLevel: "high", reason: "Complete.", evidence: ["draft"] }],
+      },
+      requiredLevel: "high",
+      passed: true,
+      reviewedAt: 1_250,
+    }];
     input.persisted.runState = state;
     input.persisted.workerOutputs = [{
       nodeId: "draft",
@@ -234,7 +249,7 @@ describe("Workflow V2 AgentHub durable restore", () => {
       finishedAt: undefined,
       lastError: undefined,
       progress: [
-        { nodeId: "draft", status: "completed", detail: "Draft persisted" },
+        { nodeId: "draft", status: "completed", detail: "Draft persisted", reviewHistory: [expect.objectContaining({ reviewAttempt: 1, reviewedAt: 1_250 })] },
         {
           nodeId: "verify",
           status: "paused",
@@ -246,6 +261,44 @@ describe("Workflow V2 AgentHub durable restore", () => {
     });
     expect(restored?.workflow).toMatchObject({ status: "waiting_for_user", error: undefined });
     expect(restored?.run.finalReport).toBeUndefined();
+  });
+
+  test("does not resurrect a stopped run from its superseded paused checkpoint", async () => {
+    const input = await fixture();
+    input.persisted.runState = transitionWorkflowV2NodeState(
+      transitionWorkflowV2NodeState(input.persisted.runState, { nodeId: "draft", status: "running", now: 1_100 }),
+      {
+        nodeId: "draft",
+        status: "paused",
+        now: 1_200,
+        intervention: {
+          nodeId: "draft",
+          source: "review_rejection",
+          reason: "Superseded by a full rerun.",
+          allowedActions: ["rerun_all", "accept_last_result"],
+          requestedAt: 1_200,
+        },
+      },
+    );
+    input.run.status = "stopped";
+    input.run.finishedAt = 1_300;
+    input.run.finalReport = "Superseded by a full rerun.";
+    input.persisted.nodeControl.draft = {
+      extensionCount: 0,
+      interventionResolution: {
+        action: "rerun_all",
+        reason: "Superseded by a full rerun.",
+        resolvedAt: 1_300,
+      },
+    };
+
+    const restored = reconcileWorkflowV2RunFromDurableState({ ...input, updateWorkflowProjection: false });
+
+    expect(restored?.run).toMatchObject({
+      status: "stopped",
+      finishedAt: 1_300,
+      finalReport: "Superseded by a full rerun.",
+    });
   });
 
   test("restores a paused script input request as typed awaiting input", async () => {

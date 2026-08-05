@@ -158,6 +158,8 @@ export function WorkflowPage({ controller: source }: { controller: WorkflowContr
   const [transactionApprovalMode, setTransactionApprovalMode] = useState<"batch" | "per_operation">("batch");
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [reviewSettingDraft, setReviewSettingDraft] = useState(reviewEnabled);
+  const [settingsSaving, setSettingsSaving] = useState(false);
+  const [settingsError, setSettingsError] = useState<string>();
 
   useEffect(() => {
     if (generationReview?.status === "reviewing") setReviewDrawerOpen(true);
@@ -395,16 +397,24 @@ export function WorkflowPage({ controller: source }: { controller: WorkflowContr
             >
               {workDir || workflowText.noWorkDir}
             </button>
-            {graphVisible && onUpdateDefinition ? <button type="button" className="icon-btn" title="Workflow settings" aria-label="Workflow settings" onClick={() => setSettingsOpen(true)} disabled={running}><Settings2 size={15} /></button> : null}
+            {graphVisible && onUpdateDefinition ? <button type="button" className="icon-btn" title="Workflow settings" aria-label="Workflow settings" onClick={() => { setReviewSettingDraft(reviewEnabled); setSettingsError(undefined); setSettingsOpen(true); }} disabled={running}><Settings2 size={15} /></button> : null}
           </div>
         </div>
       </header>
 
       {settingsOpen ? <div className="workflow-revision-backdrop" role="presentation" onClick={() => setSettingsOpen(false)}>
         <section className="workflow-revision-dialog workflow-settings-dialog" role="dialog" aria-modal="true" aria-label="Workflow settings" onClick={(event) => event.stopPropagation()}>
-          <header><div><strong>Workflow settings</strong><span>Review settings are frozen into a new Workflow revision.</span></div><button className="icon-btn" onClick={() => setSettingsOpen(false)} aria-label="Close Workflow settings"><X size={15} /></button></header>
-          <label className="workflow-review-setting-toggle"><input type="checkbox" checked={reviewSettingDraft} onChange={(event) => setReviewSettingDraft(event.currentTarget.checked)} /><span><strong>Enable Review</strong><small>Show global adversarial review and enforce configured node quality gates while running.</small></span></label>
-          <footer><button className="control-btn" onClick={() => setSettingsOpen(false)}>Cancel</button><button className="send-btn" disabled={reviewSettingDraft === reviewEnabled} onClick={() => { void Promise.resolve(onUpdateDefinition!({ ...structuredClone(definition), reviewEnabled: reviewSettingDraft })).then(() => setSettingsOpen(false)); }}>Save settings</button></footer>
+          <header><div><strong>Workflow settings</strong></div><button className="icon-btn" onClick={() => setSettingsOpen(false)} aria-label="Close Workflow settings"><X size={15} /></button></header>
+          <label className="workflow-review-setting-toggle"><input type="checkbox" checked={reviewSettingDraft} onChange={(event) => setReviewSettingDraft(event.currentTarget.checked)} /><span><strong>Enable Review</strong></span></label>
+          {settingsError ? <p className="is-error">{settingsError}</p> : null}
+          <footer><button className="control-btn" onClick={() => setSettingsOpen(false)} disabled={settingsSaving}>Cancel</button><button className="send-btn" disabled={settingsSaving || reviewSettingDraft === reviewEnabled} onClick={() => {
+            setSettingsSaving(true);
+            setSettingsError(undefined);
+            void Promise.resolve(onUpdateDefinition!({ ...structuredClone(definition), reviewEnabled: reviewSettingDraft }))
+              .then(() => setSettingsOpen(false))
+              .catch((error) => setSettingsError(error instanceof Error ? error.message : String(error)))
+              .finally(() => setSettingsSaving(false));
+          }}>{settingsSaving ? "Saving..." : "Save settings"}</button></footer>
         </section>
       </div> : null}
 

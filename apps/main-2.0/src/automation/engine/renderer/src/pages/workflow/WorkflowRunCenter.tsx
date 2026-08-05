@@ -476,7 +476,12 @@ function WorkflowRunCenterOpen({ runs, conversations = [], artifacts = [], loadi
                           {progress?.outputs ? <details className="workflow-run-center-node-outputs"><summary>{labels.outputs}</summary><pre>{JSON.stringify(progress.outputs, null, 2)}</pre></details> : null}
                           {progress?.reviewHistory?.length ? <details className="workflow-run-center-node-outputs" open={progress.intervention?.source === "review_rejection" || progress.intervention?.source === "review_escalation"}>
                             <summary>{language === "zh" ? "质量审查历史" : "Quality review history"} · {progress.reviewHistory.length}</summary>
-                            <div className="workflow-run-center-events">{progress.reviewHistory.map((review) => <span key={review.reviewAttempt}>#{review.reviewAttempt} · {review.verdict.qualityLevel}/{review.requiredLevel} · {review.passed ? (language === "zh" ? "通过" : "passed") : (language === "zh" ? "未通过" : "failed")} · {review.verdict.dimensionResults.map((dimension) => `${dimension.key}: ${dimension.qualityLevel}`).join(", ")}</span>)}</div>
+                            <div className="workflow-run-center-events">{progress.reviewHistory.map((review) => <details key={review.reviewAttempt}>
+                              <summary>#{review.reviewAttempt} · {review.verdict.qualityLevel}/{review.requiredLevel} · {review.passed ? (language === "zh" ? "通过" : "passed") : (language === "zh" ? "未通过" : "failed")} · {new Date(review.reviewedAt).toLocaleString()}</summary>
+                              <strong>{language === "zh" ? "候选结果" : "Candidate result"}</strong>
+                              <pre>{JSON.stringify(review.candidate, null, 2)}</pre>
+                              {review.verdict.dimensionResults.map((dimension) => <span key={dimension.key}><b>{dimension.key}: {dimension.qualityLevel}</b>{dimension.reason}{dimension.evidence.length ? ` · ${dimension.evidence.join("; ")}` : ""}</span>)}
+                            </details>)}</div>
                           </details> : null}
                           {progress?.acceptance ? <details className="workflow-run-center-node-outputs" open={progress.acceptance.outcome !== "clean"}>
                             <summary>{language === "zh" ? "节点验收" : "Node acceptance"} · {progress.acceptance.outcome}</summary>
@@ -499,10 +504,11 @@ function WorkflowRunCenterOpen({ runs, conversations = [], artifacts = [], loadi
                           {progress?.intervention && selectedRun.runId === writableRunId && onResolveIntervention ? <div className="workflow-run-center-node-actions">
                             {!progress.intervention.allowedActions.includes("accept_last_result") ? <input value={nodeActionReason} maxLength={2_000} onChange={(event) => setNodeActionReason(event.currentTarget.value)} placeholder={language === "zh" ? "处理依据（可选）" : "Decision reason (optional)"} /> : null}
                             <div>{progress.intervention.allowedActions.map((action) => <button key={action} type="button" disabled={nodeActionBusy} onClick={() => {
-                              if (action !== "accept_last_result" && !window.confirm(language === "zh" ? `确认对节点 ${progress.title} 执行 ${action}？` : `Confirm ${action} for node ${progress.title}?`)) return;
+                              const isReviewResolution = action === "rerun_all" || action === "accept_last_result";
+                              if (!isReviewResolution && !window.confirm(language === "zh" ? `确认对节点 ${progress.title} 执行 ${action}？` : `Confirm ${action} for node ${progress.title}?`)) return;
                               setNodeActionBusy(true);
                               setNodeActionError(undefined);
-                              void Promise.resolve(onResolveIntervention(progress.nodeId, action, action === "accept_last_result" ? undefined : nodeActionReason.trim() || undefined)).then(() => setNodeActionReason("")).catch((nodeActionFailure) => setNodeActionError(nodeActionFailure instanceof Error ? nodeActionFailure.message : String(nodeActionFailure))).finally(() => setNodeActionBusy(false));
+                              void Promise.resolve(onResolveIntervention(progress.nodeId, action, isReviewResolution ? undefined : nodeActionReason.trim() || undefined)).then(() => setNodeActionReason("")).catch((nodeActionFailure) => setNodeActionError(nodeActionFailure instanceof Error ? nodeActionFailure.message : String(nodeActionFailure))).finally(() => setNodeActionBusy(false));
                             }}>{action === "continue" ? (language === "zh" ? "继续/重试" : "Continue / retry") : action === "rerun_all" ? (language === "zh" ? "全部节点重新运行" : "Rerun all nodes") : action === "accept_last_result" ? (language === "zh" ? "采用最后一次结果" : "Accept last result") : action}</button>)}</div>
                             {nodeActionError ? <p className="is-error">{nodeActionError}</p> : null}
                           </div> : null}

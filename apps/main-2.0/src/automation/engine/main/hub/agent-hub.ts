@@ -1343,6 +1343,7 @@ export class AgentHub {
     const workflow = this.workflowStore.workflows.get(input.workflowId);
     if (!workflow) return this.snapshot();
     if (workflow.revision !== input.expectedRevision) return this.snapshot();
+    if (workflow.definition.reviewEnabled !== true) return this.snapshot();
     const reviewer = this.resolveConfiguredAgent(workflow.reviewerConfiguredAgentId, workflow.reviewerModelId);
     if (!reviewer?.runtime?.available) {
       this.workflowStore.workflows.set(workflow.workflowId, this.cloneWorkflowDraft({ ...workflow, generationReview: { status: "failed", reviewerConfiguredAgentId: workflow.reviewerConfiguredAgentId, reviewerModelId: workflow.reviewerModelId, reviewedRevision: workflow.revision, error: "The selected Workflow Reviewer Agent is unavailable.", updatedAt: Date.now() }, updatedAt: Date.now() }));
@@ -1376,9 +1377,13 @@ export class AgentHub {
       const bundledDefinition = normalizeWorkflowV2TerminalNode(def.definition).definition;
       if (existing) {
         if (existing.sourceType === "official") {
+          const refreshedDefinition = {
+            ...bundledDefinition,
+            ...(existing.definition.reviewEnabled !== undefined ? { reviewEnabled: existing.definition.reviewEnabled } : {}),
+          };
           const bundledContentChanged = existing.title !== def.title
             || existing.objective !== def.objective
-            || !isDeepStrictEqual(existing.definition, bundledDefinition);
+            || !isDeepStrictEqual(existing.definition, refreshedDefinition);
           if (bundledContentChanged || !existing.topologyLocked) {
             const refreshed = bundledContentChanged
               ? updateWorkflowDraftStateValue({
@@ -1387,9 +1392,9 @@ export class AgentHub {
                     workflowId: existing.workflowId,
                     title: def.title,
                     objective: def.objective,
-                    definition: bundledDefinition,
+                    definition: refreshedDefinition,
                   },
-                  definition: bundledDefinition,
+                  definition: refreshedDefinition,
                   configuredAgentId: existing.configuredAgentId,
                   modelId: existing.modelId,
                   reviewerConfiguredAgentId: existing.reviewerConfiguredAgentId,
@@ -1626,7 +1631,6 @@ export class AgentHub {
     const current = this.workflowStore.workflows.get(input.workflowId);
     if (!current) return { ok: false, error: `Workflow ${input.workflowId} was not found.` };
     if (current.status === "running") return { ok: false, error: "Cannot modify workflow graph while it is running." };
-    if (current.topologyLocked) return { ok: false, workflowId: current.workflowId, revision: current.revision, error: "Official workflow topology is locked." };
     if (input.expectedRevision !== undefined && input.expectedRevision !== current.revision) {
       return { ok: false, workflowId: current.workflowId, revision: current.revision, error: "Workflow changed since you read it. Call workflow_get and retry." };
     }
@@ -1639,6 +1643,9 @@ export class AgentHub {
     }
     if (definition.edges.length > MAX_WORKFLOW_EDGE_COUNT) {
       return { ok: false, workflowId: current.workflowId, revision: current.revision, error: `Workflow V2 definition exceeds ${MAX_WORKFLOW_EDGE_COUNT} edges.` };
+    }
+    if (current.topologyLocked && !isLockedWorkflowReviewSettingUpdate(input, current.definition, definition)) {
+      return { ok: false, workflowId: current.workflowId, revision: current.revision, error: "Official workflow topology is locked." };
     }
     const validation = validateWorkflowV2Definition(definition, { configuredAgentIds: this.configuredAgents.keys() });
     if (!validation.valid) return { ok: false, workflowId: current.workflowId, revision: current.revision, error: validation.errors[0] ?? "Workflow V2 definition is invalid." };
@@ -3480,4 +3487,19 @@ export class AgentHub {
 
 export function getDefaultWorkDir(): string {
   return process.cwd();
+}
+
+function isLockedWorkflowReviewSettingUpdate(
+  input: UpdateWorkflowRequest,
+  currentDefinition: WorkflowV2Definition,
+  nextDefinition: WorkflowV2Definition,
+): boolean {
+  const allowedRequestKeys = new Set(["workflowId", "expectedRevision", "definition"]);
+  if (!input.definition || Object.entries(input).some(([key, value]) => value !== undefined && !allowedRequestKeys.has(key))) return false;
+  if (typeof nextDefinition.reviewEnabled !== "boolean" || nextDefinition.reviewEnabled === (currentDefinition.reviewEnabled === true)) return false;
+  const currentTopology = structuredClone(currentDefinition);
+  const nextTopology = structuredClone(nextDefinition);
+  delete currentTopology.reviewEnabled;
+  delete nextTopology.reviewEnabled;
+  return isDeepStrictEqual(currentTopology, nextTopology);
 }

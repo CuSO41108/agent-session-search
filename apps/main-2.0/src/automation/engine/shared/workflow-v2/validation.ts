@@ -153,6 +153,10 @@ function appendNodeValidationErrors(node: WorkflowV2Node, errors: string[]): voi
     } else {
       const dimensionKeys = new Set<string>();
       for (const dimension of node.judgeDimensions) {
+        if (!dimension || typeof dimension !== "object" || typeof dimension.key !== "string" || typeof dimension.description !== "string") {
+          errors.push(`Workflow V2 node ${node.id} judge dimensions require string keys and descriptions.`);
+          continue;
+        }
         if (!dimension.key.trim() || !dimension.description.trim()) errors.push(`Workflow V2 node ${node.id} judge dimensions require non-empty keys and descriptions.`);
         if (dimensionKeys.has(dimension.key)) errors.push(`Workflow V2 node ${node.id} has duplicate judge dimension ${dimension.key}.`);
         dimensionKeys.add(dimension.key);

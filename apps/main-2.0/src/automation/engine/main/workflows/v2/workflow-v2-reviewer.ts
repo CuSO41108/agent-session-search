@@ -14,10 +14,11 @@ export function createWorkflowV2ReviewerInput(input: {
   node: WorkflowV2Node;
   objective: string;
   output: WorkflowV2WorkerOutput;
+  upstreamOutputs: readonly WorkflowV2ResultPacket[];
   reviewAttempt: number;
 }): WorkflowV2ReviewerInput {
   if (!input.node.reviewLevel || input.node.reviewLevel === "none") throw new Error(`Workflow V2 node ${input.node.id} does not require review.`);
-  const clonedOutput = cloneWorkflowV2WorkerOutput(input.output);
+  const { proposals: _executorProposals, ...reviewEvidence } = cloneWorkflowV2WorkerOutput(input.output);
   return {
     executorNodeId: input.node.id,
     objective: input.objective,
@@ -27,7 +28,8 @@ export function createWorkflowV2ReviewerInput(input: {
     reviewLevel: input.node.reviewLevel,
     judgeDimensions: structuredClone(input.node.judgeDimensions ?? []),
     reviewAttempt: input.reviewAttempt,
-    result: toResultPacket(clonedOutput),
+    upstreamResults: input.upstreamOutputs.map((output) => structuredClone(output)),
+    result: reviewEvidence,
   };
 }
 
@@ -115,17 +117,6 @@ function qualityRank(level: "low" | "medium" | "high"): number {
 function lowestQualityLevel(levels: Array<"low" | "medium" | "high">): "low" | "medium" | "high" {
   if (levels.length === 0) throw new Error("Workflow V2 reviewer response has no dimension results.");
   return levels.reduce((lowest, level) => qualityRank(level) < qualityRank(lowest) ? level : lowest);
-}
-
-function toResultPacket(output: WorkflowV2WorkerOutput): WorkflowV2ResultPacket {
-  return {
-    nodeId: output.nodeId,
-    summary: output.summary,
-    outputs: output.outputs,
-    ...(output.evidence ? { evidence: output.evidence } : {}),
-    ...(output.risks ? { risks: output.risks } : {}),
-    ...(output.nextStepSuggestions ? { nextStepSuggestions: output.nextStepSuggestions } : {}),
-  };
 }
 
 function cloneVerdict(verdict: WorkflowV2ReviewVerdict): WorkflowV2ReviewVerdict {

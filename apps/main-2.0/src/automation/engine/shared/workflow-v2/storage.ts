@@ -276,7 +276,7 @@ function isNodeExecutionStatus(value: unknown): boolean {
 function isReviewAttemptRecord(value: unknown): boolean {
   return isRecord(value)
     && isPositiveSafeInteger(value.reviewAttempt)
-    && isRecord(value.candidate)
+    && isWorkflowV2WorkerOutput(value.candidate)
     && isWorkflowV2ReviewVerdict(value.verdict)
     && (value.requiredLevel === "low" || value.requiredLevel === "medium" || value.requiredLevel === "high")
     && typeof value.passed === "boolean"

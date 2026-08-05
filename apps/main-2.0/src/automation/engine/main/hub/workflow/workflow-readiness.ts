@@ -19,7 +19,9 @@ export function inspectWorkflowReadiness(input: {
 }): WorkflowReadinessResult {
   const agents = new Map([...input.configuredAgents].map((agent) => [agent.id, agent]));
   const issues: WorkflowReadinessIssue[] = [];
-  inspectRoute({ scope: "reviewer", field: "reviewerConfiguredAgentId", configuredAgentId: input.workflow.reviewerConfiguredAgentId, modelId: input.workflow.reviewerModelId });
+  if (input.workflow.definition.reviewEnabled === true) {
+    inspectRoute({ scope: "reviewer", field: "reviewerConfiguredAgentId", configuredAgentId: input.workflow.reviewerConfiguredAgentId, modelId: input.workflow.reviewerModelId });
+  }
 
   for (const node of input.workflow.definition.nodes) {
     if (node.execModel === "llm") {

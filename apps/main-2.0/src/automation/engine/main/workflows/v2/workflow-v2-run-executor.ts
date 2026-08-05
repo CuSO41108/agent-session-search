@@ -201,20 +201,29 @@ export class WorkflowV2RunExecutor {
     );
     const hookInjectedContextByNodeId = new Map<string, string[]>();
     let latestSnapshot = this.deps.snapshot();
+    const recoveredOutputByNodeId = new Map(input.initialCheckpoint?.workerOutputs.map((output) => [output.nodeId, output]) ?? []);
     let latestProgress = plan.definition.nodes.map((node): WorkflowRunProgressItem => {
       const recovered = input.initialCheckpoint?.runState.nodes[node.id];
+      const recoveredOutput = recoveredOutputByNodeId.get(node.id);
+      const recoveredDetails = {
+        ...(recovered?.reviewHistory?.length ? { reviewHistory: structuredClone(recovered.reviewHistory) } : {}),
+        ...(recoveredOutput ? { outputs: structuredClone(recoveredOutput.outputs) } : {}),
+        ...(recoveredOutput?.acceptance ? { acceptance: structuredClone(recoveredOutput.acceptance) } : {}),
+        ...(recoveredOutput?.scriptReceipt ? { scriptReceipt: structuredClone(recoveredOutput.scriptReceipt) } : {}),
+      };
       if (recovered?.status === "completed" || recovered?.status === "completed_with_override" || recovered?.status === "skipped") {
         return {
           nodeId: node.id,
           title: node.title,
           status: recovered.status === "completed_with_override" ? "completed_with_override" : "completed",
           detail: recovered.status === "completed_with_override" ? "Recovered with human override" : "Recovered",
+          ...recoveredDetails,
         };
       }
       if (recovered?.status === "failed") {
-        return { nodeId: node.id, title: node.title, status: "failed", detail: recovered.lastError ?? "Recovery failed" };
+        return { nodeId: node.id, title: node.title, status: "failed", detail: recovered.lastError ?? "Recovery failed", ...recoveredDetails };
       }
-      return { nodeId: node.id, title: node.title, status: "queued", detail: "Queued" };
+      return { nodeId: node.id, title: node.title, status: "queued", detail: "Queued", ...recoveredDetails };
     });
     const sourceWorkDir = workflow.workDir || latestSnapshot.workDir;
     const transactionMode = resolveWorkflowTransactionPolicy(plan.definition.transactionPolicy).policy.defaultMode;

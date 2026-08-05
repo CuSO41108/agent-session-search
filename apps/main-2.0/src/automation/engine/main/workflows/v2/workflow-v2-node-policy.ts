@@ -47,13 +47,15 @@ export function workflowV2ExecutionEnvironment(input: {
 
 export function workflowV2ReviewerPolicy(
   node: WorkflowV2LLMNode | WorkflowV2ScriptNode,
+  reviewEnabled: boolean,
   forceIndependentReview = false,
 ): Record<string, unknown> {
   return {
+    reviewEnabled,
     judgeDimensions: node.judgeDimensions ?? [],
     reviewLevel: node.reviewLevel ?? "none",
     reviewMaxRetries: node.reviewMaxRetries ?? 2,
-    requiresIndependentReview: node.reviewLevel !== undefined && node.reviewLevel !== "none"
+    requiresIndependentReview: reviewEnabled && node.role !== "reviewer" && node.reviewLevel !== undefined && node.reviewLevel !== "none"
       && (forceIndependentReview || (node.judgeDimensions?.length ?? 0) > 0),
     forceIndependentReview,
   };
