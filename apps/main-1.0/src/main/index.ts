@@ -29,6 +29,7 @@ import {
   type CodexRequestExport,
   type CodexRequestFidelity,
 } from "../core/codex-request-export";
+import { extractSessionContextComponents } from "../core/session-context-components";
 import { indexMigratedSessionFile, type IndexStatus } from "../core/indexer";
 import { createIndexRunCoordinator } from "../core/index-run-coordinator";
 import { createIndexProgressPublisher } from "./index-progress";
@@ -1786,6 +1787,31 @@ function registerIpc(): void {
       });
     }
     return session;
+  });
+  ipcMain.handle("session:context-components", async (_event, sessionKey: string) => {
+    const session = store.getSession(sessionKey);
+    if (!session) {
+      return {
+        status: "source_unavailable" as const,
+        source: "codex-cli" as const,
+        format: null,
+        components: [],
+      };
+    }
+    try {
+      return await extractSessionContextComponents({
+        source: session.source,
+        filePath: isLocalSessionEnvironment(session) ? session.filePath : null,
+        sourceAvailable: session.sourceAvailable,
+      });
+    } catch {
+      return {
+        status: "source_unavailable" as const,
+        source: session.source,
+        format: null,
+        components: [],
+      };
+    }
   });
   ipcMain.handle("session:messages", async (_event, sessionKey: string, offset?: number, limit?: number) => {
     const pageOffset = offset ?? 0;

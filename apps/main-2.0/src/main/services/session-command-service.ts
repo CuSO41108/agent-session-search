@@ -19,6 +19,10 @@ import {
   type AppSettings,
 } from "../../core/platform";
 import { routeResumeSession, type ResumeRouteResult } from "../../core/resume-router";
+import {
+  extractSessionContextComponents,
+  type SessionContextComponents,
+} from "../../core/session-context-components";
 import { focusLiveSessionTerminal } from "../../core/session-focus";
 import { isLocalSessionEnvironment } from "../../core/session-environment";
 import type { SessionStore } from "../../core/session-store";
@@ -67,6 +71,32 @@ type SessionExportContent = {
  */
 export class SessionCommandService {
   constructor(private readonly dependencies: SessionCommandServiceDependencies) {}
+
+  async getContextComponents(sessionKey: string): Promise<SessionContextComponents> {
+    const session = await this.dependencies.store.getSession(sessionKey);
+    if (!session) {
+      return {
+        status: "source_unavailable",
+        source: "codex-cli",
+        format: null,
+        components: [],
+      };
+    }
+    try {
+      return await extractSessionContextComponents({
+        source: session.source,
+        filePath: isLocalSessionEnvironment(session) ? session.filePath : null,
+        sourceAvailable: session.sourceAvailable,
+      });
+    } catch {
+      return {
+        status: "source_unavailable",
+        source: session.source,
+        format: null,
+        components: [],
+      };
+    }
+  }
 
   async copyResumeCommand(sessionKey: string): Promise<void> {
     const session = await this.dependencies.store.getSession(sessionKey);

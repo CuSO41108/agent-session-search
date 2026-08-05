@@ -5,6 +5,8 @@ export function registerSessionCommandIpc(
   ipc: Pick<IpcMain, "handle">,
   service: SessionCommandService,
 ): void {
+  ipc.handle("session:context-components", (_event, sessionKey: string) =>
+    service.getContextComponents(sessionKey));
   ipc.handle("command:copy-resume", (_event, sessionKey: string) =>
     service.copyResumeCommand(sessionKey));
   ipc.handle("command:resume", (_event, sessionKey: string) => service.resume(sessionKey));
