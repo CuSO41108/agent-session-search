@@ -47,6 +47,7 @@ export function cloneWorkflowRun(run: WorkflowRunState): WorkflowRunState {
     workflowId: run.workflowId,
     status: run.status,
     ...(run.triggerSource !== undefined ? { triggerSource: run.triggerSource } : {}),
+    ...(run.parentRunId !== undefined ? { parentRunId: run.parentRunId } : {}),
     ...(run.configurationSnapshot !== undefined ? { configurationSnapshot: structuredClone(run.configurationSnapshot) } : {}),
     workflowV2Plan: cloneWorkflowV2Plan(run.workflowV2Plan),
     progress: run.progress.map(cloneWorkflowRunProgressItem),

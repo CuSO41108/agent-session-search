@@ -57,7 +57,7 @@ export interface WorkflowV2ScriptParameterDef {
   literalValue?: WorkflowV2ScriptParameterValue;
 }
 export type WorkflowV2ExhaustedPolicy = "fail" | "skip" | "ask_human";
-export type WorkflowV2PassThreshold = "must" | "should" | "nice_to_have";
+export type WorkflowV2ReviewLevel = "none" | "low" | "medium" | "high";
 export type WorkflowV2ValidationOutcome = "pass" | "retry" | "fail" | "ask_human";
 export type WorkflowV2TemplateParamValue = string | number | boolean | string[] | number[] | boolean[];
 export type WorkflowV2OutputArtifactFormat = "markdown" | "text" | "json" | "html" | "csv";
@@ -83,8 +83,7 @@ export interface WorkflowV2ConstraintDef {
 
 export interface WorkflowV2JudgeDimensionDef {
   key: string;
-  description?: string;
-  passThreshold?: WorkflowV2PassThreshold;
+  description: string;
 }
 
 export interface WorkflowV2ContextBudget {
@@ -112,6 +111,9 @@ export interface WorkflowV2BaseNode {
   executionMode?: WorkflowV2ExecutionMode;
   executionModeRationale?: string;
   executionModeConfidence?: number;
+  reviewLevel?: WorkflowV2ReviewLevel;
+  reviewMaxRetries?: number;
+  judgeDimensions?: WorkflowV2JudgeDimensionDef[];
 }
 
 export interface WorkflowV2LLMNode extends WorkflowV2BaseNode {
@@ -120,7 +122,6 @@ export interface WorkflowV2LLMNode extends WorkflowV2BaseNode {
   modelId?: string;
   modelProfile?: WorkflowV2ModelProfile;
   prompt: string;
-  judgeDimensions?: WorkflowV2JudgeDimensionDef[];
   constraints?: WorkflowV2ConstraintDef[];
   maxRetry?: number;
   onExhausted?: WorkflowV2ExhaustedPolicy;
@@ -219,6 +220,8 @@ export interface WorkflowV2TemplateNodeOverrides {
   onExhausted?: WorkflowV2ExhaustedPolicy;
   requiredTools?: string[];
   contextBudget?: WorkflowV2ContextBudget;
+  reviewLevel?: WorkflowV2ReviewLevel;
+  reviewMaxRetries?: number;
   script?: WorkflowV2ScriptSpec;
   expectedExitCode?: number;
   onError?: WorkflowV2ScriptErrorPolicy;
@@ -237,6 +240,7 @@ export interface WorkflowV2Definition {
   workflowId: string;
   graphVersion: number;
   objective: string;
+  reviewEnabled?: boolean;
   nodes: WorkflowV2Node[];
   edges: WorkflowV2Edge[];
   /** Missing on legacy definitions, which are normalized to direct mode. */

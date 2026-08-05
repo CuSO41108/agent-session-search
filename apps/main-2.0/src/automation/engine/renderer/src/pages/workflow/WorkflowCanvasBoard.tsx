@@ -70,6 +70,7 @@ function workflowFlowEdges(layout: WorkflowCanvasLayout, runProgressByNodeId: Ma
 function workflowMiniMapNodeColor(node: WorkflowFlowNode, runProgress?: WorkflowRunProgressItem): string {
   if (runProgress?.status === "failed") return "var(--danger)";
   if (runProgress?.status === "completed") return "var(--ok)";
+  if (runProgress?.status === "completed_with_override") return "var(--warning)";
   if (runProgress?.status === "running") return "var(--accent)";
   return node.data.node.execModel === "script" ? "var(--warning)" : "var(--accent)";
 }

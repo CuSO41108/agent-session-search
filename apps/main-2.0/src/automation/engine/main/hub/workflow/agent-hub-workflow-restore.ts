@@ -308,6 +308,7 @@ export function restoreWorkflowRun(raw: unknown): WorkflowRunState | undefined {
     workflowId,
     status: restoreWorkflowRunStatus(record.status),
     ...(record.triggerSource === "manual" || record.triggerSource === "scheduled" || record.triggerSource === "mcp" || record.triggerSource === "recovery" || record.triggerSource === "rerun" ? { triggerSource: record.triggerSource } : {}),
+    ...(asOptionalString(record.parentRunId) ? { parentRunId: asOptionalString(record.parentRunId)! } : {}),
     ...(configuration && asOptionalString(configuration.configuredAgentId) ? { configurationSnapshot: {
       configuredAgentId: asOptionalString(configuration.configuredAgentId)!,
       ...(asOptionalString(configuration.runtimeId) ? { runtimeId: asOptionalString(configuration.runtimeId) } : {}),
@@ -438,6 +439,7 @@ export function reconcileWorkflowV2RunFromDurableState(input: {
 }
 
 function publicWorkflowV2NodeStatus(node: WorkflowV2RunNodeState): WorkflowRunProgressItem["status"] {
+  if (node.status === "completed_with_override") return "completed_with_override";
   if (node.status === "completed" || node.status === "skipped") return "completed";
   if (node.status === "failed") return "failed";
   if (node.status === "paused" || node.status === "running" || node.status === "validating" || node.status === "awaiting_review") {
@@ -448,6 +450,7 @@ function publicWorkflowV2NodeStatus(node: WorkflowV2RunNodeState): WorkflowRunPr
 
 function publicWorkflowV2NodeDetail(node: WorkflowV2RunNodeState, outputSummary: string | undefined): string {
   if (node.status === "completed") return outputSummary ?? "Completed before app restart";
+  if (node.status === "completed_with_override") return outputSummary ?? "Accepted by human override before app restart";
   if (node.status === "skipped") return "Skipped before app restart";
   if (node.status === "failed") return node.lastError ?? "Failed before app restart";
   if (node.status === "paused") {

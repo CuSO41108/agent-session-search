@@ -203,8 +203,13 @@ export class WorkflowV2RunExecutor {
     let latestSnapshot = this.deps.snapshot();
     let latestProgress = plan.definition.nodes.map((node): WorkflowRunProgressItem => {
       const recovered = input.initialCheckpoint?.runState.nodes[node.id];
-      if (recovered?.status === "completed" || recovered?.status === "skipped") {
-        return { nodeId: node.id, title: node.title, status: "completed", detail: "Recovered" };
+      if (recovered?.status === "completed" || recovered?.status === "completed_with_override" || recovered?.status === "skipped") {
+        return {
+          nodeId: node.id,
+          title: node.title,
+          status: recovered.status === "completed_with_override" ? "completed_with_override" : "completed",
+          detail: recovered.status === "completed_with_override" ? "Recovered with human override" : "Recovered",
+        };
       }
       if (recovered?.status === "failed") {
         return { nodeId: node.id, title: node.title, status: "failed", detail: recovered.lastError ?? "Recovery failed" };
@@ -265,6 +270,9 @@ export class WorkflowV2RunExecutor {
     }
     const configuredAgentId = workflow.configuredAgentId;
     const modelId = configuredAgentModelId(workflow, latestSnapshot);
+    const reviewerConfiguredAgentId = workflow.reviewerConfiguredAgentId;
+    const reviewerAgent = latestSnapshot.configuredAgents.find((agent) => agent.id === reviewerConfiguredAgentId);
+    const reviewerModelId = workflow.reviewerModelId || reviewerAgent?.modelId || modelId;
     const publishTransactionProjection = async (transaction: WorkflowTransactionState): Promise<void> => {
       const operations = (await durableStore?.readOperations?.(workflow.workflowId, runId) ?? [])
         .map(sanitizeWorkflowOperationRecord);
@@ -346,7 +354,7 @@ export class WorkflowV2RunExecutor {
         if (completedIds.has(policyCheckpoint.id)) continue;
         const reached = policyCheckpoint.afterNodeIds.every((nodeId) => {
           const status = checkpoint.runState.nodes[nodeId]?.status;
-          return status === "completed" || status === "skipped";
+          return status === "completed" || status === "completed_with_override" || status === "skipped";
         });
         if (!reached) continue;
         const savepointId = workflowV2PolicySavepointId(policyCheckpoint.id);
@@ -1380,23 +1388,29 @@ export class WorkflowV2RunExecutor {
     };
 
     const reviewNodeOutput = async (reviewInput: WorkflowV2ReviewerInput): Promise<WorkflowV2ReviewerResponse> => {
-      const task = await startModelTask(`reviewer:${reviewInput.executorNodeId}`, {
-        prompt: workflowV2ReviewerPrompt(reviewInput),
-        configuredAgentId,
-        modelId,
-        workDir: workflowWorkDir,
-      });
-      updateNode(reviewInput.executorNodeId, {
-        status: "running",
-        detail: "Independent semantic review running",
-        taskId: task.id,
-      });
-      try {
-        const completedTask = await waitForTask(task.id, reviewInput.executorNodeId);
-        return parseWorkflowV2ReviewerResponse(taskArtifact(completedTask), reviewInput.executorNodeId);
-      } finally {
-        latestSnapshot = await this.deps.deleteTask(task.id);
+      let lastError: unknown;
+      for (let infrastructureAttempt = 1; infrastructureAttempt <= 2; infrastructureAttempt += 1) {
+        const task = await startModelTask(`reviewer:${reviewInput.executorNodeId}`, {
+          prompt: workflowV2ReviewerPrompt(reviewInput),
+          configuredAgentId: reviewerConfiguredAgentId,
+          modelId: reviewerModelId,
+          workDir: workflowWorkDir,
+        });
+        updateNode(reviewInput.executorNodeId, {
+          status: "running",
+          detail: infrastructureAttempt === 1 ? "Independent quality review running" : "Retrying independent quality review",
+          taskId: task.id,
+        });
+        try {
+          const completedTask = await waitForTask(task.id, reviewInput.executorNodeId);
+          return parseWorkflowV2ReviewerResponse(taskArtifact(completedTask), reviewInput);
+        } catch (error) {
+          lastError = error;
+        } finally {
+          latestSnapshot = await this.deps.deleteTask(task.id);
+        }
       }
+      throw lastError instanceof Error ? lastError : new Error(String(lastError));
     };
 
     const hookMemory = new Map<string, unknown>();
@@ -1587,6 +1601,19 @@ export class WorkflowV2RunExecutor {
               ...(durableNodeControl[transition.nodeId] ? { control: durableNodeControl[transition.nodeId] } : {}),
             });
             updateNode(transition.nodeId, interaction.progress, interaction.event, true);
+          } else if (transition.status === "reviewed") {
+            const currentHistory = latestProgress.find((item) => item.nodeId === transition.nodeId)?.reviewHistory ?? [];
+            updateNode(transition.nodeId, {
+              status: "running",
+              detail: transition.record.passed ? "Independent quality review passed" : "Independent quality review requested changes",
+              reviewHistory: [...currentHistory, structuredClone(transition.record)],
+            }, {
+              type: "node_judged",
+              nodeId: transition.nodeId,
+              attempt: transition.record.reviewAttempt,
+              pass: transition.record.passed,
+              detail: `${transition.record.verdict.qualityLevel} / ${transition.record.requiredLevel}`,
+            });
           } else {
             updateNode(transition.nodeId, { status: "failed", detail: transition.error }, {
               type: "node_failed",

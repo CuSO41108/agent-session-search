@@ -424,7 +424,8 @@ export class WorkflowV2RunPersistence {
       if (this.cachedNodeIds.has(output.nodeId)) continue;
       const node = this.input.plan.definition.nodes.find((item) => item.id === output.nodeId);
       const planNode = this.input.plan.nodes.find((item) => item.nodeId === output.nodeId);
-      if (!node || !planNode || checkpoint.runState.nodes[output.nodeId]?.status !== "completed") continue;
+      const nodeStatus = checkpoint.runState.nodes[output.nodeId]?.status;
+      if (!node || !planNode || (nodeStatus !== "completed" && nodeStatus !== "completed_with_override")) continue;
       const recoveryOverride = this.input.recoveryOverrides?.get(output.nodeId);
       const effectivePlanNode = recoveryOverride?.modelProfile ? { ...planNode, modelProfile: recoveryOverride.modelProfile } : planNode;
       const upstreamOutputs = this.input.plan.definition.edges

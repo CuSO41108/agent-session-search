@@ -186,6 +186,12 @@
   gap: 12px;
 }
 
+.workflow-settings-dialog { width: min(520px, calc(100vw - 32px)); }
+.workflow-review-setting-toggle { display: grid !important; grid-template-columns: 18px minmax(0, 1fr); align-items: start; gap: 12px; padding: 18px; }
+.workflow-review-setting-toggle input { width: 18px; height: 18px; margin: 2px 0 0; }
+.workflow-review-setting-toggle span { display: grid; gap: 4px; }
+.workflow-review-setting-toggle small { color: var(--muted); line-height: 1.45; }
+
 .workflow-revision-dialog header div,
 .workflow-revision-dialog label {
   display: grid;

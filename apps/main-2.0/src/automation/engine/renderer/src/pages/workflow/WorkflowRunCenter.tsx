@@ -121,7 +121,7 @@ function runIcon(status: WorkflowStatus) {
 }
 
 function nodeStatusIcon(status: WorkflowRunState["progress"][number]["status"]) {
-  if (status === "completed") return CheckCircle2;
+  if (status === "completed" || status === "completed_with_override") return CheckCircle2;
   if (status === "failed" || status === "awaiting_input") return CircleAlert;
   if (status === "paused") return CircleStop;
   return Clock3;
@@ -423,7 +423,7 @@ function WorkflowRunCenterOpen({ runs, conversations = [], artifacts = [], loadi
                 {selectedArtifacts.length > 0 ? <section className="workflow-run-center-section workflow-run-center-artifacts"><header><GitBranch size={14} /><strong>{labels.artifacts}</strong></header><div className="workflow-run-center-artifact-list">{selectedArtifacts.map((artifact) => <article key={artifact.id}><strong>{artifact.title}</strong><small>{artifact.kind === "file" ? artifactFileName(artifact.path) : artifact.kind === "url" ? artifactUrlPreview(artifact.url) : "text"}</small>{artifact.description ? <p>{artifact.description}</p> : null}{artifact.kind === "text" && artifact.content ? <pre>{artifact.content.slice(0, 4000)}</pre> : null}</article>)}</div></section> : null}
                 <section className="workflow-run-center-section">
                   <header><GitBranch size={14} /><strong>{labels.config}</strong></header>
-                  <div className="workflow-run-center-config-grid"><span><b>{labels.approvedBy}</b>{selectedRun.workflowV2Plan.approvedBy || "—"}</span><span><b>{labels.nodes}</b>{selectedRun.workflowV2Plan.nodes.length}</span><span><b>{language === "zh" ? "上下文预算" : "Context budget"}</b>{selectedRun.workflowV2Plan.budget.context.maxContextTokens ?? "—"}</span><span><b>{labels.agent}</b>{selectedRun.configurationSnapshot?.configuredAgentId ?? "—"}</span><span><b>{labels.agentRevision}</b>{selectedRun.configurationSnapshot?.agentRevision ?? "—"}</span><span><b>{labels.runtime}</b>{selectedRun.configurationSnapshot?.runtimeId ?? "—"}</span><span><b>{labels.channel}</b>{selectedRun.configurationSnapshot?.channelId ?? "—"}</span><span><b>{labels.model}</b>{selectedRun.configurationSnapshot?.modelId ?? "—"}</span></div>
+                  <div className="workflow-run-center-config-grid"><span><b>{labels.approvedBy}</b>{selectedRun.workflowV2Plan.approvedBy || "—"}</span><span><b>{labels.nodes}</b>{selectedRun.workflowV2Plan.nodes.length}</span><span><b>{language === "zh" ? "上下文预算" : "Context budget"}</b>{selectedRun.workflowV2Plan.budget.context.maxContextTokens ?? "—"}</span><span><b>{language === "zh" ? "上一次运行" : "Parent run"}</b>{selectedRun.parentRunId ?? "—"}</span><span><b>{labels.agent}</b>{selectedRun.configurationSnapshot?.configuredAgentId ?? "—"}</span><span><b>{labels.agentRevision}</b>{selectedRun.configurationSnapshot?.agentRevision ?? "—"}</span><span><b>{labels.runtime}</b>{selectedRun.configurationSnapshot?.runtimeId ?? "—"}</span><span><b>{labels.channel}</b>{selectedRun.configurationSnapshot?.channelId ?? "—"}</span><span><b>{labels.model}</b>{selectedRun.configurationSnapshot?.modelId ?? "—"}</span></div>
                 </section>
                 <section className="workflow-run-center-section">
                   <header><CalendarClock size={14} /><strong>{labels.timeline}</strong></header>
@@ -474,6 +474,10 @@ function WorkflowRunCenterOpen({ runs, conversations = [], artifacts = [], loadi
                           {eventError ? <p className="is-error">{getWorkflowErrorCode(eventError)} · {eventError}</p> : null}
                           {progress?.inputSummary ? <details className="workflow-run-center-node-outputs"><summary>{labels.inputSummary}</summary><pre>{JSON.stringify(progress.inputSummary, null, 2)}</pre></details> : null}
                           {progress?.outputs ? <details className="workflow-run-center-node-outputs"><summary>{labels.outputs}</summary><pre>{JSON.stringify(progress.outputs, null, 2)}</pre></details> : null}
+                          {progress?.reviewHistory?.length ? <details className="workflow-run-center-node-outputs" open={progress.intervention?.source === "review_rejection" || progress.intervention?.source === "review_escalation"}>
+                            <summary>{language === "zh" ? "质量审查历史" : "Quality review history"} · {progress.reviewHistory.length}</summary>
+                            <div className="workflow-run-center-events">{progress.reviewHistory.map((review) => <span key={review.reviewAttempt}>#{review.reviewAttempt} · {review.verdict.qualityLevel}/{review.requiredLevel} · {review.passed ? (language === "zh" ? "通过" : "passed") : (language === "zh" ? "未通过" : "failed")} · {review.verdict.dimensionResults.map((dimension) => `${dimension.key}: ${dimension.qualityLevel}`).join(", ")}</span>)}</div>
+                          </details> : null}
                           {progress?.acceptance ? <details className="workflow-run-center-node-outputs" open={progress.acceptance.outcome !== "clean"}>
                             <summary>{language === "zh" ? "节点验收" : "Node acceptance"} · {progress.acceptance.outcome}</summary>
                             <div className="workflow-run-center-events">
@@ -493,13 +497,13 @@ function WorkflowRunCenterOpen({ runs, conversations = [], artifacts = [], loadi
                             </div>
                           </details> : null}
                           {progress?.intervention && selectedRun.runId === writableRunId && onResolveIntervention ? <div className="workflow-run-center-node-actions">
-                            <input value={nodeActionReason} maxLength={2_000} onChange={(event) => setNodeActionReason(event.currentTarget.value)} placeholder={language === "zh" ? "处理依据（可选）" : "Decision reason (optional)"} />
+                            {!progress.intervention.allowedActions.includes("accept_last_result") ? <input value={nodeActionReason} maxLength={2_000} onChange={(event) => setNodeActionReason(event.currentTarget.value)} placeholder={language === "zh" ? "处理依据（可选）" : "Decision reason (optional)"} /> : null}
                             <div>{progress.intervention.allowedActions.map((action) => <button key={action} type="button" disabled={nodeActionBusy} onClick={() => {
-                              if (!window.confirm(language === "zh" ? `确认对节点 ${progress.title} 执行 ${action}？` : `Confirm ${action} for node ${progress.title}?`)) return;
+                              if (action !== "accept_last_result" && !window.confirm(language === "zh" ? `确认对节点 ${progress.title} 执行 ${action}？` : `Confirm ${action} for node ${progress.title}?`)) return;
                               setNodeActionBusy(true);
                               setNodeActionError(undefined);
-                              void Promise.resolve(onResolveIntervention(progress.nodeId, action, nodeActionReason.trim() || undefined)).then(() => setNodeActionReason("")).catch((nodeActionFailure) => setNodeActionError(nodeActionFailure instanceof Error ? nodeActionFailure.message : String(nodeActionFailure))).finally(() => setNodeActionBusy(false));
-                            }}>{action === "continue" ? (language === "zh" ? "继续/重试" : "Continue / retry") : action}</button>)}</div>
+                              void Promise.resolve(onResolveIntervention(progress.nodeId, action, action === "accept_last_result" ? undefined : nodeActionReason.trim() || undefined)).then(() => setNodeActionReason("")).catch((nodeActionFailure) => setNodeActionError(nodeActionFailure instanceof Error ? nodeActionFailure.message : String(nodeActionFailure))).finally(() => setNodeActionBusy(false));
+                            }}>{action === "continue" ? (language === "zh" ? "继续/重试" : "Continue / retry") : action === "rerun_all" ? (language === "zh" ? "全部节点重新运行" : "Rerun all nodes") : action === "accept_last_result" ? (language === "zh" ? "采用最后一次结果" : "Accept last result") : action}</button>)}</div>
                             {nodeActionError ? <p className="is-error">{nodeActionError}</p> : null}
                           </div> : null}
                           {selectedRun.recovery?.availableActions.includes("rollback_savepoint") && selectedRun.runId === writableRunId && onResolveRecovery && selectedRun.recovery.uncertainNodeIds.includes(node.nodeId) ? <div className="workflow-run-center-node-actions">

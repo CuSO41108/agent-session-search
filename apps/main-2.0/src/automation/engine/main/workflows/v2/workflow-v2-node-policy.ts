@@ -50,8 +50,10 @@ export function workflowV2ReviewerPolicy(
   forceIndependentReview = false,
 ): Record<string, unknown> {
   return {
-    judgeDimensions: node.execModel === "llm" ? node.judgeDimensions ?? [] : [],
-    requiresIndependentReview: node.execModel === "llm" && node.role !== "reviewer"
+    judgeDimensions: node.judgeDimensions ?? [],
+    reviewLevel: node.reviewLevel ?? "none",
+    reviewMaxRetries: node.reviewMaxRetries ?? 2,
+    requiresIndependentReview: node.reviewLevel !== undefined && node.reviewLevel !== "none"
       && (forceIndependentReview || (node.judgeDimensions?.length ?? 0) > 0),
     forceIndependentReview,
   };
@@ -69,6 +71,8 @@ export function workflowV2InterventionResolutionReason(
   if (action === "replan") return `Keep the run stopped and create a new graph revision for ${nodeTitle}.`;
   if (action === "increase_review_strength") return `Rerun ${nodeTitle} with mandatory independent review.`;
   if (action === "approve_once") return `Approve one execution of dangerous script ${nodeTitle}.`;
+  if (action === "rerun_all") return `Supersede this run and restart the Workflow from its first node.`;
+  if (action === "accept_last_result") return `Accept the latest candidate for ${nodeTitle} with an explicit human override.`;
   return `Reject dangerous script ${nodeTitle}.`;
 }
 

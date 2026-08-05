@@ -15,7 +15,7 @@ export interface WorkflowNodeMessage {
 }
 
 // Public run-state contract consumed by UI, persistence, and answer/resume flows.
-export type WorkflowRunNodeStatus = "queued" | "running" | "paused" | "awaiting_input" | "completed" | "failed";
+export type WorkflowRunNodeStatus = "queued" | "running" | "paused" | "awaiting_input" | "completed" | "completed_with_override" | "failed";
 
 export type WorkflowNodeInputRequest = {
   kind: "script_parameters";
@@ -38,6 +38,7 @@ export interface WorkflowRunProgressItem {
   /** Safe, persisted summary of submitted human inputs; secret values are redacted upstream. */
   inputSummary?: Record<string, unknown>;
   outputs?: Record<string, unknown>;
+  reviewHistory?: import("../workflow-v2/review").WorkflowV2ReviewAttemptRecord[];
   messages?: WorkflowNodeMessage[];
   telemetry?: WorkflowRunNodeTelemetry;
 }
@@ -134,6 +135,7 @@ export interface WorkflowRunState {
   workflowId: string;
   status: WorkflowStatus;
   triggerSource?: WorkflowRunTriggerSource;
+  parentRunId?: string;
   configurationSnapshot?: WorkflowRunConfigurationSnapshot;
   workflowV2Plan: WorkflowV2Plan;
   progress: WorkflowRunProgressItem[];

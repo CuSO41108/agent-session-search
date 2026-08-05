@@ -258,6 +258,8 @@ function isPersistedExecutionState(
     const node = nodes[nodeId];
     if (!isRecord(node) || node.nodeId !== nodeId || !isNonEmptyString(node.title)) return false;
     if (!isNodeExecutionStatus(node.status) || !isNonNegativeSafeInteger(node.attempt)) return false;
+    if (node.reviewAttempt !== undefined && !isNonNegativeSafeInteger(node.reviewAttempt)) return false;
+    if (node.reviewHistory !== undefined && (!Array.isArray(node.reviewHistory) || !node.reviewHistory.every(isReviewAttemptRecord))) return false;
     return [node.dependsOn, node.dependents, node.blockedBy, node.resourceLocks].every(
       (items) => Array.isArray(items) && items.every((item) => typeof item === "string"),
     );
@@ -340,8 +342,19 @@ function isNodeExecutionStatus(value: unknown): boolean {
     || value === "paused"
     || value === "skipped"
     || value === "completed"
+    || value === "completed_with_override"
     || value === "failed"
   );
+}
+
+function isReviewAttemptRecord(value: unknown): boolean {
+  return isRecord(value)
+    && isPositiveSafeInteger(value.reviewAttempt)
+    && isRecord(value.candidate)
+    && isWorkflowV2ReviewVerdict(value.verdict)
+    && (value.requiredLevel === "low" || value.requiredLevel === "medium" || value.requiredLevel === "high")
+    && typeof value.passed === "boolean"
+    && isNonNegativeFinite(value.reviewedAt);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

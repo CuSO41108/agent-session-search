@@ -4,18 +4,19 @@ import type {
   WorkflowV2RunState,
 } from "../../../shared/workflow-v2/state";
 import type { WorkflowV2NodeValidationResult } from "../../../shared/workflow-v2/definition";
-import type { WorkflowV2HumanIntervention, WorkflowV2ReviewVerdict } from "../../../shared/workflow-v2/review";
+import type { WorkflowV2HumanIntervention, WorkflowV2ReviewAttemptRecord, WorkflowV2ReviewVerdict } from "../../../shared/workflow-v2/review";
 
 export interface WorkflowV2NodeStateTransition {
   nodeId: string;
   status: Extract<
     WorkflowV2NodeExecutionState,
-    "ready" | "running" | "validating" | "awaiting_review" | "paused" | "skipped" | "completed" | "failed"
+    "ready" | "running" | "validating" | "awaiting_review" | "paused" | "skipped" | "completed" | "completed_with_override" | "failed"
   >;
   now?: number;
   error?: string;
   validation?: WorkflowV2NodeValidationResult;
   reviewVerdict?: WorkflowV2ReviewVerdict;
+  reviewRecord?: WorkflowV2ReviewAttemptRecord;
   intervention?: WorkflowV2HumanIntervention;
 }
 
@@ -72,13 +73,17 @@ export function transitionWorkflowV2NodeState(
   } else if (transition.status === "awaiting_review") {
     nextTarget.status = "awaiting_review";
     if (transition.reviewVerdict !== undefined) nextTarget.reviewVerdict = transition.reviewVerdict;
+    if (transition.reviewRecord !== undefined) {
+      nextTarget.reviewAttempt = transition.reviewRecord.reviewAttempt;
+      nextTarget.reviewHistory = [...(nextTarget.reviewHistory ?? []), structuredClone(transition.reviewRecord)];
+    }
   } else if (transition.status === "paused") {
     nextTarget.status = "paused";
     nextTarget.finishedAt = now;
     if (transition.intervention !== undefined) nextTarget.intervention = transition.intervention;
     if (transition.reviewVerdict !== undefined) nextTarget.reviewVerdict = transition.reviewVerdict;
     if (transition.error !== undefined) nextTarget.lastError = transition.error;
-  } else if (transition.status === "completed" || transition.status === "skipped") {
+  } else if (transition.status === "completed" || transition.status === "completed_with_override" || transition.status === "skipped") {
     nextTarget.status = transition.status;
     nextTarget.finishedAt = now;
     nextTarget.blockedBy = [];
@@ -119,7 +124,7 @@ function isWaitingNodeState(status: WorkflowV2NodeExecutionState): boolean {
 }
 
 function isDependencySatisfied(status: WorkflowV2NodeExecutionState): boolean {
-  return status === "completed" || status === "skipped";
+  return status === "completed" || status === "completed_with_override" || status === "skipped";
 }
 
 function orderedNodes(runState: WorkflowV2RunState): WorkflowV2RunNodeState[] {
@@ -144,6 +149,7 @@ function cloneNodes(nodes: Record<string, WorkflowV2RunNodeState>): Record<strin
           },
         } : {}),
         ...(node.reviewVerdict ? { reviewVerdict: structuredClone(node.reviewVerdict) } : {}),
+        ...(node.reviewHistory ? { reviewHistory: structuredClone(node.reviewHistory) } : {}),
         ...(node.intervention ? { intervention: structuredClone(node.intervention) } : {}),
       } satisfies WorkflowV2RunNodeState,
     ]),

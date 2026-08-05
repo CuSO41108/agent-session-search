@@ -816,7 +816,7 @@ export type {
   WorkflowV2NodeRole,
   WorkflowV2NodeTemplate,
   WorkflowV2OutputFieldDef,
-  WorkflowV2PassThreshold,
+  WorkflowV2ReviewLevel,
   WorkflowV2ScriptLanguage,
   WorkflowV2ScriptRiskLevel,
   WorkflowV2ScriptCapability,

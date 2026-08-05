@@ -30,6 +30,7 @@ export function startWorkflowRunState(input: {
       workflowId: input.workflow.workflowId,
       status: "running",
       triggerSource: input.request.triggerSource ?? "manual",
+      ...(input.request.parentRunId ? { parentRunId: input.request.parentRunId } : {}),
       ...(input.request.configurationSnapshot ? { configurationSnapshot: structuredClone(input.request.configurationSnapshot) } : {}),
       workflowV2Plan,
       progress: [],

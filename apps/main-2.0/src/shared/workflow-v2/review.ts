@@ -1,4 +1,4 @@
-import type { WorkflowV2ConstraintDef, WorkflowV2ExhaustedPolicy, WorkflowV2ScriptCapability, WorkflowV2ScriptRiskLevel } from "./definition";
+import type { WorkflowV2ConstraintDef, WorkflowV2JudgeDimensionDef, WorkflowV2ReviewLevel, WorkflowV2ScriptCapability, WorkflowV2ScriptRiskLevel } from "./definition";
 import type { WorkflowV2ResultPacket } from "./planning";
 import type { WorkflowV2ProgressReport, WorkflowV2SupervisorDecision } from "./supervision";
 import { isWorkflowV2ProgressReport, isWorkflowV2SupervisorDecision } from "./supervision";
@@ -6,6 +6,14 @@ import { isWorkflowV2ProgressReport, isWorkflowV2SupervisorDecision } from "./su
 export type WorkflowV2ReviewDecision = "accept" | "reject" | "escalate";
 export type WorkflowV2ReviewRiskLevel = "low" | "medium" | "high";
 export type WorkflowV2ReviewConfidence = "high" | "medium" | "low";
+export type WorkflowV2QualityLevel = Exclude<WorkflowV2ReviewLevel, "none">;
+
+export interface WorkflowV2ReviewDimensionResult {
+  key: string;
+  qualityLevel: WorkflowV2QualityLevel;
+  reason: string;
+  evidence: string[];
+}
 
 export interface WorkflowV2ReviewVerdict {
   decision: WorkflowV2ReviewDecision;
@@ -14,12 +22,17 @@ export interface WorkflowV2ReviewVerdict {
   riskLevel: WorkflowV2ReviewRiskLevel;
   evidence?: string[];
   confidence: WorkflowV2ReviewConfidence;
+  qualityLevel: WorkflowV2QualityLevel;
+  dimensionResults: WorkflowV2ReviewDimensionResult[];
 }
 
 export interface WorkflowV2ReviewerInput {
   executorNodeId: string;
   objective: string;
   constraints: WorkflowV2ConstraintDef[];
+  reviewLevel: WorkflowV2QualityLevel;
+  judgeDimensions: WorkflowV2JudgeDimensionDef[];
+  reviewAttempt: number;
   result: WorkflowV2ResultPacket;
 }
 
@@ -37,12 +50,20 @@ export interface WorkflowV2ReviewResolution {
 }
 
 export interface WorkflowV2ReviewRetryPolicy {
-  attempt: number;
-  maxRetry: number;
-  onExhausted: WorkflowV2ExhaustedPolicy;
+  reviewAttempt: number;
+  maxReviewRetries: number;
 }
 
-export type WorkflowV2InterventionAction = "continue" | "skip" | "escalate" | "replan" | "increase_review_strength" | "approve_once" | "reject";
+export interface WorkflowV2ReviewAttemptRecord {
+  reviewAttempt: number;
+  candidate: WorkflowV2ResultPacket;
+  verdict: WorkflowV2ReviewVerdict;
+  requiredLevel: WorkflowV2QualityLevel;
+  passed: boolean;
+  reviewedAt: number;
+}
+
+export type WorkflowV2InterventionAction = "continue" | "skip" | "escalate" | "replan" | "increase_review_strength" | "approve_once" | "reject" | "rerun_all" | "accept_last_result";
 
 export interface WorkflowV2ScriptApprovalRequest {
   requestId: string;
@@ -68,6 +89,7 @@ export interface WorkflowV2HumanIntervention {
   allowedActions: WorkflowV2InterventionAction[];
   requestedAt: number;
   reviewVerdict?: WorkflowV2ReviewVerdict;
+  lastCandidate?: WorkflowV2ResultPacket;
   progressReport?: WorkflowV2ProgressReport;
   supervisorDecision?: WorkflowV2SupervisorDecision;
   scriptApproval?: WorkflowV2ScriptApprovalRequest;
@@ -89,7 +111,13 @@ export function isWorkflowV2ReviewVerdict(value: unknown): value is WorkflowV2Re
     return false;
   }
   if (value.evidence !== undefined && !isStringArray(value.evidence)) return false;
-  return value.confidence === "high" || value.confidence === "medium" || value.confidence === "low";
+  if (value.confidence !== "high" && value.confidence !== "medium" && value.confidence !== "low") return false;
+  if (!isQualityLevel(value.qualityLevel) || !Array.isArray(value.dimensionResults)) return false;
+  return value.dimensionResults.every((item) => isRecord(item)
+    && typeof item.key === "string" && item.key.trim().length > 0
+    && isQualityLevel(item.qualityLevel)
+    && typeof item.reason === "string" && item.reason.trim().length > 0
+    && isStringArray(item.evidence));
 }
 
 export function isWorkflowV2HumanIntervention(value: unknown): value is WorkflowV2HumanIntervention {
@@ -104,6 +132,7 @@ export function isWorkflowV2HumanIntervention(value: unknown): value is Workflow
     return false;
   }
   if (value.reviewVerdict !== undefined && !isWorkflowV2ReviewVerdict(value.reviewVerdict)) return false;
+  if (value.lastCandidate !== undefined && !isResultPacket(value.lastCandidate)) return false;
   if (value.progressReport !== undefined && !isWorkflowV2ProgressReport(value.progressReport)) return false;
   if (value.supervisorDecision !== undefined && !isWorkflowV2SupervisorDecision(value.supervisorDecision)) {
     return false;
@@ -147,7 +176,20 @@ export function isWorkflowV2InterventionAction(value: unknown): value is Workflo
     || value === "increase_review_strength"
     || value === "approve_once"
     || value === "reject"
+    || value === "rerun_all"
+    || value === "accept_last_result"
   );
+}
+
+function isQualityLevel(value: unknown): value is WorkflowV2QualityLevel {
+  return value === "low" || value === "medium" || value === "high";
+}
+
+function isResultPacket(value: unknown): value is WorkflowV2ResultPacket {
+  return isRecord(value)
+    && typeof value.nodeId === "string" && value.nodeId.trim().length > 0
+    && typeof value.summary === "string"
+    && isRecord(value.outputs);
 }
 
 function isWorkflowV2ScriptApprovalRequest(value: unknown): value is WorkflowV2ScriptApprovalRequest {

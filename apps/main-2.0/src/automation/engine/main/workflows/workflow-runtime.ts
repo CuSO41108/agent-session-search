@@ -491,7 +491,7 @@ export class WorkflowRuntime {
     const continuationTargetNodeId = input.action === "continue"
       ? persisted.runState.nodeOrder.find((nodeId) => {
           const status = persisted.runState.nodes[nodeId]?.status;
-          return status !== "completed" && status !== "skipped";
+          return status !== "completed" && status !== "completed_with_override" && status !== "skipped";
         })
       : undefined;
     const pendingCheckpointId = persistedTransaction.pendingCheckpointId;
@@ -1088,6 +1088,9 @@ export class WorkflowRuntime {
         error: `Workflow V2 action ${input.action} requires a pending script permission request.`,
       };
     }
+    if (input.action === "accept_last_result" && !intervention?.lastCandidate) {
+      return { ok: false, workflowId: input.workflow.workflowId, runId: input.run.runId, error: "Workflow V2 intervention has no candidate result to accept." };
+    }
     if ((input.action === "escalate" || input.action === "increase_review_strength") && targetNode.execModel !== "llm") {
       return {
         ok: false,
@@ -1152,6 +1155,21 @@ export class WorkflowRuntime {
         contextDocument: input.run.contextDocument,
       });
       return { ok: true, workflowId: input.workflow.workflowId, runId: input.run.runId };
+    }
+
+    if (input.action === "rerun_all") {
+      await store.appendEvents({ workflowId: input.workflow.workflowId, runId: input.run.runId, events: [resolutionEvent] });
+      await store.persistRunState({ ...structuredClone(persisted), savedAt: resolvedAt, eventCount: initialDurableEventCount, nodeControl: initialNodeControl });
+      this.deps.finishWorkflowRun({
+        workflowId: input.workflow.workflowId,
+        runId: input.run.runId,
+        status: "stopped",
+        progress: input.run.progress,
+        appendEvents: [{ type: "node_paused", nodeId: input.nodeId, at: resolvedAt, detail: resolutionReason, ...(intervention ? { intervention: structuredClone(intervention) } : {}) }],
+        contextDocument: input.run.contextDocument,
+        finalReport: [input.run.finalReport, `Superseded by a full rerun requested from ${targetNode.title}.`].filter(Boolean).join("\n\n"),
+      });
+      return this.runWorkflow({ workflowId: input.workflow.workflowId, contextDocument: input.run.contextDocument, triggerSource: "rerun", parentRunId: input.run.runId });
     }
 
     const snapshot = this.deps.snapshot();
@@ -1232,6 +1250,36 @@ export class WorkflowRuntime {
       materialized.recoveryCheckpoints.delete(input.nodeId);
       materialized.resumeConversations.delete(input.nodeId);
     }
+    if (input.action === "accept_last_result") {
+      const candidate = intervention!.lastCandidate!;
+      await materializeWorkflowV2OutputArtifacts({
+        workflowId: input.workflow.workflowId,
+        runId: input.run.runId,
+        workDir,
+        node: targetNode,
+        output: {
+          nodeId: candidate.nodeId,
+          summary: candidate.summary,
+          outputs: structuredClone(candidate.outputs),
+          ...(candidate.evidence ? { evidence: [...candidate.evidence] } : {}),
+          ...(candidate.risks ? { risks: [...candidate.risks] } : {}),
+          proposals: [],
+        },
+      });
+      materialized.checkpoint.runState = transitionWorkflowV2NodeState(materialized.checkpoint.runState, { nodeId: input.nodeId, status: "completed_with_override", now: resolvedAt });
+      materialized.checkpoint.workerOutputs = materialized.checkpoint.workerOutputs.filter((output) => output.nodeId !== input.nodeId);
+      materialized.checkpoint.workerOutputs.push({
+        nodeId: candidate.nodeId,
+        summary: candidate.summary,
+        outputs: structuredClone(candidate.outputs),
+        ...(candidate.evidence ? { evidence: [...candidate.evidence] } : {}),
+        ...(candidate.risks ? { risks: [...candidate.risks] } : {}),
+        ...(candidate.nextStepSuggestions ? { nextStepSuggestions: [...candidate.nextStepSuggestions] } : {}),
+        proposals: [],
+      });
+      materialized.recoveryCheckpoints.delete(input.nodeId);
+      materialized.resumeConversations.delete(input.nodeId);
+    }
     const recoveryOverrides = new Map<string, WorkflowV2RecoveryOverride>();
     if (input.action === "approve_once") {
       const approval = createWorkflowV2ScriptApprovalOverride({ node: targetNode, planNode: plan.nodes.find((item) => item.nodeId === input.nodeId), intervention, resolutionReason });
@@ -1270,6 +1318,7 @@ export class WorkflowRuntime {
       workflowId: input.workflow.workflowId,
       runId: input.run.runId,
       status: "running",
+      ...(input.action === "accept_last_result" ? { progress: input.run.progress.map((item) => item.nodeId === input.nodeId ? { ...item, status: "completed_with_override" as const, detail: resolutionReason, outputs: structuredClone(intervention!.lastCandidate!.outputs) } : item) } : {}),
       contextDocument: input.run.contextDocument,
     });
     const storagePlan = workflowStoragePlanFor(input.workflow.workflowId, input.run.runId);

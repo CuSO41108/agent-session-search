@@ -86,7 +86,7 @@ export function buildWorkflowV2RecoveryPlan(input: {
       continue;
     }
 
-    if (nodeState.status === "completed" && !graphChanged) {
+    if ((nodeState.status === "completed" || nodeState.status === "completed_with_override") && !graphChanged) {
       const output = outputByNodeId.get(nodeId);
       if (output) {
         decisions.set(nodeId, {
@@ -283,7 +283,7 @@ export function buildWorkflowV2RecoveryPreview(input: {
   const hasContinuationTarget = Boolean(input.transaction.pendingCheckpointId)
     || input.runState.nodeOrder.some((nodeId) => {
       const status = input.runState.nodes[nodeId]?.status;
-      return status !== "completed" && status !== "skipped";
+      return status !== "completed" && status !== "completed_with_override" && status !== "skipped";
     });
   const generatedAt = input.now ?? Date.now();
   const availableActions = [

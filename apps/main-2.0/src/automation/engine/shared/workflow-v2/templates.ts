@@ -81,6 +81,8 @@ export function compileWorkflowV2Node(
   });
   const resourceLocks = overrides.resourceLocks ?? template.resourceLocks;
   const executionLease = overrides.executionLease ?? template.executionLease;
+  const reviewLevel = overrides.reviewLevel ?? template.reviewLevel;
+  const reviewMaxRetries = overrides.reviewMaxRetries ?? template.reviewMaxRetries;
 
   if (template.execModel === "llm") {
     const compiled: WorkflowV2LLMNode = {
@@ -95,6 +97,8 @@ export function compileWorkflowV2Node(
       ...(hooks ? { hooks } : {}),
       ...(resourceLocks ? { resourceLocks } : {}),
       ...(executionLease ? { executionLease: { ...executionLease } } : {}),
+      ...(reviewLevel ? { reviewLevel } : {}),
+      ...(reviewMaxRetries !== undefined ? { reviewMaxRetries } : {}),
       ...(overrides.modelProfile ?? template.modelProfile ? { modelProfile: overrides.modelProfile ?? template.modelProfile } : {}),
       ...(overrides.configuredAgentId ?? template.configuredAgentId ? { configuredAgentId: overrides.configuredAgentId ?? template.configuredAgentId } : {}),
       ...(overrides.modelId ?? template.modelId ? { modelId: overrides.modelId ?? template.modelId } : {}),
@@ -124,6 +128,9 @@ export function compileWorkflowV2Node(
     ...(hooks ? { hooks } : {}),
     ...(resourceLocks ? { resourceLocks } : {}),
     ...(executionLease ? { executionLease: { ...executionLease } } : {}),
+    ...(reviewLevel ? { reviewLevel } : {}),
+    ...(reviewMaxRetries !== undefined ? { reviewMaxRetries } : {}),
+    ...(overrides.judgeDimensions ?? template.judgeDimensions ? { judgeDimensions: overrides.judgeDimensions ?? template.judgeDimensions } : {}),
     ...((overrides.expectedExitCode ?? template.expectedExitCode) !== undefined
       ? { expectedExitCode: overrides.expectedExitCode ?? template.expectedExitCode }
       : {}),

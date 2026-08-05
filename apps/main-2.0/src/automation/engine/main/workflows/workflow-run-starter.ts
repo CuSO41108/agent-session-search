@@ -44,6 +44,7 @@ export function startWorkflowRun(input: { request: RunWorkflowRequest; deps: Wor
     workflowId: workflow.workflowId,
     contextDocument: initialContextDocument,
     ...(input.request.triggerSource ? { triggerSource: input.request.triggerSource } : {}),
+    ...(input.request.parentRunId ? { parentRunId: input.request.parentRunId } : {}),
     ...(configurationSnapshot ? { configurationSnapshot } : {}),
     ...(effectiveApprovalMode ? { transactionApprovalMode: effectiveApprovalMode } : {}),
   };

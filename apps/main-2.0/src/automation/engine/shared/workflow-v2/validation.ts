@@ -28,6 +28,7 @@ const VALID_EXHAUSTED_POLICIES = new Set(["fail", "skip", "ask_human"]);
 const VALID_SUMMARY_FALLBACK_POLICIES = new Set(["truncate", "summarize", "ask_human"]);
 const VALID_MODEL_PROFILES = new Set(["fast", "balanced", "expert"]);
 const VALID_NODE_ROLES = new Set(["orchestrator", "executor", "reviewer"]);
+const VALID_REVIEW_LEVELS = new Set(["none", "low", "medium", "high"]);
 const VALID_WORKFLOW_VALUE_TYPES = new Set(["string", "number", "boolean", "json", "secret", "file", "directory"]);
 const VALID_OUTPUT_ARTIFACT_FORMATS = new Set(["markdown", "text", "json", "html", "csv"]);
 const STRICT_WORKSPACE_CAPABILITIES = new Set(["workspace_read", "workspace_write", "workspace_delete"]);
@@ -140,6 +141,23 @@ function appendNodeValidationErrors(node: WorkflowV2Node, errors: string[]): voi
   }
   if (node.executionLease !== undefined && !isWorkflowV2ExecutionLeasePolicy(node.executionLease)) {
     errors.push(`Workflow V2 node ${node.id} has an invalid execution lease policy.`);
+  }
+  const reviewLevel = node.reviewLevel ?? "none";
+  if (!VALID_REVIEW_LEVELS.has(reviewLevel)) errors.push(`Workflow V2 node ${node.id} has unsupported reviewLevel ${String(reviewLevel)}.`);
+  if (node.reviewMaxRetries !== undefined && !isNonNegativeSafeInteger(node.reviewMaxRetries)) {
+    errors.push(`Workflow V2 node ${node.id} must have a non-negative safe-integer reviewMaxRetries.`);
+  }
+  if (reviewLevel !== "none") {
+    if (!Array.isArray(node.judgeDimensions) || node.judgeDimensions.length === 0) {
+      errors.push(`Workflow V2 reviewed node ${node.id} must declare at least one judge dimension.`);
+    } else {
+      const dimensionKeys = new Set<string>();
+      for (const dimension of node.judgeDimensions) {
+        if (!dimension.key.trim() || !dimension.description.trim()) errors.push(`Workflow V2 node ${node.id} judge dimensions require non-empty keys and descriptions.`);
+        if (dimensionKeys.has(dimension.key)) errors.push(`Workflow V2 node ${node.id} has duplicate judge dimension ${dimension.key}.`);
+        dimensionKeys.add(dimension.key);
+      }
+    }
   }
   errors.push(...workflowV2NodeHookValidationErrors(node.hooks).map(
     (error) => `Workflow V2 node ${node.id} ${error}`,
@@ -345,6 +363,7 @@ export function validateWorkflowV2Definition(definition: WorkflowV2Definition, o
     errors.push("Workflow V2 definition must have a positive safe-integer graphVersion.");
   }
   if (!definition.objective.trim()) errors.push("Workflow V2 definition must have an objective.");
+  if (definition.reviewEnabled !== undefined && typeof definition.reviewEnabled !== "boolean") errors.push("Workflow V2 reviewEnabled must be a boolean.");
   if (definition.nodes.length === 0) errors.push("Workflow V2 definition must have at least one node.");
 
   const nodeIds = new Set<string>();

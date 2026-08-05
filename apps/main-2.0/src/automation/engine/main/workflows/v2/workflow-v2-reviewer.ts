@@ -14,7 +14,9 @@ export function createWorkflowV2ReviewerInput(input: {
   node: WorkflowV2Node;
   objective: string;
   output: WorkflowV2WorkerOutput;
+  reviewAttempt: number;
 }): WorkflowV2ReviewerInput {
+  if (!input.node.reviewLevel || input.node.reviewLevel === "none") throw new Error(`Workflow V2 node ${input.node.id} does not require review.`);
   const clonedOutput = cloneWorkflowV2WorkerOutput(input.output);
   return {
     executorNodeId: input.node.id,
@@ -22,6 +24,9 @@ export function createWorkflowV2ReviewerInput(input: {
     constraints: input.node.execModel === "llm"
       ? (input.node.constraints ?? []).map((constraint) => ({ ...constraint }))
       : [],
+    reviewLevel: input.node.reviewLevel,
+    judgeDimensions: structuredClone(input.node.judgeDimensions ?? []),
+    reviewAttempt: input.reviewAttempt,
     result: toResultPacket(clonedOutput),
   };
 }
@@ -44,13 +49,10 @@ export function resolveWorkflowV2ReviewVerdict(
 ): WorkflowV2ReviewResolution {
   const reason = verdict.reasons.join(" ").trim() || `Reviewer returned ${verdict.decision}.`;
   if (verdict.decision === "accept") return { action: "accept", verdict: cloneVerdict(verdict), reason };
-  if (verdict.decision === "escalate") return { action: "escalate", verdict: cloneVerdict(verdict), reason };
-  if (retryPolicy.attempt <= retryPolicy.maxRetry) {
+  if (retryPolicy.reviewAttempt <= retryPolicy.maxReviewRetries) {
     return { action: "retry", verdict: cloneVerdict(verdict), reason };
   }
-  if (retryPolicy.onExhausted === "skip") return { action: "skip", verdict: cloneVerdict(verdict), reason };
-  if (retryPolicy.onExhausted === "ask_human") return { action: "pause", verdict: cloneVerdict(verdict), reason };
-  return { action: "fail", verdict: cloneVerdict(verdict), reason };
+  return { action: "pause", verdict: cloneVerdict(verdict), reason };
 }
 
 export function isWorkflowV2ReviewVerdict(value: unknown): value is WorkflowV2ReviewVerdict {
@@ -61,9 +63,10 @@ export function workflowV2ReviewerPrompt(input: WorkflowV2ReviewerInput): string
   return [
     `Act as an independent Workflow V2 reviewer for executor node ${input.executorNodeId}.`,
     "Do not continue the executor's work and do not certify based on its self-assessment.",
-    "Evaluate the result against the objective and constraints using only concrete evidence in the packet.",
+    "Evaluate the result against the Workflow objective, node constraints, and every configured judge dimension using only concrete evidence in the packet.",
+    "Return one result for every judge dimension. Use low, medium, or high. The overall qualityLevel is the lowest dimension level.",
     "Return one JSON object with exactly this contract:",
-    '{"reviewerNodeId":"independent-reviewer","verdict":{"decision":"accept|reject|escalate","reasons":["string"],"requiredFixes":["optional string"],"riskLevel":"low|medium|high","evidence":["optional string"],"confidence":"high|medium|low"}}',
+    '{"reviewerNodeId":"independent-reviewer","verdict":{"decision":"accept|reject","reasons":["string"],"requiredFixes":["optional string"],"riskLevel":"low|medium|high","evidence":["optional string"],"confidence":"high|medium|low","qualityLevel":"low|medium|high","dimensionResults":[{"key":"configured-dimension-key","qualityLevel":"low|medium|high","reason":"string","evidence":["string"]}]}}',
     "Reviewer input:",
     JSON.stringify(input),
   ].join("\n\n");
@@ -71,7 +74,7 @@ export function workflowV2ReviewerPrompt(input: WorkflowV2ReviewerInput): string
 
 export function parseWorkflowV2ReviewerResponse(
   content: string,
-  executorNodeId: string,
+  input: WorkflowV2ReviewerInput,
 ): WorkflowV2ReviewerResponse {
   const normalized = content.trim();
   const fenced = normalized.match(/^```(?:json)?\s*\n([\s\S]*?)\n```$/i);
@@ -89,12 +92,29 @@ export function parseWorkflowV2ReviewerResponse(
     || !isWorkflowV2ReviewVerdict(parsed.verdict)) {
     throw new Error("Workflow V2 reviewer response is malformed.");
   }
+  const dimensionKeys = new Set(input.judgeDimensions.map((dimension) => dimension.key));
+  if (parsed.verdict.dimensionResults.length !== dimensionKeys.size
+    || parsed.verdict.dimensionResults.some((dimension) => !dimensionKeys.has(dimension.key))
+    || new Set(parsed.verdict.dimensionResults.map((dimension) => dimension.key)).size !== dimensionKeys.size) {
+    throw new Error("Workflow V2 reviewer response must assess every configured judge dimension exactly once.");
+  }
+  const qualityLevel = lowestQualityLevel(parsed.verdict.dimensionResults.map((dimension) => dimension.qualityLevel));
+  const decision = qualityRank(qualityLevel) >= qualityRank(input.reviewLevel) ? "accept" : "reject";
   const response: WorkflowV2ReviewerResponse = {
     reviewerNodeId: parsed.reviewerNodeId.trim(),
-    verdict: cloneVerdict(parsed.verdict),
+    verdict: cloneVerdict({ ...parsed.verdict, decision, qualityLevel }),
   };
-  assertIndependentWorkflowV2Reviewer(executorNodeId, response);
+  assertIndependentWorkflowV2Reviewer(input.executorNodeId, response);
   return response;
+}
+
+function qualityRank(level: "low" | "medium" | "high"): number {
+  return level === "low" ? 1 : level === "medium" ? 2 : 3;
+}
+
+function lowestQualityLevel(levels: Array<"low" | "medium" | "high">): "low" | "medium" | "high" {
+  if (levels.length === 0) throw new Error("Workflow V2 reviewer response has no dimension results.");
+  return levels.reduce((lowest, level) => qualityRank(level) < qualityRank(lowest) ? level : lowest);
 }
 
 function toResultPacket(output: WorkflowV2WorkerOutput): WorkflowV2ResultPacket {
