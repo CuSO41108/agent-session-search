@@ -16,7 +16,8 @@ describe("OpenViking main-process wiring", () => {
     expect(mainSource).toContain("openVikingHookManifestService?.clear()");
     expect(mainSource).toContain("reconcileOpenVikingMemoryHooks");
     expect(mainSource).toContain("refreshOpenVikingHookManifest");
-    expect(mainSource).toContain("void openVikingControlService.syncManagedWorkspaces()");
+    expect(mainSource).toContain("snapshot.workspaces.some((workspace) => workspace.managed)");
+    expect(mainSource).not.toContain("syncManagedWorkspaces");
     expect(mainSource).toContain("build-openviking-runtime.mjs");
     expect(mainSource).toContain("developmentFallback");
     expect(mainSource).toContain("allowLocalRuntime: !releaseUpdateRuntime");
@@ -27,7 +28,11 @@ describe("OpenViking main-process wiring", () => {
       "developmentFallback: releaseUpdateRuntime",
     );
     expect(mainSource).toContain(
-      'codexAuthBootstrapPath: codexAuthPath(process.env, app.getPath("home"))',
+      'const codexAuthBootstrapPath = codexAuthPath(process.env, app.getPath("home"))',
+    );
+    expect(mainSource).toContain("loadActiveCodexSummaryEndpointDefaults(codexHome)");
+    expect(mainSource).toContain(
+      "resolveOpenVikingExtractionConfig({ settings, codex, codexEndpoint })",
     );
     expect(mainSource.indexOf("store = new SessionStore")).toBeLessThan(
       mainSource.indexOf("initializeOpenVikingMemory();"),
@@ -36,5 +41,7 @@ describe("OpenViking main-process wiring", () => {
     expect(mainSource).not.toContain("new AgentMemoryService");
     expect(preloadSource).not.toContain("createAgentMemoryApi");
     expect(preloadSource).toContain("createOpenVikingMemoryApi");
+    expect(preloadSource).not.toContain("importOpenVikingWorkspace");
+    expect(preloadSource).not.toContain("listOpenVikingImportSessions");
   });
 });

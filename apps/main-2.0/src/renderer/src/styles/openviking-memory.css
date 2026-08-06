@@ -311,6 +311,7 @@
   font-weight: 650;
 }
 
+.openviking-workspaces em.tracking,
 .openviking-workspaces em.running,
 .openviking-workspaces em.completed {
   background: var(--success-bg);
@@ -384,120 +385,62 @@
   border-radius: 50%;
 }
 
-.openviking-import-status {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  min-height: 78px;
-  padding: 11px 14px 10px;
+.openviking-tracking-status {
+  display: grid;
+  grid-template-columns: 8px minmax(0, 1fr);
+  align-items: start;
+  gap: 10px;
+  min-height: 92px;
+  padding: 13px 14px;
   border-bottom: 1px solid var(--border-subtle);
   box-shadow: inset 3px 0 0 transparent;
   color: var(--text-muted);
   font-size: 11px;
 }
 
-.openviking-import-status.running {
-  background: color-mix(in srgb, var(--accent) 5%, transparent);
-  box-shadow: inset 3px 0 0 var(--accent);
+.openviking-tracking-status.tracking {
+  background: color-mix(in srgb, var(--success-text) 5%, transparent);
+  box-shadow: inset 3px 0 0 var(--success-text);
 }
 
-.openviking-import-status-head,
-.openviking-import-status-foot {
-  display: flex;
-  min-width: 0;
-  align-items: center;
+.openviking-tracking-status.stopped {
+  background: var(--panel-subtle);
 }
 
-.openviking-import-status-head {
-  gap: 7px;
-}
-
-.openviking-import-status-head strong {
-  flex: 0 0 auto;
-  color: var(--text);
-  font-size: 11.5px;
-  font-weight: 600;
-}
-
-.openviking-import-status-head > span:not(.openviking-import-live) {
-  min-width: 0;
-  overflow: hidden;
-  color: var(--text-muted);
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.openviking-import-status-head em {
-  flex: 0 0 auto;
-  margin-left: auto;
-  color: var(--text-faint);
-  font-style: normal;
-  font-variant-numeric: tabular-nums;
-}
-
-.openviking-import-live {
-  width: 7px;
-  height: 7px;
-  flex: 0 0 auto;
+.openviking-tracking-dot {
+  width: 8px;
+  height: 8px;
+  margin-top: 5px;
   border-radius: 50%;
   background: var(--text-faint);
 }
 
-.openviking-import-status.running .openviking-import-live {
-  background: var(--accent);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 16%, transparent);
-  animation: openviking-import-pulse 1.4s ease-in-out infinite;
+.openviking-tracking-status.tracking .openviking-tracking-dot {
+  background: var(--success-text);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--success-text) 15%, transparent);
 }
 
-.openviking-import-track {
-  height: 5px;
-  overflow: hidden;
-  border-radius: 99px;
-  background: var(--border);
+.openviking-tracking-status > div {
+  display: grid;
+  min-width: 0;
+  gap: 5px;
 }
 
-.openviking-import-track i {
-  display: block;
-  height: 100%;
-  border-radius: inherit;
-  background: var(--accent);
-  transition: width 0.2s ease;
+.openviking-tracking-status strong {
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 650;
 }
 
-.openviking-import-track i.active {
-  background: linear-gradient(90deg, var(--accent), var(--accent-bright), var(--accent));
-  background-size: 200% 100%;
-  animation: openviking-import-active 1.2s linear infinite;
+.openviking-tracking-status span,
+.openviking-tracking-status small {
+  color: var(--text-muted);
+  line-height: 1.5;
 }
 
-@keyframes openviking-import-active {
-  to {
-    background-position: -200% 0;
-  }
-}
-
-.openviking-import-status-foot {
-  justify-content: space-between;
-}
-
-.openviking-import-status-foot em {
+.openviking-tracking-status small {
   color: var(--text-faint);
-  font-style: normal;
-  font-variant-numeric: tabular-nums;
-}
-
-@keyframes openviking-import-pulse {
-  50% {
-    opacity: 0.55;
-    transform: scale(0.8);
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .openviking-import-status.running .openviking-import-live,
-  .openviking-import-track i.active {
-    animation: none;
-  }
+  font-size: 10.5px;
 }
 
 .openviking-search {
@@ -654,11 +597,13 @@
 }
 
 .openviking-memory-detail {
-  display: grid;
-  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  display: flex;
   min-width: 0;
   min-height: 0;
-  overflow: hidden;
+  flex-direction: column;
+  overflow-x: hidden;
+  overflow-y: auto;
+  scrollbar-gutter: stable;
 }
 
 .openviking-memory-detail > header {
@@ -695,6 +640,7 @@
 }
 
 .openviking-memory-detail > textarea {
+  flex: 1 1 auto;
   min-height: 0;
   padding: 13px;
   resize: none;
@@ -708,11 +654,42 @@
   background: var(--panel-subtle);
 }
 
+.openviking-memory-control-meta {
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px;
+  padding: 7px 13px;
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--panel-subtle);
+}
+
+.openviking-memory-control-meta > span {
+  display: inline-flex;
+  min-height: 22px;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 7px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 999px;
+  background: var(--panel-bg);
+  color: var(--text-muted);
+  font-size: 9.5px;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
+.openviking-memory-control-meta > span.locked {
+  border-color: color-mix(in srgb, var(--accent) 30%, var(--border-subtle));
+  background: var(--accent-soft);
+  color: var(--accent-bright);
+}
+
 .openviking-memory-detail > footer {
-  min-height: 45px;
-  justify-content: space-between;
-  flex-wrap: nowrap;
-  gap: 12px;
+  display: grid;
+  flex: 0 0 auto;
+  gap: 7px;
   padding: 8px 12px;
 }
 
@@ -726,12 +703,38 @@
 }
 
 .openviking-memory-detail > footer > div {
-  flex: 0 0 auto;
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
   gap: 6px;
 }
 
 .openviking-memory-detail > footer > div > button {
+  width: auto;
   flex: 0 0 auto;
+  min-height: 29px;
+  padding: 0 8px;
+  white-space: nowrap;
+}
+
+.openviking-memory-feedback-actions {
+  display: flex;
+  min-width: 0;
+  flex: 1 1 auto;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.openviking-memory-feedback-actions button {
+  display: inline-flex;
+  min-height: 29px;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
   padding: 0 8px;
   white-space: nowrap;
 }
@@ -817,176 +820,16 @@
   border-top: 1px solid var(--border);
 }
 
-.openviking-import-picker {
-  display: grid;
-  width: min(760px, calc(100vw - 40px));
-  max-height: min(760px, calc(100vh - 40px));
-  grid-template-rows: auto auto minmax(0, 1fr) auto;
-}
-
-.openviking-import-picker-tools {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  padding: 11px 15px;
-  border-bottom: 1px solid var(--border);
-}
-
-.openviking-import-picker-tools > label {
-  display: flex;
-  min-width: 0;
-  height: 32px;
-  flex: 1;
-  align-items: center;
-  gap: 7px;
-  padding: 0 9px;
-  border: 1px solid var(--border-strong);
-  border-radius: 8px;
-  background: var(--input-bg);
-  color: var(--text-faint);
-}
-
-.openviking-import-picker-tools input {
-  min-width: 0;
-  flex: 1;
-  border: 0;
-  background: transparent;
-  color: var(--text);
-  outline: none;
-}
-
-.openviking-import-picker-tools > button {
-  min-height: 32px;
-  padding: 0 10px;
-  border: 1px solid var(--border-strong);
-  border-radius: 8px;
-  color: var(--text-muted);
-  font-size: 11.5px;
-  font-weight: 650;
-  white-space: nowrap;
-}
-
-.openviking-import-session-list {
-  min-height: 180px;
-  overflow-y: auto;
-  padding: 6px 0;
-}
-
-.openviking-import-session-list > label {
-  display: grid;
-  grid-template-columns: 18px minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 10px;
-  padding: 10px 16px;
-  border-bottom: 1px solid var(--border-subtle);
-  cursor: pointer;
-}
-
-.openviking-import-session-list > label:hover {
-  background: var(--panel-hover);
-}
-
-.openviking-import-session-list > label.disabled {
-  opacity: 0.58;
-  cursor: default;
-}
-
-.openviking-import-session-list > label > span {
-  display: grid;
-  min-width: 0;
-  gap: 4px;
-}
-
-.openviking-import-session-list strong,
-.openviking-import-session-list small {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.openviking-import-session-list strong {
-  color: var(--text);
-  font-size: 12.5px;
-}
-
-.openviking-import-session-list small {
-  color: var(--text-muted);
-  font-size: 10.5px;
-}
-
-.openviking-import-session-list em {
-  padding: 3px 7px;
-  border-radius: 999px;
-  background: var(--panel-subtle);
-  color: var(--text-muted);
-  font-size: 9.5px;
-  font-style: normal;
-  font-weight: 700;
-  white-space: nowrap;
-}
-
-.openviking-import-session-list em.new {
-  background: var(--running-bg);
-  color: var(--running-text);
-}
-
-.openviking-import-session-list em.changed {
-  background: var(--accent-soft);
-  color: var(--accent-bright);
-}
-
-.openviking-import-session-list em.importing {
-  background: var(--running-bg);
-  color: var(--running-text);
-}
-
-.openviking-import-session-list em.imported {
-  background: var(--success-bg);
-  color: var(--success-text);
-}
-
-.openviking-import-session-empty {
-  display: grid;
-  min-height: 180px;
-  place-items: center;
-  color: var(--text-faint);
-  font-size: 12px;
-}
-
 .openviking-page-actions button.primary svg,
 .openviking-memory-detail button.primary svg,
 .openviking-preview-dialog > footer button.primary svg {
   color: inherit;
 }
 
-.openviking-preview-dialog > footer button,
-.openviking-import-picker > footer > div > button {
+.openviking-preview-dialog > footer button {
   flex: 0 0 auto;
   width: auto;
   white-space: nowrap;
-}
-
-.openviking-import-picker > footer {
-  justify-content: space-between;
-  flex-wrap: nowrap;
-}
-
-.openviking-import-picker > footer > span {
-  min-width: 0;
-  overflow: hidden;
-  color: var(--text-muted);
-  font-size: 11.5px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.openviking-import-picker > footer > div {
-  display: flex;
-  flex: 0 0 auto;
-  flex-direction: row;
-  flex-wrap: nowrap;
-  align-items: center;
-  gap: 7px;
 }
 
 .openviking-settings-pane .settings-pane-head.compact {
@@ -1281,6 +1124,7 @@
 
 .openviking-runtime-state.running,
 .openviking-runtime-state.healthy,
+.openviking-runtime-state.tracking,
 .openviking-runtime-state.completed {
   background: var(--success-bg);
   color: var(--success-text);
@@ -1525,6 +1369,100 @@
   gap: 7px;
 }
 
+.openviking-control-columns {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  border-top: 1px solid var(--border-subtle);
+}
+
+.openviking-control-column {
+  min-width: 0;
+  border-right: 1px solid var(--border-subtle);
+}
+
+.openviking-control-column:last-child {
+  border-right: 0;
+}
+
+.openviking-control-column > strong {
+  display: block;
+  padding: 8px 11px;
+  border-bottom: 1px solid var(--border-subtle);
+  color: var(--text-dim);
+  font-size: 10.5px;
+}
+
+.openviking-control-column > div {
+  display: grid;
+}
+
+.openviking-control-row {
+  display: grid;
+  min-height: 58px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 8px;
+  padding: 8px 11px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.openviking-control-row:last-child {
+  border-bottom: 0;
+}
+
+.openviking-control-row > div,
+.openviking-control-row > aside {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.openviking-control-row > div > strong,
+.openviking-control-row > div > span,
+.openviking-control-row > div > em {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.openviking-control-row > div > strong {
+  color: var(--text-dim);
+  font-size: 10.5px;
+}
+
+.openviking-control-row > div > span,
+.openviking-control-row > div > em,
+.openviking-control-row time {
+  color: var(--text-faint);
+  font-size: 9.5px;
+  font-style: normal;
+}
+
+.openviking-control-row > div > em.error {
+  color: var(--danger);
+}
+
+.openviking-control-row > aside {
+  justify-items: end;
+}
+
+.openviking-control-row time {
+  white-space: nowrap;
+}
+
+.openviking-control-empty {
+  padding: 18px 11px;
+  color: var(--text-faint);
+  font-size: 10.5px;
+  text-align: center;
+}
+
+.openviking-runtime-state.degraded,
+.openviking-runtime-state.skipped {
+  background: var(--running-bg);
+  color: var(--running-text);
+}
+
 .openviking-runtime-current,
 .openviking-runtime-task-error {
   gap: 6px;
@@ -1692,6 +1630,19 @@
 
   .openviking-runtime-facts {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .openviking-control-columns {
+    grid-template-columns: 1fr;
+  }
+
+  .openviking-control-column {
+    border-right: 0;
+    border-bottom: 1px solid var(--border-subtle);
+  }
+
+  .openviking-control-column:last-child {
+    border-bottom: 0;
   }
 
   .openviking-runtime-hero {

@@ -28,6 +28,25 @@ describe("OpenVikingHookManifestService", () => {
             }
           : null,
       },
+      control: {
+        listOpenVikingMemoryControls: async (workspaceId) => workspaceId === "managed"
+          ? [{
+              workspaceId,
+              uri: "viking://user/memories/preferences/editor.md",
+              memoryType: "preferences",
+              authority: "user",
+              lifecycle: "active",
+              locked: true,
+              evidenceStatus: "verified",
+              source: "user-edit",
+              title: "Editor",
+              lockedContent: "Prefer concise diffs.",
+              evidenceCount: 2,
+              createdAt: "2026-08-05T00:00:00.000Z",
+              updatedAt: "2026-08-05T00:00:00.000Z",
+            }]
+          : [],
+      },
     });
 
     const manifestPath = await service.write({
@@ -37,13 +56,25 @@ describe("OpenVikingHookManifestService", () => {
         workspace("managed", true),
         workspace("retained", false),
       ],
+      recallTokenBudget: 1_600,
     });
 
     const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+    expect(manifest.version).toBe(2);
     expect(manifest.workspaces).toEqual([expect.objectContaining({
       id: "managed",
       apiKey: "workspace-key",
+      recallTokenBudget: 1_600,
+      policyPath: expect.any(String),
     })]);
+    const policy = JSON.parse(await readFile(manifest.workspaces[0].policyPath, "utf8"));
+    expect(policy).toMatchObject({ version: 2, strict: true, workspaceId: "managed" });
+    expect(policy.memories["viking://user/memories/preferences/editor.md"]).toMatchObject({
+      authority: "user",
+      locked: true,
+      lockedContent: "Prefer concise diffs.",
+      evidenceStatus: "verified",
+    });
     if (process.platform !== "win32") {
       expect((await stat(manifestPath)).mode & 0o777).toBe(0o600);
     }
@@ -56,11 +87,13 @@ describe("OpenVikingHookManifestService", () => {
       rootDir: root,
       realpath: async (value) => value,
       credentials: { get: async () => null },
+      control: { listOpenVikingMemoryControls: async () => [] },
     });
     const manifestPath = await service.write({
       baseUrl: "http://127.0.0.1:21933",
       integrations: { claude: false, codex: true, opencode: false },
       workspaces: [],
+      recallTokenBudget: 1_200,
     });
 
     await service.clear();
@@ -77,9 +110,6 @@ function workspace(id: string, managed: boolean) {
     identity: `path:${id}`,
     displayName: id,
     managed,
-    importState: "completed" as const,
-    importedTurns: 1,
-    totalTurns: 1,
     createdAt: "2026-07-24T00:00:00.000Z",
     updatedAt: "2026-07-24T00:00:00.000Z",
   };

@@ -1,4 +1,9 @@
 import type {
+  OpenVikingMemoryControl,
+  OpenVikingMemoryDetails,
+  OpenVikingMemoryFeedbackKind,
+} from "../../core/openviking-memory-control";
+import type {
   OpenVikingDiagnosticsSnapshot,
   OpenVikingMemoryItem,
   OpenVikingMemorySnapshot,
@@ -6,12 +11,8 @@ import type {
   OpenVikingRuntimeStatus,
   OpenVikingWorkspace,
 } from "../../core/openviking-memory";
-import type { OpenVikingImportJob } from "../../core/postgres/openviking-memory-repository";
 import { OPENVIKING_MEMORY_IPC } from "../../shared/ipc/openviking-memory";
-import type {
-  OpenVikingDirectoryPreview,
-  OpenVikingImportSessionPreview,
-} from "../services/openviking-memory-service";
+import type { OpenVikingDirectoryPreview } from "../services/openviking-memory-service";
 import type { SaveOpenVikingMemoryInput } from "../services/openviking-client";
 import {
   combineIpcDisposers,
@@ -25,13 +26,16 @@ export interface OpenVikingMemoryIpcService {
   chooseDirectory(): Promise<OpenVikingDirectoryPreview | null>;
   previewDirectory(rootPath: string): Promise<OpenVikingDirectoryPreview>;
   addWorkspace(rootPath: string): Promise<OpenVikingWorkspace>;
-  listImportSessions(workspaceId: string): Promise<OpenVikingImportSessionPreview[]>;
-  importWorkspace(workspaceId: string, selectedSessionKeys?: string[]): Promise<OpenVikingImportJob>;
-  pauseImport(workspaceId: string): Promise<OpenVikingImportJob>;
-  resumeImport(workspaceId: string): Promise<OpenVikingImportJob>;
   search(workspaceId: string, query: string, limit?: number): Promise<OpenVikingMemoryItem[]>;
   read(workspaceId: string, uri: string): Promise<string>;
+  memoryDetails(workspaceId: string, uri: string): Promise<OpenVikingMemoryDetails>;
   save(workspaceId: string, input: SaveOpenVikingMemoryInput): Promise<OpenVikingMemoryItem>;
+  feedback(
+    workspaceId: string,
+    uri: string,
+    feedback: OpenVikingMemoryFeedbackKind,
+    note?: string,
+  ): Promise<OpenVikingMemoryControl>;
   deleteMemory(workspaceId: string, uri: string): Promise<void>;
   stopManaging(workspaceId: string): Promise<OpenVikingWorkspace>;
   deleteWorkspace(workspaceId: string): Promise<void>;
@@ -54,20 +58,16 @@ export function registerOpenVikingMemoryIpc(
       service.previewDirectory(rootPath)),
     registerIpcHandler(ipc, OPENVIKING_MEMORY_IPC.addWorkspace, (_event, rootPath) =>
       service.addWorkspace(rootPath)),
-    registerIpcHandler(ipc, OPENVIKING_MEMORY_IPC.listImportSessions, (_event, workspaceId) =>
-      service.listImportSessions(workspaceId)),
-    registerIpcHandler(ipc, OPENVIKING_MEMORY_IPC.importWorkspace, (_event, workspaceId, selectedSessionKeys?) =>
-      service.importWorkspace(workspaceId, selectedSessionKeys)),
-    registerIpcHandler(ipc, OPENVIKING_MEMORY_IPC.pauseImport, (_event, workspaceId) =>
-      service.pauseImport(workspaceId)),
-    registerIpcHandler(ipc, OPENVIKING_MEMORY_IPC.resumeImport, (_event, workspaceId) =>
-      service.resumeImport(workspaceId)),
     registerIpcHandler(ipc, OPENVIKING_MEMORY_IPC.search, (_event, workspaceId, query, limit?) =>
       service.search(workspaceId, query, limit)),
     registerIpcHandler(ipc, OPENVIKING_MEMORY_IPC.read, (_event, workspaceId, uri) =>
       service.read(workspaceId, uri)),
+    registerIpcHandler(ipc, OPENVIKING_MEMORY_IPC.details, (_event, workspaceId, uri) =>
+      service.memoryDetails(workspaceId, uri)),
     registerIpcHandler(ipc, OPENVIKING_MEMORY_IPC.save, (_event, workspaceId, input) =>
       service.save(workspaceId, input)),
+    registerIpcHandler(ipc, OPENVIKING_MEMORY_IPC.feedback, (_event, workspaceId, uri, input) =>
+      service.feedback(workspaceId, uri, input.feedback, input.note)),
     registerIpcHandler(ipc, OPENVIKING_MEMORY_IPC.deleteMemory, (_event, workspaceId, uri) =>
       service.deleteMemory(workspaceId, uri)),
     registerIpcHandler(ipc, OPENVIKING_MEMORY_IPC.stopManaging, (_event, workspaceId) =>

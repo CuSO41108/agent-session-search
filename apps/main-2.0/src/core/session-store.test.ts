@@ -201,6 +201,49 @@ describe("SessionStore PostgreSQL facade", () => {
     await expect(store.getSession(sessionKey)).resolves.toBeNull();
   });
 
+  it("invalidates online memory evidence when its source Session is deleted", async () => {
+    const store = createStore();
+    const uri = "viking://user/memories/events/release.md";
+    await store.upsertIndexedSession(indexedSession(), messages);
+    await store.setSessionSourceAvailable("codex:session-a", false);
+    await store.addOpenVikingWorkspace({
+      id: "workspace-1",
+      userId: "workspace_abcd",
+      rootPath: "/synthetic/repo",
+      identity: "path:workspace-1",
+      displayName: "repo",
+    });
+    await store.applyOpenVikingCommitResult({
+      run: {
+        taskId: "task-1",
+        workspaceId: "workspace-1",
+        sessionId: "agent-recall-synthetic",
+        sourceSessionId: "session-a",
+        agent: "codex",
+        trigger: "session-end",
+        state: "completed",
+        sourceTurnIds: ["turn-1"],
+        tokenEstimate: 100,
+        startedAt: "2026-08-05T00:00:00.000Z",
+        completedAt: "2026-08-05T00:00:10.000Z",
+        updatedAt: "2026-08-05T00:00:10.000Z",
+      },
+      changes: [{ kind: "add", uri, memoryType: "events", after: "Release note required." }],
+    });
+    let policyRefreshes = 0;
+    store.setOpenVikingControlChangedHandler(() => {
+      policyRefreshes += 1;
+    });
+
+    await expect(store.deleteSession("codex:session-a")).resolves.toBe(true);
+    await expect(store.getOpenVikingMemoryControl("workspace-1", uri)).resolves.toMatchObject({
+      lifecycle: "invalidated",
+      evidenceStatus: "invalid",
+      evidenceCount: 0,
+    });
+    expect(policyRefreshes).toBe(1);
+  });
+
   it("deletes a Claude parent with indexed descendants and owned companion artifacts", async () => {
     const store = createStore();
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "agent-recall-claude-tree-delete-"));
