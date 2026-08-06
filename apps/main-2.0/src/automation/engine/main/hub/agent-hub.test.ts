@@ -3615,7 +3615,12 @@ fs.writeFileSync(${JSON.stringify(argsPath)}, process.argv.slice(2).join("\\n") 
     let managerPrompt = "";
     vi.spyOn(hub as any, "askWorkflowDraftAgent").mockImplementation(async (...args: unknown[]) => {
       const request = args[0] as { prompt: string };
+      const onEvent = args[1] as ((event: { requestId: string; type: "delta" | "tool_call"; content: string; name?: string }) => void) | undefined;
       managerPrompt = request.prompt;
+      const requestId = (args[0] as { requestId: string }).requestId;
+      onEvent?.({ requestId, type: "delta", content: "正在修改工作流。" });
+      onEvent?.({ requestId, type: "tool_call", name: "workflow_create", content: "Submitting revised definition" });
+      expect(hub.snapshot().workflowDraft).toMatchObject({ revision: reviewed.revision, generationReview: { reviewedRevision: reviewed.revision } });
       const revisedDefinition = structuredClone(hub.snapshot().workflowDraft!.definition);
       revisedDefinition.nodes[0]!.outputFields.push({ key: "evidence", required: true });
       const result = hub.materializeWorkflowDraft(workflowId, { title: "Evidence answer", objective: revisedDefinition.objective, definition: revisedDefinition });

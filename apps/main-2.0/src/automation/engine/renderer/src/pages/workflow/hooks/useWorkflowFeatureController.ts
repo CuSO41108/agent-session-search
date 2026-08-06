@@ -75,7 +75,7 @@ export function useWorkflowFeatureController({
       reviewerConfiguredAgentId: draft.workflowReviewerConfiguredAgentId,
       reviewerModelId: draft.workflowReviewerModelId,
       generationReview: activeWorkflow?.generationReview,
-      reviewFeatureEnabled: globalReviewEnabled && activeWorkflow?.sourceType !== "official",
+      reviewFeatureEnabled: globalReviewEnabled && activeWorkflow?.sourceType !== "official" && activeWorkflow?.topologyLocked !== true,
       runtimes: snapshot.runtimes,
       channels: snapshot.channels,
       configuredAgents: snapshot.configuredAgents,

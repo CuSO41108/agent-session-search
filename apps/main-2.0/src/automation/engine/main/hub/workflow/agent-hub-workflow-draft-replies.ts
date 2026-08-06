@@ -105,7 +105,6 @@ export function reduceWorkflowDraftReplyEvent(input: {
       type: "delta",
       workflow: input.cloneDraft({
         ...input.workflow,
-        revision: input.workflow.revision + 1,
         messages: input.replaceMessage(
           input.workflow.messages,
           input.activeRequest.assistantMessageId,
@@ -172,7 +171,6 @@ export function reduceWorkflowDraftReplyEvent(input: {
       type: "event",
       workflow: input.cloneDraft({
         ...input.workflow,
-        revision: input.workflow.revision + 1,
         messages,
         updatedAt: input.now ?? Date.now(),
       }),
