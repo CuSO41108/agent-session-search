@@ -1046,6 +1046,7 @@ describe("workflow-v2 executor", () => {
     const plan = await buildWorkflowV2Plan({ definition: reviewedDefinition, approvedBy: "tester", now: 5_300 });
     let runnerAttempts = 0;
     let reviewAttempts = 0;
+    const rejectedAttempts: Array<{ attempt: number; summary: string }> = [];
 
     const result = await executeWorkflowV2Plan({
       plan,
@@ -1076,6 +1077,9 @@ describe("workflow-v2 executor", () => {
           },
         };
       },
+      onReviewRetry: async ({ attempt, output }) => {
+        rejectedAttempts.push({ attempt, summary: output.summary });
+      },
     });
 
     expect(runnerAttempts).toBe(2);
@@ -1084,6 +1088,7 @@ describe("workflow-v2 executor", () => {
     expect(result.workerOutputs[0]?.outputs).toEqual({ draft: "revision 2" });
     expect(result.runState.nodes.draft?.reviewHistory).toHaveLength(2);
     expect(result.runState.nodes.draft?.reviewAttempt).toBe(2);
+    expect(rejectedAttempts).toEqual([{ attempt: 1, summary: "draft 1" }]);
   });
 
   test("pauses an exhausted quality review with only full-rerun and last-result actions", async () => {
@@ -1473,6 +1478,36 @@ describe("workflow-v2 executor", () => {
     expect(infrastructureAttempts).toEqual([3]);
     expect(result.runState.status).toBe("completed");
     expect(result.workerOutputs).toEqual([expect.objectContaining({ nodeId: "draft", summary: "Persisted candidate" })]);
+  });
+
+  test("replays a durably recorded Review Gate verdict without reviewing the candidate twice", async () => {
+    const reviewDefinition = definition();
+    reviewDefinition.nodes = [reviewDefinition.nodes[0]!];
+    reviewDefinition.edges = [];
+    reviewDefinition.reviewGates = [{ id: "review-draft", targetNodeId: "draft", configuredAgentId: "review-agent", reviewLevel: "high", judgeDimensions: [{ key: "quality", description: "Must be correct." }], maxQualityRetries: 2 }];
+    const plan = await buildWorkflowV2Plan({ definition: reviewDefinition, approvedBy: "tester", now: 6_250 });
+    const candidate = { nodeId: "draft", summary: "Persisted accepted candidate", outputs: { draft: "ready" }, proposals: [] };
+    let runState = createWorkflowV2RunState({ definition: plan.definition });
+    runState = transitionWorkflowV2NodeState(runState, { nodeId: "draft", status: "running", now: 6_251 });
+    runState = transitionWorkflowV2NodeState(runState, {
+      nodeId: "draft",
+      status: "awaiting_review",
+      now: 6_252,
+      reviewInfrastructureAttempt: 3,
+      reviewVerdict: { decision: "accept", reasons: ["通过"], riskLevel: "low", confidence: "high", qualityLevel: "high", dimensionResults: [{ key: "quality", qualityLevel: "high", reason: "正确", evidence: ["candidate"] }] },
+      reviewRecord: { gateId: "review-draft", reviewerConfiguredAgentId: "review-agent", reviewAttempt: 1, candidate, verdict: { decision: "accept", reasons: ["通过"], riskLevel: "low", confidence: "high", qualityLevel: "high", dimensionResults: [{ key: "quality", qualityLevel: "high", reason: "正确", evidence: ["candidate"] }] }, requiredLevel: "high", passed: true, reviewedAt: 6_252 },
+    });
+
+    const result = await executeWorkflowV2Plan({
+      plan,
+      initialCheckpoint: { runState, workerOutputs: [candidate] },
+      runLlmNode: async () => { throw new Error("executor must not rerun"); },
+      executeScript: async () => { throw new Error("script must not run"); },
+      reviewNodeOutput: async () => { throw new Error("durably recorded verdict must not be requested twice"); },
+    });
+
+    expect(result.runState.status).toBe("completed");
+    expect(result.runState.nodes.draft?.reviewHistory).toHaveLength(1);
   });
 
   test("rejects a checkpoint whose identity does not match the frozen plan", async () => {

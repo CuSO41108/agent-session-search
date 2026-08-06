@@ -36,6 +36,7 @@ import { validateWorkflowV2NodeOutput } from "./workflow-v2-validation";
 import { WorkflowV2SupervisionSignal } from "./workflow-v2-supervision-signal";
 import type { WorkflowV2HookLifecycle } from "../../../shared/workflow-v2/hooks";
 import { WorkflowV2HookSignal } from "./workflow-v2-hooks";
+import { isDeepStrictEqual } from "node:util";
 
 export interface ExecuteWorkflowV2PlanInput {
   plan: WorkflowV2Plan;
@@ -61,6 +62,7 @@ export interface ExecuteWorkflowV2PlanInput {
   reviewNodeOutput?: (input: WorkflowV2ReviewerInput, context?: {
     initialInfrastructureAttempt: number;
     onInfrastructureAttempt: (attempt: number) => Promise<void>;
+    onCompletedResponse: (response: WorkflowV2ReviewerResponse) => Promise<void>;
   }) => Promise<WorkflowV2ReviewerResponse>;
   forceIndependentReviewNodeIds?: ReadonlySet<string>;
   runNodeHooks?: (input: {
@@ -70,6 +72,7 @@ export interface ExecuteWorkflowV2PlanInput {
   }) => Promise<void>;
   beforeNodeExecute?: (input: { node: WorkflowV2Node; attempt: number }) => Promise<void>;
   onNodeAccepted?: (input: { node: WorkflowV2Node; output: WorkflowV2WorkerOutput }) => Promise<void>;
+  onReviewRetry?: (input: { node: WorkflowV2Node; output: WorkflowV2WorkerOutput; attempt: number }) => Promise<void>;
   onNodeStateTransition?: (input: WorkflowV2NodeStateTransitionEvent) => void;
   onRunCheckpoint?: (input: ExecuteWorkflowV2Checkpoint) => Promise<void>;
   afterBatchCheckpoint?: (input: ExecuteWorkflowV2Checkpoint) => Promise<{ pauseReason?: string } | void>;
@@ -421,24 +424,57 @@ export async function executeWorkflowV2Plan(input: ExecuteWorkflowV2PlanInput): 
             continue;
           }
 
-          let reviewerResponse: WorkflowV2ReviewerResponse;
-          const reviewAttempt = (runState.nodes[nodeId]?.reviewAttempt ?? 0) + 1;
-          const reviewerInput = createWorkflowV2ReviewerInput({
-            node,
-            objective: input.plan.objective,
-            output: authoritativeWorkerOutput,
-            upstreamOutputs,
-            reviewAttempt,
-            ...(reviewGate ? { gate: reviewGate } : {}),
-          });
-          try {
-            reviewerResponse = await input.reviewNodeOutput(reviewerInput, {
+          let resolution: ReturnType<typeof resolveWorkflowV2ReviewVerdict> | undefined;
+          let reviewRecord: WorkflowV2ReviewAttemptRecord | undefined;
+          const resumedRecord = resumedReviewCandidateNodeIds.has(nodeId)
+            ? runState.nodes[nodeId]?.reviewHistory?.at(-1)
+            : undefined;
+          if (resumedRecord) {
+            if (!isDeepStrictEqual(resumedRecord.candidate, authoritativeWorkerOutput)
+              || resumedRecord.gateId !== reviewGate?.id
+              || (reviewGate && resumedRecord.reviewerConfiguredAgentId !== reviewGate.configuredAgentId)
+              || resumedRecord.requiredLevel !== (reviewGate?.reviewLevel ?? node.reviewLevel)) {
+              throw new Error(`Workflow V2 node ${nodeId} persisted Review Gate verdict does not match its candidate or frozen review contract.`);
+            }
+            reviewRecord = structuredClone(resumedRecord);
+            resolution = resolveWorkflowV2ReviewVerdict(reviewRecord.verdict, reviewRetryPolicyFor(node, reviewRecord.reviewAttempt, reviewGate));
+          } else try {
+            const reviewAttempt = (runState.nodes[nodeId]?.reviewAttempt ?? 0) + 1;
+            const reviewerInput = createWorkflowV2ReviewerInput({
+              node,
+              objective: input.plan.objective,
+              output: authoritativeWorkerOutput,
+              upstreamOutputs,
+              reviewAttempt,
+              ...(reviewGate ? { gate: reviewGate } : {}),
+            });
+            const onCompletedResponse = async (reviewerResponse: WorkflowV2ReviewerResponse): Promise<void> => {
+              if (resolution && reviewRecord) return;
+              assertIndependentWorkflowV2Reviewer(nodeId, reviewerResponse, reviewGate !== undefined);
+              resolution = resolveWorkflowV2ReviewVerdict(reviewerResponse.verdict, reviewRetryPolicyFor(node, reviewAttempt, reviewGate));
+              reviewRecord = {
+                ...(reviewGate ? { gateId: reviewGate.id, reviewerConfiguredAgentId: reviewGate.configuredAgentId } : {}),
+                reviewAttempt,
+                candidate: cloneWorkflowV2WorkerOutput(authoritativeWorkerOutput),
+                verdict: structuredClone(resolution.verdict),
+                requiredLevel: reviewerInput.reviewLevel,
+                passed: resolution.action === "accept",
+                reviewedAt: now(),
+                ...(reviewerResponse.trace?.length ? { trace: structuredClone(reviewerResponse.trace) } : {}),
+              };
+              runState = transitionWorkflowV2NodeState(runState, { nodeId, status: "awaiting_review", now: now(), reviewVerdict: resolution.verdict, reviewRecord });
+              input.onNodeStateTransition?.({ nodeId, status: "reviewed", record: structuredClone(reviewRecord) });
+              if (input.onRunCheckpoint) await checkpoint();
+            };
+            const reviewerResponse = await input.reviewNodeOutput(reviewerInput, {
               initialInfrastructureAttempt: runState.nodes[nodeId]?.reviewInfrastructureAttempt ?? 0,
               onInfrastructureAttempt: async (infrastructureAttempt) => {
                 runState = transitionWorkflowV2NodeState(runState, { nodeId, status: "awaiting_review", now: now(), reviewInfrastructureAttempt: infrastructureAttempt });
                 if (input.onRunCheckpoint) await checkpoint();
               },
+              onCompletedResponse,
             });
+            await onCompletedResponse(reviewerResponse);
           } catch (error) {
             if (
               error instanceof WorkflowV2SupervisionSignal
@@ -479,28 +515,10 @@ export async function executeWorkflowV2Plan(input: ExecuteWorkflowV2PlanInput): 
             input.onNodeStateTransition?.({ nodeId, status: "paused", intervention });
             continue;
           }
-          assertIndependentWorkflowV2Reviewer(nodeId, reviewerResponse, reviewGate !== undefined);
-          const resolution = resolveWorkflowV2ReviewVerdict(reviewerResponse.verdict, reviewRetryPolicyFor(node, reviewAttempt, reviewGate));
-          const reviewRecord: WorkflowV2ReviewAttemptRecord = {
-            ...(reviewGate ? { gateId: reviewGate.id, reviewerConfiguredAgentId: reviewGate.configuredAgentId } : {}),
-            reviewAttempt,
-            candidate: cloneWorkflowV2WorkerOutput(authoritativeWorkerOutput),
-            verdict: structuredClone(resolution.verdict),
-            requiredLevel: reviewerInput.reviewLevel,
-            passed: resolution.action === "accept",
-            reviewedAt: now(),
-            ...(reviewerResponse.trace?.length ? { trace: structuredClone(reviewerResponse.trace) } : {}),
-          };
-          runState = transitionWorkflowV2NodeState(runState, {
-            nodeId,
-            status: "awaiting_review",
-            now: now(),
-            reviewVerdict: resolution.verdict,
-            reviewRecord,
-          });
-          input.onNodeStateTransition?.({ nodeId, status: "reviewed", record: structuredClone(reviewRecord) });
+          if (!resolution || !reviewRecord) throw new Error(`Workflow V2 node ${nodeId} review completed without a durable verdict record.`);
 
           if (resolution.action === "retry") {
+            await input.onReviewRetry?.({ node, output: cloneWorkflowV2WorkerOutput(authoritativeWorkerOutput), attempt });
             removeWorkerOutput(nodeId);
             resumedReviewCandidateNodeIds.delete(nodeId);
             reviewFeedbackByNodeId.set(nodeId, [resolution.reason, ...(resolution.verdict.requiredFixes ?? [])].filter(Boolean).join("\n"));

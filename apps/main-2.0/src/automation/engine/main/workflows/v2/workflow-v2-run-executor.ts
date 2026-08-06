@@ -101,6 +101,7 @@ import { inspectWorkflowV2AgentCompletion } from "./workflow-v2-node-acceptance"
 import { WorkflowV2ScriptExecutionError } from "./workflow-v2-script-executor";
 import { WorkflowV2CommitCoordinator } from "./workflow-v2-commit-coordinator";
 import { canRollbackWorkflowV2CurrentSavepoint } from "./workflow-v2-recovery-capabilities";
+import { workflowV2ReviewGateForNode } from "../../../shared/workflow-v2/review-gates";
 
 const WORKFLOW_V2_MAX_PARALLEL_NODES = 4;
 const MAX_NODE_TIMER_DELAY_MS = 2_147_483_647;
@@ -184,6 +185,12 @@ class WorkflowV2OneShotInputRequestSignal extends Error {
 class WorkflowV2ReviewerExecutionError extends Error {
   constructor(message: string, readonly reviewTrace: WorkflowV2ReviewTraceEntry[]) {
     super(message);
+  }
+}
+
+class WorkflowV2ReviewPersistenceError extends Error {
+  constructor(readonly cause: unknown) {
+    super(cause instanceof Error ? cause.message : String(cause));
   }
 }
 
@@ -1406,6 +1413,7 @@ export class WorkflowV2RunExecutor {
       let output: WorkflowV2ScriptWorkerOutput;
       try {
         output = await executeAuthorizedWorkflowV2Script({ deps: this.deps, node: request.node, workDir: workflowWorkDir, upstreamOutputs: request.upstreamOutputs, timeoutMs, inputs: resolvedInput.values, controller, transactionMode,
+          ...(workflowV2ReviewGateForNode(plan.definition, request.node.id) ? { requireReversibleOperations: true } : {}),
           authorization: {
             decision: permission.decision,
             workflowId: workflow.workflowId,
@@ -1495,10 +1503,19 @@ export class WorkflowV2RunExecutor {
     const reviewNodeOutput = async (reviewInput: WorkflowV2ReviewerInput, reviewContext?: {
       initialInfrastructureAttempt: number;
       onInfrastructureAttempt: (attempt: number) => Promise<void>;
+      onCompletedResponse: (response: WorkflowV2ReviewerResponse) => Promise<void>;
     }): Promise<WorkflowV2ReviewerResponse> => {
       let lastError: unknown;
       let lastCompletedArtifact: string | undefined;
       const reviewTrace: WorkflowV2ReviewTraceEntry[] = [];
+      const completeResponse = async (response: WorkflowV2ReviewerResponse): Promise<WorkflowV2ReviewerResponse> => {
+        try {
+          await reviewContext?.onCompletedResponse(response);
+        } catch (error) {
+          throw new WorkflowV2ReviewPersistenceError(error);
+        }
+        return response;
+      };
       const reviewConfiguredAgentId = reviewInput.reviewerConfiguredAgentId ?? reviewerConfiguredAgentId;
       const reviewAgent = this.deps.snapshot().configuredAgents.find((agent) => agent.id === reviewConfiguredAgentId);
       if (!reviewConfiguredAgentId || !reviewAgent) {
@@ -1557,12 +1574,13 @@ export class WorkflowV2RunExecutor {
           completedTraceCaptured = true;
           lastCompletedArtifact = taskArtifact(completedTask);
           if (!this.deps.takeWorkflowReviewGateSubmission) {
-            return { ...parseWorkflowV2ReviewerResponse(lastCompletedArtifact, reviewInput), trace: structuredClone(reviewTrace) };
+            return completeResponse({ ...parseWorkflowV2ReviewerResponse(lastCompletedArtifact, reviewInput), trace: structuredClone(reviewTrace) });
           }
           const submitted = this.deps.takeWorkflowReviewGateSubmission?.(executionId);
-          if (submitted) return { ...submitted, trace: structuredClone(reviewTrace) };
+          if (submitted) return completeResponse({ ...submitted, trace: structuredClone(reviewTrace) });
           throw new Error("Review Agent completed without calling workflow_review_gate_submit.");
         } catch (error) {
+          if (error instanceof WorkflowV2ReviewPersistenceError) throw error.cause;
           lastError = error;
           const message = error instanceof Error ? error.message : String(error);
           if (completedTraceCaptured && task) {
@@ -1581,8 +1599,9 @@ export class WorkflowV2RunExecutor {
       }
       if (lastCompletedArtifact !== undefined) {
         try {
-          return { ...parseWorkflowV2ReviewerResponse(lastCompletedArtifact, reviewInput), trace: structuredClone(reviewTrace) };
+          return completeResponse({ ...parseWorkflowV2ReviewerResponse(lastCompletedArtifact, reviewInput), trace: structuredClone(reviewTrace) });
         } catch (error) {
+          if (error instanceof WorkflowV2ReviewPersistenceError) throw error.cause;
           lastError = error;
           reviewTrace.push({
             id: `review-fallback:${randomUUID()}`,
@@ -1605,6 +1624,40 @@ export class WorkflowV2RunExecutor {
         });
       }
       throw new WorkflowV2ReviewerExecutionError(lastError instanceof Error ? lastError.message : String(lastError), reviewTrace);
+    };
+
+    const discardRejectedReviewAttempt = async (nodeId: string, attempt: number, output: WorkflowV2WorkerOutput): Promise<void> => {
+      const operationIds = new Set(output.acceptance?.operationIds ?? []);
+      if (operationIds.size === 0 || !durableStore?.readOperations || !durableStore.transitionOperation) return;
+      let operations = (await durableStore.readOperations(workflow.workflowId, runId))
+        .filter((operation) => operation.nodeId === nodeId && operation.attempt === attempt && operation.adapterId && operationIds.has(operation.operationId));
+      for (const operation of operations) {
+        if (operation.state === "planned") {
+          await persistence.transitionOperation({ operationId: operation.operationId, state: "discarded", updatedAt: Date.now() });
+        }
+      }
+      operations = (await durableStore.readOperations(workflow.workflowId, runId))
+        .filter((operation) => operation.nodeId === nodeId && operation.attempt === attempt && operation.adapterId && operationIds.has(operation.operationId));
+      const unsettled = operations.filter((operation) => operation.state === "applying" || operation.state === "unknown" || operation.state === "compensating");
+      const broker = this.deps.createWorkflowV2RecoveryOperationBroker?.(durableStore);
+      for (const operation of unsettled) {
+        if (!broker?.canInspectOperation(operation)) throw new Error(`Rejected Review Gate attempt left operation ${operation.operationId} in ${operation.state} state and it cannot be inspected safely.`);
+        await broker.inspect({ workflowId: workflow.workflowId, runId, operationId: operation.operationId, signal: AbortSignal.timeout(10_000) });
+      }
+      operations = (await durableStore.readOperations(workflow.workflowId, runId))
+        .filter((operation) => operation.nodeId === nodeId && operation.attempt === attempt && operation.adapterId && operationIds.has(operation.operationId));
+      const appliedIds = operations.filter((operation) => operation.state === "applied").map((operation) => operation.operationId);
+      if (appliedIds.length > 0) {
+        if (!broker) throw new Error("Rejected Review Gate attempt cannot compensate its applied external operations because no operation broker is available.");
+        const compensation = await broker.compensateRun({ workflowId: workflow.workflowId, runId, operationIds: appliedIds, signal: AbortSignal.timeout(60_000) });
+        if (compensation.failed || compensation.skipped.length > 0 || compensation.compensated.length !== appliedIds.length) {
+          throw new Error(compensation.failed?.error ?? `Rejected Review Gate attempt could not compensate operations: ${[...compensation.skipped, ...appliedIds.filter((id) => !compensation.compensated.includes(id))].join(", ")}`);
+        }
+      }
+      const unresolved = (await durableStore.readOperations(workflow.workflowId, runId))
+        .filter((operation) => operation.nodeId === nodeId && operation.attempt === attempt && operation.adapterId && operationIds.has(operation.operationId))
+        .filter((operation) => operation.state !== "discarded" && operation.state !== "compensated");
+      if (unresolved.length > 0) throw new Error(`Rejected Review Gate attempt still has unresolved operations: ${unresolved.map((operation) => operation.operationId).join(", ")}`);
     };
 
     const hookMemory = new Map<string, unknown>();
@@ -1738,6 +1791,10 @@ export class WorkflowV2RunExecutor {
         runLlmNode,
         executeScript: runScriptNode,
         reviewNodeOutput,
+        onReviewRetry: async ({ node, output, attempt }) => {
+          runtimeAttemptByNodeId.set(node.id, Math.max(runtimeAttemptByNodeId.get(node.id) ?? 0, attempt));
+          await discardRejectedReviewAttempt(node.id, attempt, output);
+        },
         onNodeAccepted: async ({ node, output }) => {
           await materializeWorkflowV2OutputArtifacts({
             workflowId: workflow.workflowId,

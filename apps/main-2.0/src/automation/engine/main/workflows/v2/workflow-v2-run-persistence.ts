@@ -502,6 +502,7 @@ export class WorkflowV2RunPersistence {
 }
 
 function operationEventType(state: WorkflowOperationState): string | undefined {
+  if (state === "discarded") return "operation_discarded";
   if (state === "applying") return "operation_started";
   if (state === "applied") return "operation_applied";
   if (state === "unknown") return "operation_unknown";

@@ -376,9 +376,11 @@ function appendReviewGateValidationErrors(definition: WorkflowV2Definition, erro
     const gateId = typeof gate.id === "string" ? gate.id.trim() : "";
     const targetNodeId = typeof gate.targetNodeId === "string" ? gate.targetNodeId.trim() : "";
     if (!gateId) errors.push("Workflow V2 Review Gate requires a non-empty id.");
+    else if (gate.id !== gateId) errors.push(`Workflow V2 Review Gate id ${gateId} must not contain surrounding whitespace.`);
     else if (gateIds.has(gateId)) errors.push(`Workflow V2 definition has duplicate Review Gate id ${gateId}.`);
     else gateIds.add(gateId);
     if (!targetNodeId) errors.push(`Workflow V2 Review Gate ${gateId || "<unknown>"} requires targetNodeId.`);
+    else if (gate.targetNodeId !== targetNodeId) errors.push(`Workflow V2 Review Gate ${gateId} targetNodeId must not contain surrounding whitespace.`);
     else if (targetNodeIds.has(targetNodeId)) errors.push(`Workflow V2 node ${targetNodeId} may have at most one Review Gate.`);
     else targetNodeIds.add(targetNodeId);
     const targetNode = nodeById.get(targetNodeId);
@@ -386,6 +388,8 @@ function appendReviewGateValidationErrors(definition: WorkflowV2Definition, erro
     if (targetNode?.role === "reviewer") errors.push(`Workflow V2 Review Gate ${gateId} cannot target reviewer node ${targetNodeId}.`);
     if (typeof gate.configuredAgentId !== "string" || !gate.configuredAgentId.trim()) {
       errors.push(`Workflow V2 Review Gate ${gateId} requires configuredAgentId.`);
+    } else if (gate.configuredAgentId !== gate.configuredAgentId.trim()) {
+      errors.push(`Workflow V2 Review Gate ${gateId} configuredAgentId must not contain surrounding whitespace.`);
     }
     if (gate.reviewLevel !== "low" && gate.reviewLevel !== "medium" && gate.reviewLevel !== "high") {
       errors.push(`Workflow V2 Review Gate ${gateId} has unsupported reviewLevel ${String(gate.reviewLevel)}.`);
@@ -398,17 +402,18 @@ function appendReviewGateValidationErrors(definition: WorkflowV2Definition, erro
     } else {
       const dimensionKeys = new Set<string>();
       for (const dimension of gate.judgeDimensions) {
-        if (!isRecord(dimension) || typeof dimension.key !== "string" || !dimension.key.trim() || typeof dimension.description !== "string" || !dimension.description.trim()) {
+        if (!isRecord(dimension) || typeof dimension.key !== "string" || !dimension.key.trim() || dimension.key !== dimension.key.trim() || typeof dimension.description !== "string" || !dimension.description.trim()) {
           errors.push(`Workflow V2 Review Gate ${gateId} judge dimensions require non-empty string keys and descriptions.`);
           continue;
         }
-        if (dimensionKeys.has(dimension.key)) errors.push(`Workflow V2 Review Gate ${gateId} has duplicate judge dimension ${dimension.key}.`);
-        dimensionKeys.add(dimension.key);
+        const dimensionKey = dimension.key.trim();
+        if (dimensionKeys.has(dimensionKey)) errors.push(`Workflow V2 Review Gate ${gateId} has duplicate judge dimension ${dimensionKey}.`);
+        dimensionKeys.add(dimensionKey);
       }
     }
     if (gate.requiredTools !== undefined && (!Array.isArray(gate.requiredTools)
-      || gate.requiredTools.some((tool) => typeof tool !== "string" || !tool.trim())
-      || new Set(gate.requiredTools).size !== gate.requiredTools.length)) {
+      || gate.requiredTools.some((tool) => typeof tool !== "string" || !tool.trim() || tool !== tool.trim())
+      || new Set(gate.requiredTools.map((tool) => typeof tool === "string" ? tool.trim() : tool)).size !== gate.requiredTools.length)) {
       errors.push(`Workflow V2 Review Gate ${gateId} requiredTools must contain unique non-empty tool names.`);
     }
     if (targetNode?.execModel === "llm" && targetNode.configuredAgentId === gate.configuredAgentId) {

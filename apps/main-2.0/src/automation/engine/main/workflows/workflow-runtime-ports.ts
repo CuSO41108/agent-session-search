@@ -47,6 +47,7 @@ export interface ExecuteWorkflowV2ScriptRequest {
   inputs: Readonly<Record<string, unknown>>;
   authorization: WorkflowV2ScriptAuthorization;
   transactionMode?: WorkflowTransactionMode;
+  requireReversibleOperations?: boolean;
 }
 
 export interface WorkflowV2StorePort {

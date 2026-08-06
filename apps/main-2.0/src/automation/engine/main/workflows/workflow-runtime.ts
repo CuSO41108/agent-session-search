@@ -1160,8 +1160,48 @@ export class WorkflowRuntime {
     }
 
     if (input.action === "rerun_all") {
+      const operations = await store.readOperations?.(input.workflow.workflowId, input.run.runId) ?? [];
+      const appliedOperationIds = operations.filter((operation) => operation.adapterId && operation.state === "applied").map((operation) => operation.operationId);
+      if (appliedOperationIds.length > 0) {
+        const operationBroker = this.deps.createWorkflowV2RecoveryOperationBroker?.(store);
+        if (!operationBroker) {
+          return { ok: false, workflowId: input.workflow.workflowId, runId: input.run.runId, error: "Workflow V2 cannot rerun all nodes until the old Run's applied external operations can be compensated." };
+        }
+        const uncompensable = operations.filter((operation) => appliedOperationIds.includes(operation.operationId) && !operationBroker.canCompensateOperation(operation));
+        if (uncompensable.length > 0) {
+          return { ok: false, workflowId: input.workflow.workflowId, runId: input.run.runId, error: `Workflow V2 cannot rerun all nodes because these old operations are not compensable: ${uncompensable.map((operation) => operation.operationId).join(", ")}` };
+        }
+        const compensation = await operationBroker.compensateRun({ workflowId: input.workflow.workflowId, runId: input.run.runId, operationIds: appliedOperationIds, signal: AbortSignal.timeout(60_000) });
+        if (compensation.failed || compensation.skipped.length > 0 || compensation.compensated.length !== appliedOperationIds.length) {
+          return {
+            ok: false,
+            workflowId: input.workflow.workflowId,
+            runId: input.run.runId,
+            error: compensation.failed?.error ?? `Workflow V2 cannot rerun all nodes because these old operations were not compensated: ${[...compensation.skipped, ...appliedOperationIds.filter((operationId) => !compensation.compensated.includes(operationId))].join(", ")}`,
+          };
+        }
+      }
+      for (const operation of operations) {
+        if (operation.adapterId && operation.state === "planned") {
+          await store.transitionOperation?.({ workflowId: input.workflow.workflowId, runId: input.run.runId, operationId: operation.operationId, state: "discarded", updatedAt: resolvedAt });
+        }
+      }
+      const unresolvedOperations = (await store.readOperations?.(input.workflow.workflowId, input.run.runId) ?? [])
+        .filter((operation) => operation.adapterId)
+        .filter((operation) => operation.state !== "discarded" && operation.state !== "compensated");
+      if (unresolvedOperations.length > 0) {
+        return { ok: false, workflowId: input.workflow.workflowId, runId: input.run.runId, error: `Workflow V2 cannot rerun all nodes while old operations remain unresolved: ${unresolvedOperations.map((operation) => operation.operationId).join(", ")}` };
+      }
+      await store.discardWorkspaceTransaction?.({ workflowId: input.workflow.workflowId, runId: input.run.runId });
       await store.appendEvents({ workflowId: input.workflow.workflowId, runId: input.run.runId, events: [resolutionEvent] });
-      await store.persistRunState({ ...structuredClone(persisted), savedAt: resolvedAt, eventCount: initialDurableEventCount, nodeControl: initialNodeControl });
+      const cleanedPersisted = await store.readRunState?.(input.workflow.workflowId, input.run.runId) ?? persisted;
+      await store.persistRunState({
+        ...structuredClone(cleanedPersisted),
+        savedAt: resolvedAt,
+        eventCount: initialDurableEventCount,
+        nodeControl: initialNodeControl,
+        ...(cleanedPersisted.transaction ? { transaction: { ...cleanedPersisted.transaction, status: "rolled_back", updatedAt: resolvedAt } } : {}),
+      });
       this.deps.finishWorkflowRun({
         workflowId: input.workflow.workflowId,
         runId: input.run.runId,
@@ -1252,6 +1292,18 @@ export class WorkflowRuntime {
     }
     if (input.action === "accept_last_result") {
       const candidate = intervention!.lastCandidate!;
+      const candidateOperationIds = new Set(candidate.acceptance?.operationIds ?? []);
+      const candidateOperations = await store.readOperations?.(input.workflow.workflowId, input.run.runId) ?? [];
+      const missingCandidateOperationIds = [...candidateOperationIds].filter((operationId) => !candidateOperations.some((operation) => operation.operationId === operationId));
+      if (missingCandidateOperationIds.length > 0) {
+        return { ok: false, workflowId: input.workflow.workflowId, runId: input.run.runId, error: `Workflow V2 cannot accept the last result because its operation evidence is missing: ${missingCandidateOperationIds.join(", ")}` };
+      }
+      const unavailableCandidateOperations = candidateOperations
+        .filter((operation) => operation.adapterId && candidateOperationIds.has(operation.operationId))
+        .filter((operation) => operation.state !== "planned" && operation.state !== "applied");
+      if (unavailableCandidateOperations.length > 0) {
+        return { ok: false, workflowId: input.workflow.workflowId, runId: input.run.runId, error: `Workflow V2 cannot accept the last result because its external operations are no longer available: ${unavailableCandidateOperations.map((operation) => operation.operationId).join(", ")}` };
+      }
       const acceptedOutput = await materializeWorkflowV2AcceptedReviewCandidate({
         workflowId: input.workflow.workflowId,
         runId: input.run.runId,

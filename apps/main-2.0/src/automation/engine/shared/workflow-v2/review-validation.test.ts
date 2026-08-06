@@ -99,6 +99,28 @@ describe("Workflow V2 Review definition validation", () => {
     expect(errors).toContain("Workflow V2 Review Gate a maxQualityRetries must be between 0 and 5.");
   });
 
+  test("rejects Review Gate identifiers that runtime normalization would change", () => {
+    const value = definition();
+    value.reviewGates = [{
+      id: " review-result ",
+      targetNodeId: "result ",
+      configuredAgentId: "reviewer ",
+      reviewLevel: "high",
+      judgeDimensions: [
+        { key: " quality ", description: "Check quality." },
+        { key: "quality", description: "Duplicate after trimming." },
+      ],
+      maxQualityRetries: 2,
+      requiredTools: [" search ", "search"],
+    }];
+
+    const errors = validateWorkflowV2Definition(value).errors;
+    expect(errors).toEqual(expect.arrayContaining([
+      expect.stringContaining("must not contain surrounding whitespace"),
+      expect.stringContaining("requiredTools must contain unique non-empty tool names"),
+    ]));
+  });
+
   test("migrates legacy node review fields into one explicit Gate", () => {
     const value = definition();
     value.reviewEnabled = true;
