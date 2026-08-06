@@ -22,6 +22,7 @@ import {
   Sun,
   Terminal as TerminalIcon,
   Trash2,
+  Type,
   Wrench,
   X,
 } from "lucide-react";
@@ -37,6 +38,10 @@ import type { SessionEnvironment } from "../../../../core/types";
 import type { SettingsFeedback } from "../../app-types";
 import { localize, type LanguageMode } from "../../language";
 import { SupabaseSetupGuide } from "../../components/supabase-setup-guide";
+import {
+  MESSAGE_FONT_SIZE_SCALES,
+  type MessageFontSizeScale,
+} from "../../message-font-size";
 import type { ThemeMode } from "../../theme";
 import {
   environmentStatus,
@@ -113,6 +118,7 @@ export function SettingsDialog({
   diagnosingEnvironmentId,
   theme,
   language,
+  messageFontSize,
   feedback,
   onSettingsChange: persistSettings,
   onCheckAppUpdate,
@@ -120,6 +126,7 @@ export function SettingsDialog({
   onSkipAppUpdate,
   onThemeChange,
   onLanguageChange,
+  onMessageFontSizeChange,
   skillHookInstalled,
   skillHookBusy,
   onSkillHookChange,
@@ -147,6 +154,7 @@ export function SettingsDialog({
   diagnosingEnvironmentId: string | null;
   theme: ThemeMode;
   language: LanguageMode;
+  messageFontSize: MessageFontSizeScale;
   feedback: SettingsFeedback;
   onSettingsChange: (settings: AppSettingsUpdate) => Promise<void>;
   onCheckAppUpdate: () => void;
@@ -154,6 +162,7 @@ export function SettingsDialog({
   onSkipAppUpdate: (untilNextVersion: boolean) => void;
   onThemeChange: (theme: ThemeMode) => void;
   onLanguageChange: (language: LanguageMode) => void;
+  onMessageFontSizeChange: (scale: MessageFontSizeScale) => void;
   skillHookInstalled: boolean | null;
   skillHookBusy: boolean;
   onSkillHookChange: (enabled: boolean) => void;
@@ -1069,7 +1078,7 @@ export function SettingsDialog({
               <section className="settings-pane">
                 <header className="settings-pane-head">
                   <h3>{l("Appearance", "外观")}</h3>
-                  <p>{l("Choose the color theme and language used by the session search window.", "选择会话搜索窗口使用的颜色主题和语言。")}</p>
+                  <p>{l("Choose the color theme, language, and session message text size.", "选择颜色主题、语言和会话正文字号。")}</p>
                 </header>
                 <div className="settings-field">
                   <div className="settings-field-text">
@@ -1101,6 +1110,34 @@ export function SettingsDialog({
                       <Languages size={14} />
                       <span>中文</span>
                     </button>
+                  </div>
+                </div>
+                <div className="settings-field">
+                  <div className="settings-field-text">
+                    <span className="settings-field-title">{l("Session text size", "会话正文字号")}</span>
+                    <span className="settings-field-sub">
+                      {l("Only changes message text inside the session detail panel.", "只影响会话详情里的消息正文。")}
+                    </span>
+                  </div>
+                  <div className="message-font-size-setting-toggle" role="group" aria-label={l("Session text size", "会话正文字号")}>
+                    {MESSAGE_FONT_SIZE_SCALES.map((scale) => (
+                      <button
+                        key={scale}
+                        className={messageFontSize === scale ? "active" : ""}
+                        onClick={() => onMessageFontSizeChange(scale)}
+                      >
+                        <Type size={14} />
+                        <span>
+                          {scale === "medium"
+                            ? l("Medium", "标准")
+                            : scale === "medium-large"
+                              ? l("Medium large", "稍大")
+                              : scale === "large"
+                                ? l("Large", "大")
+                                : l("Extra large", "更大")}
+                        </span>
+                      </button>
+                    ))}
                   </div>
                 </div>
                 {platform === "darwin" ? (

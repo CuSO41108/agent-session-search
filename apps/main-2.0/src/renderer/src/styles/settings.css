@@ -986,7 +986,8 @@
 }
 
 .theme-setting-toggle,
-.language-setting-toggle {
+.language-setting-toggle,
+.message-font-size-setting-toggle {
   display: inline-flex;
   flex: 0 0 auto;
   gap: 2px;
@@ -996,8 +997,14 @@
   background: var(--panel-bg);
 }
 
+.message-font-size-setting-toggle {
+  flex-wrap: wrap;
+  max-width: 360px;
+}
+
 .theme-setting-toggle button,
-.language-setting-toggle button {
+.language-setting-toggle button,
+.message-font-size-setting-toggle button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -1013,19 +1020,22 @@
 }
 
 .theme-setting-toggle button:hover,
-.language-setting-toggle button:hover {
+.language-setting-toggle button:hover,
+.message-font-size-setting-toggle button:hover {
   color: var(--text);
 }
 
 .theme-setting-toggle button.active,
-.language-setting-toggle button.active {
+.language-setting-toggle button.active,
+.message-font-size-setting-toggle button.active {
   background: var(--accent-soft);
   color: var(--accent-bright);
   box-shadow: inset 0 0 0 1px var(--border-subtle);
 }
 
 .theme-setting-toggle button.active svg,
-.language-setting-toggle button.active svg {
+.language-setting-toggle button.active svg,
+.message-font-size-setting-toggle button.active svg {
   color: var(--accent);
 }
 
