@@ -52,6 +52,15 @@ interface RuntimeConfig {
 }
 
 const RUNTIME_CONFIG_NAME = "runtime.json";
+const EMBEDDED_POSTGRES_PROCESS_EVENTS = [
+  "exit",
+  "beforeExit",
+  "SIGHUP",
+  "SIGINT",
+  "SIGTERM",
+  "SIGBREAK",
+  "message",
+] as const;
 
 export async function startPostgresRuntime(
   options: StartPostgresRuntimeOptions,
@@ -156,7 +165,24 @@ async function isRuntimeAvailable(connectionUrl: string): Promise<boolean> {
 }
 
 async function defaultCreateEmbedded(options: EmbeddedPostgresOptions): Promise<EmbeddedPostgresInstance> {
-  const { default: EmbeddedPostgres } = await import("embedded-postgres");
+  const processEvents = process as unknown as {
+    listeners(event: string): Array<(...args: unknown[]) => void>;
+    removeListener(event: string, listener: (...args: unknown[]) => void): void;
+  };
+  const existingListeners = new Map(
+    EMBEDDED_POSTGRES_PROCESS_EVENTS.map((event) => [event, new Set(processEvents.listeners(event))]),
+  );
+  let EmbeddedPostgres: typeof import("embedded-postgres")["default"];
+  try {
+    ({ default: EmbeddedPostgres } = await import("embedded-postgres"));
+  } finally {
+    for (const event of EMBEDDED_POSTGRES_PROCESS_EVENTS) {
+      const previous = existingListeners.get(event)!;
+      for (const listener of processEvents.listeners(event)) {
+        if (!previous.has(listener)) processEvents.removeListener(event, listener);
+      }
+    }
+  }
   return new EmbeddedPostgres(options);
 }
 

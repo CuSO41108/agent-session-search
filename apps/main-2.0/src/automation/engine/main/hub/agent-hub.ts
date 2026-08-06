@@ -3558,17 +3558,20 @@ export class AgentHub {
 
   private async persistState(throwOnError = false): Promise<void> {
     if ((!this.storagePath && !this.persistedStore) || this.persistenceWriteBlocked) return;
-    if (this.persistInFlight) await this.persistInFlight;
-
-    const payload = this.buildPersistedPayload();
-    this.persistInFlight = writePersistedPayload({
-      storagePath: this.storagePath,
-      persistedStore: this.persistedStore,
-      payload,
-    });
+    const previousPersist = this.persistInFlight?.catch(() => undefined);
+    const persist = (async () => {
+      await previousPersist;
+      const payload = this.buildPersistedPayload();
+      await writePersistedPayload({
+        storagePath: this.storagePath,
+        persistedStore: this.persistedStore,
+        payload,
+      });
+    })();
+    this.persistInFlight = persist;
 
     try {
-      await this.persistInFlight;
+      await persist;
     } catch (error) {
       console.warn(
         this.persistedStore
@@ -3578,7 +3581,7 @@ export class AgentHub {
       );
       if (throwOnError) throw error;
     } finally {
-      this.persistInFlight = undefined;
+      if (this.persistInFlight === persist) this.persistInFlight = undefined;
     }
   }
 }

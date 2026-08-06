@@ -1,5 +1,10 @@
 import type { AppSettings } from "../../core/platform";
 import type {
+  OpenVikingMemoryControl,
+  OpenVikingMemoryDetails,
+  OpenVikingMemoryFeedbackKind,
+} from "../../core/openviking-memory-control";
+import type {
   OpenVikingDiagnosticsSnapshot,
   OpenVikingMemoryItem,
   OpenVikingMemorySnapshot,
@@ -9,14 +14,9 @@ import type {
   OpenVikingRuntimeStatus,
   OpenVikingWorkspace,
 } from "../../core/openviking-memory";
-import type { OpenVikingImportJob } from "../../core/postgres/openviking-memory-repository";
 import type { OpenVikingMemoryIpcService } from "../ipc/openviking-memory";
 import type { SaveOpenVikingMemoryInput } from "./openviking-client";
-import type {
-  OpenVikingDirectoryPreview,
-  OpenVikingImportSessionPreview,
-  OpenVikingMemoryService,
-} from "./openviking-memory-service";
+import type { OpenVikingDirectoryPreview, OpenVikingMemoryService } from "./openviking-memory-service";
 import type {
   OpenVikingRuntimeManifest,
   OpenVikingRuntimeService,
@@ -45,6 +45,9 @@ interface OpenVikingControlServiceOptions {
   runtime: RuntimePort | OpenVikingRuntimeService;
   model: OpenVikingModelManagerPort;
   memory: OpenVikingMemoryService;
+  control: {
+    getOpenVikingControlDiagnostics(limit?: number): Promise<OpenVikingDiagnosticsSnapshot["control"]>;
+  };
   getSettings(): AppSettings;
   chooseDirectory(): Promise<string | null>;
   resolveRuntimeManifest(
@@ -60,7 +63,6 @@ export class OpenVikingControlService implements OpenVikingMemoryIpcService {
   private runtimeStart: Promise<OpenVikingRuntimeStatus> | null = null;
   private readonly activeDataOperations = new Map<string, Set<Promise<unknown>>>();
   private readonly blockedWorkspaceIds = new Set<string>();
-  private readonly activeWorkspaceLifecycles = new Set<string>();
 
   constructor(private readonly options: OpenVikingControlServiceOptions) {}
 
@@ -77,20 +79,18 @@ export class OpenVikingControlService implements OpenVikingMemoryIpcService {
 
   async diagnostics(): Promise<OpenVikingDiagnosticsSnapshot> {
     this.requireEnabled();
-    const [runtime, model, workspaces] = await Promise.all([
+    const [runtime, model, workspaces, control] = await Promise.all([
       this.options.runtime.getDiagnostics(),
       this.options.model.getStatus(),
       this.options.memory.listWorkspaces(),
+      this.options.control.getOpenVikingControlDiagnostics(),
     ]);
-    const tasks = await this.options.memory.listImportTaskDiagnostics(
-      runtime.status.state === "running",
-    );
     return {
       capturedAt: new Date().toISOString(),
       runtime,
       model,
       workspaces,
-      tasks,
+      control,
     };
   }
 
@@ -112,85 +112,6 @@ export class OpenVikingControlService implements OpenVikingMemoryIpcService {
     return workspace;
   }
 
-  listImportSessions(workspaceId: string): Promise<OpenVikingImportSessionPreview[]> {
-    this.requireEnabled();
-    return this.options.memory.listImportSessions(workspaceId);
-  }
-
-  importWorkspace(
-    workspaceId: string,
-    selectedSessionKeys?: string[],
-  ): Promise<OpenVikingImportJob> {
-    this.requireEnabled();
-    return this.options.memory.importWorkspace(workspaceId, selectedSessionKeys);
-  }
-
-  async syncManagedWorkspaces(): Promise<void> {
-    this.requireEnabled();
-    const workspaces = await this.options.memory.listWorkspaces();
-    const listedWorkspaceIds = new Set(workspaces.map((workspace) => workspace.id));
-    for (const workspaceId of this.blockedWorkspaceIds) {
-      if (!listedWorkspaceIds.has(workspaceId) && !this.activeWorkspaceLifecycles.has(workspaceId)) {
-        this.blockedWorkspaceIds.delete(workspaceId);
-      }
-    }
-    for (const workspace of workspaces) {
-      if (workspace.managed && workspace.importState === "paused") {
-        this.blockedWorkspaceIds.add(workspace.id);
-      } else if (!this.activeWorkspaceLifecycles.has(workspace.id)) {
-        this.blockedWorkspaceIds.delete(workspace.id);
-      }
-    }
-    for (const workspace of workspaces) {
-      if (
-        !workspace.managed
-        || !["queued", "running", "completed"].includes(workspace.importState)
-      ) continue;
-      void this.options.memory.importWorkspace(workspace.id).catch(() => {
-        // Each import persists its own failure for the renderer to surface.
-      });
-    }
-  }
-
-  async pauseImport(workspaceId: string): Promise<OpenVikingImportJob> {
-    this.requireEnabled();
-    const wasBlocked = this.blockedWorkspaceIds.has(workspaceId);
-    let pauseApplied = false;
-    this.activeWorkspaceLifecycles.add(workspaceId);
-    this.blockedWorkspaceIds.add(workspaceId);
-    try {
-      const paused = await this.options.memory.pauseImport(workspaceId);
-      pauseApplied = true;
-      await this.waitForDataOperations(workspaceId);
-      await this.options.memory.waitForImportToSettle(workspaceId);
-      const otherAccessibleWorkspace = (await this.options.memory.listWorkspaces()).some((workspace) =>
-        workspace.id !== workspaceId
-        && (!workspace.managed || workspace.importState !== "paused"));
-      if (!otherAccessibleWorkspace) await this.stopRuntime();
-      return paused;
-    } catch (error) {
-      if (!wasBlocked && !pauseApplied) this.blockedWorkspaceIds.delete(workspaceId);
-      throw error;
-    } finally {
-      this.activeWorkspaceLifecycles.delete(workspaceId);
-    }
-  }
-
-  async resumeImport(workspaceId: string): Promise<OpenVikingImportJob> {
-    this.requireEnabled();
-    this.activeWorkspaceLifecycles.add(workspaceId);
-    try {
-      if ((await this.options.runtime.getStatus()).state !== "running") {
-        await this.startRuntime();
-      }
-      const resumed = await this.options.memory.resumeImport(workspaceId);
-      this.blockedWorkspaceIds.delete(workspaceId);
-      return resumed;
-    } finally {
-      this.activeWorkspaceLifecycles.delete(workspaceId);
-    }
-  }
-
   async search(workspaceId: string, query: string, limit?: number): Promise<OpenVikingMemoryItem[]> {
     this.requireEnabled();
     return this.runDataOperation(
@@ -204,104 +125,92 @@ export class OpenVikingControlService implements OpenVikingMemoryIpcService {
     return this.runDataOperation(workspaceId, () => this.options.memory.readMemory(workspaceId, uri));
   }
 
-  save(workspaceId: string, input: SaveOpenVikingMemoryInput): Promise<OpenVikingMemoryItem> {
+  async save(workspaceId: string, input: SaveOpenVikingMemoryInput): Promise<OpenVikingMemoryItem> {
     this.requireEnabled();
-    return this.runDataOperation(workspaceId, () => this.options.memory.saveMemory(workspaceId, input));
+    const memory = await this.runDataOperation(
+      workspaceId,
+      () => this.options.memory.saveMemory(workspaceId, input),
+    );
+    await this.notifyStateChanged();
+    return memory;
   }
 
-  deleteMemory(workspaceId: string, uri: string): Promise<void> {
+  async deleteMemory(workspaceId: string, uri: string): Promise<void> {
     this.requireEnabled();
-    return this.runDataOperation(workspaceId, () => this.options.memory.deleteMemory(workspaceId, uri));
+    await this.runDataOperation(workspaceId, () => this.options.memory.deleteMemory(workspaceId, uri));
+    await this.notifyStateChanged();
+  }
+
+  memoryDetails(workspaceId: string, uri: string): Promise<OpenVikingMemoryDetails> {
+    this.requireEnabled();
+    return this.runDataOperation(
+      workspaceId,
+      () => this.options.memory.memoryDetails(workspaceId, uri),
+    );
+  }
+
+  async feedback(
+    workspaceId: string,
+    uri: string,
+    feedback: OpenVikingMemoryFeedbackKind,
+    note?: string,
+  ): Promise<OpenVikingMemoryControl> {
+    this.requireEnabled();
+    const control = await this.runDataOperation(
+      workspaceId,
+      () => this.options.memory.feedback(workspaceId, uri, feedback, "user", note),
+    );
+    await this.notifyStateChanged();
+    return control;
   }
 
   async stopManaging(workspaceId: string): Promise<OpenVikingWorkspace> {
     this.requireEnabled();
-    const wasBlocked = this.blockedWorkspaceIds.has(workspaceId);
-    let pausedForStop = false;
-    this.activeWorkspaceLifecycles.add(workspaceId);
+    if (this.blockedWorkspaceIds.has(workspaceId)) {
+      throw new Error("This memory directory is being updated.");
+    }
+    this.blockedWorkspaceIds.add(workspaceId);
     try {
-      const current = (await this.options.memory.listWorkspaces())
-        .find((workspace) => workspace.id === workspaceId);
-      if (current && ["queued", "running"].includes(current.importState)) {
-        this.blockedWorkspaceIds.add(workspaceId);
-        await this.options.memory.pauseImport(workspaceId);
-        pausedForStop = true;
-        await this.waitForDataOperations(workspaceId);
-        await this.options.memory.waitForImportToSettle(workspaceId);
-      }
+      await this.waitForDataOperations(workspaceId);
       const workspace = await this.options.memory.stopManaging(workspaceId);
-      this.blockedWorkspaceIds.delete(workspaceId);
       await this.notifyStateChanged();
       return workspace;
-    } catch (error) {
-      if (!wasBlocked && !pausedForStop) this.blockedWorkspaceIds.delete(workspaceId);
-      throw error;
     } finally {
-      this.activeWorkspaceLifecycles.delete(workspaceId);
+      this.blockedWorkspaceIds.delete(workspaceId);
     }
   }
 
   async deleteWorkspace(workspaceId: string): Promise<void> {
     this.requireEnabled();
-    const wasBlocked = this.blockedWorkspaceIds.has(workspaceId);
-    this.activeWorkspaceLifecycles.add(workspaceId);
+    if (this.blockedWorkspaceIds.has(workspaceId)) {
+      throw new Error("This memory directory is being updated.");
+    }
     this.blockedWorkspaceIds.add(workspaceId);
-    let pauseApplied = false;
     let runtimeWasRunning = false;
-    let reusedRunningRuntime = false;
     let startedForCleanup = false;
     let deleted = false;
-    let keepRunning = false;
     let clearData = false;
     try {
-      try {
-        await this.options.memory.pauseImport(workspaceId);
-        pauseApplied = true;
-      } catch (error) {
-        if (!(error instanceof Error) || !error.message.includes("was not found")) throw error;
-      }
       await this.waitForDataOperations(workspaceId);
       const runtimeStatus = await this.options.runtime.getStatus();
       runtimeWasRunning = runtimeStatus.state === "running";
-      const otherWorkspaces = (await this.options.memory.listWorkspaces())
-        .filter((workspace) => workspace.id !== workspaceId);
-      reusedRunningRuntime = runtimeWasRunning
-        && otherWorkspaces.some((workspace) =>
-          !workspace.managed || workspace.importState !== "paused");
-      if (runtimeWasRunning && !reusedRunningRuntime) await this.options.runtime.stop();
-      await this.options.memory.waitForImportToSettle(workspaceId);
-      if (!reusedRunningRuntime) {
+      if (!runtimeWasRunning) {
         await this.options.runtime.startFromPersistedConfig();
         startedForCleanup = true;
       }
       await this.options.memory.deleteWorkspace(workspaceId);
       const remaining = (await this.options.memory.listWorkspaces())
         .filter((workspace) => workspace.id !== workspaceId);
-      keepRunning = remaining.some((workspace) =>
-        !workspace.managed || workspace.importState !== "paused");
       clearData = remaining.length === 0;
-      for (const workspace of remaining) {
-        if (workspace.managed && workspace.importState === "paused") {
-          this.blockedWorkspaceIds.add(workspace.id);
-        } else if (!this.activeWorkspaceLifecycles.has(workspace.id)) {
-          this.blockedWorkspaceIds.delete(workspace.id);
-        }
-      }
-      this.blockedWorkspaceIds.delete(workspaceId);
       deleted = true;
       await this.notifyStateChanged();
     } finally {
-      this.activeWorkspaceLifecycles.delete(workspaceId);
-      if (!deleted && !wasBlocked && !pauseApplied) {
-        this.blockedWorkspaceIds.delete(workspaceId);
-      }
+      this.blockedWorkspaceIds.delete(workspaceId);
       if (deleted) {
-        if (!keepRunning) await this.stopRuntime();
+        if (clearData || startedForCleanup) await this.stopRuntime();
         if (clearData) await this.options.runtime.clearData();
       } else if (!runtimeWasRunning && startedForCleanup) {
         await this.options.runtime.stop().catch(() => undefined);
-      } else if (runtimeWasRunning && !reusedRunningRuntime && !startedForCleanup) {
-        await this.options.runtime.startFromPersistedConfig().catch(() => undefined);
       }
     }
   }
@@ -410,7 +319,7 @@ export class OpenVikingControlService implements OpenVikingMemoryIpcService {
 
   private runDataOperation<T>(workspaceId: string, operation: () => Promise<T>): Promise<T> {
     if (this.blockedWorkspaceIds.has(workspaceId)) {
-      return Promise.reject(new Error("OpenViking is paused."));
+      return Promise.reject(new Error("This memory directory is being updated."));
     }
     const pending = operation();
     const workspaceOperations = this.activeDataOperations.get(workspaceId) ?? new Set<Promise<unknown>>();

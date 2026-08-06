@@ -10,6 +10,7 @@ import path from "node:path";
 
 const POINTER_DIR = ".agent-recall-v2";
 const POINTER_FILE = "database-url";
+const OPENVIKING_MANIFEST_POINTER_FILE = "openviking-manifest-path";
 
 export function databaseUrlPointerPath(home: string = homedir()): string {
   return path.join(home, POINTER_DIR, POINTER_FILE);
@@ -19,6 +20,19 @@ export function writeDatabaseUrlPointer(connectionUrl: string, home: string = ho
   const pointer = databaseUrlPointerPath(home);
   mkdirSync(path.dirname(pointer), { recursive: true, mode: 0o700 });
   writeFileSync(pointer, `${connectionUrl}\n`, { encoding: "utf8", mode: 0o600 });
+}
+
+export function openVikingManifestPointerPath(home: string = homedir()): string {
+  return path.join(home, POINTER_DIR, OPENVIKING_MANIFEST_POINTER_FILE);
+}
+
+export function writeOpenVikingManifestPointer(
+  manifestPath: string,
+  home: string = homedir(),
+): void {
+  const pointer = openVikingManifestPointerPath(home);
+  mkdirSync(path.dirname(pointer), { recursive: true, mode: 0o700 });
+  writeFileSync(pointer, `${manifestPath}\n`, { encoding: "utf8", mode: 0o600 });
 }
 
 // Resolution order for standalone consumers: explicit env override, then the

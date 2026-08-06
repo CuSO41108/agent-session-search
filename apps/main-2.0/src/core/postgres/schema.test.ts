@@ -57,8 +57,14 @@ describe("AgentRecall PostgreSQL schema", () => {
       "openviking_import_tasks",
       "openviking_imported_sessions",
       "openviking_imported_turns",
+      "openviking_memories",
+      "openviking_memory_evidence",
+      "openviking_memory_feedback",
+      "openviking_commit_runs",
+      "openviking_operation_events",
+      "openviking_recall_traces",
     ]));
-    expect(names).toHaveLength(61);
+    expect(names).toHaveLength(67);
     const sessionColumns = await database.query<{
       column_name: string;
       is_nullable: string;
@@ -232,6 +238,68 @@ describe("AgentRecall PostgreSQL schema", () => {
       { table_name: "session_turns", column_name: "time_to_first_token_ms" },
       { table_name: "sessions", column_name: "codex_history_mode" },
       { table_name: "token_events", column_name: "source_turn_id" },
+    ]);
+    await upgradedDatabase.close();
+  });
+
+  it("reconciles the directory memory migration previously recorded as version 27", async () => {
+    const pool = new PGliteTestPool();
+    const branchDatabase = new PostgresDatabase(pool, {
+      migrationLock: false,
+      migrations: POSTGRES_MIGRATIONS.filter((migration) => migration.version <= 26),
+    });
+    await branchDatabase.initialize();
+
+    const directoryMemoryMigration = POSTGRES_MIGRATIONS.find((migration) => migration.version === 28)!;
+    for (const statement of directoryMemoryMigration.statements) {
+      await branchDatabase.query(statement);
+    }
+    await branchDatabase.query(`
+      ALTER TABLE agent_recall.evaluation_runs DROP COLUMN IF EXISTS skill_hash;
+      INSERT INTO agent_recall.schema_migrations (version, name)
+      VALUES (27, 'add directory memory control plane');
+      INSERT INTO agent_recall.openviking_workspaces (
+        id, user_id, root_path, identity, display_name, managed, created_at, updated_at
+      ) VALUES (
+        'legacy-workspace', 'legacy-user', '/legacy', 'legacy-identity', 'Legacy', true, now(), now()
+      );
+      INSERT INTO agent_recall.openviking_memories (
+        workspace_id, uri, memory_type, created_at, updated_at
+      ) VALUES (
+        'legacy-workspace', 'viking://legacy/memory', 'profile', now(), now()
+      );
+    `);
+
+    const upgradedDatabase = new PostgresDatabase(pool, {
+      migrationLock: false,
+      migrations: POSTGRES_MIGRATIONS,
+    });
+    await upgradedDatabase.initialize();
+
+    const evaluationColumns = await upgradedDatabase.query<{ column_name: string }>(`
+      SELECT column_name
+      FROM information_schema.columns
+      WHERE table_schema = 'agent_recall'
+        AND table_name = 'evaluation_runs'
+        AND column_name = 'skill_hash'
+    `);
+    expect(evaluationColumns.rows).toEqual([{ column_name: "skill_hash" }]);
+
+    const memory = await upgradedDatabase.query<{ uri: string }>(`
+      SELECT uri FROM agent_recall.openviking_memories WHERE workspace_id = 'legacy-workspace'
+    `);
+    expect(memory.rows).toEqual([{ uri: "viking://legacy/memory" }]);
+
+    const migrations = await upgradedDatabase.query<{ version: number; name: string }>(`
+      SELECT version, name
+      FROM agent_recall.schema_migrations
+      WHERE version IN (27, 28, 29)
+      ORDER BY version
+    `);
+    expect(migrations.rows).toEqual([
+      { version: 27, name: "add directory memory control plane" },
+      { version: 28, name: "add directory memory control plane" },
+      { version: 29, name: "reconcile directory memory and evaluation migration histories" },
     ]);
     await upgradedDatabase.close();
   });

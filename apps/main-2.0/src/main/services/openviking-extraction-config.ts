@@ -1,4 +1,8 @@
-import type { CodexConfigSnapshot } from "../../core/codex-profile";
+import {
+  DEFAULT_CODEX_API_BASE_URL,
+  type CodexConfigSnapshot,
+  type CodexSummaryEndpointDefaults,
+} from "../../core/codex-profile";
 import type {
   AppSettings,
   OpenVikingExtractionReasoningEffort,
@@ -16,6 +20,7 @@ export interface ResolvedOpenVikingVlmConfig {
 export function resolveOpenVikingExtractionConfig(input: {
   settings: AppSettings;
   codex: Pick<CodexConfigSnapshot, "activeModel">;
+  codexEndpoint?: CodexSummaryEndpointDefaults | null;
 }): ResolvedOpenVikingVlmConfig {
   if (input.settings.summarySource === "claude") {
     throw new Error("Claude CLI cannot be used for OpenViking memory extraction.");
@@ -23,12 +28,25 @@ export function resolveOpenVikingExtractionConfig(input: {
 
   if (input.settings.summarySource === "codex") {
     const model = input.settings.summaryCodexModel.trim()
+      || input.codexEndpoint?.model.trim()
       || input.codex.activeModel.trim()
       || DEFAULT_OPENVIKING_CODEX_EXTRACTION_MODEL;
+    if (input.codexEndpoint) {
+      const baseUrl = input.codexEndpoint.baseUrl.trim();
+      return {
+        provider: input.codexEndpoint.apiFormat === "openai_responses"
+          ? "openai-codex"
+          : "openai",
+        model,
+        ...(baseUrl ? { api_base: baseUrl } : {}),
+        api_key: input.codexEndpoint.apiKey,
+        reasoning_effort: input.settings.openVikingExtractionReasoningEffort,
+      };
+    }
     return {
       provider: "openai-codex",
       model,
-      api_base: "https://chatgpt.com/backend-api/codex",
+      api_base: DEFAULT_CODEX_API_BASE_URL,
       reasoning_effort: input.settings.openVikingExtractionReasoningEffort,
     };
   }

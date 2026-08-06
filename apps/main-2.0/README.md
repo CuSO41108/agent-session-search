@@ -43,7 +43,7 @@ agent-recall-v2
 - **继续和迁移会话**：从搜索结果快速启动原 Agent，也可在支持的本地 Agent 之间迁移会话。
 - **跨设备恢复**：可使用自己的 Supabase 项目同步会话快照，在另一台设备搜索、查看并恢复会话。
 - **用量与额度概览**：统计各 Agent token 使用量，并查看 Claude Code / Codex 的额度状态。
-- **目录级长期记忆**：在 Memory 页面为主动选择的目录启用相互隔离的 OpenViking 记忆，按需导入历史会话，并为 Codex、Claude Code 和 OpenCode 配置自动召回。
+- **目录级长期记忆**：在 Memory 页面为主动选择的目录启用相互隔离的 OpenViking 记忆，只增量捕获开启后的新对话，并为 Codex、Claude Code 和 OpenCode 配置自动召回；历史会话继续通过 Session 搜索按需复用。
 - **多 Agent 工作室**：在同一个工作室中创建和复用多个独立 Agent 会话，共享工作目录，并通过受控的 MCP 能力协作。
 
 ## 支持的数据源
