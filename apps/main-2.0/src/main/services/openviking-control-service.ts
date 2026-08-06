@@ -166,22 +166,25 @@ export class OpenVikingControlService implements OpenVikingMemoryIpcService {
 
   async stopManaging(workspaceId: string): Promise<OpenVikingWorkspace> {
     this.requireEnabled();
-    const wasBlocked = this.blockedWorkspaceIds.has(workspaceId);
+    if (this.blockedWorkspaceIds.has(workspaceId)) {
+      throw new Error("This memory directory is being updated.");
+    }
     this.blockedWorkspaceIds.add(workspaceId);
     try {
       await this.waitForDataOperations(workspaceId);
       const workspace = await this.options.memory.stopManaging(workspaceId);
-      this.blockedWorkspaceIds.delete(workspaceId);
       await this.notifyStateChanged();
       return workspace;
     } finally {
-      if (!wasBlocked) this.blockedWorkspaceIds.delete(workspaceId);
+      this.blockedWorkspaceIds.delete(workspaceId);
     }
   }
 
   async deleteWorkspace(workspaceId: string): Promise<void> {
     this.requireEnabled();
-    const wasBlocked = this.blockedWorkspaceIds.has(workspaceId);
+    if (this.blockedWorkspaceIds.has(workspaceId)) {
+      throw new Error("This memory directory is being updated.");
+    }
     this.blockedWorkspaceIds.add(workspaceId);
     let runtimeWasRunning = false;
     let startedForCleanup = false;
@@ -199,13 +202,10 @@ export class OpenVikingControlService implements OpenVikingMemoryIpcService {
       const remaining = (await this.options.memory.listWorkspaces())
         .filter((workspace) => workspace.id !== workspaceId);
       clearData = remaining.length === 0;
-      this.blockedWorkspaceIds.delete(workspaceId);
       deleted = true;
       await this.notifyStateChanged();
     } finally {
-      if (!deleted && !wasBlocked) {
-        this.blockedWorkspaceIds.delete(workspaceId);
-      }
+      this.blockedWorkspaceIds.delete(workspaceId);
       if (deleted) {
         if (clearData || startedForCleanup) await this.stopRuntime();
         if (clearData) await this.options.runtime.clearData();

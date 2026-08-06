@@ -1336,7 +1336,7 @@ export const POSTGRES_MIGRATIONS: readonly PostgresMigration[] = [{
   name: "add directory memory control plane",
   statements: [
     `
-      CREATE TABLE agent_recall.openviking_memories (
+      CREATE TABLE IF NOT EXISTS agent_recall.openviking_memories (
         workspace_id text NOT NULL
           REFERENCES agent_recall.openviking_workspaces(id) ON DELETE CASCADE,
         uri text NOT NULL,
@@ -1357,7 +1357,7 @@ export const POSTGRES_MIGRATIONS: readonly PostgresMigration[] = [{
         PRIMARY KEY (workspace_id, uri)
       );
 
-      CREATE TABLE agent_recall.openviking_memory_evidence (
+      CREATE TABLE IF NOT EXISTS agent_recall.openviking_memory_evidence (
         id text PRIMARY KEY,
         workspace_id text NOT NULL,
         memory_uri text NOT NULL,
@@ -1377,7 +1377,7 @@ export const POSTGRES_MIGRATIONS: readonly PostgresMigration[] = [{
           REFERENCES agent_recall.openviking_memories(workspace_id, uri) ON DELETE CASCADE
       );
 
-      CREATE TABLE agent_recall.openviking_memory_feedback (
+      CREATE TABLE IF NOT EXISTS agent_recall.openviking_memory_feedback (
         id text PRIMARY KEY,
         workspace_id text NOT NULL,
         memory_uri text NOT NULL,
@@ -1389,7 +1389,7 @@ export const POSTGRES_MIGRATIONS: readonly PostgresMigration[] = [{
           REFERENCES agent_recall.openviking_memories(workspace_id, uri) ON DELETE CASCADE
       );
 
-      CREATE TABLE agent_recall.openviking_commit_runs (
+      CREATE TABLE IF NOT EXISTS agent_recall.openviking_commit_runs (
         task_id text PRIMARY KEY,
         workspace_id text NOT NULL
           REFERENCES agent_recall.openviking_workspaces(id) ON DELETE CASCADE,
@@ -1409,7 +1409,7 @@ export const POSTGRES_MIGRATIONS: readonly PostgresMigration[] = [{
         updated_at timestamptz NOT NULL
       );
 
-      CREATE TABLE agent_recall.openviking_operation_events (
+      CREATE TABLE IF NOT EXISTS agent_recall.openviking_operation_events (
         id text PRIMARY KEY,
         workspace_id text NOT NULL
           REFERENCES agent_recall.openviking_workspaces(id) ON DELETE CASCADE,
@@ -1424,7 +1424,7 @@ export const POSTGRES_MIGRATIONS: readonly PostgresMigration[] = [{
         details jsonb
       );
 
-      CREATE TABLE agent_recall.openviking_recall_traces (
+      CREATE TABLE IF NOT EXISTS agent_recall.openviking_recall_traces (
         id text PRIMARY KEY,
         workspace_id text NOT NULL
           REFERENCES agent_recall.openviking_workspaces(id) ON DELETE CASCADE,
@@ -1441,20 +1441,29 @@ export const POSTGRES_MIGRATIONS: readonly PostgresMigration[] = [{
         created_at timestamptz NOT NULL
       );
 
-      CREATE INDEX openviking_memories_recall_idx
+      CREATE INDEX IF NOT EXISTS openviking_memories_recall_idx
         ON agent_recall.openviking_memories (
           workspace_id, lifecycle, evidence_status, locked, updated_at DESC
         );
-      CREATE INDEX openviking_memory_evidence_uri_idx
+      CREATE INDEX IF NOT EXISTS openviking_memory_evidence_uri_idx
         ON agent_recall.openviking_memory_evidence (workspace_id, memory_uri, created_at DESC);
-      CREATE INDEX openviking_memory_feedback_uri_idx
+      CREATE INDEX IF NOT EXISTS openviking_memory_feedback_uri_idx
         ON agent_recall.openviking_memory_feedback (workspace_id, memory_uri, created_at DESC);
-      CREATE INDEX openviking_commit_runs_workspace_idx
+      CREATE INDEX IF NOT EXISTS openviking_commit_runs_workspace_idx
         ON agent_recall.openviking_commit_runs (workspace_id, updated_at DESC);
-      CREATE INDEX openviking_operation_events_workspace_idx
+      CREATE INDEX IF NOT EXISTS openviking_operation_events_workspace_idx
         ON agent_recall.openviking_operation_events (workspace_id, started_at DESC);
-      CREATE INDEX openviking_recall_traces_workspace_idx
+      CREATE INDEX IF NOT EXISTS openviking_recall_traces_workspace_idx
         ON agent_recall.openviking_recall_traces (workspace_id, created_at DESC);
+    `,
+  ],
+}, {
+  version: 29,
+  name: "reconcile directory memory and evaluation migration histories",
+  statements: [
+    `
+      ALTER TABLE agent_recall.evaluation_runs
+        ADD COLUMN IF NOT EXISTS skill_hash text;
     `,
   ],
 }];

@@ -286,34 +286,44 @@ export class PostgresOpenVikingMemoryRepository {
 
   async saveUserMemory(input: SaveOpenVikingMemoryControlInput): Promise<OpenVikingMemoryControl> {
     const now = input.now ?? new Date().toISOString();
-    await this.database.query(
-      `
-        insert into agent_recall.openviking_memories (
-          workspace_id, uri, memory_type, authority, lifecycle, locked,
-          evidence_status, source, title, locked_content, created_at, updated_at
-        )
-        values ($1, $2, $3, 'user', 'active', true, 'verified', $4, $5, $6, $7, $7)
-        on conflict (workspace_id, uri) do update set
-          memory_type = excluded.memory_type,
-          authority = 'user',
-          lifecycle = 'active',
-          locked = true,
-          evidence_status = 'verified',
-          source = excluded.source,
-          title = excluded.title,
-          locked_content = excluded.locked_content,
-          updated_at = excluded.updated_at
-      `,
-      [
-        input.workspaceId,
-        input.uri,
-        inferOpenVikingMemoryType(input.uri),
-        input.source,
-        input.title,
-        input.content,
-        now,
-      ],
-    );
+    await this.database.transaction(async (client) => {
+      await client.query(
+        `
+          insert into agent_recall.openviking_memories (
+            workspace_id, uri, memory_type, authority, lifecycle, locked,
+            evidence_status, source, title, locked_content, created_at, updated_at
+          )
+          values ($1, $2, $3, 'user', 'active', true, 'verified', $4, $5, $6, $7, $7)
+          on conflict (workspace_id, uri) do update set
+            memory_type = excluded.memory_type,
+            authority = 'user',
+            lifecycle = 'active',
+            locked = true,
+            evidence_status = 'verified',
+            source = excluded.source,
+            title = excluded.title,
+            locked_content = excluded.locked_content,
+            updated_at = excluded.updated_at
+        `,
+        [
+          input.workspaceId,
+          input.uri,
+          inferOpenVikingMemoryType(input.uri),
+          input.source,
+          input.title,
+          input.content,
+          now,
+        ],
+      );
+      await client.query(
+        `
+          update agent_recall.openviking_memory_evidence
+          set state = 'invalidated', updated_at = $3
+          where workspace_id = $1 and memory_uri = $2 and state = 'active'
+        `,
+        [input.workspaceId, input.uri, now],
+      );
+    });
     const control = await this.getMemoryControl(input.workspaceId, input.uri);
     if (!control) throw new Error("OpenViking memory control record was not saved.");
     return control;
@@ -593,13 +603,13 @@ export class PostgresOpenVikingMemoryRepository {
               values ($1, $2, $3, 'model', 'active', false, 'verified', 'openviking', $4, $4)
               on conflict (workspace_id, uri) do update set
                 memory_type = excluded.memory_type,
+                authority = 'model',
                 lifecycle = 'active',
+                locked = false,
                 evidence_status = 'verified',
-                source = case
-                  when agent_recall.openviking_memories.authority = 'user'
-                    then agent_recall.openviking_memories.source
-                  else 'openviking'
-                end,
+                source = 'openviking',
+                title = null,
+                locked_content = null,
                 updated_at = excluded.updated_at
             `,
             [input.run.workspaceId, change.uri, change.memoryType, completedAt],

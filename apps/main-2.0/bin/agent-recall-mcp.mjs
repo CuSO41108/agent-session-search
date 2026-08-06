@@ -395,7 +395,14 @@ export async function memorySearch(
           : Array.isArray(payload.items)
             ? payload.items
             : [];
-      const memories = raw.map((value) => normalizeMemoryResult(value, workspace.userId)).filter(Boolean);
+      const memories = [];
+      const seenUris = new Set();
+      for (const value of raw) {
+        const memory = normalizeMemoryResult(value, workspace.userId);
+        if (!memory || seenUris.has(memory.uri)) continue;
+        seenUris.add(memory.uri);
+        memories.push(memory);
+      }
       const controls = await loadMemoryControls(db, workspace.id, memories.map((memory) => memory.uri));
       const candidates = [];
       const accepted = [];
@@ -850,7 +857,8 @@ async function refreshMemoryPolicy(db, workspaceId, options) {
   if (!workspace?.policyPath) return false;
   const controls = await loadWorkspaceMemoryControls(db, workspaceId);
   await writeJsonAtomic(workspace.policyPath, {
-    version: 1,
+    version: 2,
+    strict: true,
     workspaceId,
     memories: Object.fromEntries(controls.map((control) => [control.uri, {
       memoryType: control.memoryType,

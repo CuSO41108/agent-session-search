@@ -319,6 +319,7 @@ let openVikingControlService: OpenVikingControlService | null = null;
 let openVikingHookManifestService: OpenVikingHookManifestService | null = null;
 let openVikingHookStateFlusher: OpenVikingHookStateFlusher | null = null;
 let automationQuitReady = false;
+let automationQuitStarted = false;
 let postgresRuntime: PostgresRuntime | null = null;
 let postgresDatabase: PostgresDatabase | null = null;
 let quickSearchWindow: BrowserWindow | null = null;
@@ -2704,6 +2705,8 @@ app.on("activate", () => {
 app.on("before-quit", (event) => {
   if (automationQuitReady) return;
   event.preventDefault();
+  if (automationQuitStarted) return;
+  automationQuitStarted = true;
   installedRuntimeMonitor?.stop();
   openVikingHookStateFlusher?.stop();
   stopAutoIndexRefresh();

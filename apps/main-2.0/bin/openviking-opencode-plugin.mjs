@@ -15,6 +15,7 @@ export function createAgentRecallOpenVikingPlugin(manifestPath, dependencies = {
   return async function agentRecallOpenVikingPlugin(context) {
     const sessions = new Map();
     const messages = new Map();
+    const messageParts = new Map();
     const directory = context?.directory || context?.worktree || process.cwd();
 
     async function activeScope() {
@@ -66,6 +67,15 @@ export function createAgentRecallOpenVikingPlugin(manifestPath, dependencies = {
       });
     }
 
+    function clearSessionMessages(sessionID) {
+      if (!sessionID) return;
+      for (const [messageID, message] of messages) {
+        if (message.sessionID !== sessionID) continue;
+        messages.delete(messageID);
+        messageParts.delete(messageID);
+      }
+    }
+
     return {
       "chat.message": async (input, output) => {
         const scope = await activeScope();
@@ -106,17 +116,24 @@ export function createAgentRecallOpenVikingPlugin(manifestPath, dependencies = {
             const role = part.role || message.role;
             if (role === "user" || role === "assistant") {
               const session = sessions.get(sessionID) || {};
-              session[role] = stripInjectedContext(part.text);
+              const parts = messageParts.get(part.messageID) || new Map();
+              parts.set(part.id || `part-${parts.size}`, stripInjectedContext(part.text));
+              messageParts.set(part.messageID, parts);
+              session[role] = [...parts.values()].filter(Boolean).join("\n").slice(0, 12_000);
               sessions.set(sessionID, session);
             }
             return;
           }
 
           const sessionID = properties.sessionID || properties.sessionId || properties.info?.id || properties.session?.id;
-          if (type === "session.idle") await capture(sessionID);
+          if (type === "session.idle") {
+            await capture(sessionID);
+            clearSessionMessages(sessionID);
+          }
           if (type === "session.compacted" || type === "session.deleted" || type === "session.error") {
             await capture(sessionID);
             await commit(sessionID);
+            clearSessionMessages(sessionID);
             if (type === "session.deleted") sessions.delete(sessionID);
           }
         } catch {
@@ -129,6 +146,7 @@ export function createAgentRecallOpenVikingPlugin(manifestPath, dependencies = {
           const sessionID = input?.sessionID || input?.sessionId || input?.session?.id;
           await capture(sessionID);
           await commit(sessionID);
+          clearSessionMessages(sessionID);
         } catch {
           // Compaction remains fail-open.
         }
@@ -139,6 +157,7 @@ export function createAgentRecallOpenVikingPlugin(manifestPath, dependencies = {
           try {
             await capture(sessionID);
             await commit(sessionID);
+            clearSessionMessages(sessionID);
           } catch {
             // OpenCode shutdown remains fail-open.
           }

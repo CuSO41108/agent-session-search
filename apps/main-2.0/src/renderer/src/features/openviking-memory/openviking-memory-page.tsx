@@ -19,13 +19,13 @@ import {
 } from "lucide-react";
 
 import type {
-  OpenVikingMemoryDetails,
-  OpenVikingMemoryFeedbackKind,
-} from "../../../../core/openviking-memory-control";
-import type {
   OpenVikingMemoryItem,
   OpenVikingMemorySnapshot,
 } from "../../../../core/openviking-memory";
+import type {
+  OpenVikingMemoryDetails,
+  OpenVikingMemoryFeedbackKind,
+} from "../../../../core/openviking-memory-control";
 import { isOpenVikingMemoryTransient } from "../../../../core/openviking-memory-lifecycle";
 import type { OpenVikingDirectoryPreview } from "../../../../main/services/openviking-memory-service";
 import { localize, type LanguageMode } from "../../language";
@@ -33,6 +33,7 @@ import {
   groupOpenVikingMemories,
   type OpenVikingMemoryCategory,
 } from "./openviking-memory-groups";
+import { tryCanonicalOpenVikingMemoryUri } from "./openviking-memory-uri";
 import { OpenVikingRuntimeMonitor } from "./openviking-runtime-monitor";
 
 type MemoryView = "memory" | "runtime";
@@ -748,9 +749,7 @@ function CircleStopIcon(): ReactElement {
 }
 
 function editableUriForMemory(uri: string): string | null {
-  return /^viking:\/\/user\/memories(?:\/[A-Za-z0-9][A-Za-z0-9._-]{0,127})+$/u.test(uri)
-    ? uri
-    : null;
+  return tryCanonicalOpenVikingMemoryUri(uri);
 }
 
 function isIdentityMemory(uri: string): boolean {

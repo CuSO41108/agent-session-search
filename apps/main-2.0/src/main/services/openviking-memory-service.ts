@@ -95,6 +95,7 @@ export class OpenVikingMemoryService {
   private readonly inspectDirectory: NonNullable<OpenVikingMemoryServiceOptions["inspectDirectory"]>;
   private readonly resolveIdentity: NonNullable<OpenVikingMemoryServiceOptions["resolveIdentity"]>;
   private readonly createId: NonNullable<OpenVikingMemoryServiceOptions["createId"]>;
+  private workspaceMutationQueue: Promise<void> = Promise.resolve();
 
   constructor(private readonly options: OpenVikingMemoryServiceOptions) {
     this.inspectDirectory = options.inspectDirectory ?? inspectDirectory;
@@ -124,64 +125,70 @@ export class OpenVikingMemoryService {
     };
   }
 
-  async addWorkspace(inputPath: string): Promise<OpenVikingWorkspace> {
-    const preview = await this.previewDirectory(inputPath);
-    if (preview.existingWorkspaceId) {
-      const existing = await this.options.store.getOpenVikingWorkspace(preview.existingWorkspaceId);
-      if (!existing) throw new Error("Retained OpenViking workspace was not found.");
-      if (existing.managed) {
-        throw new Error(`Directory is already managed by workspace ${preview.existingWorkspaceId}.`);
+  addWorkspace(inputPath: string): Promise<OpenVikingWorkspace> {
+    return this.runWorkspaceMutation(async () => {
+      const preview = await this.previewDirectory(inputPath);
+      if (preview.existingWorkspaceId) {
+        const existing = await this.options.store.getOpenVikingWorkspace(preview.existingWorkspaceId);
+        if (!existing) throw new Error("Retained OpenViking workspace was not found.");
+        if (existing.managed) {
+          throw new Error(`Directory is already managed by workspace ${preview.existingWorkspaceId}.`);
+        }
+        await this.requireAuth(existing);
+        return this.options.store.setOpenVikingWorkspaceManaged(existing.id, true);
       }
-      await this.requireAuth(existing);
-      return this.options.store.setOpenVikingWorkspaceManaged(existing.id, true);
-    }
-    if (preview.relinkWorkspaceId) {
-      const relinked = await this.options.store.relinkOpenVikingWorkspace(
-        preview.relinkWorkspaceId,
-        preview.rootPath,
-        preview.displayName,
-      );
-      await this.requireAuth(relinked);
-      return relinked.managed
-        ? relinked
-        : this.options.store.setOpenVikingWorkspaceManaged(relinked.id, true);
-    }
-    const id = this.createId();
-    const userId = workspaceUserId(preview.identity);
-    const auth = await this.options.client.ensureWorkspaceUser({
-      accountId: OPENVIKING_ACCOUNT_ID,
-      userId,
-    });
-    await this.options.credentials.set(id, auth);
-    try {
-      return await this.options.store.addOpenVikingWorkspace({
-        id,
+      if (preview.relinkWorkspaceId) {
+        const relinked = await this.options.store.relinkOpenVikingWorkspace(
+          preview.relinkWorkspaceId,
+          preview.rootPath,
+          preview.displayName,
+        );
+        await this.requireAuth(relinked);
+        return relinked.managed
+          ? relinked
+          : this.options.store.setOpenVikingWorkspaceManaged(relinked.id, true);
+      }
+      const id = this.createId();
+      const userId = workspaceUserId(preview.identity);
+      const auth = await this.options.client.ensureWorkspaceUser({
+        accountId: OPENVIKING_ACCOUNT_ID,
         userId,
-        rootPath: preview.rootPath,
-        identity: preview.identity,
-        displayName: preview.displayName,
       });
-    } catch (error) {
-      await this.options.credentials.delete(id);
-      await this.options.client.deleteWorkspaceUser(auth).catch(() => undefined);
-      throw error;
-    }
+      await this.options.credentials.set(id, auth);
+      try {
+        return await this.options.store.addOpenVikingWorkspace({
+          id,
+          userId,
+          rootPath: preview.rootPath,
+          identity: preview.identity,
+          displayName: preview.displayName,
+        });
+      } catch (error) {
+        await this.options.credentials.delete(id);
+        await this.options.client.deleteWorkspaceUser(auth).catch(() => undefined);
+        throw error;
+      }
+    });
   }
 
   stopManaging(workspaceId: string): Promise<OpenVikingWorkspace> {
-    return this.options.store.setOpenVikingWorkspaceManaged(workspaceId, false);
+    return this.runWorkspaceMutation(
+      () => this.options.store.setOpenVikingWorkspaceManaged(workspaceId, false),
+    );
   }
 
-  async deleteWorkspace(workspaceId: string): Promise<void> {
-    const workspace = await this.options.store.getOpenVikingWorkspace(workspaceId);
-    if (!workspace) {
+  deleteWorkspace(workspaceId: string): Promise<void> {
+    return this.runWorkspaceMutation(async () => {
+      const workspace = await this.options.store.getOpenVikingWorkspace(workspaceId);
+      if (!workspace) {
+        await this.options.credentials.delete(workspaceId);
+        return;
+      }
+      const auth = await this.requireAuth(workspace);
+      await this.options.client.deleteWorkspaceUser(auth);
+      await this.options.store.deleteOpenVikingWorkspace(workspaceId);
       await this.options.credentials.delete(workspaceId);
-      return;
-    }
-    const auth = await this.requireAuth(workspace);
-    await this.options.client.deleteWorkspaceUser(auth);
-    await this.options.store.deleteOpenVikingWorkspace(workspaceId);
-    await this.options.credentials.delete(workspaceId);
+    });
   }
 
   async searchMemories(
@@ -309,6 +316,12 @@ export class OpenVikingMemoryService {
     });
     await this.options.credentials.set(workspace.id, created);
     return created;
+  }
+
+  private runWorkspaceMutation<T>(operation: () => Promise<T>): Promise<T> {
+    const pending = this.workspaceMutationQueue.then(operation);
+    this.workspaceMutationQueue = pending.then(() => undefined, () => undefined);
+    return pending;
   }
 
   private async runObserved<T>(
@@ -456,6 +469,10 @@ export async function resolveDirectoryIdentity(
   try {
     const remote = (await runGit(rootPath, ["config", "--get", "remote.origin.url"])).trim();
     if (remote) return `repo:${normalizeGitRemote(remote)}`;
+  } catch {
+    // A repository without origin makes `git config --get` exit non-zero.
+  }
+  try {
     const firstCommit = (await runGit(rootPath, ["rev-list", "--max-parents=0", "HEAD"])).trim();
     if (firstCommit) return `repo-commit:${firstCommit}`;
   } catch {
@@ -480,14 +497,15 @@ async function runGitCommand(rootPath: string, args: string[]): Promise<string> 
 }
 
 function normalizeGitRemote(remote: string): string {
-  const scp = /^(?:[^@]+@)?([^:]+):(.+)$/u.exec(remote);
-  if (scp && !/^[A-Za-z]:[\\/]/u.test(remote)) {
-    return `${scp[1].toLowerCase()}/${stripGitSuffix(scp[2])}`;
-  }
   try {
     const url = new URL(remote);
+    if (!url.hostname) throw new Error("Git remote URL does not have a network host.");
     return `${url.hostname.toLowerCase()}/${stripGitSuffix(url.pathname.replace(/^\/+/u, ""))}`;
   } catch {
+    const scp = /^(?:[^@]+@)?([^:]+):(.+)$/u.exec(remote);
+    if (scp && !/^[A-Za-z]:[\\/]/u.test(remote)) {
+      return `${scp[1].toLowerCase()}/${stripGitSuffix(scp[2])}`;
+    }
     return stripGitSuffix(remote.replaceAll("\\", "/"));
   }
 }

@@ -256,6 +256,26 @@ describe("OpenVikingControlService", () => {
     expect(memory.stopManaging).toHaveBeenCalledWith("workspace-1");
   });
 
+  it("rejects a second destructive operation for the same directory", async () => {
+    const { service, memory } = harness();
+    let finishStop: () => void = () => undefined;
+    vi.mocked(memory.stopManaging).mockImplementation(async (workspaceId) => {
+      await new Promise<void>((resolve) => {
+        finishStop = resolve;
+      });
+      return workspace({ id: workspaceId, managed: false });
+    });
+
+    const stopping = service.stopManaging("workspace-1");
+    await vi.waitFor(() => expect(memory.stopManaging).toHaveBeenCalledOnce());
+
+    await expect(service.deleteWorkspace("workspace-1")).rejects.toThrow("being updated");
+    expect(memory.deleteWorkspace).not.toHaveBeenCalled();
+
+    finishStop();
+    await stopping;
+  });
+
   it("blocks only the directory being deleted while another directory stays usable", async () => {
     const { service, memory, workspaces } = harness();
     workspaces.push(workspace({

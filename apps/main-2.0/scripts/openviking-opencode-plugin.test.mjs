@@ -54,7 +54,8 @@ test("OpenCode recalls before a managed prompt and captures the completed turn",
   await hooks["chat.message"]({ sessionID: "session-1" }, output);
   assert.match(output.parts[0].text, /Keep release notes concise/);
   await hooks.event({ event: { type: "message.updated", properties: { info: { id: "assistant-message", sessionID: "session-1", role: "assistant" } } } });
-  await hooks.event({ event: { type: "message.part.updated", properties: { part: { messageID: "assistant-message", sessionID: "session-1", type: "text", text: "Use one clear user-facing bullet." } } } });
+  await hooks.event({ event: { type: "message.part.updated", properties: { part: { id: "assistant-part-1", messageID: "assistant-message", sessionID: "session-1", type: "text", text: "Use one clear user-facing bullet." } } } });
+  await hooks.event({ event: { type: "message.part.updated", properties: { part: { id: "assistant-part-2", messageID: "assistant-message", sessionID: "session-1", type: "text", text: "Keep the wording concise." } } } });
   await hooks.event({ event: { type: "session.idle", properties: { sessionID: "session-1" } } });
 
   assert.equal(requests.filter((request) => request.url.endsWith("/api/v1/search/search")).length, 1);
@@ -62,7 +63,10 @@ test("OpenCode recalls before a managed prompt and captures the completed turn",
   assert.match(JSON.parse(search.init.body).session_id, /^opencode-workspace-1-session-1$/);
   assert.equal(requests.filter((request) => request.url.endsWith("/messages/batch")).length, 1);
   const batch = requests.find((request) => request.url.endsWith("/messages/batch"));
-  assert.deepEqual(JSON.parse(batch.init.body).messages.map((message) => message.role), ["user", "assistant"]);
+  const capturedMessages = JSON.parse(batch.init.body).messages;
+  assert.deepEqual(capturedMessages.map((message) => message.role), ["user", "assistant"]);
+  assert.match(capturedMessages[1].content, /Use one clear user-facing bullet/);
+  assert.match(capturedMessages[1].content, /Keep the wording concise/);
 
   await hooks.event({ event: { type: "session.compacted", properties: { sessionID: "session-1" } } });
   const stateDir = path.join(root, "state");

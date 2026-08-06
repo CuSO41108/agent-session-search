@@ -7,6 +7,8 @@ export type OpenVikingMemoryCategory =
   | "experiences"
   | "events"
   | "trajectories"
+  | "decisions"
+  | "open_loops"
   | "manual"
   | "other";
 
@@ -26,6 +28,8 @@ const CATEGORIES: ReadonlyArray<{
   { key: "experiences", label: { en: "Experiences", zh: "经验" } },
   { key: "events", label: { en: "Events", zh: "事件" } },
   { key: "trajectories", label: { en: "Trajectories", zh: "轨迹" } },
+  { key: "decisions", label: { en: "Decisions", zh: "决策" } },
+  { key: "open_loops", label: { en: "Open Loops", zh: "待办闭环" } },
   { key: "manual", label: { en: "Manual", zh: "手动" } },
   { key: "other", label: { en: "Other", zh: "其他" } },
 ];

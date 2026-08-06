@@ -169,6 +169,7 @@ function harness(options: {
       content: "remembered",
     }]),
     readMemory: vi.fn(async () => "remembered"),
+    readSessionArtifact: vi.fn(async () => "{}"),
     saveMemory: vi.fn(async (_workspaceAuth, input) => ({
       id: input.uri ?? "viking://user/memories/manual/note.md",
       workspaceId: "",
@@ -228,6 +229,29 @@ describe("OpenVikingMemoryService", () => {
 
     await expect(h.service.addWorkspace("/projects/app")).rejects.toThrow("already managed");
     expect(h.client.ensureWorkspaceUser).not.toHaveBeenCalled();
+  });
+
+  it("serializes concurrent adds so a duplicate cannot delete the winning workspace user", async () => {
+    const h = harness();
+    const originalAdd = vi.mocked(h.store.addOpenVikingWorkspace).getMockImplementation();
+    let finishAdd: () => void = () => undefined;
+    vi.mocked(h.store.addOpenVikingWorkspace).mockImplementation(async (input) => {
+      await new Promise<void>((resolve) => {
+        finishAdd = resolve;
+      });
+      return originalAdd!(input);
+    });
+
+    const first = h.service.addWorkspace("/projects/app");
+    await vi.waitFor(() => expect(h.store.addOpenVikingWorkspace).toHaveBeenCalledOnce());
+    const duplicate = h.service.addWorkspace("/projects/app");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(h.client.ensureWorkspaceUser).toHaveBeenCalledOnce();
+    finishAdd();
+    await first;
+    await expect(duplicate).rejects.toThrow("already managed");
+    expect(h.client.deleteWorkspaceUser).not.toHaveBeenCalled();
   });
 
   it("relinks a moved Git directory without creating a second OpenViking user", async () => {
@@ -432,6 +456,27 @@ describe("OpenViking directory identity", () => {
         ? "git@github.com:Acme/App.git\n"
         : "",
     })).resolves.toBe("repo:github.com/Acme/App");
+  });
+
+  it("normalizes an HTTPS remote without treating its scheme as SCP syntax", async () => {
+    await expect(resolveDirectoryIdentity("/projects/app", {
+      runGit: async () => "https://GitHub.com/Acme/App.git\n",
+    })).resolves.toBe("repo:github.com/Acme/App");
+  });
+
+  it("falls back to the first commit when a Git repository has no origin", async () => {
+    await expect(resolveDirectoryIdentity("/projects/app", {
+      runGit: async (_rootPath, args) => {
+        if (args[0] === "config") throw new Error("origin is not configured");
+        return "abc123\n";
+      },
+    })).resolves.toBe("repo-commit:abc123");
+  });
+
+  it("keeps a Windows filesystem remote as a path instead of a URL scheme", async () => {
+    await expect(resolveDirectoryIdentity("C:\\projects\\app", {
+      runGit: async () => "C:\\repos\\App.git\n",
+    })).resolves.toBe("repo:C:/repos/App");
   });
 
   it("uses an AgentRecall UUID for an ordinary directory", async () => {

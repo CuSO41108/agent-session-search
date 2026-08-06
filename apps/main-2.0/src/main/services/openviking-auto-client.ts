@@ -81,6 +81,10 @@ export class AutoStartingOpenVikingClient implements OpenVikingClientPort {
     return (await this.client()).readMemory(auth, uri);
   }
 
+  async readSessionArtifact(auth: OpenVikingWorkspaceAuth, uri: string): Promise<string> {
+    return (await this.client()).readSessionArtifact(auth, uri);
+  }
+
   async saveMemory(
     auth: OpenVikingWorkspaceAuth,
     input: SaveOpenVikingMemoryInput,
@@ -92,8 +96,9 @@ export class AutoStartingOpenVikingClient implements OpenVikingClientPort {
     auth: OpenVikingWorkspaceAuth,
     uri: string,
     content: string,
+    title?: string,
   ): Promise<void> {
-    return (await this.client()).writeMemoryContent(auth, uri, content);
+    return (await this.client()).writeMemoryContent(auth, uri, content, title);
   }
 
   async deleteMemory(auth: OpenVikingWorkspaceAuth, uri: string): Promise<void> {

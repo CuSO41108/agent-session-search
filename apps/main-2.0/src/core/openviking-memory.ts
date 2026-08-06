@@ -172,8 +172,9 @@ export function normalizeWorkspacePath(
   platform: NodeJS.Platform = process.platform,
 ): string {
   if (rootPath.includes("\0")) throw new Error("Workspace path cannot contain NUL characters.");
-  const normalized = (platform === "win32" ? path.win32 : path.posix).resolve(rootPath.trim());
-  if (!normalized) throw new Error("Workspace path is required.");
+  const input = rootPath.trim();
+  if (!input) throw new Error("Workspace path is required.");
+  const normalized = (platform === "win32" ? path.win32 : path.posix).resolve(input);
   return normalized;
 }
 

@@ -81,11 +81,18 @@ test("managed prompt recall combines fixed core memory with session-aware search
       return Response.json({
         status: "ok",
         result: {
-          memories: [{
-            uri: "viking://user/memories/events/migration.md",
-            abstract: "Use the staged migration plan.",
-            score: 0.91,
-          }],
+          memories: [
+            {
+              uri: "viking://user/memories/identity.md",
+              abstract: "You are the project's coding assistant.",
+              score: 0.99,
+            },
+            {
+              uri: "viking://user/memories/events/migration.md",
+              abstract: "Use the staged migration plan.",
+              score: 0.91,
+            },
+          ],
         },
       });
     },
@@ -101,6 +108,7 @@ test("managed prompt recall combines fixed core memory with session-aware search
   assert.match(result.hookSpecificOutput.additionalContext, /project's coding assistant/);
   assert.match(result.hookSpecificOutput.additionalContext, /evidence from the current repository/);
   assert.match(result.hookSpecificOutput.additionalContext, /staged migration plan/);
+  assert.equal(result.hookSpecificOutput.additionalContext.match(/project's coding assistant/gu)?.length, 1);
   assert.equal(result.hookSpecificOutput.hookEventName, "UserPromptSubmit");
 });
 
@@ -234,6 +242,145 @@ test("managed Stop appends once and waits for the session lifecycle to commit", 
   assert.equal(clearQuery, "Explain the production database migration plan.");
 });
 
+test("concurrent Stop hooks serialize the same turn before appending", async (context) => {
+  const testHome = fs.mkdtempSync(path.join(os.tmpdir(), "agent-recall-openviking-parallel-stop-"));
+  context.after(() => fs.rmSync(testHome, { recursive: true, force: true }));
+  const rootPath = path.join(testHome, "project");
+  const transcriptPath = path.join(testHome, "transcript.jsonl");
+  fs.mkdirSync(rootPath, { recursive: true });
+  fs.writeFileSync(transcriptPath, [
+    JSON.stringify({ message: { role: "user", content: "Capture this turn once." } }),
+    JSON.stringify({ message: { role: "assistant", content: "Captured once." } }),
+  ].join("\n"));
+  const requests = [];
+  const options = {
+    agent: "claude",
+    event: "Stop",
+    manifest: managedManifest(rootPath),
+    stateDir: path.join(testHome, "state"),
+    fetchImpl: async (url) => {
+      requests.push(String(url));
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      return Response.json({ status: "ok", result: {} });
+    },
+    realpathSync: (value) => path.resolve(value),
+  };
+  const input = {
+    cwd: rootPath,
+    session_id: "session-parallel",
+    transcript_path: transcriptPath,
+  };
+
+  await Promise.all([handleHook(input, options), handleHook(input, options)]);
+
+  assert.equal(requests.filter((url) => url.endsWith("?auto_create=true")).length, 1);
+  assert.equal(requests.filter((url) => url.endsWith("/messages/batch")).length, 1);
+});
+
+test("vague continuation ignores corrupt handoff timestamps", async (context) => {
+  const testHome = fs.mkdtempSync(path.join(os.tmpdir(), "agent-recall-openviking-handoff-order-"));
+  context.after(() => fs.rmSync(testHome, { recursive: true, force: true }));
+  const rootPath = path.join(testHome, "project");
+  const stateDir = path.join(testHome, "state");
+  fs.mkdirSync(rootPath, { recursive: true });
+  fs.mkdirSync(stateDir, { recursive: true });
+  fs.writeFileSync(path.join(stateDir, "000-invalid.json"), JSON.stringify({
+    workspaceId: "workspace-1",
+    sessionId: "old-session",
+    updatedAt: "not-a-date",
+    recentTurns: [{ user: "Wrong handoff", assistant: "Ignore this" }],
+  }));
+  fs.writeFileSync(path.join(stateDir, "zzz-valid.json"), JSON.stringify({
+    workspaceId: "workspace-1",
+    sessionId: "latest-session",
+    updatedAt: "2026-08-05T00:00:00.000Z",
+    recentTurns: [{ user: "Correct handoff", assistant: "Use this" }],
+  }));
+  const requests = [];
+
+  await handleHook({
+    cwd: rootPath,
+    session_id: "new-session",
+    prompt: "Continue with that.",
+  }, {
+    agent: "claude",
+    event: "UserPromptSubmit",
+    manifest: managedManifest(rootPath),
+    stateDir,
+    fetchImpl: async (url, init) => {
+      requests.push({ url: String(url), init });
+      if (String(url).includes("/api/v1/content/read")) {
+        return Response.json({ status: "ok", result: { content: "" } });
+      }
+      return Response.json({ status: "ok", result: { memories: [] } });
+    },
+    realpathSync: (value) => path.resolve(value),
+  });
+
+  const search = requests.find((request) => request.url.endsWith("/api/v1/search/search"));
+  const query = JSON.parse(search.init.body).query;
+  assert.match(query, /Correct handoff/u);
+  assert.doesNotMatch(query, /Wrong handoff/u);
+});
+
+test("commit keeps turns captured while the request is in flight", async (context) => {
+  const testHome = fs.mkdtempSync(path.join(os.tmpdir(), "agent-recall-openviking-concurrent-"));
+  context.after(() => fs.rmSync(testHome, { recursive: true, force: true }));
+  const rootPath = path.join(testHome, "project");
+  const transcriptPath = path.join(testHome, "transcript.jsonl");
+  const stateDir = path.join(testHome, "state");
+  fs.mkdirSync(rootPath, { recursive: true });
+  fs.writeFileSync(transcriptPath, [
+    JSON.stringify({ message: { role: "user", content: "Remember the first turn." } }),
+    JSON.stringify({ message: { role: "assistant", content: "First turn captured." } }),
+  ].join("\n"));
+  const manifest = managedManifest(rootPath);
+  const baseOptions = {
+    agent: "codex",
+    manifest,
+    stateDir,
+    realpathSync: (value) => path.resolve(value),
+  };
+  await handleHook({
+    cwd: rootPath,
+    session_id: "session-1",
+    transcript_path: transcriptPath,
+  }, {
+    ...baseOptions,
+    event: "Stop",
+    fetchImpl: async () => Response.json({ status: "ok", result: {} }),
+  });
+  const statePath = path.join(stateDir, fs.readdirSync(stateDir).find((name) => name.endsWith(".json")));
+  const beforeCommit = JSON.parse(fs.readFileSync(statePath, "utf8"));
+
+  await handleHook({ cwd: rootPath, session_id: "session-1" }, {
+    ...baseOptions,
+    event: "PreCompact",
+    fetchImpl: async (url) => {
+      if (String(url).endsWith("/commit")) {
+        const current = JSON.parse(fs.readFileSync(statePath, "utf8"));
+        fs.writeFileSync(statePath, JSON.stringify({
+          ...current,
+          pendingTokenEstimate: Number(current.pendingTokenEstimate || 0) + 80,
+          pendingEvidence: [
+            ...current.pendingEvidence,
+            { id: "turn-2", tokenEstimate: 80, inputChars: 320, toolCount: 2 },
+          ],
+          updatedAt: "2026-08-05T00:03:01.000Z",
+        }));
+        return Response.json({ status: "ok", result: { task_id: "task-concurrent" } });
+      }
+      return Response.json({ status: "ok", result: {} });
+    },
+  });
+
+  const state = JSON.parse(fs.readFileSync(statePath, "utf8"));
+  assert.equal(state.pendingTokenEstimate, 80);
+  assert.deepEqual(state.pendingEvidence.map((item) => item.id), ["turn-2"]);
+  assert.equal(state.commitTasks[0].taskId, "task-concurrent");
+  assert.deepEqual(state.commitTasks[0].sourceTurnIds, beforeCommit.pendingEvidence.map((item) => item.id));
+});
+
 test("managed Stop commits automatically after the pending token threshold", async (context) => {
   const testHome = fs.mkdtempSync(path.join(os.tmpdir(), "agent-recall-openviking-threshold-"));
   context.after(() => fs.rmSync(testHome, { recursive: true, force: true }));
@@ -261,6 +408,10 @@ test("managed Stop commits automatically after the pending token threshold", asy
 
   assert.equal(requests.filter((request) => request.url.endsWith("/messages/batch")).length, 1);
   assert.equal(requests.filter((request) => request.url.endsWith("/commit")).length, 1);
+  const stateFile = fs.readdirSync(path.join(testHome, "state")).find((name) => name.endsWith(".json"));
+  const state = JSON.parse(fs.readFileSync(path.join(testHome, "state", stateFile), "utf8"));
+  assert.ok(state.pendingTokenEstimate > 0);
+  assert.equal(state.commitRequest, undefined);
 });
 
 test("managed Stop commits when the user explicitly asks to remember the result", async (context) => {
@@ -548,6 +699,33 @@ test("strict recall hides uncontrolled and in-flight model memories while keepin
   assert.equal(trace.candidates.find((candidate) => candidate.uri.endsWith("uncontrolled.md")).reason, "uncontrolled-memory");
 });
 
+test("a missing strict policy file fails closed instead of recalling uncontrolled memories", async (context) => {
+  const testHome = fs.mkdtempSync(path.join(os.tmpdir(), "agent-recall-openviking-missing-policy-"));
+  context.after(() => fs.rmSync(testHome, { recursive: true, force: true }));
+  const rootPath = path.join(testHome, "project");
+  fs.mkdirSync(rootPath, { recursive: true });
+
+  const contextText = await recallForWorkspace(
+    managedManifest(rootPath, { policyPath: path.join(testHome, "missing-policy.json") }).workspaces[0],
+    "show project decisions",
+    {
+      agent: "codex",
+      fetchImpl: async () => Response.json({
+        status: "ok",
+        result: {
+          memories: [{
+            uri: "viking://user/memories/decisions/uncontrolled.md",
+            abstract: "This uncontrolled memory must stay hidden.",
+            score: 0.99,
+          }],
+        },
+      }),
+    },
+  );
+
+  assert.equal(contextText, "");
+});
+
 test("large recalled context remains structurally complete", async () => {
   const rootPath = path.join(os.tmpdir(), "managed-project");
   const contextText = await recallForWorkspace(managedManifest(rootPath).workspaces[0], "summarize the project", {
@@ -590,4 +768,7 @@ test("workspace containment is platform aware and chooses the deepest root", () 
 
   assert.equal(findWorkspaceForCwd(manifest, "c:\\work\\app\\src", "win32")?.id, "nested");
   assert.equal(findWorkspaceForCwd(manifest, "C:\\Workspace2", "win32"), null);
+  assert.equal(findWorkspaceForCwd({
+    workspaces: [{ id: "empty", rootPath: "   " }],
+  }, process.cwd(), "darwin"), null);
 });

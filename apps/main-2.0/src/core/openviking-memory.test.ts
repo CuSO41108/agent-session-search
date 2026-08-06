@@ -21,6 +21,7 @@ describe("OpenViking workspace identity", () => {
     expect(normalizeWorkspacePath("C:\\Users\\me\\project\\..\\project\\", "win32")).toBe(
       "C:\\Users\\me\\project",
     );
+    expect(() => normalizeWorkspacePath("   ")).toThrow("Workspace path is required");
   });
 
   it("canonicalizes OpenViking user-qualified memory URIs to the control-plane URI", () => {
@@ -36,6 +37,9 @@ describe("OpenViking workspace identity", () => {
       "viking://user/workspace_other/memories/preferences/editor.md",
       "workspace_abcd",
     )).toThrow(/selected OpenViking workspace/u);
+    expect(tryCanonicalOpenVikingMemoryUri(
+      "viking://user/memories/decisions/中文决策.md",
+    )).toBe("viking://user/memories/decisions/中文决策.md");
     expect(tryCanonicalOpenVikingMemoryUri("viking://user/memories/../secret.md")).toBeNull();
   });
 

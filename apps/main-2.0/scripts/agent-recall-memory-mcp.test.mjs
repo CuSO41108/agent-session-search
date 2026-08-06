@@ -139,6 +139,7 @@ test("memory_search filters invalid memories and returns user-locked content fir
           memories: [
             { uri: "viking://user/workspace_user/memories/events/obsolete.md", abstract: "obsolete", score: 0.99 },
             { uri: "viking://user/workspace_user/memories/preferences/editor.md", abstract: "model version", score: 0.2 },
+            { uri: "viking://user/memories/preferences/editor.md", abstract: "duplicate model version", score: 0.1 },
           ],
         },
       });
@@ -238,6 +239,8 @@ test("memory_feedback invalidates active evidence and is visible through memory_
   assert.equal(details.control.evidenceStatus, "invalid");
   assert.equal(details.evidence[0].state, "invalidated");
   assert.equal(details.feedback[0].feedback, "wrong");
+  assert.equal(policy.version, 2);
+  assert.equal(policy.strict, true);
   assert.equal(policy.memories[uri].lifecycle, "invalidated");
   assert.equal(policy.memories[uri].evidenceStatus, "invalid");
   assert.equal(policy.memories[uri].evidenceCount, 0);

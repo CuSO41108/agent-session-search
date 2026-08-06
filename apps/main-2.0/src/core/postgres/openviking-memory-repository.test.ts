@@ -157,6 +157,101 @@ describe("PostgresOpenVikingMemoryRepository", () => {
     });
   });
 
+  it("invalidates model evidence when a user locks an edited memory", async () => {
+    await repository.addWorkspace({
+      id: "workspace-1",
+      userId: "workspace_abcd",
+      rootPath: "/projects/app",
+      identity: "repo:github.com/acme/app",
+      displayName: "app",
+    });
+    const uri = "viking://user/memories/preferences/editor.md";
+    await repository.applyCommitResult({
+      run: {
+        taskId: "task-model",
+        workspaceId: "workspace-1",
+        sessionId: "session-model",
+        agent: "codex",
+        trigger: "token-threshold",
+        state: "completed",
+        sourceTurnIds: ["turn-model"],
+        tokenEstimate: 100,
+        startedAt: "2026-08-05T00:00:00.000Z",
+        completedAt: "2026-08-05T00:01:00.000Z",
+        updatedAt: "2026-08-05T00:01:00.000Z",
+      },
+      changes: [{ kind: "add", uri, memoryType: "preferences", after: "Use verbose diffs." }],
+    });
+
+    await repository.saveUserMemory({
+      workspaceId: "workspace-1",
+      uri,
+      title: "Editor",
+      content: "Prefer concise diffs.",
+      source: "user-edit",
+      now: "2026-08-05T00:02:00.000Z",
+    });
+
+    await expect(repository.getMemoryControl("workspace-1", uri)).resolves.toMatchObject({
+      authority: "user",
+      locked: true,
+      evidenceStatus: "verified",
+      evidenceCount: 0,
+    });
+    await expect(repository.listMemoryEvidence("workspace-1", uri)).resolves.toEqual([
+      expect.objectContaining({ state: "invalidated", remoteTaskId: "task-model" }),
+    ]);
+  });
+
+  it("restores model authority when extraction recreates a user-deleted URI", async () => {
+    await repository.addWorkspace({
+      id: "workspace-1",
+      userId: "workspace_abcd",
+      rootPath: "/projects/app",
+      identity: "repo:github.com/acme/app",
+      displayName: "app",
+    });
+    const uri = "viking://user/memories/decisions/storage.md";
+    await repository.saveUserMemory({
+      workspaceId: "workspace-1",
+      uri,
+      title: "Storage decision",
+      content: "Use SQLite.",
+      source: "user-edit",
+      now: "2026-08-05T00:00:00.000Z",
+    });
+    await repository.markMemoryDeleted("workspace-1", uri, "2026-08-05T00:01:00.000Z");
+
+    await repository.applyCommitResult({
+      run: {
+        taskId: "task-recreate",
+        workspaceId: "workspace-1",
+        sessionId: "session-recreate",
+        agent: "claude",
+        trigger: "session-end",
+        state: "completed",
+        sourceTurnIds: ["turn-recreate"],
+        tokenEstimate: 80,
+        startedAt: "2026-08-05T00:02:00.000Z",
+        completedAt: "2026-08-05T00:03:00.000Z",
+        updatedAt: "2026-08-05T00:03:00.000Z",
+      },
+      changes: [{ kind: "add", uri, memoryType: "decisions", after: "Use PostgreSQL." }],
+    });
+
+    const control = await repository.getMemoryControl("workspace-1", uri);
+    expect(control).toMatchObject({
+      authority: "model",
+      lifecycle: "active",
+      locked: false,
+      evidenceStatus: "verified",
+      source: "openviking",
+      evidenceCount: 1,
+    });
+    expect(control?.title).toBeUndefined();
+    expect(control?.lockedContent).toBeUndefined();
+  });
+
   it("records online Commit evidence, feedback and runtime diagnostics", async () => {
     await repository.addWorkspace({
       id: "workspace-1",

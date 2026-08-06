@@ -19,6 +19,10 @@ const DEFAULT_RECALL_TOKEN_BUDGET = 1_200;
 const MIN_RECALL_TOKEN_BUDGET = 256;
 const MAX_RECALL_TOKEN_BUDGET = 8_192;
 const MIN_RECALL_SCORE = 0.25;
+const COMMIT_REQUEST_STALE_MS = 5 * 60_000;
+const STATE_LOCK_RETRY_MS = 10;
+const STATE_LOCK_TIMEOUT_MS = 5_000;
+const STATE_LOCK_STALE_MS = 30_000;
 
 function findWorkspaceForCwd(manifest, cwd, platform = process.platform) {
   if (!manifest || !Array.isArray(manifest.workspaces) || typeof cwd !== "string" || !cwd.trim()) return null;
@@ -34,7 +38,7 @@ function findWorkspaceForCwd(manifest, cwd, platform = process.platform) {
   let match = null;
   let matchLength = -1;
   for (const workspace of manifest.workspaces) {
-    if (!workspace || typeof workspace.rootPath !== "string") continue;
+    if (!workspace || typeof workspace.rootPath !== "string" || !workspace.rootPath.trim()) continue;
     const root = normalize(workspace.rootPath);
     if (target !== root && !target.startsWith(`${root}${pathApi.sep}`)) continue;
     if (root.length > matchLength) {
@@ -181,6 +185,7 @@ async function recallForWorkspace(workspace, query, options) {
   let coreTokens = 0;
   const acceptedCore = [];
   const acceptedSnippets = [];
+  const injectedUris = new Set();
   const candidates = [...ranked.candidates];
 
   for (const core of coreMemories) {
@@ -206,12 +211,17 @@ async function recallForWorkspace(workspace, query, options) {
     }
     const tokenCount = estimateTokens(line);
     acceptedCore.push(line);
+    injectedUris.add(core.uri);
     usedTokens += tokenCount;
     coreTokens += tokenCount;
     candidates.push(candidateTrace(core.uri, undefined, core.control, "injected", "core-memory"));
   }
 
   for (const memory of ranked.selected) {
+    if (injectedUris.has(memory.uri)) {
+      setCandidateDecision(candidates, memory.uri, "filtered", "core-memory-duplicate");
+      continue;
+    }
     const content = memory.control.locked && typeof memory.control.lockedContent === "string"
       ? cleanText(memory.control.lockedContent, MAX_TURN_CHARS)
       : cleanText(memory.abstract || memory.overview || memory.content || memory.title, 2_000);
@@ -232,6 +242,7 @@ async function recallForWorkspace(workspace, query, options) {
       continue;
     }
     acceptedSnippets.push(line);
+    injectedUris.add(memory.uri);
     usedTokens += tokenCount;
     setCandidateDecision(candidates, memory.uri, "injected", "selected");
   }
@@ -434,67 +445,77 @@ async function captureTurn(workspace, sessionId, turn, options) {
   const toolCount = Math.max(0, Math.floor(Number(turn?.toolCount || 0)));
   const fingerprint = sha256(JSON.stringify([user, assistant]));
   const statePath = sessionStatePath(options.stateDir, sessionId);
-  const existing = readSessionState(options.stateDir, sessionId);
-  if (existing?.fingerprint === fingerprint) return false;
-
-  const started = Date.now();
-  const encodedSessionId = encodeURIComponent(sessionId);
-  const created = await requestJson(`/api/v1/sessions/${encodedSessionId}?auto_create=true`, workspace, options, { method: "GET" });
-  if (!created.accepted) {
-    writeHookEvent(options.stateDir, failedEvent(workspace.id, sessionId, "append", started, "session-create-failed"));
-    return false;
-  }
-  const appended = await requestJson(`/api/v1/sessions/${encodedSessionId}/messages/batch`, workspace, options, {
-    method: "POST",
-    body: JSON.stringify({ messages: [{ role: "user", content: user }, { role: "assistant", content: assistant }] }),
-  });
-  if (!appended.accepted) {
-    writeHookEvent(options.stateDir, failedEvent(workspace.id, sessionId, "append", started, "message-append-failed"));
-    return false;
-  }
-
-  const previous = readSessionState(options.stateDir, sessionId) || {};
   const turnTokenEstimate = estimateTokens(user) + estimateTokens(assistant);
-  const pendingTokenEstimate = Number(previous.pendingTokenEstimate || 0) + turnTokenEstimate;
-  if (statePath) {
-    const recentTurns = Array.isArray(previous.recentTurns) ? previous.recentTurns : [];
-    const pendingEvidence = Array.isArray(previous.pendingEvidence) ? previous.pendingEvidence : [];
-    writeStateAtomic(statePath, {
-      ...previous,
-      version: 2,
-      sessionId,
-      workspaceId: workspace.id,
-      agent: options.agent,
-      sourceSessionId: options.sourceSessionId || previous.sourceSessionId,
-      fingerprint,
-      recentTurns: [...recentTurns, { user, assistant }].slice(-2),
-      pendingEvidence: [...pendingEvidence, {
-        id: fingerprint,
-        capturedAt: new Date().toISOString(),
-        tokenEstimate: turnTokenEstimate,
-        inputChars,
-        toolCount,
-      }].slice(-100),
-      pendingTokenEstimate,
-      pendingSince: previous.pendingSince || new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
+  const append = async () => {
+    const previous = statePath ? readStateFile(statePath) || {} : {};
+    if (previous.fingerprint === fingerprint) return null;
+    const started = Date.now();
+    const encodedSessionId = encodeURIComponent(sessionId);
+    const created = await requestJson(`/api/v1/sessions/${encodedSessionId}?auto_create=true`, workspace, options, { method: "GET" });
+    if (!created.accepted) {
+      writeHookEvent(options.stateDir, failedEvent(workspace.id, sessionId, "append", started, "session-create-failed"));
+      return null;
+    }
+    const appended = await requestJson(`/api/v1/sessions/${encodedSessionId}/messages/batch`, workspace, options, {
+      method: "POST",
+      body: JSON.stringify({ messages: [{ role: "user", content: user }, { role: "assistant", content: assistant }] }),
     });
-  }
-  const completed = Date.now();
+    if (!appended.accepted) {
+      writeHookEvent(options.stateDir, failedEvent(workspace.id, sessionId, "append", started, "message-append-failed"));
+      return null;
+    }
+
+    let pendingTokenEstimate = turnTokenEstimate;
+    if (statePath) {
+      const recentTurns = Array.isArray(previous.recentTurns) ? previous.recentTurns : [];
+      const pendingEvidence = Array.isArray(previous.pendingEvidence) ? previous.pendingEvidence : [];
+      pendingTokenEstimate = Number(previous.pendingTokenEstimate || 0) + turnTokenEstimate;
+      const capturedAt = new Date().toISOString();
+      writeStateAtomic(statePath, {
+        ...previous,
+        version: 2,
+        sessionId,
+        workspaceId: workspace.id,
+        agent: options.agent,
+        sourceSessionId: options.sourceSessionId || previous.sourceSessionId,
+        fingerprint,
+        recentTurns: [...recentTurns, { user, assistant }].slice(-2),
+        pendingEvidence: [...pendingEvidence, {
+          id: fingerprint,
+          capturedAt,
+          tokenEstimate: turnTokenEstimate,
+          inputChars,
+          toolCount,
+        }].slice(-100),
+        pendingTokenEstimate,
+        pendingSince: previous.pendingSince || capturedAt,
+        updatedAt: capturedAt,
+      });
+    }
+    return { started, completed: Date.now(), pendingTokenEstimate };
+  };
+  const captured = statePath ? await withStateLock(statePath, append) : await append();
+  if (!captured) return false;
+
   writeHookEvent(options.stateDir, {
     workspaceId: workspace.id,
     sessionId,
     phase: "append",
     status: "completed",
-    startedAt: new Date(started).toISOString(),
-    completedAt: new Date(completed).toISOString(),
-    durationMs: completed - started,
-    details: { turnTokenEstimate, pendingTokenEstimate, inputChars, toolCount },
+    startedAt: new Date(captured.started).toISOString(),
+    completedAt: new Date(captured.completed).toISOString(),
+    durationMs: captured.completed - captured.started,
+    details: {
+      turnTokenEstimate,
+      pendingTokenEstimate: captured.pendingTokenEstimate,
+      inputChars,
+      toolCount,
+    },
   });
   const threshold = Number.isFinite(options.commitTokenThreshold)
     ? Math.max(1, options.commitTokenThreshold)
     : DEFAULT_COMMIT_TOKEN_THRESHOLD;
-  if (options.commitRequested === true || pendingTokenEstimate >= threshold) {
+  if (options.commitRequested === true || captured.pendingTokenEstimate >= threshold) {
     await commitSession(workspace, sessionId, {
       ...options,
       trigger: options.commitRequested === true ? "explicit-remember" : "token-threshold",
@@ -505,51 +526,27 @@ async function captureTurn(workspace, sessionId, turn, options) {
 
 async function commitSession(workspace, sessionId, options) {
   const started = Date.now();
+  const statePath = sessionStatePath(options.stateDir, sessionId);
+  const request = statePath
+    ? await prepareCommitRequest(statePath, workspace, sessionId, options, started)
+    : commitRequestFromState({}, options, started);
+  if (!request) return false;
   const response = await requestJson(`/api/v1/sessions/${encodeURIComponent(sessionId)}/commit`, workspace, options, {
     method: "POST",
     body: JSON.stringify({ keep_recent_count: 0 }),
   });
   const completed = Date.now();
   if (!response.accepted) {
+    if (statePath) await clearCommitRequest(statePath, request.requestId);
     writeHookEvent(options.stateDir, failedEvent(workspace.id, sessionId, "commit", started, "commit-rejected"));
     return false;
   }
   const result = response.payload?.result ?? response.payload ?? {};
   const taskId = cleanText(result.task_id || result.taskId || result.id, 256);
-  const statePath = sessionStatePath(options.stateDir, sessionId);
-  const previous = readSessionState(options.stateDir, sessionId) || {};
-  const sourceTurnIds = Array.isArray(previous.pendingEvidence)
-    ? previous.pendingEvidence.map((evidence) => String(evidence?.id || "")).filter(Boolean)
-    : [];
-  const tokenEstimate = Math.max(0, Number(previous.pendingTokenEstimate || 0));
-  const inputChars = Array.isArray(previous.pendingEvidence)
-    ? previous.pendingEvidence.reduce((total, evidence) => total + Math.max(0, Number(evidence?.inputChars || 0)), 0)
-    : 0;
-  const toolCount = Array.isArray(previous.pendingEvidence)
-    ? previous.pendingEvidence.reduce((total, evidence) => total + Math.max(0, Number(evidence?.toolCount || 0)), 0)
-    : 0;
-  if (statePath) {
-    const commitTasks = Array.isArray(previous.commitTasks) ? previous.commitTasks : [];
-    writeStateAtomic(statePath, {
-      ...previous,
-      pendingEvidence: [],
-      pendingTokenEstimate: 0,
-      pendingSince: null,
-      commitTasks: taskId ? [...commitTasks.filter((task) => task?.taskId !== taskId), {
-        taskId,
-        trigger: options.trigger || "manual",
-        agent: options.agent || previous.agent || "unknown",
-        sourceSessionId: options.sourceSessionId || previous.sourceSessionId,
-        sourceTurnIds,
-        tokenEstimate,
-        inputChars,
-        toolCount,
-        startedAt: new Date(started).toISOString(),
-        acceptedAt: new Date(completed).toISOString(),
-      }].slice(-20) : commitTasks,
-      lastCommittedAt: new Date(completed).toISOString(),
-      updatedAt: new Date(completed).toISOString(),
-    });
+  if (!taskId) {
+    if (statePath) await clearCommitRequest(statePath, request.requestId);
+  } else if (statePath) {
+    await acceptCommitRequest(statePath, request, taskId, completed);
   }
   writeHookEvent(options.stateDir, {
     workspaceId: workspace.id,
@@ -561,15 +558,111 @@ async function commitSession(workspace, sessionId, options) {
     completedAt: new Date(completed).toISOString(),
     durationMs: completed - started,
     details: {
-      trigger: options.trigger || "manual",
-      sourceTurnCount: sourceTurnIds.length,
-      tokenEstimate,
-      inputChars,
-      toolCount,
+      trigger: request.trigger || "manual",
+      sourceTurnCount: request.sourceTurnIds.length,
+      tokenEstimate: request.tokenEstimate,
+      inputChars: request.inputChars,
+      toolCount: request.toolCount,
       ...(taskId ? {} : { reason: "missing-task-id" }),
     },
   });
-  return true;
+  return Boolean(taskId);
+}
+
+async function prepareCommitRequest(statePath, workspace, sessionId, options, started) {
+  return withStateLock(statePath, async () => {
+    const previous = readStateFile(statePath) || {};
+    if (isActiveCommitRequest(previous.commitRequest, started)) return null;
+    const hasPending = Number(previous.pendingTokenEstimate || 0) > 0
+      || (Array.isArray(previous.pendingEvidence) && previous.pendingEvidence.length > 0);
+    const hasRunningTask = Array.isArray(previous.commitTasks)
+      && previous.commitTasks.some((task) => typeof task?.taskId === "string" && task.taskId);
+    if (!hasPending && hasRunningTask) return null;
+
+    const request = commitRequestFromState(previous, options, started);
+    writeStateAtomic(statePath, {
+      ...previous,
+      version: 2,
+      sessionId,
+      workspaceId: workspace.id,
+      agent: options.agent || previous.agent,
+      sourceSessionId: options.sourceSessionId || previous.sourceSessionId,
+      commitRequest: request,
+    });
+    return request;
+  });
+}
+
+function commitRequestFromState(state, options, started) {
+  const evidence = Array.isArray(state.pendingEvidence) ? state.pendingEvidence : [];
+  return {
+    requestId: randomId(),
+    trigger: options.trigger || "manual",
+    agent: options.agent || state.agent || "unknown",
+    sourceSessionId: options.sourceSessionId || state.sourceSessionId,
+    sourceTurnIds: evidence.map((item) => String(item?.id || "")).filter(Boolean),
+    tokenEstimate: Math.max(0, Number(state.pendingTokenEstimate || 0)),
+    inputChars: evidence.reduce(
+      (total, item) => total + Math.max(0, Number(item?.inputChars || 0)),
+      0,
+    ),
+    toolCount: evidence.reduce(
+      (total, item) => total + Math.max(0, Number(item?.toolCount || 0)),
+      0,
+    ),
+    startedAt: new Date(started).toISOString(),
+  };
+}
+
+async function clearCommitRequest(statePath, requestId) {
+  await withStateLock(statePath, async () => {
+    const current = readStateFile(statePath);
+    if (!current || current.commitRequest?.requestId !== requestId) return;
+    delete current.commitRequest;
+    writeStateAtomic(statePath, current);
+  });
+}
+
+async function acceptCommitRequest(statePath, request, taskId, completed) {
+  await withStateLock(statePath, async () => {
+    const current = readStateFile(statePath) || {};
+    if (current.commitRequest?.requestId === request.requestId) delete current.commitRequest;
+    removeCommittedPendingState(current, request);
+    const { requestId: _requestId, ...taskFields } = request;
+    const commitTasks = Array.isArray(current.commitTasks) ? current.commitTasks : [];
+    const acceptedAt = new Date(completed).toISOString();
+    writeStateAtomic(statePath, {
+      ...current,
+      commitTasks: [...commitTasks.filter((task) => task?.taskId !== taskId), {
+        taskId,
+        ...taskFields,
+        acceptedAt,
+      }].slice(-20),
+      lastCommittedAt: acceptedAt,
+      updatedAt: acceptedAt,
+    });
+  });
+}
+
+function removeCommittedPendingState(state, request) {
+  const committedIds = new Set(request.sourceTurnIds || []);
+  const pendingEvidence = (Array.isArray(state.pendingEvidence) ? state.pendingEvidence : [])
+    .filter((item) => !committedIds.has(String(item?.id || "")));
+  const pendingTokenEstimate = Math.max(
+    0,
+    Number(state.pendingTokenEstimate || 0) - Math.max(0, Number(request.tokenEstimate || 0)),
+  );
+  state.pendingEvidence = pendingEvidence;
+  state.pendingTokenEstimate = pendingTokenEstimate;
+  if (pendingTokenEstimate <= 0 && pendingEvidence.length === 0) state.pendingSince = null;
+}
+
+function isActiveCommitRequest(request, now = Date.now()) {
+  const startedAt = Date.parse(request?.startedAt || "");
+  return typeof request?.requestId === "string"
+    && request.requestId.length > 0
+    && Number.isFinite(startedAt)
+    && now - startedAt < COMMIT_REQUEST_STALE_MS;
 }
 
 function estimateTokens(value) {
@@ -721,6 +814,10 @@ function sessionStatePath(stateDir, sessionId) {
 function readSessionState(stateDir, sessionId) {
   const filePath = sessionStatePath(stateDir, sessionId);
   if (!filePath) return null;
+  return readStateFile(filePath);
+}
+
+function readStateFile(filePath) {
   try {
     const parsed = JSON.parse(fs.readFileSync(filePath, "utf8"));
     return parsed && typeof parsed === "object" ? parsed : null;
@@ -744,6 +841,7 @@ function latestWorkspaceHandoff(stateDir, workspaceId, excludedSessionId) {
       if (value?.workspaceId !== workspaceId || value?.sessionId === excludedSessionId) continue;
       if (!Array.isArray(value.recentTurns) || value.recentTurns.length === 0) continue;
       const updatedAt = Date.parse(value.updatedAt || "");
+      if (!Number.isFinite(updatedAt)) continue;
       if (!latest || updatedAt > latest.updatedAt) latest = { updatedAt, recentTurns: value.recentTurns };
     } catch {
       // Corrupt hook state is isolated to that session.
@@ -774,9 +872,9 @@ function readMemoryPolicy(policyPath) {
     const parsed = JSON.parse(fs.readFileSync(policyPath, "utf8"));
     return parsed && typeof parsed === "object" && parsed.memories && typeof parsed.memories === "object"
       ? parsed
-      : { strict: false, memories: {} };
+      : { strict: true, memories: {} };
   } catch {
-    return { strict: false, memories: {} };
+    return { strict: true, memories: {} };
   }
 }
 
@@ -902,6 +1000,9 @@ function workspaceRecallBlock(stateDir, workspaceId) {
       if (typeof value.recallBlockedByTaskId === "string" && value.recallBlockedByTaskId) {
         return { taskId: value.recallBlockedByTaskId, reason: "failed" };
       }
+      if (isActiveCommitRequest(value.commitRequest)) {
+        return { taskId: value.commitRequest.requestId, reason: "running" };
+      }
       const task = Array.isArray(value.commitTasks)
         ? value.commitTasks.find((candidate) => typeof candidate?.taskId === "string" && candidate.taskId)
         : null;
@@ -961,6 +1062,37 @@ function writeStateAtomic(filePath, value) {
   const temporaryPath = `${filePath}.${process.pid}.tmp`;
   fs.writeFileSync(temporaryPath, `${JSON.stringify(value)}\n`, { encoding: "utf8", mode: 0o600 });
   fs.renameSync(temporaryPath, filePath);
+}
+
+async function withStateLock(filePath, operation) {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true, mode: 0o700 });
+  const lockPath = `${filePath}.lock`;
+  const deadline = Date.now() + STATE_LOCK_TIMEOUT_MS;
+  while (true) {
+    try {
+      fs.mkdirSync(lockPath, { mode: 0o700 });
+      break;
+    } catch (error) {
+      if (error?.code !== "EEXIST") throw error;
+      try {
+        const lockStat = fs.statSync(lockPath);
+        if (Date.now() - lockStat.mtimeMs >= STATE_LOCK_STALE_MS) {
+          fs.rmSync(lockPath, { recursive: true, force: true });
+          continue;
+        }
+      } catch (statError) {
+        if (statError?.code !== "ENOENT") throw statError;
+        continue;
+      }
+      if (Date.now() >= deadline) throw new Error(`Timed out acquiring OpenViking hook state lock: ${filePath}`);
+      await new Promise((resolve) => setTimeout(resolve, STATE_LOCK_RETRY_MS));
+    }
+  }
+  try {
+    return await operation();
+  } finally {
+    fs.rmSync(lockPath, { recursive: true, force: true });
+  }
 }
 
 function sha256(value) {

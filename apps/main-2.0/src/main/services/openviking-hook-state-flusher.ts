@@ -1,13 +1,15 @@
 import { randomUUID } from "node:crypto";
-import { readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 
-import type {
-  OpenVikingApplyCommitInput,
-  OpenVikingCommitRun,
-  OpenVikingMemoryChange,
-  OpenVikingOperationEvent,
-  OpenVikingRecallTrace,
+import { canonicalOpenVikingMemoryUri } from "../../core/openviking-memory";
+import {
+  inferOpenVikingMemoryType,
+  type OpenVikingApplyCommitInput,
+  type OpenVikingCommitRun,
+  type OpenVikingMemoryChange,
+  type OpenVikingOperationEvent,
+  type OpenVikingRecallTrace,
 } from "../../core/openviking-memory-control";
 import type { OpenVikingClientPort } from "./openviking-client";
 import type { OpenVikingCredentialStorePort } from "./openviking-memory-service";
@@ -16,14 +18,14 @@ interface OpenVikingHookStateFlusherOptions {
   stateDir: string;
   client: Pick<
     OpenVikingClientPort,
-    "commitSession" | "getTask" | "readMemory" | "writeMemoryContent"
+    "commitSession" | "getTask" | "readSessionArtifact" | "writeMemoryContent"
   >;
   credentials: Pick<OpenVikingCredentialStorePort, "get">;
   control: {
     upsertOpenVikingCommitRun(run: OpenVikingCommitRun): Promise<void>;
     applyOpenVikingCommitResult(
       input: OpenVikingApplyCommitInput,
-    ): Promise<Array<{ uri: string; content: string }>>;
+    ): Promise<Array<{ uri: string; content: string; title?: string }>>;
     recordOpenVikingOperationEvent(event: OpenVikingOperationEvent): Promise<void>;
     recordOpenVikingRecallTrace(trace: OpenVikingRecallTrace): Promise<void>;
   };
@@ -55,6 +57,10 @@ interface HookCommitTask {
   acceptedAt?: string;
 }
 
+interface HookCommitRequest extends Omit<HookCommitTask, "taskId" | "acceptedAt"> {
+  requestId?: string;
+}
+
 interface HookSessionState {
   workspaceId?: string;
   sessionId?: string;
@@ -62,6 +68,7 @@ interface HookSessionState {
   agent?: string;
   pendingTokenEstimate?: number;
   pendingEvidence?: HookTurnEvidence[];
+  commitRequest?: HookCommitRequest;
   commitTasks?: HookCommitTask[];
   recallBlockedByTaskId?: string;
   updatedAt?: string;
@@ -90,6 +97,10 @@ interface OpenVikingTaskResult extends Record<string, unknown> {
 
 const DEFAULT_IDLE_MS = 120_000;
 const DEFAULT_INTERVAL_MS = 10_000;
+const COMMIT_REQUEST_STALE_MS = 5 * 60_000;
+const STATE_LOCK_RETRY_MS = 10;
+const STATE_LOCK_TIMEOUT_MS = 5_000;
+const STATE_LOCK_STALE_MS = 30_000;
 
 export class OpenVikingHookStateFlusher {
   private timer: ReturnType<typeof setInterval> | null = null;
@@ -180,16 +191,20 @@ export class OpenVikingHookStateFlusher {
     if (state.workspaceId && state.sessionId && Array.isArray(state.commitTasks)) {
       const result = await this.processCommitTasks(state, now);
       if (result.completedTaskIds.size > 0) {
-        const current = await readState(filePath);
+        const current = await withStateLock(filePath, async () => {
+          const latest = await readState(filePath);
+          if (!latest) return null;
+          latest.commitTasks = (Array.isArray(latest.commitTasks) ? latest.commitTasks : [])
+            .filter((task) => !result.completedTaskIds.has(String(task?.taskId || "")));
+          if (result.lastOutcome?.state === "failed") {
+            latest.recallBlockedByTaskId = result.lastOutcome.taskId;
+          } else if (result.lastOutcome?.state === "completed") {
+            delete latest.recallBlockedByTaskId;
+          }
+          await writeState(filePath, latest);
+          return latest;
+        });
         if (!current) return changed;
-        current.commitTasks = (Array.isArray(current.commitTasks) ? current.commitTasks : [])
-          .filter((task) => !result.completedTaskIds.has(String(task?.taskId || "")));
-        if (result.lastOutcome?.state === "failed") {
-          current.recallBlockedByTaskId = result.lastOutcome.taskId;
-        } else if (result.lastOutcome?.state === "completed") {
-          delete current.recallBlockedByTaskId;
-        }
-        await writeState(filePath, current);
         state = current;
         changed = true;
       }
@@ -207,15 +222,19 @@ export class OpenVikingHookStateFlusher {
     const auth = await this.options.credentials.get(state.workspaceId);
     if (!auth) return changed;
 
-    const startedAt = new Date(now).toISOString();
+    const prepared = await this.prepareIdleCommit(filePath, now);
+    if (!prepared) return changed;
+    const { request, state: commitState } = prepared;
+    const startedAt = request.startedAt!;
     let taskId: string;
     try {
-      taskId = (await this.options.client.commitSession(auth, state.sessionId)).taskId;
+      taskId = (await this.options.client.commitSession(auth, commitState.sessionId!)).taskId;
     } catch (error) {
+      await this.clearCommitRequest(filePath, request.requestId!);
       await this.options.control.recordOpenVikingOperationEvent({
         id: randomUUID(),
-        workspaceId: state.workspaceId,
-        sessionId: state.sessionId,
+        workspaceId: commitState.workspaceId!,
+        sessionId: commitState.sessionId!,
         phase: "commit",
         status: "failed",
         startedAt,
@@ -226,39 +245,16 @@ export class OpenVikingHookStateFlusher {
       return changed;
     }
 
-    const current = await readState(filePath);
-    if (!current) return changed;
-    if (current.updatedAt !== state.updatedAt || Number(current.pendingTokenEstimate || 0) !== pending) return changed;
-    const sourceTurnIds = (Array.isArray(current.pendingEvidence) ? current.pendingEvidence : [])
-      .map((evidence) => String(evidence?.id || ""))
-      .filter(Boolean);
-    const inputChars = (Array.isArray(current.pendingEvidence) ? current.pendingEvidence : [])
-      .reduce((total, evidence) => total + Math.max(0, Number(evidence?.inputChars || 0)), 0);
-    const toolCount = (Array.isArray(current.pendingEvidence) ? current.pendingEvidence : [])
-      .reduce((total, evidence) => total + Math.max(0, Number(evidence?.toolCount || 0)), 0);
     const acceptedAt = new Date(now).toISOString();
+    const { requestId: _requestId, ...taskFields } = request;
     const task: HookCommitTask = {
       taskId,
-      trigger: "idle",
-      agent: current.agent || "unknown",
-      ...(current.sourceSessionId ? { sourceSessionId: current.sourceSessionId } : {}),
-      sourceTurnIds,
-      tokenEstimate: pending,
-      inputChars,
-      toolCount,
+      ...taskFields,
       startedAt,
       acceptedAt,
     };
-    current.pendingEvidence = [];
-    current.pendingTokenEstimate = 0;
-    current.pendingSince = null;
-    current.commitTasks = [
-      ...(Array.isArray(current.commitTasks) ? current.commitTasks : []).filter((item) => item?.taskId !== taskId),
-      task,
-    ].slice(-20);
-    current.lastCommittedAt = acceptedAt;
-    current.updatedAt = acceptedAt;
-    await writeState(filePath, current);
+    const current = await this.acceptCommitRequest(filePath, request, task, acceptedAt);
+    if (!current) return changed;
     await this.options.control.upsertOpenVikingCommitRun(toCommitRun(current, task, "running"));
     await this.options.control.recordOpenVikingOperationEvent({
       id: randomUUID(),
@@ -272,13 +268,68 @@ export class OpenVikingHookStateFlusher {
       durationMs: Math.max(0, Date.parse(acceptedAt) - now),
       details: {
         trigger: "idle",
-        sourceTurnCount: sourceTurnIds.length,
-        tokenEstimate: pending,
-        inputChars,
-        toolCount,
+        sourceTurnCount: request.sourceTurnIds?.length ?? 0,
+        tokenEstimate: request.tokenEstimate ?? 0,
+        inputChars: request.inputChars ?? 0,
+        toolCount: request.toolCount ?? 0,
       },
     });
     return true;
+  }
+
+  private async prepareIdleCommit(
+    filePath: string,
+    now: number,
+  ): Promise<{ state: HookSessionState; request: HookCommitRequest } | null> {
+    return withStateLock(filePath, async () => {
+      const current = await readState(filePath);
+      if (!current?.workspaceId || !current.sessionId) return null;
+      const pending = Math.max(0, Number(current.pendingTokenEstimate || 0));
+      const updatedAt = Date.parse(current.updatedAt || "");
+      if (
+        pending <= 0
+        || !Number.isFinite(updatedAt)
+        || now - updatedAt < (this.options.idleMs ?? DEFAULT_IDLE_MS)
+      ) return null;
+      if (isActiveCommitRequest(current.commitRequest, now)) return null;
+
+      const request = commitRequestFromState(current, "idle", now);
+      current.commitRequest = request;
+      await writeState(filePath, current);
+      return { state: current, request };
+    });
+  }
+
+  private async clearCommitRequest(filePath: string, requestId: string): Promise<void> {
+    await withStateLock(filePath, async () => {
+      const current = await readState(filePath);
+      if (!current || current.commitRequest?.requestId !== requestId) return;
+      delete current.commitRequest;
+      await writeState(filePath, current);
+    });
+  }
+
+  private async acceptCommitRequest(
+    filePath: string,
+    request: HookCommitRequest,
+    task: HookCommitTask,
+    acceptedAt: string,
+  ): Promise<HookSessionState | null> {
+    return withStateLock(filePath, async () => {
+      const current = await readState(filePath);
+      if (!current) return null;
+      if (current.commitRequest?.requestId === request.requestId) delete current.commitRequest;
+      removeCommittedPendingState(current, request);
+      current.commitTasks = [
+        ...(Array.isArray(current.commitTasks) ? current.commitTasks : [])
+          .filter((item) => item?.taskId !== task.taskId),
+        task,
+      ].slice(-20);
+      current.lastCommittedAt = acceptedAt;
+      current.updatedAt = acceptedAt;
+      await writeState(filePath, current);
+      return current;
+    });
   }
 
   private async processCommitTasks(
@@ -307,25 +358,7 @@ export class OpenVikingHookStateFlusher {
       const status = String(remoteTask.status || "").toLowerCase();
       if (["failed", "error", "cancelled", "canceled"].includes(status)) {
         const completedAt = new Date(now).toISOString();
-        await this.options.control.upsertOpenVikingCommitRun({
-          ...run,
-          state: "failed",
-          error: taskError(remoteTask),
-          completedAt,
-          updatedAt: completedAt,
-        });
-        await this.options.control.recordOpenVikingOperationEvent({
-          id: randomUUID(),
-          workspaceId: state.workspaceId!,
-          sessionId: state.sessionId!,
-          taskId,
-          phase: "verify",
-          status: "failed",
-          startedAt: run.startedAt,
-          completedAt,
-          durationMs: Math.max(0, Date.parse(completedAt) - Date.parse(run.startedAt)),
-          details: { error: taskError(remoteTask) },
-        });
+        await this.recordFailedCommitTask(state, run, taskId, taskError(remoteTask), completedAt);
         completedTaskIds.add(taskId);
         lastOutcome = { taskId, state: "failed" };
         continue;
@@ -337,12 +370,25 @@ export class OpenVikingHookStateFlusher {
       const memoryDiffUri = stringValue(result.memory_diff_uri) || stringValue(result.memoryDiffUri);
       let changes: OpenVikingMemoryChange[] = [];
       if (memoryDiffUri) {
+        let memoryDiff: string;
         try {
-          changes = parseMemoryDiff(
-            await this.options.client.readMemory(auth, memoryDiffUri),
-            auth.userId,
-          );
+          memoryDiff = await this.options.client.readSessionArtifact(auth, memoryDiffUri);
         } catch {
+          continue;
+        }
+        try {
+          changes = parseMemoryDiff(memoryDiff, auth.userId);
+        } catch (error) {
+          const completedAt = new Date(now).toISOString();
+          await this.recordFailedCommitTask(
+            state,
+            run,
+            taskId,
+            `Invalid OpenViking Memory Diff: ${error instanceof Error ? error.message : String(error)}`,
+            completedAt,
+          );
+          completedTaskIds.add(taskId);
+          lastOutcome = { taskId, state: "failed" };
           continue;
         }
       }
@@ -381,7 +427,12 @@ export class OpenVikingHookStateFlusher {
       let restored = 0;
       try {
         for (const conflict of conflicts) {
-          await this.options.client.writeMemoryContent(auth, conflict.uri, conflict.content);
+          await this.options.client.writeMemoryContent(
+            auth,
+            conflict.uri,
+            conflict.content,
+            conflict.title,
+          );
           restored += 1;
         }
       } catch {
@@ -392,6 +443,34 @@ export class OpenVikingHookStateFlusher {
       lastOutcome = { taskId, state: "completed" };
     }
     return { completedTaskIds, ...(lastOutcome ? { lastOutcome } : {}) };
+  }
+
+  private async recordFailedCommitTask(
+    state: HookSessionState,
+    run: OpenVikingCommitRun,
+    taskId: string,
+    error: string,
+    completedAt: string,
+  ): Promise<void> {
+    await this.options.control.upsertOpenVikingCommitRun({
+      ...run,
+      state: "failed",
+      error,
+      completedAt,
+      updatedAt: completedAt,
+    });
+    await this.options.control.recordOpenVikingOperationEvent({
+      id: randomUUID(),
+      workspaceId: state.workspaceId!,
+      sessionId: state.sessionId!,
+      taskId,
+      phase: "verify",
+      status: "failed",
+      startedAt: run.startedAt,
+      completedAt,
+      durationMs: Math.max(0, Date.parse(completedAt) - Date.parse(run.startedAt)),
+      details: { error },
+    });
   }
 
   private async recordCompletedPhases(
@@ -564,7 +643,7 @@ function parseMemoryDiff(content: string, userId: string): OpenVikingMemoryChang
       changes.push({
         kind,
         uri,
-        memoryType: stringValue(record.memory_type) || inferMemoryType(uri),
+        memoryType: stringValue(record.memory_type) || inferOpenVikingMemoryType(uri),
         ...(stringValue(record.before) ? { before: stringValue(record.before) } : {}),
         ...(stringValue(record.after) ? { after: stringValue(record.after) } : {}),
         ...(stringValue(record.deleted_content) ? { before: stringValue(record.deleted_content) } : {}),
@@ -575,19 +654,106 @@ function parseMemoryDiff(content: string, userId: string): OpenVikingMemoryChang
 }
 
 function normalizeMemoryUri(uri: string, userId: string): string {
-  if (uri.startsWith("viking://user/memories/")) return uri;
-  const normalized = uri.replaceAll("\\", "/");
+  const normalized = uri.trim().replaceAll("\\", "/");
+  try {
+    return canonicalOpenVikingMemoryUri(normalized, userId);
+  } catch {
+    // OpenViking Memory Diff may use its internal memory/user/<id>/... path.
+  }
   const prefix = `memory/user/${userId}/`;
   if (!normalized.startsWith(prefix)) return "";
   const suffix = normalized.slice(prefix.length);
-  if (!suffix || suffix.split("/").some((segment) => !segment || segment === "." || segment === "..")) return "";
-  return `viking://user/memories/${suffix}`;
+  try {
+    return canonicalOpenVikingMemoryUri(`viking://user/memories/${suffix}`, userId);
+  } catch {
+    return "";
+  }
 }
 
 function taskError(task: OpenVikingTaskRecord): string {
   if (typeof task.error === "string") return task.error;
   const error = objectValue(task.error);
   return stringValue(error?.message) || "OpenViking commit task failed.";
+}
+
+function commitRequestFromState(
+  state: HookSessionState,
+  trigger: string,
+  now: number,
+): HookCommitRequest {
+  const evidence = Array.isArray(state.pendingEvidence) ? state.pendingEvidence : [];
+  return {
+    requestId: randomUUID(),
+    trigger,
+    agent: state.agent || "unknown",
+    ...(state.sourceSessionId ? { sourceSessionId: state.sourceSessionId } : {}),
+    sourceTurnIds: evidence
+      .map((item) => String(item?.id || ""))
+      .filter(Boolean),
+    tokenEstimate: Math.max(0, Math.floor(Number(state.pendingTokenEstimate || 0))),
+    inputChars: evidence.reduce(
+      (total, item) => total + Math.max(0, Number(item?.inputChars || 0)),
+      0,
+    ),
+    toolCount: evidence.reduce(
+      (total, item) => total + Math.max(0, Number(item?.toolCount || 0)),
+      0,
+    ),
+    startedAt: new Date(now).toISOString(),
+  };
+}
+
+function isActiveCommitRequest(request: HookCommitRequest | undefined, now: number): boolean {
+  const startedAt = Date.parse(request?.startedAt || "");
+  return Boolean(request?.requestId)
+    && Number.isFinite(startedAt)
+    && now - startedAt < COMMIT_REQUEST_STALE_MS;
+}
+
+function removeCommittedPendingState(
+  state: HookSessionState,
+  request: HookCommitRequest,
+): void {
+  const committedIds = new Set(request.sourceTurnIds ?? []);
+  state.pendingEvidence = (Array.isArray(state.pendingEvidence) ? state.pendingEvidence : [])
+    .filter((item) => !committedIds.has(String(item?.id || "")));
+  state.pendingTokenEstimate = Math.max(
+    0,
+    Number(state.pendingTokenEstimate || 0) - Math.max(0, Number(request.tokenEstimate || 0)),
+  );
+  if (state.pendingTokenEstimate <= 0 && state.pendingEvidence.length === 0) {
+    state.pendingSince = null;
+  }
+}
+
+async function withStateLock<T>(filePath: string, operation: () => Promise<T>): Promise<T> {
+  const lockPath = `${filePath}.lock`;
+  const deadline = Date.now() + STATE_LOCK_TIMEOUT_MS;
+  while (true) {
+    try {
+      await mkdir(lockPath, { mode: 0o700 });
+      break;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      try {
+        const lockStat = await stat(lockPath);
+        if (Date.now() - lockStat.mtimeMs >= STATE_LOCK_STALE_MS) {
+          await rm(lockPath, { recursive: true, force: true });
+          continue;
+        }
+      } catch (statError) {
+        if ((statError as NodeJS.ErrnoException).code !== "ENOENT") throw statError;
+        continue;
+      }
+      if (Date.now() >= deadline) throw new Error(`Timed out acquiring OpenViking hook state lock: ${filePath}`);
+      await new Promise((resolve) => setTimeout(resolve, STATE_LOCK_RETRY_MS));
+    }
+  }
+  try {
+    return await operation();
+  } finally {
+    await rm(lockPath, { recursive: true, force: true });
+  }
 }
 
 async function readState(filePath: string): Promise<HookSessionState | null> {
@@ -630,14 +796,4 @@ function numberRecord(value: unknown): Record<string, number> | null {
   return Object.fromEntries(
     Object.entries(record).filter((entry): entry is [string, number] => typeof entry[1] === "number"),
   );
-}
-
-function inferMemoryType(uri: string): string {
-  const segment = uri
-    .toLowerCase()
-    .replace(/^viking:\/\/user\/memories\//u, "")
-    .split("/")[0]
-    ?.replace(/\.md$/u, "");
-  if (segment === "identity" || segment === "soul") return "profile";
-  return segment || "other";
 }

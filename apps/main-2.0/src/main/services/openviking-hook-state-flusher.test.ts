@@ -21,7 +21,7 @@ function control() {
     upsertOpenVikingCommitRun: vi.fn(async (_run: unknown) => undefined),
     applyOpenVikingCommitResult: vi.fn(async (
       _input: unknown,
-    ): Promise<Array<{ uri: string; content: string }>> => []),
+    ): Promise<Array<{ uri: string; content: string; title?: string }>> => []),
     recordOpenVikingOperationEvent: vi.fn(async (_event: unknown) => undefined),
     recordOpenVikingRecallTrace: vi.fn(async (_trace: unknown) => undefined),
   };
@@ -31,7 +31,7 @@ function client() {
   return {
     commitSession: vi.fn(async () => ({ taskId: "task-1" })),
     getTask: vi.fn(async (): Promise<Record<string, unknown> | null> => null),
-    readMemory: vi.fn(async () => ""),
+    readSessionArtifact: vi.fn(async () => ""),
     writeMemoryContent: vi.fn(async () => undefined),
   };
 }
@@ -95,6 +95,56 @@ describe("OpenVikingHookStateFlusher", () => {
       phase: "commit",
       details: expect.objectContaining({ inputChars: 480, toolCount: 3 }),
     }));
+  });
+
+  it("preserves turns captured while an idle Commit request is in flight", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "agent-recall-openviking-concurrent-"));
+    roots.push(root);
+    const stateDir = path.join(root, "hook-state");
+    await mkdir(stateDir);
+    const statePath = path.join(stateDir, "pending.json");
+    await writeFile(statePath, JSON.stringify({
+      workspaceId: "workspace-1",
+      sessionId: "session-1",
+      agent: "codex",
+      pendingTokenEstimate: 120,
+      pendingEvidence: [{ id: "turn-1", tokenEstimate: 120, inputChars: 480, toolCount: 1 }],
+      pendingSince: "2026-08-05T00:00:00.000Z",
+      updatedAt: "2026-08-05T00:00:00.000Z",
+    }));
+    const openViking = client();
+    openViking.commitSession.mockImplementation(async () => {
+      const current = JSON.parse(await readFile(statePath, "utf8"));
+      await writeFile(statePath, JSON.stringify({
+        ...current,
+        pendingTokenEstimate: 200,
+        pendingEvidence: [
+          ...current.pendingEvidence,
+          { id: "turn-2", tokenEstimate: 80, inputChars: 320, toolCount: 2 },
+        ],
+        updatedAt: "2026-08-05T00:03:01.000Z",
+      }));
+      return { taskId: "task-concurrent" };
+    });
+    const flusher = new OpenVikingHookStateFlusher({
+      stateDir,
+      idleMs: 120_000,
+      client: openViking,
+      control: control(),
+      credentials: { get: vi.fn(async () => auth) },
+    });
+
+    await flusher.flushIdle(Date.parse("2026-08-05T00:03:00.000Z"));
+
+    expect(JSON.parse(await readFile(statePath, "utf8"))).toMatchObject({
+      pendingTokenEstimate: 80,
+      pendingEvidence: [{ id: "turn-2", tokenEstimate: 80 }],
+      commitTasks: [{
+        taskId: "task-concurrent",
+        sourceTurnIds: ["turn-1"],
+        tokenEstimate: 120,
+      }],
+    });
   });
 
   it("keeps failed idle commits pending and retries them on the next sweep", async () => {
@@ -161,8 +211,8 @@ describe("OpenVikingHookStateFlusher", () => {
     openViking.getTask.mockResolvedValue({
       status: "completed",
       result: {
-        archive_uri: "viking://session/archive/session-1.md",
-        memory_diff_uri: "viking://resources/memory_diff.json",
+        archive_uri: "viking://user/workspace_user/sessions/session-1/history/archive_001",
+        memory_diff_uri: "viking://user/workspace_user/sessions/session-1/history/archive_001/memory_diff.json",
         memories_extracted: { events: 1 },
         token_usage: { total: 421 },
         stage_timings: {
@@ -174,12 +224,16 @@ describe("OpenVikingHookStateFlusher", () => {
         },
       },
     });
-    openViking.readMemory.mockResolvedValue(JSON.stringify({
+    openViking.readSessionArtifact.mockResolvedValue(JSON.stringify({
       operations: {
         adds: [{
-          uri: "memory/user/workspace_user/events/release.md",
+          uri: "viking://user/workspace_user/memories/events/release.md",
           memory_type: "events",
           after: "Release requires one user-facing note.",
+        }, {
+          uri: "viking://user/memories/../secret.md",
+          memory_type: "events",
+          after: "Must be rejected.",
         }],
         updates: [],
         deletes: [],
@@ -220,13 +274,17 @@ describe("OpenVikingHookStateFlusher", () => {
         memoryType: "events",
         after: "Release requires one user-facing note.",
       }],
-      memoryDiffUri: "viking://resources/memory_diff.json",
+      memoryDiffUri: "viking://user/workspace_user/sessions/session-1/history/archive_001/memory_diff.json",
       modelSnapshot: expect.objectContaining({ model: "gpt-5.6-terra" }),
       policySnapshot: expect.objectContaining({
         trigger: "explicit-remember",
         runtimeVersion: "0.4.11-r4",
       }),
     }));
+    expect(openViking.readSessionArtifact).toHaveBeenCalledWith(
+      auth,
+      "viking://user/workspace_user/sessions/session-1/history/archive_001/memory_diff.json",
+    );
     const phases = memoryControl.recordOpenVikingOperationEvent.mock.calls
       .map(([event]) => (event as { phase: string }).phase);
     expect(phases).toEqual(expect.arrayContaining([
@@ -339,6 +397,54 @@ describe("OpenVikingHookStateFlusher", () => {
     expect(recovered.recallBlockedByTaskId).toBeUndefined();
   });
 
+  it("marks a completed task failed when its Memory Diff is permanently malformed", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "agent-recall-openviking-invalid-diff-"));
+    roots.push(root);
+    const stateDir = path.join(root, "hook-state");
+    await mkdir(stateDir);
+    const statePath = path.join(stateDir, "commit.json");
+    await writeFile(statePath, JSON.stringify({
+      workspaceId: "workspace-1",
+      sessionId: "session-invalid-diff",
+      commitTasks: [{
+        taskId: "task-invalid-diff",
+        trigger: "token-threshold",
+        sourceTurnIds: ["turn-a"],
+        tokenEstimate: 100,
+        startedAt: "2026-08-05T00:00:00.000Z",
+      }],
+      updatedAt: "2026-08-05T00:00:00.000Z",
+    }));
+    const openViking = client();
+    openViking.getTask.mockResolvedValue({
+      status: "completed",
+      result: {
+        memory_diff_uri: "viking://user/workspace_user/sessions/session-1/history/archive_001/memory_diff.json",
+      },
+    });
+    openViking.readSessionArtifact.mockResolvedValue("{not-json");
+    const memoryControl = control();
+    const flusher = new OpenVikingHookStateFlusher({
+      stateDir,
+      client: openViking,
+      control: memoryControl,
+      credentials: { get: vi.fn(async () => auth) },
+    });
+
+    await flusher.flushIdle(Date.parse("2026-08-05T00:01:00.000Z"));
+
+    expect(memoryControl.applyOpenVikingCommitResult).not.toHaveBeenCalled();
+    expect(memoryControl.upsertOpenVikingCommitRun).toHaveBeenLastCalledWith(expect.objectContaining({
+      taskId: "task-invalid-diff",
+      state: "failed",
+      error: expect.stringContaining("Invalid OpenViking Memory Diff"),
+    }));
+    expect(JSON.parse(await readFile(statePath, "utf8"))).toMatchObject({
+      commitTasks: [],
+      recallBlockedByTaskId: "task-invalid-diff",
+    });
+  });
+
   it("restores a user-locked memory after automatic extraction tries to overwrite it", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "agent-recall-openviking-lock-"));
     roots.push(root);
@@ -359,14 +465,16 @@ describe("OpenVikingHookStateFlusher", () => {
     const openViking = client();
     openViking.getTask.mockResolvedValue({
       status: "completed",
-      result: { memory_diff_uri: "viking://resources/memory_diff.json" },
+      result: {
+        memory_diff_uri: "viking://user/workspace_user/sessions/session-1/history/archive_001/memory_diff.json",
+      },
     });
-    openViking.readMemory.mockResolvedValue(JSON.stringify({
+    openViking.readSessionArtifact.mockResolvedValue(JSON.stringify({
       operations: {
         adds: [],
         updates: [{
-          uri: "memory/user/workspace_user/preferences/editor.md",
-          memory_type: "preferences",
+          uri: "memory/user/workspace_user/manual/editor.md",
+          memory_type: "manual",
           before: "Use verbose diffs.",
           after: "Use automatic formatting.",
         }],
@@ -375,8 +483,9 @@ describe("OpenVikingHookStateFlusher", () => {
     }));
     const memoryControl = control();
     memoryControl.applyOpenVikingCommitResult.mockResolvedValue([{
-      uri: "viking://user/memories/preferences/editor.md",
+      uri: "viking://user/memories/manual/editor.md",
       content: "Prefer concise diffs.",
+      title: "Editor policy",
     }]);
     const flusher = new OpenVikingHookStateFlusher({
       stateDir,
@@ -389,8 +498,9 @@ describe("OpenVikingHookStateFlusher", () => {
 
     expect(openViking.writeMemoryContent).toHaveBeenCalledWith(
       auth,
-      "viking://user/memories/preferences/editor.md",
+      "viking://user/memories/manual/editor.md",
       "Prefer concise diffs.",
+      "Editor policy",
     );
     expect(memoryControl.recordOpenVikingOperationEvent).toHaveBeenCalledWith(expect.objectContaining({
       phase: "verify",

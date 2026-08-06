@@ -53,11 +53,17 @@ export interface OpenVikingClientPort {
     limit?: number,
   ): Promise<OpenVikingMemoryItem[]>;
   readMemory(auth: OpenVikingWorkspaceAuth, uri: string): Promise<string>;
+  readSessionArtifact(auth: OpenVikingWorkspaceAuth, uri: string): Promise<string>;
   saveMemory(
     auth: OpenVikingWorkspaceAuth,
     input: SaveOpenVikingMemoryInput,
   ): Promise<OpenVikingMemoryItem>;
-  writeMemoryContent(auth: OpenVikingWorkspaceAuth, uri: string, content: string): Promise<void>;
+  writeMemoryContent(
+    auth: OpenVikingWorkspaceAuth,
+    uri: string,
+    content: string,
+    title?: string,
+  ): Promise<void>;
   deleteMemory(auth: OpenVikingWorkspaceAuth, uri: string): Promise<void>;
 }
 
@@ -150,12 +156,20 @@ export class OpenVikingGateway implements OpenVikingClientPort {
         "viking://user/sessions",
         "viking://user/skills",
       ]) {
-        await client.remove(uri, {
-          recursive: true,
-          wait: true,
-        });
+        try {
+          await client.remove(uri, {
+            recursive: true,
+            wait: true,
+          });
+        } catch (error) {
+          if (!isNotFoundError(error)) throw error;
+        }
       }
-      await this.rootClient.adminRemoveUser(auth.accountId, auth.userId);
+      try {
+        await this.rootClient.adminRemoveUser(auth.accountId, auth.userId);
+      } catch (error) {
+        if (!isNotFoundError(error)) throw error;
+      }
     });
   }
 
@@ -214,12 +228,14 @@ export class OpenVikingGateway implements OpenVikingClientPort {
         const listedIds = new Set(memories.map((memory) => memory.id));
         const matches = Array.isArray(globbed.matches) ? globbed.matches : [];
         for (const uri of matches) {
-          if (typeof uri !== "string" || listedIds.has(uri)) continue;
+          if (typeof uri !== "string") continue;
           const memory = normalizeMemory({
             uri,
-            rel_path: uri.replace(/^viking:\/\/user\/memories\//u, ""),
+            rel_path: uri.replace(/^viking:\/\/user\/(?:[^/]+\/)?memories\//u, ""),
           }, auth.userId);
-          if (memory) memories.push(memory);
+          if (!memory || listedIds.has(memory.id)) continue;
+          listedIds.add(memory.id);
+          memories.push(memory);
         }
         const selected = memories
           .sort((left, right) => (right.updatedAt ?? "").localeCompare(left.updatedAt ?? ""))
@@ -254,6 +270,12 @@ export class OpenVikingGateway implements OpenVikingClientPort {
       const content = await this.workspaceClient(auth).read(memoryUri);
       return MANUAL_MEMORY_URI.test(memoryUri) ? decodeManualMemory(content).content : content;
     });
+  }
+
+  async readSessionArtifact(auth: OpenVikingWorkspaceAuth, uri: string): Promise<string> {
+    return this.normalize(() => this.workspaceClient(auth).read(
+      requireSessionArtifactUri(uri, auth.userId),
+    ));
   }
 
   async saveMemory(
@@ -292,11 +314,15 @@ export class OpenVikingGateway implements OpenVikingClientPort {
     auth: OpenVikingWorkspaceAuth,
     uri: string,
     content: string,
+    title?: string,
   ): Promise<void> {
     const memoryUri = requireMemoryUri(uri, auth.userId);
+    const storedContent = MANUAL_MEMORY_URI.test(memoryUri) && title !== undefined
+      ? encodeManualMemory(title, content)
+      : content;
     try {
       await this.normalize(async () => {
-        await this.workspaceClient(auth).write(memoryUri, content, {
+        await this.workspaceClient(auth).write(memoryUri, storedContent, {
           mode: "replace",
           wait: true,
         });
@@ -304,7 +330,7 @@ export class OpenVikingGateway implements OpenVikingClientPort {
     } catch (error) {
       if (!(error instanceof OpenVikingGatewayError) || error.code !== "NOT_FOUND") throw error;
       await this.normalize(async () => {
-        await this.workspaceClient(auth).write(memoryUri, content, {
+        await this.workspaceClient(auth).write(memoryUri, storedContent, {
           mode: "create",
           wait: true,
         });
@@ -313,9 +339,13 @@ export class OpenVikingGateway implements OpenVikingClientPort {
   }
 
   async deleteMemory(auth: OpenVikingWorkspaceAuth, uri: string): Promise<void> {
-    await this.normalize(async () => {
-      await this.workspaceClient(auth).remove(requireMemoryUri(uri, auth.userId), { wait: true });
-    });
+    try {
+      await this.normalize(async () => {
+        await this.workspaceClient(auth).remove(requireMemoryUri(uri, auth.userId), { wait: true });
+      });
+    } catch (error) {
+      if (!isNotFoundError(error)) throw error;
+    }
   }
 
   private workspaceClient(auth: OpenVikingWorkspaceAuth): OpenVikingClient {
@@ -476,6 +506,44 @@ function stringValue(value: unknown): string {
   return typeof value === "string" ? value : "";
 }
 
+function isNotFoundError(error: unknown): boolean {
+  if (error instanceof OpenVikingGatewayError) {
+    return error.code === "NOT_FOUND" || error.statusCode === 404;
+  }
+  return isOpenVikingError(error)
+    && (error.code === "NOT_FOUND" || error.statusCode === 404);
+}
+
 function requireMemoryUri(uri: string, userId: string): string {
   return canonicalOpenVikingMemoryUri(uri, userId);
+}
+
+function requireSessionArtifactUri(uri: string, userId: string): string {
+  const normalized = uri.trim();
+  if (
+    !normalized.startsWith("viking://user/")
+    || normalized.includes("\0")
+    || normalized.includes("\\")
+    || normalized.includes("?")
+    || normalized.includes("#")
+  ) {
+    throw new Error("Session artifact URI must stay inside the selected OpenViking workspace.");
+  }
+
+  const segments = normalized.slice("viking://user/".length).split("/");
+  let sessionsIndex = -1;
+  if (segments[0] === "sessions") {
+    sessionsIndex = 0;
+  } else if (segments[0] === userId && segments[1] === "sessions") {
+    sessionsIndex = 1;
+  }
+  const artifactPath = segments.slice(sessionsIndex + 1);
+  if (
+    sessionsIndex < 0
+    || artifactPath.length < 2
+    || artifactPath.some((segment) => !segment || segment === "." || segment === "..")
+  ) {
+    throw new Error("Session artifact URI must stay inside the selected OpenViking workspace.");
+  }
+  return `viking://user/${userId}/sessions/${artifactPath.join("/")}`;
 }
