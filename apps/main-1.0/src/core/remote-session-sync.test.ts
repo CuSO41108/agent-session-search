@@ -12,6 +12,7 @@ import {
   buildRemoteSessionUploadFromStore,
   buildSessionSyncItems,
   filterRemoteSessions,
+  findCursorSessionSyncBindingRepairs,
   parseDetailSnapshot,
   parsePortableSession,
   remotePortableSessionFrom,
@@ -647,6 +648,63 @@ describe("remote session sync model", () => {
     expect(stateFor(SESSION, { contentHash: "cloud-change" })).toBe("remote-newer");
     expect(stateFor({ ...SESSION, fileMtimeMs: 5_000 }, { contentHash: "cloud-change" })).toBe("conflict");
     expect(stateFor(SESSION, {}, [])).toBe("synced");
+  });
+
+  it("repairs only an unambiguous Cursor session identity", () => {
+    const local = {
+      session: {
+        ...SESSION,
+        sessionKey: "cursor:empty-window:same-composer",
+        rawId: "same-composer",
+        source: "cursor-agent" as const,
+      },
+      revision: null,
+    };
+    const remote = {
+      id: "cursor-remote",
+      sourceSessionKey: "cursor:repo-old:same-composer",
+      sourceAgent: "cursor" as const,
+      sourceSource: "cursor-agent",
+      sourceEnvironmentId: "local",
+      sourceEnvironmentKind: "local",
+      sourceEnvironmentLabel: "Local",
+      title: "Cursor session",
+      projectPath: "/repo",
+      startedAt: "x",
+      updatedAt: 1,
+      contentHash: "remote",
+      revisionVersion: 2,
+      messageCount: 1,
+      traceEventCount: 0,
+      aiSummary: null,
+      tags: [],
+      searchText: "",
+      detailObjectKey: "d",
+      portableObjectKey: "p",
+      detailSha256: "dh",
+      portableSha256: "ph",
+      createdAt: 1,
+      syncedAt: 2,
+    };
+
+    expect(findCursorSessionSyncBindingRepairs([local], [remote], [])).toEqual([{
+      localSessionKey: local.session.sessionKey,
+      remoteSessionId: remote.id,
+      lastLocalRevision: "",
+      lastRemoteRevision: "",
+      lastSyncedAt: remote.syncedAt,
+      direction: "upload",
+    }]);
+    expect(findCursorSessionSyncBindingRepairs(
+      [local],
+      [remote, { ...remote, id: "cursor-duplicate" }],
+      [],
+    )).toEqual([]);
+    expect(findCursorSessionSyncBindingRepairs(
+      [local],
+      [{ ...remote, sourceEnvironmentId: "ssh-other" }],
+      [],
+    )).toEqual([]);
   });
 
   it("uses an explicit restore binding without duplicating the same remote session", () => {
