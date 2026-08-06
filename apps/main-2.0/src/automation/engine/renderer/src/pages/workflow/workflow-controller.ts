@@ -69,6 +69,7 @@ export interface WorkflowController {
   reviewerModelId?: string;
   generationReview?: WorkflowDraftState["generationReview"];
   reviewFeatureEnabled?: boolean;
+  runtimeReviewFeatureEnabled?: boolean;
   runtimes: AgentRuntime[];
   channels: AgentChannel[];
   configuredAgents?: ConfiguredAgent[];

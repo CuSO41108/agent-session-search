@@ -30,6 +30,7 @@ export interface WorkflowV2RunNodeState {
   validation?: WorkflowV2NodeValidationResult;
   reviewVerdict?: WorkflowV2ReviewVerdict;
   reviewAttempt?: number;
+  reviewInfrastructureAttempt?: number;
   reviewHistory?: WorkflowV2ReviewAttemptRecord[];
   intervention?: WorkflowV2HumanIntervention;
 }

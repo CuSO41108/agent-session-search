@@ -1479,4 +1479,13 @@ export const POSTGRES_MIGRATIONS: readonly PostgresMigration[] = [{
         ADD COLUMN IF NOT EXISTS review_history jsonb;
     `,
   ],
+}, {
+  version: 31,
+  name: "persist MCP tool read-only declarations",
+  statements: [
+    `
+      ALTER TABLE agent_recall.mcp_tools
+        ADD COLUMN IF NOT EXISTS read_only boolean NOT NULL DEFAULT false;
+    `,
+  ],
 }];

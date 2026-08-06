@@ -153,5 +153,6 @@ export function compileWorkflowV2Definition(
     ...(definition.reviewEnabled !== undefined ? { reviewEnabled: definition.reviewEnabled } : {}),
     nodes: definition.nodes.map((node) => compileWorkflowV2Node(node, registry)),
     edges: definition.edges.map((edge) => ({ fromNodeId: edge.fromNodeId, toNodeId: edge.toNodeId })),
+    ...(definition.reviewGates ? { reviewGates: structuredClone(definition.reviewGates) } : {}),
   };
 }

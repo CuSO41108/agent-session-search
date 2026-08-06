@@ -50,8 +50,20 @@ export interface WorkflowV2ReviewVerdict {
   dimensionResults: WorkflowV2ReviewDimensionResult[];
 }
 
+export interface WorkflowV2ReviewGateSubmission {
+  reasons: string[];
+  requiredFixes?: string[];
+  riskLevel: WorkflowV2ReviewRiskLevel;
+  evidence?: string[];
+  confidence: WorkflowV2ReviewConfidence;
+  dimensionResults: WorkflowV2ReviewDimensionResult[];
+}
+
 export interface WorkflowV2ReviewerInput {
+  gateId?: string;
   executorNodeId: string;
+  reviewerConfiguredAgentId?: string;
+  requiredTools?: string[];
   objective: string;
   constraints: WorkflowV2ConstraintDef[];
   reviewLevel: WorkflowV2QualityLevel;
@@ -81,6 +93,8 @@ export interface WorkflowV2ReviewRetryPolicy {
 }
 
 export interface WorkflowV2ReviewAttemptRecord {
+  gateId?: string;
+  reviewerConfiguredAgentId?: string;
   reviewAttempt: number;
   candidate: WorkflowV2WorkerOutput;
   verdict: WorkflowV2ReviewVerdict;

@@ -9,7 +9,7 @@ const agent: ConfiguredAgent = {
 };
 const server: McpServerDefinition = {
   id: "server-a", name: "Server", transport: "stdio", command: "synthetic", args: [], env: {}, enabled: true,
-  tools: [{ name: "search", inputSchema: {} }], status: "connected", createdAt: 1, updatedAt: 1,
+  tools: [{ name: "search", inputSchema: {}, readOnly: true }], status: "connected", createdAt: 1, updatedAt: 1,
 };
 
 function workflow(): Pick<WorkflowDraftState, "configuredAgentId" | "modelId" | "reviewerConfiguredAgentId" | "reviewerModelId" | "definition"> {
@@ -46,6 +46,36 @@ describe("workflow readiness", () => {
   test("treats an empty MCP allowlist as all server tools, matching runtime routing", () => {
     const unrestrictedAgent = { ...agent, mcpBindings: [{ serverId: "server-a", toolAllowlist: [] }] };
     expect(inspectWorkflowReadiness({ workflow: workflow(), configuredAgents: [unrestrictedAgent], channels: [channel], mcpServers: [server] })).toEqual({ ready: true, issues: [] });
+  });
+
+  test("checks each Review Gate Agent and required evidence tool", () => {
+    const draft = workflow();
+    draft.definition.reviewEnabled = false;
+    draft.definition.reviewGates = [{ id: "review-answer", targetNodeId: "answer", configuredAgentId: "agent-a", reviewLevel: "high", judgeDimensions: [{ key: "quality", description: "Check quality." }], maxQualityRetries: 2, requiredTools: ["publish"] }];
+    const result = inspectWorkflowReadiness({ workflow: draft, configuredAgents: [agent], channels: [channel], mcpServers: [server] });
+    expect(result.issues).toEqual([expect.objectContaining({ code: "REQUIRED_TOOL_MISSING", scope: "reviewer", nodeId: "answer", configuredAgentId: "agent-a" })]);
+  });
+
+  test("rejects Review Gate tools on runtimes without enforceable per-tool isolation", () => {
+    const draft = workflow();
+    draft.definition.reviewEnabled = false;
+    draft.definition.reviewGates = [{ id: "review-answer", targetNodeId: "answer", configuredAgentId: "agent-a", reviewLevel: "high", judgeDimensions: [{ key: "quality", description: "Check quality." }], maxQualityRetries: 2, requiredTools: ["search"] }];
+    const unsupportedAgent = { ...agent, runtimeAgentId: "hermes" as const };
+
+    const result = inspectWorkflowReadiness({ workflow: draft, configuredAgents: [unsupportedAgent], channels: [channel], mcpServers: [server] });
+
+    expect(result.issues).toEqual(expect.arrayContaining([expect.objectContaining({ code: "REQUIRED_TOOL_MISSING", field: "reviewGates.requiredTools" })]));
+  });
+
+  test("rejects Review Gate tools that are not explicitly declared read-only", () => {
+    const draft = workflow();
+    draft.definition.reviewEnabled = false;
+    draft.definition.reviewGates = [{ id: "review-answer", targetNodeId: "answer", configuredAgentId: "agent-a", reviewLevel: "high", judgeDimensions: [{ key: "quality", description: "Check quality." }], maxQualityRetries: 2, requiredTools: ["search"] }];
+    const unsafeServer = { ...server, tools: [{ name: "search", inputSchema: {} }] };
+
+    const result = inspectWorkflowReadiness({ workflow: draft, configuredAgents: [agent], channels: [channel], mcpServers: [unsafeServer] });
+
+    expect(result.issues).toEqual(expect.arrayContaining([expect.objectContaining({ code: "REQUIRED_TOOL_MISSING", field: "reviewGates.requiredTools" })]));
   });
 
   test("reports missing dependencies without guessing by display name", () => {

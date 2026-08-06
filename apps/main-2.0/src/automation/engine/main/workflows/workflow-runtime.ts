@@ -23,6 +23,7 @@ import type {
   WorkflowV2NodeCompletionSubmission,
 } from "../../shared/workflow-v2/completion";
 import type { WorkflowV2Plan } from "../../shared/workflow-v2/planning";
+import { workflowV2ReviewGateForNode } from "../../shared/workflow-v2/review-gates";
 import { createHash } from "node:crypto";
 import path from "node:path";
 import { workflowStoragePlanDocument, workflowStoragePlanFor } from "../../shared/workflow-v2/runtime-utils";
@@ -1170,7 +1171,7 @@ export class WorkflowRuntime {
         contextDocument: input.run.contextDocument,
         finalReport: [input.run.finalReport, `Superseded by a full rerun requested from ${targetNode.title}.`].filter(Boolean).join("\n\n"),
       });
-      return this.runWorkflow({ workflowId: input.workflow.workflowId, contextDocument: input.run.contextDocument, triggerSource: "rerun", reviewEnabled: plan.definition.reviewEnabled === true, parentRunId: input.run.runId });
+      return this.runWorkflow({ workflowId: input.workflow.workflowId, contextDocument: input.run.contextDocument, triggerSource: "rerun", reviewEnabled: (plan.definition.reviewGates?.length ?? 0) > 0 || plan.definition.reviewEnabled === true, parentRunId: input.run.runId });
     }
 
     const snapshot = this.deps.snapshot();
@@ -1204,7 +1205,10 @@ export class WorkflowRuntime {
         planNode,
         upstreamOutputs,
         executionEnvironment: workflowV2ExecutionEnvironment({ node, workDir, configuredAgentId: agentRoute.configuredAgentId, modelId: agentRoute.modelId }),
-        reviewerPolicy: workflowV2ReviewerPolicy(node, plan.definition.reviewEnabled === true),
+        reviewerPolicy: workflowV2ReviewerPolicy(
+          node,
+          workflowV2ReviewGateForNode(plan.definition, node.id) ?? plan.definition.reviewEnabled === true,
+        ),
       });
       targetFingerprints.set(node.id, fingerprint);
       if (cacheEntry) knownOutputs.set(node.id, cacheEntry.output);

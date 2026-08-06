@@ -12,6 +12,7 @@ interface McpToolDefinition {
   name: string;
   description: string;
   inputSchema: Record<string, unknown>;
+  annotations?: { readOnlyHint?: boolean };
 }
 
 interface JsonRpcRequest {
@@ -33,6 +34,7 @@ const TOOL_ROUTES: Record<string, string> = {
   models_list: "/mcp/models/list",
   workflow_create: "/mcp/workflow/create",
   workflow_review_submit: "/mcp/workflow/review/submit",
+  workflow_review_gate_submit: "/mcp/workflow/review-gate/submit",
   workflow_list: "/mcp/workflow/list",
   workflow_get: "/mcp/workflow/get",
   workflow_update: "/mcp/workflow/update",
@@ -175,6 +177,18 @@ const workflowV2DefinitionSchema = {
       },
     },
     edges: { type: "array", items: objectSchema({ fromNodeId: { type: "string" }, toNodeId: { type: "string" } }, ["fromNodeId", "toNodeId"]) },
+    reviewGates: {
+      type: "array",
+      items: objectSchema({
+        id: { type: "string", minLength: 1 },
+        targetNodeId: { type: "string", minLength: 1 },
+        configuredAgentId: { type: "string", minLength: 1 },
+        reviewLevel: { type: "string", enum: ["low", "medium", "high"] },
+        judgeDimensions: { type: "array", minItems: 1, items: objectSchema({ key: { type: "string", minLength: 1 }, description: { type: "string", minLength: 1 } }, ["key", "description"]) },
+        maxQualityRetries: { type: "integer", minimum: 0, maximum: 5 },
+        requiredTools: { type: "array", items: { type: "string", minLength: 1 } },
+      }, ["id", "targetNodeId", "configuredAgentId", "reviewLevel", "judgeDimensions", "maxQualityRetries"]),
+    },
     transactionPolicy: workflowTransactionPolicySchema,
   },
   required: ["workflowId", "graphVersion", "objective", "nodes", "edges"],
@@ -351,6 +365,27 @@ export function mcpToolDefinitions(): McpToolDefinition[] {
         },
         suggestions: { type: "array", items: { type: "string", minLength: 1 } },
       }, ["verdict", "summary", "findings", "scriptRisks", "suggestions"]),
+    },
+    {
+      name: "workflow_review_gate_submit",
+      description: "Submit the current bound Runtime Review Gate result. Call this exactly once after assessing every configured dimension. Workflow, Run, Gate, node, candidate, and Reviewer identity are injected by the managed session.",
+      inputSchema: objectSchema({
+        reasons: { type: "array", minItems: 1, items: { type: "string", minLength: 1 } },
+        requiredFixes: { type: "array", minItems: 1, items: { type: "string", minLength: 1 } },
+        riskLevel: { type: "string", enum: ["low", "medium", "high"] },
+        evidence: { type: "array", minItems: 1, items: { type: "string", minLength: 1 } },
+        confidence: { type: "string", enum: ["high", "medium", "low"] },
+        dimensionResults: {
+          type: "array",
+          minItems: 1,
+          items: objectSchema({
+            key: { type: "string", minLength: 1 },
+            qualityLevel: { type: "string", enum: ["low", "medium", "high"] },
+            reason: { type: "string", minLength: 1 },
+            evidence: { type: "array", minItems: 1, items: { type: "string", minLength: 1 } },
+          }, ["key", "qualityLevel", "reason", "evidence"]),
+        },
+      }, ["reasons", "riskLevel", "confidence", "dimensionResults"]),
     },
     {
       name: "workflow_list",
@@ -640,7 +675,11 @@ export function mcpToolDefinitions(): McpToolDefinition[] {
   if (studioScoped) {
     for (const toolName of STUDIO_MCP_TOOL_NAMES) allowed.add(toolName);
   }
-  return tools.filter((tool) => allowed.has(tool.name));
+  return tools
+    .filter((tool) => allowed.has(tool.name))
+    .map((tool) => READ_ONLY_TOOL_NAMES.has(tool.name)
+      ? { ...tool, annotations: { readOnlyHint: true } }
+      : tool);
 }
 
 export function resolveBridgeDiscoveryPath(): string {
@@ -692,6 +731,10 @@ export async function callMcpTool(name: string, args: unknown): Promise<unknown>
       } : name === "workflow_review_submit" ? {
         workflowId: process.env.AGENT_RECALL_WORKFLOW_ID,
         reviewedRevision: Number(process.env.AGENT_RECALL_WORKFLOW_REVIEW_REVISION),
+      } : name === "workflow_review_gate_submit" ? {
+        workflowId: process.env.AGENT_RECALL_WORKFLOW_ID,
+        runId: process.env.AGENT_RECALL_WORKFLOW_RUN_ID,
+        executionId: process.env.AGENT_RECALL_WORKFLOW_NODE_EXECUTION_ID,
       } : {}),
     }),
   });

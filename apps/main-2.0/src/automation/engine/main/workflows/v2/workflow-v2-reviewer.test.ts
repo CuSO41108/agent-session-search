@@ -2,6 +2,7 @@ import { describe, expect, test } from "vitest";
 import type { WorkflowV2LLMNode } from "../../../shared/workflow-v2/definition";
 import {
   createWorkflowV2ReviewerInput,
+  parseWorkflowV2ReviewGateSubmission,
   parseWorkflowV2ReviewerResponse,
   resolveWorkflowV2ReviewVerdict,
   workflowV2ReviewerPrompt,
@@ -66,13 +67,65 @@ describe("Workflow V2 quality reviewer", () => {
       reviewerNodeId: "independent-reviewer",
       verdict: {
         decision: "accept",
-        reasons: [],
+        reasons: ["Only one dimension was assessed."],
         riskLevel: "low",
         confidence: "high",
         qualityLevel: "high",
-        dimensionResults: [{ key: "accuracy", qualityLevel: "high", reason: "Supported.", evidence: [] }],
+        dimensionResults: [{ key: "accuracy", qualityLevel: "high", reason: "Supported.", evidence: ["source"] }],
       },
     }), input)).toThrow(/every configured judge dimension/i);
+  });
+
+  test("accepts the strict tool and JSON fallback contract and requires concrete evidence", () => {
+    const input = createWorkflowV2ReviewerInput({
+      node,
+      objective: "Deliver a verified report",
+      reviewAttempt: 1,
+      upstreamOutputs: [],
+      output: { nodeId: node.id, summary: "Candidate", outputs: { result: "draft" }, proposals: [] },
+    });
+    const submission = {
+      reasons: ["两个维度均已审查。"],
+      riskLevel: "low",
+      confidence: "high",
+      dimensionResults: [
+        { key: "accuracy", qualityLevel: "high", reason: "事实有依据。", evidence: ["source-1"] },
+        { key: "completeness", qualityLevel: "medium", reason: "缺少一节。", evidence: ["candidate-section-list"] },
+      ],
+    };
+    expect(parseWorkflowV2ReviewGateSubmission(submission, input).dimensionResults).toHaveLength(2);
+    expect(parseWorkflowV2ReviewerResponse(JSON.stringify(submission), input).verdict).toMatchObject({ decision: "reject", qualityLevel: "medium" });
+    expect(() => parseWorkflowV2ReviewGateSubmission({ ...submission, dimensionResults: [{ ...submission.dimensionResults[0], evidence: [] }, submission.dimensionResults[1]] }, input)).toThrow(/concrete evidence/i);
+  });
+
+  test("allows a context-bound Review Gate Agent whose configured ID matches the executor node ID", () => {
+    const input = createWorkflowV2ReviewerInput({
+      node,
+      objective: "Deliver a verified report",
+      reviewAttempt: 1,
+      upstreamOutputs: [],
+      output: { nodeId: node.id, summary: "Candidate", outputs: { result: "draft" }, proposals: [] },
+      gate: {
+        id: "review-critical",
+        targetNodeId: node.id,
+        configuredAgentId: node.id,
+        reviewLevel: "high",
+        maxQualityRetries: 2,
+        judgeDimensions: node.judgeDimensions ?? [],
+      },
+    });
+    const response = parseWorkflowV2ReviewerResponse(JSON.stringify({
+      reasons: ["证据完整。"],
+      riskLevel: "low",
+      confidence: "high",
+      dimensionResults: [
+        { key: "accuracy", qualityLevel: "high", reason: "事实一致。", evidence: ["source"] },
+        { key: "completeness", qualityLevel: "high", reason: "结构完整。", evidence: ["candidate"] },
+      ],
+    }), input);
+
+    expect(response.reviewerNodeId).toBe(node.id);
+    expect(response.verdict.decision).toBe("accept");
   });
 
   test("pauses after the independent quality retry budget is exhausted", () => {

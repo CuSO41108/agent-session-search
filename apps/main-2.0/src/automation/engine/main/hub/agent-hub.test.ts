@@ -70,6 +70,34 @@ function addConfiguredAgents(hub: AgentHub, agents: ConfiguredAgent[]): void {
   hub.updateConfiguredAgents([...hub.snapshot().configuredAgents, ...agents]);
 }
 
+test("Runtime Review MCP binding exposes only requested tools declared read-only", () => {
+  const hub = new AgentHub();
+  addConfiguredAgents(hub, [{
+    ...configuredAgent("review-agent"),
+    mcpBindings: [{ serverId: "evidence", toolAllowlist: [] }],
+  }]);
+  hub.setMcpServers([{
+    id: "evidence",
+    name: "Evidence",
+    transport: "http",
+    args: [],
+    url: "https://example.test/mcp",
+    env: {},
+    enabled: true,
+    tools: [
+      { name: "search", inputSchema: {}, readOnly: true },
+      { name: "publish", inputSchema: {} },
+    ],
+    status: "connected",
+    createdAt: 1,
+    updatedAt: 1,
+  }]);
+
+  const bindings = (hub as any).boundMcpServersForAgent("review-agent", ["search", "publish"]);
+
+  expect(bindings).toEqual([expect.objectContaining({ toolAllowlist: ["search"] })]);
+});
+
 function createV2Workflow(hub: AgentHub, input: any): any {
   const configuredAgentId = input.configuredAgentId === TEST_CODEX_AGENT_ID
     ? TEST_CODEX_AGENT_ID
@@ -205,7 +233,7 @@ function createHubWithClaudeOneShot(
   const options: RuntimeAgentExecutorFactoryOptions = {
     executables: resolvedExecutables,
     channelById: (channelId) => (hub as any).channelById(channelId),
-    mcpServersForAgent: (configuredAgentId) => (hub as any).boundMcpServersForAgent(configuredAgentId),
+    mcpServersForAgent: (configuredAgentId, allowedMcpTools) => (hub as any).boundMcpServersForAgent(configuredAgentId, allowedMcpTools),
     ...(workflowMcpDiscoveryPath ? { workflowMcpDiscoveryPath } : {}),
   };
   const defaultDrivers = createRuntimeDriverRegistry(options);

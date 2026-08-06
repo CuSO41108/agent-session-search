@@ -255,6 +255,13 @@ export function applyWorkflowImportMappings(input: {
     if (node.configuredAgentId) node.configuredAgentId = route.configuredAgentId;
     if (node.modelId) node.modelId = route.modelId;
   }
+  for (const gate of next.workflow.definition.reviewGates ?? []) {
+    const targetAgentId = agentMappings[gate.configuredAgentId] ?? gate.configuredAgentId;
+    if (agentMappings[gate.configuredAgentId] && !agents.has(targetAgentId)) {
+      throw new WorkflowPortableError("WORKFLOW_IMPORT_MAPPING_INVALID", `Mapped Review Gate Agent ${targetAgentId} is unavailable.`);
+    }
+    gate.configuredAgentId = targetAgentId;
+  }
   return next;
 }
 

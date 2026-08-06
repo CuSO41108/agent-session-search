@@ -17,6 +17,7 @@ export interface WorkflowV2NodeStateTransition {
   validation?: WorkflowV2NodeValidationResult;
   reviewVerdict?: WorkflowV2ReviewVerdict;
   reviewRecord?: WorkflowV2ReviewAttemptRecord;
+  reviewInfrastructureAttempt?: number;
   intervention?: WorkflowV2HumanIntervention;
 }
 
@@ -65,6 +66,7 @@ export function transitionWorkflowV2NodeState(
     delete nextTarget.lastError;
     delete nextTarget.validation;
     delete nextTarget.reviewVerdict;
+    delete nextTarget.reviewInfrastructureAttempt;
     delete nextTarget.intervention;
   } else if (transition.status === "validating") {
     nextTarget.status = "validating";
@@ -73,6 +75,7 @@ export function transitionWorkflowV2NodeState(
   } else if (transition.status === "awaiting_review") {
     nextTarget.status = "awaiting_review";
     if (transition.reviewVerdict !== undefined) nextTarget.reviewVerdict = transition.reviewVerdict;
+    if (transition.reviewInfrastructureAttempt !== undefined) nextTarget.reviewInfrastructureAttempt = transition.reviewInfrastructureAttempt;
     if (transition.reviewRecord !== undefined) {
       nextTarget.reviewAttempt = transition.reviewRecord.reviewAttempt;
       nextTarget.reviewHistory = [...(nextTarget.reviewHistory ?? []), structuredClone(transition.reviewRecord)];

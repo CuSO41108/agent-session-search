@@ -194,5 +194,6 @@ export function compileWorkflowV2Definition(
       fromNodeId: edge.fromNodeId,
       toNodeId: edge.toNodeId,
     })),
+    ...(definition.reviewGates ? { reviewGates: structuredClone(definition.reviewGates) } : {}),
   };
 }

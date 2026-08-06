@@ -136,6 +136,16 @@ export interface WorkflowV2MaterializedRecovery {
   resumeConversations: Map<string, RuntimeConversation>;
 }
 
+export function acceptedWorkflowV2WorkerOutputs(
+  runState: WorkflowV2PersistedRunState["runState"],
+  workerOutputs: readonly WorkflowV2WorkerOutput[],
+): WorkflowV2WorkerOutput[] {
+  return workerOutputs.filter((output) => {
+    const status = runState.nodes[output.nodeId]?.status;
+    return status === "completed" || status === "completed_with_override" || status === "skipped";
+  });
+}
+
 export function buildWorkflowV2FinalReport(
   plan: WorkflowV2PersistedRunState["plan"],
   workerOutputs: readonly WorkflowV2WorkerOutput[],

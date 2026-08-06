@@ -1445,6 +1445,36 @@ describe("workflow-v2 executor", () => {
     expect(result.runState.nodes.draft?.status).toBe("completed_with_override");
   });
 
+  test("resumes the persisted Review Gate candidate without rerunning its executor", async () => {
+    const reviewDefinition = definition();
+    reviewDefinition.nodes = [reviewDefinition.nodes[0]!];
+    reviewDefinition.edges = [];
+    reviewDefinition.reviewGates = [{ id: "review-draft", targetNodeId: "draft", configuredAgentId: "review-agent", reviewLevel: "high", judgeDimensions: [{ key: "quality", description: "Must be correct." }], maxQualityRetries: 2 }];
+    const plan = await buildWorkflowV2Plan({ definition: reviewDefinition, approvedBy: "tester", now: 6_200 });
+    let runState = createWorkflowV2RunState({ definition: plan.definition });
+    runState = transitionWorkflowV2NodeState(runState, { nodeId: "draft", status: "running", now: 6_210 });
+    runState = transitionWorkflowV2NodeState(runState, { nodeId: "draft", status: "awaiting_review", now: 6_220, reviewInfrastructureAttempt: 2 });
+    const infrastructureAttempts: number[] = [];
+
+    const result = await executeWorkflowV2Plan({
+      plan,
+      initialCheckpoint: { runState, workerOutputs: [{ nodeId: "draft", summary: "Persisted candidate", outputs: { draft: "ready" }, proposals: [] }] },
+      runLlmNode: async () => { throw new Error("executor must not rerun while resuming Review Gate"); },
+      executeScript: async () => { throw new Error("script should not run"); },
+      reviewNodeOutput: async (input, context) => {
+        expect(input.result.summary).toBe("Persisted candidate");
+        expect(context?.initialInfrastructureAttempt).toBe(2);
+        await context?.onInfrastructureAttempt(3);
+        infrastructureAttempts.push(3);
+        return { reviewerNodeId: "review-agent", verdict: { decision: "accept", reasons: ["通过"], riskLevel: "low", confidence: "high", qualityLevel: "high", dimensionResults: [{ key: "quality", qualityLevel: "high", reason: "正确", evidence: ["candidate"] }] } };
+      },
+    });
+
+    expect(infrastructureAttempts).toEqual([3]);
+    expect(result.runState.status).toBe("completed");
+    expect(result.workerOutputs).toEqual([expect.objectContaining({ nodeId: "draft", summary: "Persisted candidate" })]);
+  });
+
   test("rejects a checkpoint whose identity does not match the frozen plan", async () => {
     const plan = await buildWorkflowV2Plan({ definition: definition(), approvedBy: "tester", now: 6_200 });
     const runState = createWorkflowV2RunState({ definition: plan.definition });

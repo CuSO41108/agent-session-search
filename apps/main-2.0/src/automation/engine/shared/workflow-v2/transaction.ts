@@ -461,6 +461,7 @@ function sanitizeString(value: string): string {
     }
   }
   return value
+    .replace(/(["'](?:authorization|cookie|credential|password|passwd|secret|token|api.?key|private.?key)["']\s*:\s*["'])[^"'\r\n]*(["'])/gi, "$1[REDACTED]$2")
     .replace(/\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]+/gi, "$1 [REDACTED]")
     .replace(/([?&][^=&#]*(?:authorization|credential|password|secret|token|key)[^=&#]*=)[^&#\s]*/gi, "$1[REDACTED]")
     .replace(/\b((?:x[-_])?(?:api[-_]?key|auth[-_]?token|client[-_]?secret|authorization|cookie|password|private[-_]?key)\s*[:=]\s*)[^,;\r\n]+/gi, "$1[REDACTED]");

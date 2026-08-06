@@ -17,6 +17,7 @@ import { compileWorkflowV2Definition, WorkflowV2TemplateCompileError } from "./t
 import { workflowV2NodeHookValidationErrors } from "./hooks";
 import { listWorkflowV2TerminalNodeIds, normalizeWorkflowV2TerminalNode } from "./topology";
 import { workflowTransactionPolicyValidationErrors } from "./transaction";
+import { MAX_WORKFLOW_V2_GATE_QUALITY_RETRIES } from "./review-gates";
 
 const VALID_SCRIPT_LANGUAGES = new Set(["python", "typescript", "bash"]);
 const VALID_SCRIPT_RISKS = new Set(["safe", "read", "write", "dangerous"]);
@@ -358,6 +359,76 @@ function appendUpstreamScriptParameterValidationErrors(definition: WorkflowV2Def
   }
 }
 
+function appendReviewGateValidationErrors(definition: WorkflowV2Definition, errors: string[], warnings: string[]): void {
+  if (definition.reviewGates === undefined) return;
+  if (!Array.isArray(definition.reviewGates)) {
+    errors.push("Workflow V2 reviewGates must be an array.");
+    return;
+  }
+  const nodeById = new Map(definition.nodes.map((node) => [node.id, node]));
+  const gateIds = new Set<string>();
+  const targetNodeIds = new Set<string>();
+  for (const gate of definition.reviewGates) {
+    if (!isRecord(gate)) {
+      errors.push("Workflow V2 Review Gate must be an object.");
+      continue;
+    }
+    const gateId = typeof gate.id === "string" ? gate.id.trim() : "";
+    const targetNodeId = typeof gate.targetNodeId === "string" ? gate.targetNodeId.trim() : "";
+    if (!gateId) errors.push("Workflow V2 Review Gate requires a non-empty id.");
+    else if (gateIds.has(gateId)) errors.push(`Workflow V2 definition has duplicate Review Gate id ${gateId}.`);
+    else gateIds.add(gateId);
+    if (!targetNodeId) errors.push(`Workflow V2 Review Gate ${gateId || "<unknown>"} requires targetNodeId.`);
+    else if (targetNodeIds.has(targetNodeId)) errors.push(`Workflow V2 node ${targetNodeId} may have at most one Review Gate.`);
+    else targetNodeIds.add(targetNodeId);
+    const targetNode = nodeById.get(targetNodeId);
+    if (!targetNode && targetNodeId) errors.push(`Workflow V2 Review Gate ${gateId} references missing node ${targetNodeId}.`);
+    if (targetNode?.role === "reviewer") errors.push(`Workflow V2 Review Gate ${gateId} cannot target reviewer node ${targetNodeId}.`);
+    if (typeof gate.configuredAgentId !== "string" || !gate.configuredAgentId.trim()) {
+      errors.push(`Workflow V2 Review Gate ${gateId} requires configuredAgentId.`);
+    }
+    if (gate.reviewLevel !== "low" && gate.reviewLevel !== "medium" && gate.reviewLevel !== "high") {
+      errors.push(`Workflow V2 Review Gate ${gateId} has unsupported reviewLevel ${String(gate.reviewLevel)}.`);
+    }
+    if (!isNonNegativeSafeInteger(gate.maxQualityRetries) || Number(gate.maxQualityRetries) > MAX_WORKFLOW_V2_GATE_QUALITY_RETRIES) {
+      errors.push(`Workflow V2 Review Gate ${gateId} maxQualityRetries must be between 0 and ${MAX_WORKFLOW_V2_GATE_QUALITY_RETRIES}.`);
+    }
+    if (!Array.isArray(gate.judgeDimensions) || gate.judgeDimensions.length === 0) {
+      errors.push(`Workflow V2 Review Gate ${gateId} must declare at least one judge dimension.`);
+    } else {
+      const dimensionKeys = new Set<string>();
+      for (const dimension of gate.judgeDimensions) {
+        if (!isRecord(dimension) || typeof dimension.key !== "string" || !dimension.key.trim() || typeof dimension.description !== "string" || !dimension.description.trim()) {
+          errors.push(`Workflow V2 Review Gate ${gateId} judge dimensions require non-empty string keys and descriptions.`);
+          continue;
+        }
+        if (dimensionKeys.has(dimension.key)) errors.push(`Workflow V2 Review Gate ${gateId} has duplicate judge dimension ${dimension.key}.`);
+        dimensionKeys.add(dimension.key);
+      }
+    }
+    if (gate.requiredTools !== undefined && (!Array.isArray(gate.requiredTools)
+      || gate.requiredTools.some((tool) => typeof tool !== "string" || !tool.trim())
+      || new Set(gate.requiredTools).size !== gate.requiredTools.length)) {
+      errors.push(`Workflow V2 Review Gate ${gateId} requiredTools must contain unique non-empty tool names.`);
+    }
+    if (targetNode?.execModel === "llm" && targetNode.configuredAgentId === gate.configuredAgentId) {
+      warnings.push(`Workflow V2 Review Gate ${gateId} uses the same Agent as target node ${targetNodeId}; review independence is reduced.`);
+    }
+    if (targetNode?.execModel === "script") {
+      const effectMode = targetNode.script.effectMode ?? "pure";
+      if (effectMode === "workspace_only" && definition.transactionPolicy?.defaultMode === "direct") {
+        errors.push(`Workflow V2 Review Gate ${gateId} requires a staged transaction for workspace-writing node ${targetNodeId}.`);
+      }
+      if (effectMode === "brokered_external" && !targetNode.script.compensationAdapter) {
+        errors.push(`Workflow V2 Review Gate ${gateId} cannot review external-writing node ${targetNodeId} without a compensationAdapter.`);
+      }
+      if (targetNode.script.idempotency === "non_idempotent" && !targetNode.script.compensationAdapter) {
+        errors.push(`Workflow V2 Review Gate ${gateId} cannot retry non-idempotent node ${targetNodeId} without a compensationAdapter.`);
+      }
+    }
+  }
+}
+
 export function validateWorkflowV2Definition(definition: WorkflowV2Definition, options?: { configuredAgentIds?: Iterable<string> }): WorkflowV2ValidationResult {
   const errors: string[] = [];
   const warnings: string[] = [];
@@ -405,6 +476,7 @@ export function validateWorkflowV2Definition(definition: WorkflowV2Definition, o
 
   const topologicalNodeIds = topologicalOrder(definition, errors);
   appendUpstreamScriptParameterValidationErrors(definition, errors, warnings);
+  appendReviewGateValidationErrors(definition, errors, warnings);
   const terminalNodeIds = listWorkflowV2TerminalNodeIds(definition);
   if (terminalNodeIds.length !== 1) {
     errors.push(`Workflow V2 definition must have exactly one terminal node, found ${terminalNodeIds.length}.`);
@@ -421,9 +493,15 @@ export function validateWorkflowV2Definition(definition: WorkflowV2Definition, o
 
 export function validateWorkflowV2ConfiguredAgentReferences(definition: WorkflowV2Definition, configuredAgentIds: Iterable<string>): string[] {
   const known = new Set(configuredAgentIds);
-  return [...new Set(definition.nodes
+  const referencedIds = [
+    ...definition.nodes
     .filter((node) => node.execModel === "llm" && node.configuredAgentId && !known.has(node.configuredAgentId))
-    .map((node) => node.execModel === "llm" ? node.configuredAgentId! : ""))]
+    .map((node) => node.execModel === "llm" ? node.configuredAgentId! : ""),
+    ...(definition.reviewGates ?? [])
+      .filter((gate) => gate.configuredAgentId && !known.has(gate.configuredAgentId))
+      .map((gate) => gate.configuredAgentId),
+  ];
+  return [...new Set(referencedIds)]
     .map((configuredAgentId) => `Workflow V2 configured agent ${configuredAgentId} was not found.`);
 }
 

@@ -260,6 +260,7 @@ function isPersistedExecutionState(
     if (!isRecord(node) || node.nodeId !== nodeId || !isNonEmptyString(node.title)) return false;
     if (!isNodeExecutionStatus(node.status) || !isNonNegativeSafeInteger(node.attempt)) return false;
     if (node.reviewAttempt !== undefined && !isNonNegativeSafeInteger(node.reviewAttempt)) return false;
+    if (node.reviewInfrastructureAttempt !== undefined && !isNonNegativeSafeInteger(node.reviewInfrastructureAttempt)) return false;
     if (node.reviewHistory !== undefined && (!Array.isArray(node.reviewHistory) || !node.reviewHistory.every(isReviewAttemptRecord))) return false;
     return [node.dependsOn, node.dependents, node.blockedBy, node.resourceLocks].every(
       (items) => Array.isArray(items) && items.every((item) => typeof item === "string"),

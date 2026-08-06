@@ -1,6 +1,7 @@
 import { describe, expect, test } from "vitest";
 import type { WorkflowV2AuthoredDefinition, WorkflowV2Definition } from "./definition";
 import { compileWorkflowV2Definition, createWorkflowV2TemplateRegistry } from "./templates";
+import { migrateWorkflowV2ReviewGates } from "./review-gates";
 import { validateWorkflowV2Definition } from "./validation";
 
 function definition(): WorkflowV2Definition {
@@ -56,5 +57,66 @@ describe("Workflow V2 Review definition validation", () => {
     const compiled = compileWorkflowV2Definition(authored, createWorkflowV2TemplateRegistry([]));
 
     expect(compiled.reviewEnabled).toBe(true);
+  });
+
+  test("validates independently routed Review Gates without adding DAG edges", () => {
+    const value = definition();
+    const targetNode = value.nodes[0]!;
+    if (targetNode.execModel !== "llm") throw new Error("Expected an LLM node.");
+    targetNode.configuredAgentId = "executor";
+    value.reviewGates = [{
+      id: "review-result",
+      targetNodeId: "result",
+      configuredAgentId: "reviewer",
+      reviewLevel: "high",
+      judgeDimensions: [
+        { key: "accuracy", description: "The result must be accurate." },
+        { key: "coverage", description: "The result must be complete." },
+      ],
+      maxQualityRetries: 2,
+    }];
+
+    expect(validateWorkflowV2Definition(value, { configuredAgentIds: ["executor", "reviewer"] })).toMatchObject({
+      valid: true,
+      errors: [],
+      topologicalNodeIds: ["result"],
+    });
+  });
+
+  test("rejects duplicate target gates and invalid retry limits", () => {
+    const value = definition();
+    value.reviewGates = ["a", "b"].map((id, index) => ({
+      id,
+      targetNodeId: "result",
+      configuredAgentId: `reviewer-${index}`,
+      reviewLevel: "medium" as const,
+      judgeDimensions: [{ key: "quality", description: "Check quality." }],
+      maxQualityRetries: 6,
+    }));
+
+    const errors = validateWorkflowV2Definition(value).errors;
+    expect(errors).toContain("Workflow V2 node result may have at most one Review Gate.");
+    expect(errors).toContain("Workflow V2 Review Gate a maxQualityRetries must be between 0 and 5.");
+  });
+
+  test("migrates legacy node review fields into one explicit Gate", () => {
+    const value = definition();
+    value.reviewEnabled = true;
+    value.nodes[0]!.reviewLevel = "high";
+    value.nodes[0]!.reviewMaxRetries = 8;
+    value.nodes[0]!.judgeDimensions = [{ key: "quality", description: "Check quality." }];
+
+    const migrated = migrateWorkflowV2ReviewGates(value, "legacy-reviewer");
+
+    expect(migrated.reviewEnabled).toBeUndefined();
+    expect(migrated.nodes[0]).not.toHaveProperty("reviewLevel");
+    expect(migrated.reviewGates).toEqual([{
+      id: "review-result",
+      targetNodeId: "result",
+      configuredAgentId: "legacy-reviewer",
+      reviewLevel: "high",
+      judgeDimensions: [{ key: "quality", description: "Check quality." }],
+      maxQualityRetries: 5,
+    }]);
   });
 });

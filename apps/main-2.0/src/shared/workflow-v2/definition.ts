@@ -100,6 +100,16 @@ export interface WorkflowV2JudgeDimensionDef {
   description: string;
 }
 
+export interface WorkflowV2ReviewGate {
+  id: string;
+  targetNodeId: string;
+  configuredAgentId: string;
+  reviewLevel: Exclude<WorkflowV2ReviewLevel, "none">;
+  judgeDimensions: WorkflowV2JudgeDimensionDef[];
+  maxQualityRetries: number;
+  requiredTools?: string[];
+}
+
 export interface WorkflowV2ContextBudget {
   maxContextTokens: number;
   maxEvidenceItems?: number;
@@ -125,8 +135,11 @@ export interface WorkflowV2BaseNode {
   executionMode?: WorkflowV2ExecutionMode;
   executionModeRationale?: string;
   executionModeConfidence?: number;
+  /** @deprecated Read-only compatibility for definitions created before Review Gates. */
   reviewLevel?: WorkflowV2ReviewLevel;
+  /** @deprecated Read-only compatibility for definitions created before Review Gates. */
   reviewMaxRetries?: number;
+  /** @deprecated Read-only compatibility for definitions created before Review Gates. */
   judgeDimensions?: WorkflowV2JudgeDimensionDef[];
 }
 
@@ -256,9 +269,12 @@ export interface WorkflowV2Definition {
   workflowId: string;
   graphVersion: number;
   objective: string;
+  /** @deprecated Runtime Review is required whenever reviewGates is non-empty. */
   reviewEnabled?: boolean;
   nodes: WorkflowV2Node[];
   edges: WorkflowV2Edge[];
+  /** Optional only while reading definitions created before Review Gates. */
+  reviewGates?: WorkflowV2ReviewGate[];
   /** Missing on legacy definitions, which are normalized to direct mode. */
   transactionPolicy?: WorkflowTransactionPolicy;
 }
@@ -270,6 +286,7 @@ export interface WorkflowV2AuthoredDefinition {
   reviewEnabled?: boolean;
   nodes: WorkflowV2AuthoredNode[];
   edges: WorkflowV2Edge[];
+  reviewGates?: WorkflowV2ReviewGate[];
   transactionPolicy?: WorkflowTransactionPolicy;
 }
 

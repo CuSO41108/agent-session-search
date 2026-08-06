@@ -453,6 +453,10 @@ function WorkflowRunCenterOpen({ runs, conversations = [], artifacts = [], loadi
                               <span><b>{labels.attempts}</b>{telemetry?.attempt ?? "—"}</span>
                               <span><b>{labels.duration}</b>{formatNodeDuration(telemetry)}</span>
                               <span><b>{labels.cost}</b>{formatCost(telemetry, language)}</span>
+                              <span><b>{language === "zh" ? "模型调用" : "Model calls"}</b>{formatMetric(telemetry?.modelCalls)}</span>
+                              <span><b>{language === "zh" ? "审查调用" : "Review calls"}</b>{formatMetric(telemetry?.reviewModelCalls)}</span>
+                              <span><b>{language === "zh" ? "质量尝试" : "Quality attempts"}</b>{formatMetric(telemetry?.reviewQualityAttempts)}</span>
+                              <span><b>{language === "zh" ? "审查通道尝试" : "Review channel attempts"}</b>{formatMetric(telemetry?.reviewInfrastructureAttempts)}</span>
                             </div>
                             <div className="workflow-run-center-node-token-usage">
                               <strong>{labels.tokenUsage}</strong>
@@ -479,6 +483,7 @@ function WorkflowRunCenterOpen({ runs, conversations = [], artifacts = [], loadi
                             <summary>{language === "zh" ? "质量审查历史" : "Quality review history"} · {progress.reviewHistory.length}</summary>
                             <div className="workflow-run-center-events">{progress.reviewHistory.map((review) => <details key={review.reviewAttempt}>
                               <summary>#{review.reviewAttempt} · {review.verdict.qualityLevel}/{review.requiredLevel} · {review.passed ? (language === "zh" ? "通过" : "passed") : (language === "zh" ? "未通过" : "failed")} · {new Date(review.reviewedAt).toLocaleString()}</summary>
+                              {review.gateId || review.reviewerConfiguredAgentId ? <span><b>Review Gate</b>{review.gateId ?? "—"} · Agent {review.reviewerConfiguredAgentId ?? "—"}</span> : null}
                               <strong>{language === "zh" ? "候选结果" : "Candidate result"}</strong>
                               <pre>{JSON.stringify(review.candidate, null, 2)}</pre>
                               {review.verdict.dimensionResults.map((dimension) => <span key={dimension.key}><b>{dimension.key}: {dimension.qualityLevel}</b>{dimension.reason}{dimension.evidence.length ? ` · ${dimension.evidence.join("; ")}` : ""}</span>)}

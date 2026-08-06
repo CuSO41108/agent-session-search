@@ -15,6 +15,10 @@ export function startWorkflowRun(input: { request: RunWorkflowRequest; deps: Wor
   if ((!isWorkflowRunTerminalStatus(workflow.status) && workflow.status !== "draft") || hasRunningRun) return { ok: false, workflowId: workflow.workflowId, error: "Workflow is already running." };
   if (!workflow.workflowV2Plan) return { ok: false, workflowId: workflow.workflowId, error: "Workflow V2 plan is required. Legacy workflow execution is no longer supported." };
   if (workflow.confirmedRevision !== workflow.revision) return { ok: false, workflowId: workflow.workflowId, revision: workflow.revision, error: "Workflow must be confirmed before starting a run." };
+  const reviewGates = workflow.workflowV2Plan.definition.reviewGates ?? [];
+  if (reviewGates.length > 0 && input.request.reviewEnabled !== true) {
+    return { ok: false, workflowId: workflow.workflowId, error: "Enable Runtime Review before running a Workflow that contains Review Gates, or remove the Gates and confirm the Workflow again." };
+  }
   const transactionPolicy = workflow.workflowV2Plan.definition.transactionPolicy;
   const configuredApprovalMode = transactionPolicy?.defaultMode === "direct" ? undefined : transactionPolicy?.approvalMode;
   const requestedApprovalMode = input.request.transactionApprovalMode
@@ -26,7 +30,7 @@ export function startWorkflowRun(input: { request: RunWorkflowRequest; deps: Wor
     return { ok: false, workflowId: workflow.workflowId, error: "The requested approval mode does not match the confirmed workflow policy." };
   }
   const effectiveApprovalMode = configuredApprovalMode === "user_choice" ? requestedApprovalMode : configuredApprovalMode;
-  const effectiveReviewEnabled = input.request.reviewEnabled ?? workflow.workflowV2Plan.definition.reviewEnabled === true;
+  const effectiveReviewEnabled = reviewGates.length > 0 || (input.request.reviewEnabled ?? workflow.workflowV2Plan.definition.reviewEnabled === true);
   const runDefinition = {
     ...workflow.workflowV2Plan.definition,
     reviewEnabled: effectiveReviewEnabled,

@@ -348,6 +348,7 @@ export interface RuntimeRequest {
   workflowNodeId?: string;
   agentRecallMcp?: AgentRecallMcpContext;
   workflowNodeExecutionId?: string;
+  allowedMcpTools?: string[];
 }
 
 export interface RuntimeResumeCapabilities {
@@ -480,9 +481,11 @@ export interface RunTaskRequest {
   continuationPolicy?: RuntimeContinuationPolicy;
   runtimeConversation?: RuntimeConversation;
   planningWorkflowId?: string;
+  workflowReviewRevision?: number;
   workflowRunId?: string;
   workflowNodeId?: string;
   workflowNodeExecutionId?: string;
+  allowedMcpTools?: string[];
 }
 
 export interface WorkflowAgentRequest extends RuntimeRequest {

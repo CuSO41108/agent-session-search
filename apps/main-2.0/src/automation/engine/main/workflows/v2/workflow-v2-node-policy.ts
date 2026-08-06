@@ -1,7 +1,7 @@
 import type { AppSnapshot, WorkflowV2InterventionAction } from "../../../shared/types";
 import { DEFAULT_MODEL_ID } from "../../../shared/models";
 import type { WorkflowDraftState } from "../../../shared/workflow/draft";
-import type { WorkflowV2ContextBudget, WorkflowV2LLMNode, WorkflowV2OutputFieldDef, WorkflowV2ScriptNode } from "../../../shared/workflow-v2/definition";
+import type { WorkflowV2ContextBudget, WorkflowV2LLMNode, WorkflowV2OutputFieldDef, WorkflowV2ReviewGate, WorkflowV2ScriptNode } from "../../../shared/workflow-v2/definition";
 import type { WorkflowV2ResultPacket, WorkflowV2TaskPacket } from "../../../shared/workflow-v2/planning";
 import { isValidWorkflowV2ContextBudget, isValidWorkflowV2CostBudget } from "../../../shared/workflow-v2/validation";
 
@@ -47,16 +47,20 @@ export function workflowV2ExecutionEnvironment(input: {
 
 export function workflowV2ReviewerPolicy(
   node: WorkflowV2LLMNode | WorkflowV2ScriptNode,
-  reviewEnabled: boolean,
+  review: boolean | WorkflowV2ReviewGate | undefined,
   forceIndependentReview = false,
 ): Record<string, unknown> {
+  const gate = typeof review === "object" ? review : undefined;
+  const reviewEnabled = gate !== undefined || review === true;
   return {
     reviewEnabled,
-    judgeDimensions: node.judgeDimensions ?? [],
-    reviewLevel: node.reviewLevel ?? "none",
-    reviewMaxRetries: node.reviewMaxRetries ?? 2,
-    requiresIndependentReview: reviewEnabled && node.role !== "reviewer" && node.reviewLevel !== undefined && node.reviewLevel !== "none"
-      && (forceIndependentReview || (node.judgeDimensions?.length ?? 0) > 0),
+    ...(gate ? { gate: structuredClone(gate) } : {}),
+    judgeDimensions: gate?.judgeDimensions ?? node.judgeDimensions ?? [],
+    reviewLevel: gate?.reviewLevel ?? node.reviewLevel ?? "none",
+    reviewMaxRetries: gate?.maxQualityRetries ?? node.reviewMaxRetries ?? 2,
+    requiresIndependentReview: reviewEnabled && node.role !== "reviewer"
+      && (gate !== undefined || (node.reviewLevel !== undefined && node.reviewLevel !== "none"
+        && (forceIndependentReview || (node.judgeDimensions?.length ?? 0) > 0))),
     forceIndependentReview,
   };
 }

@@ -18,6 +18,7 @@ import type {
   WorkflowV2DurableEvent,
   WorkflowV2PersistedRunState,
 } from "../../shared/workflow-v2/storage";
+import type { WorkflowV2ReviewerInput, WorkflowV2ReviewerResponse } from "../../shared/workflow-v2/review";
 import type { WorkflowCommitPlan, WorkflowOperationRecord, WorkflowOperationState, WorkflowTransactionMode } from "../../shared/workflow-v2/transaction";
 import type { WorkflowRecoveryDecisionRecord, WorkflowRecoveryManagerRecommendation, WorkflowRecoveryPreview, WorkflowTransactionState } from "../../shared/workflow-v2/transaction";
 import type { WorkflowWorkspaceCommitResult, WorkflowWorkspaceConflictPreview, WorkflowWorkspaceDiffResult, WorkflowWorkspacePreparation, WorkflowWorkspaceRollbackResult } from "./v2/workflow-v2-workspace-transaction";
@@ -143,9 +144,18 @@ export interface WorkflowRuntimeDependencies {
   startWorkflowRun: (input: StartWorkflowRunRequest) => WorkflowOperationResult;
   finishWorkflowRun: (input: FinishWorkflowRunRequest) => WorkflowOperationResult;
   updateWorkflowRunState: (input: WorkflowRunStateUpdate) => void;
-  runTask: (input: RunTaskRequest, approvalPolicy?: { allowedFileWriteRoot: string; workspaceOnly?: boolean }) => Promise<AppSnapshot>;
+  runTask: (input: RunTaskRequest, approvalPolicy?: { allowedFileWriteRoot: string; workspaceOnly?: boolean; readOnly?: boolean }) => Promise<AppSnapshot>;
   stopTask: (taskId: string) => Promise<void>;
   deleteTask: (taskId: string, options?: { preserveRuntimeConversation?: boolean }) => Promise<AppSnapshot>;
+  beginWorkflowReviewGate?: (input: {
+    workflowId: string;
+    runId: string;
+    executionId: string;
+    reviewerNodeId: string;
+    reviewerInput: WorkflowV2ReviewerInput;
+  }) => void;
+  takeWorkflowReviewGateSubmission?: (executionId: string) => WorkflowV2ReviewerResponse | undefined;
+  clearWorkflowReviewGate?: (executionId: string) => void;
   executeWorkflowV2Script: (input: ExecuteWorkflowV2ScriptRequest) => Promise<WorkflowV2ScriptWorkerOutput>;
   /** Executes brokered_external scripts through a host integration that records external operations in the Broker ledger. */
   executeWorkflowV2BrokeredScript?: (input: ExecuteWorkflowV2ScriptRequest) => Promise<WorkflowV2ScriptWorkerOutput>;

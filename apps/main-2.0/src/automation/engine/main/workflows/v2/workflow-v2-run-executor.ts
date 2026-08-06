@@ -88,7 +88,7 @@ import { recordWorkflowV2ScriptInputRequest, resolveWorkflowV2ScriptInput, workf
 import { projectWorkflowV2PausedNodeInteraction } from "./workflow-v2-node-interaction";
 import { executeAuthorizedWorkflowV2Script } from "./workflow-v2-script-execution";
 import { authorizeWorkflowV2ScriptOperation } from "./workflow-v2-script-approval";
-import { buildWorkflowV2FinalReport, buildWorkflowV2RecoveryPreview } from "./workflow-v2-recovery";
+import { acceptedWorkflowV2WorkerOutputs, buildWorkflowV2FinalReport, buildWorkflowV2RecoveryPreview } from "./workflow-v2-recovery";
 import {
   createWorkflowV2HookRegistry,
   runWorkflowV2HookChain,
@@ -192,18 +192,22 @@ function workflowV2ReviewerTaskTrace(
   infrastructureAttempt: number,
   options: { includeResponse: boolean; error?: string },
 ): WorkflowV2ReviewTraceEntry[] {
+  const request = sanitizedReviewTracePayload(task.prompt);
   const trace: WorkflowV2ReviewTraceEntry[] = [{
     id: `${task.id}:request`,
     kind: "request",
     at: task.createdAt,
-    content: task.prompt,
+    content: request.content,
+    ...(request.metadata ? { metadata: request.metadata } : {}),
     infrastructureAttempt,
   }];
   for (const message of task.messages) {
     for (const event of message.events ?? []) {
       const kind = event.type === "meta" ? "system" : event.type;
+      const payload = sanitizedReviewTracePayload(event.content || event.type.replaceAll("_", " "));
       const metadata: Record<string, unknown> = {
-        ...(event.metadata ?? {}),
+        ...(sanitizeWorkflowTransactionValue(event.metadata ?? {}) as Record<string, unknown>),
+        ...(payload.metadata ?? {}),
         ...(event.requestId ? { requestId: event.requestId } : {}),
         ...(event.requestState ? { requestState: event.requestState } : {}),
         ...(event.decision ? { decision: event.decision } : {}),
@@ -214,7 +218,7 @@ function workflowV2ReviewerTaskTrace(
         id: event.id || `${task.id}:event:${trace.length}`,
         kind,
         at: event.timestamp,
-        content: event.content || event.type.replaceAll("_", " "),
+        content: payload.content,
         ...(event.name ? { name: event.name } : {}),
         ...(Object.keys(metadata).length > 0 ? { metadata } : {}),
         infrastructureAttempt,
@@ -222,24 +226,45 @@ function workflowV2ReviewerTaskTrace(
     }
   }
   if (options.includeResponse) {
+    const response = sanitizedReviewTracePayload(taskArtifact(task));
     trace.push({
       id: `${task.id}:response`,
       kind: "response",
       at: task.updatedAt,
-      content: taskArtifact(task),
+      content: response.content,
+      ...(response.metadata ? { metadata: response.metadata } : {}),
       infrastructureAttempt,
     });
   }
   if (options.error) {
+    const error = sanitizedReviewTracePayload(options.error);
     trace.push({
       id: `${task.id}:error`,
       kind: "error",
       at: Date.now(),
-      content: options.error,
+      content: error.content,
+      ...(error.metadata ? { metadata: error.metadata } : {}),
       infrastructureAttempt,
     });
   }
   return trace;
+}
+
+function sanitizedReviewTracePayload(content: string): { content: string; metadata?: Record<string, unknown> } {
+  const sanitized = String(sanitizeWorkflowTransactionValue(content));
+  const maxChars = 30_000;
+  if (sanitized.length <= maxChars) return { content: sanitized };
+  return {
+    content: `${sanitized.slice(0, maxChars)}\n[TRUNCATED]`,
+    metadata: {
+      payloadReference: {
+        kind: "sha256",
+        digest: createHash("sha256").update(sanitized).digest("hex"),
+        originalChars: sanitized.length,
+        retainedChars: maxChars,
+      },
+    },
+  };
 }
 export class WorkflowV2RunExecutor {
   constructor(
@@ -574,7 +599,7 @@ export class WorkflowV2RunExecutor {
       });
     };
 
-    const startWorkflowTask = async (request: RunTaskRequest, allowOutputWrite = false): Promise<TaskRun> => {
+    const startWorkflowTask = async (request: RunTaskRequest, allowOutputWrite = false, readOnly = false): Promise<TaskRun> => {
       const existingTaskIds = new Set(latestSnapshot.tasks.map((task) => task.id));
       latestSnapshot = await runWorkflowV2TaskWithOutputPolicy({
         workflowId: workflow.workflowId,
@@ -583,6 +608,7 @@ export class WorkflowV2RunExecutor {
         request,
         allowOutputWrite,
         workspaceOnly: workspaceIsolated,
+        readOnly,
         ...(workspaceIsolated && allowOutputWrite ? { allowedFileWriteRoot: workflowWorkDir } : {}),
         runTask: this.deps.runTask,
       });
@@ -684,14 +710,23 @@ export class WorkflowV2RunExecutor {
     const runtimeAttemptByNodeId = new Map<string, number>();
     const consumedRecoveryNodeIds = new Set<string>();
 
-    const startModelTask = async (nodeId: string, request: RunTaskRequest, allowOutputWrite = false): Promise<TaskRun> => {
+    const startModelTask = async (nodeId: string, request: RunTaskRequest, allowOutputWrite = false, readOnly = false): Promise<TaskRun> => {
       consumeModelCallBudget(nodeId);
+      const currentTelemetry = latestProgress.find((item) => item.nodeId === nodeId)?.telemetry;
+      const runtimeReviewTask = request.workflowReviewRevision !== undefined && request.workflowNodeExecutionId?.startsWith("review_") === true;
+      updateNode(nodeId, {
+        telemetry: {
+          ...(currentTelemetry ?? { attempt: 1, startedAt: Date.now() }),
+          modelCalls: (currentTelemetry?.modelCalls ?? 0) + 1,
+          ...(runtimeReviewTask ? { reviewModelCalls: (currentTelemetry?.reviewModelCalls ?? 0) + 1 } : {}),
+        },
+      });
       const task = await startWorkflowTask({
         ...request,
         planningWorkflowId: workflow.workflowId,
         workflowRunId: runId,
         workflowNodeId: nodeId,
-      }, allowOutputWrite);
+      }, allowOutputWrite, readOnly);
       this.runRegistry.get(runId)?.taskIdByNodeId.set(nodeId, task.id);
       return task;
     };
@@ -1457,39 +1492,117 @@ export class WorkflowV2RunExecutor {
       return output;
     };
 
-    const reviewNodeOutput = async (reviewInput: WorkflowV2ReviewerInput): Promise<WorkflowV2ReviewerResponse> => {
+    const reviewNodeOutput = async (reviewInput: WorkflowV2ReviewerInput, reviewContext?: {
+      initialInfrastructureAttempt: number;
+      onInfrastructureAttempt: (attempt: number) => Promise<void>;
+    }): Promise<WorkflowV2ReviewerResponse> => {
       let lastError: unknown;
+      let lastCompletedArtifact: string | undefined;
       const reviewTrace: WorkflowV2ReviewTraceEntry[] = [];
-      for (let infrastructureAttempt = 1; infrastructureAttempt <= 2; infrastructureAttempt += 1) {
-        const task = await startModelTask(`reviewer:${reviewInput.executorNodeId}`, {
-          prompt: workflowV2ReviewerPrompt(reviewInput),
-          configuredAgentId: reviewerConfiguredAgentId,
-          modelId: reviewerModelId,
-          workDir: workflowWorkDir,
+      const reviewConfiguredAgentId = reviewInput.reviewerConfiguredAgentId ?? reviewerConfiguredAgentId;
+      const reviewAgent = this.deps.snapshot().configuredAgents.find((agent) => agent.id === reviewConfiguredAgentId);
+      if (!reviewConfiguredAgentId || !reviewAgent) {
+        throw new WorkflowV2ReviewerExecutionError("No configured Review Gate Agent is selected or available.", reviewTrace);
+      }
+      const reviewModelId = reviewAgent.modelId || reviewerModelId;
+      for (let infrastructureAttempt = (reviewContext?.initialInfrastructureAttempt ?? 0) + 1; infrastructureAttempt <= 3; infrastructureAttempt += 1) {
+        await reviewContext?.onInfrastructureAttempt(infrastructureAttempt);
+        const executionId = `review_${randomUUID()}`;
+        this.deps.beginWorkflowReviewGate?.({
+          workflowId: workflow.workflowId,
+          runId,
+          executionId,
+          reviewerNodeId: reviewConfiguredAgentId,
+          reviewerInput: reviewInput,
         });
-        updateNode(reviewInput.executorNodeId, {
-          status: "running",
-          detail: infrastructureAttempt === 1 ? "Independent quality review running" : "Retrying independent quality review",
-          taskId: task.id,
-        });
+        let task: TaskRun | undefined;
         let completedTraceCaptured = false;
         try {
+          task = await startModelTask(`reviewer:${reviewInput.executorNodeId}`, {
+            prompt: workflowV2ReviewerPrompt(reviewInput),
+            configuredAgentId: reviewConfiguredAgentId,
+            modelId: reviewModelId,
+            workDir: workflowWorkDir,
+            workflowReviewRevision: plan.graphVersion,
+            workflowNodeExecutionId: executionId,
+            allowedMcpTools: reviewInput.requiredTools ?? [],
+          }, false, true);
+          updateNode(reviewInput.executorNodeId, {
+            status: "running",
+            detail: infrastructureAttempt === 1 ? "Independent quality review running" : "Retrying independent quality review",
+            taskId: task.id,
+          }, {
+            type: "node_judged",
+            nodeId: reviewInput.executorNodeId,
+            attempt: infrastructureAttempt,
+            taskId: task.id,
+            detail: `Review infrastructure attempt ${infrastructureAttempt} started`,
+          });
           const completedTask = await waitForTask(task.id, reviewInput.executorNodeId);
+          const currentTelemetry = latestProgress.find((item) => item.nodeId === reviewInput.executorNodeId)?.telemetry;
+          const usage = completedTask.usage;
+          updateNode(reviewInput.executorNodeId, {
+            telemetry: {
+              ...(currentTelemetry ?? { attempt: 1, startedAt: Date.now() }),
+              ...(usage ? addNodeUsage(currentTelemetry ?? { attempt: 1, startedAt: Date.now() }, usage) : {}),
+              reviewQualityAttempts: Math.max(currentTelemetry?.reviewQualityAttempts ?? 0, reviewInput.reviewAttempt),
+              reviewInfrastructureAttempts: infrastructureAttempt,
+              ...(usage?.inputTokens !== undefined ? { reviewInputTokens: (currentTelemetry?.reviewInputTokens ?? 0) + usage.inputTokens } : {}),
+              ...(usage?.outputTokens !== undefined ? { reviewOutputTokens: (currentTelemetry?.reviewOutputTokens ?? 0) + usage.outputTokens } : {}),
+              ...(usage?.reasoningTokens !== undefined ? { reviewReasoningTokens: (currentTelemetry?.reviewReasoningTokens ?? 0) + usage.reasoningTokens } : {}),
+              ...(usage?.estimatedCost !== undefined ? { reviewEstimatedCost: (currentTelemetry?.reviewEstimatedCost ?? 0) + usage.estimatedCost } : {}),
+            },
+          });
           reviewTrace.push(...workflowV2ReviewerTaskTrace(completedTask, infrastructureAttempt, { includeResponse: true }));
           completedTraceCaptured = true;
-          return { ...parseWorkflowV2ReviewerResponse(taskArtifact(completedTask), reviewInput), trace: structuredClone(reviewTrace) };
+          lastCompletedArtifact = taskArtifact(completedTask);
+          if (!this.deps.takeWorkflowReviewGateSubmission) {
+            return { ...parseWorkflowV2ReviewerResponse(lastCompletedArtifact, reviewInput), trace: structuredClone(reviewTrace) };
+          }
+          const submitted = this.deps.takeWorkflowReviewGateSubmission?.(executionId);
+          if (submitted) return { ...submitted, trace: structuredClone(reviewTrace) };
+          throw new Error("Review Agent completed without calling workflow_review_gate_submit.");
         } catch (error) {
           lastError = error;
           const message = error instanceof Error ? error.message : String(error);
-          if (completedTraceCaptured) {
+          if (completedTraceCaptured && task) {
             reviewTrace.push({ id: `${task.id}:parse-error`, kind: "error", at: Date.now(), content: message, infrastructureAttempt });
-          } else {
-            const failedTask = this.deps.snapshot().tasks.find((item) => item.id === task.id) ?? task;
+          } else if (task) {
+            const startedTask = task;
+            const failedTask = this.deps.snapshot().tasks.find((item) => item.id === startedTask.id) ?? startedTask;
             reviewTrace.push(...workflowV2ReviewerTaskTrace(failedTask, infrastructureAttempt, { includeResponse: false, error: message }));
+          } else {
+            reviewTrace.push({ id: `review-start:${executionId}`, kind: "error", at: Date.now(), content: message, infrastructureAttempt });
           }
         } finally {
-          latestSnapshot = await this.deps.deleteTask(task.id);
+          this.deps.clearWorkflowReviewGate?.(executionId);
+          if (task) latestSnapshot = await this.deps.deleteTask(task.id);
         }
+      }
+      if (lastCompletedArtifact !== undefined) {
+        try {
+          return { ...parseWorkflowV2ReviewerResponse(lastCompletedArtifact, reviewInput), trace: structuredClone(reviewTrace) };
+        } catch (error) {
+          lastError = error;
+          reviewTrace.push({
+            id: `review-fallback:${randomUUID()}`,
+            kind: "error",
+            at: Date.now(),
+            content: `Strict JSON fallback failed: ${error instanceof Error ? error.message : String(error)}`,
+            infrastructureAttempt: 3,
+          });
+        }
+      }
+      if (lastError === undefined && (reviewContext?.initialInfrastructureAttempt ?? 0) >= 3) {
+        const exhaustedError = new Error("Review Gate infrastructure retry budget was already exhausted before resume.");
+        lastError = exhaustedError;
+        reviewTrace.push({
+          id: `review-exhausted:${randomUUID()}`,
+          kind: "error",
+          at: Date.now(),
+          content: exhaustedError.message,
+          infrastructureAttempt: 3,
+        });
       }
       throw new WorkflowV2ReviewerExecutionError(lastError instanceof Error ? lastError.message : String(lastError), reviewTrace);
     };
@@ -1710,7 +1823,8 @@ export class WorkflowV2RunExecutor {
       const finalWorkspaceDiff = workspaceIsolated
         ? await durableStore?.inspectWorkspaceTransaction?.({ workflowId: workflow.workflowId, runId })
         : undefined;
-      let finalReport = buildWorkflowV2FinalReport(plan, result.workerOutputs, result.runState.status, finalDurableState?.recoveryDecisions, finalOperations.map(sanitizeWorkflowOperationRecord), finalWorkspaceDiff);
+      const acceptedOutputs = acceptedWorkflowV2WorkerOutputs(result.runState, result.workerOutputs);
+      let finalReport = buildWorkflowV2FinalReport(plan, acceptedOutputs, result.runState.status, finalDurableState?.recoveryDecisions, finalOperations.map(sanitizeWorkflowOperationRecord), finalWorkspaceDiff);
       if (this.runRegistry.isStopRequested(runId)) return;
       if (result.runState.status === "completed") {
         if (workspaceIsolated) {

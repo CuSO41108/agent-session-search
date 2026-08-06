@@ -29,7 +29,7 @@ export class CodexAgentExecutor implements AgentExecutor {
     const channel = this.options.channelById(this.context.channelId);
     const threadIdFromConversation = codexThreadIdFromConversation(this.context.runtimeConversation);
     const mcp = codexMcpLaunchConfig(this.context.configuredAgentId
-      ? this.options.mcpServersForAgent?.(this.context.configuredAgentId) ?? []
+      ? this.options.mcpServersForAgent?.(this.context.configuredAgentId, this.context.allowedMcpTools) ?? []
       : []);
     const workflowMcp = codexWorkflowMcpConfig({
       discoveryPath: this.options.workflowMcpDiscoveryPath?.(),

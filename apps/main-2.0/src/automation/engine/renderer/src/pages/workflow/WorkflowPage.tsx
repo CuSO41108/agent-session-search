@@ -100,6 +100,7 @@ export function WorkflowPage({ controller: source }: { controller: WorkflowContr
   const reviewerModelId = source.reviewerModelId ?? DEFAULT_MODEL_ID;
   const generationReview = source.generationReview;
   const reviewFeatureEnabled = source.reviewFeatureEnabled === true;
+  const runtimeReviewFeatureEnabled = source.runtimeReviewFeatureEnabled === true;
   const runtimes = source.runtimes;
   const channels = source.channels;
   const configuredAgents = source.configuredAgents ?? [];
@@ -149,6 +150,7 @@ export function WorkflowPage({ controller: source }: { controller: WorkflowContr
   const workflowText = WORKFLOW_TEXT[language];
   const validation = validateWorkflowV2Definition(definition);
   const workflowConfirmed = revision !== undefined && confirmedRevision === revision;
+  const runtimeReviewBlocked = (definition.reviewGates?.length ?? 0) > 0 && !runtimeReviewFeatureEnabled;
   const runOwnsInput = Boolean(activeRunId && (!source.activeRunStatus || source.activeRunStatus === "running" || source.activeRunStatus === "waiting_for_user"));
   const canEditDefinition = !runOwnsInput && !topologyLocked && !running;
   const [reviewDrawerOpen, setReviewDrawerOpen] = useState(false);
@@ -615,7 +617,7 @@ export function WorkflowPage({ controller: source }: { controller: WorkflowContr
       /> : null}
 
       {revisionEditorNodeId && onReviseRun ? <WorkflowRevisionDialog nodeId={revisionEditorNodeId} definition={definition} onRevise={onReviseRun} onClose={() => setRevisionEditorNodeId(undefined)} /> : null}
-      {draftEditorOpen && onUpdateDefinition ? <WorkflowDraftEditorDialog definition={definition} configuredAgents={configuredAgents} onSave={onUpdateDefinition} onClose={() => setDraftEditorOpen(false)} /> : null}
+      {draftEditorOpen && onUpdateDefinition ? <WorkflowDraftEditorDialog definition={definition} configuredAgents={configuredAgents} runtimeReviewEnabled={runtimeReviewFeatureEnabled} onSave={onUpdateDefinition} onClose={() => setDraftEditorOpen(false)} /> : null}
 
       {openNodeGraphNode ? <WorkflowNodeSurface
         node={openNodeGraphNode}
@@ -720,7 +722,8 @@ export function WorkflowPage({ controller: source }: { controller: WorkflowContr
               </select>
             </label> : null}
             {workflowV2Plan && !workflowV2Plan.definition.transactionPolicy ? <span className="workflow-transaction-compatibility-warning" role="status">{language === "zh" ? "兼容 direct 模式：此旧 Workflow 不保证回滚。" : "Compatibility direct mode: this legacy workflow has no rollback guarantee."}</span> : null}
-            <button className="send-btn workflow-run-action" onClick={() => void onRunWorkflow(workflowV2Plan?.definition.transactionPolicy?.approvalMode === "user_choice" ? transactionApprovalMode : undefined)} disabled={!validation.valid || !workflowConfirmed || running}>
+            {runtimeReviewBlocked ? <span className="workflow-transaction-compatibility-warning" role="status">{language === "zh" ? "此 Workflow 包含 Review Gate，请先在设置中开启运行时审查。" : "Enable Runtime Review in Settings before running this Workflow with Review Gates."}</span> : null}
+            <button className="send-btn workflow-run-action" title={runtimeReviewBlocked ? "Enable Runtime Review in Settings" : undefined} onClick={() => void onRunWorkflow(workflowV2Plan?.definition.transactionPolicy?.approvalMode === "user_choice" ? transactionApprovalMode : undefined)} disabled={!validation.valid || !workflowConfirmed || running || runtimeReviewBlocked}>
               <Play size={14} />
               <span>{workflowText.runWorkflow}</span>
             </button>

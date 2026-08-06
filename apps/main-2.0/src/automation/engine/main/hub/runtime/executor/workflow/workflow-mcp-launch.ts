@@ -49,7 +49,9 @@ export function workflowMcpLaunchConfig(
   const { discoveryPath, workflowId } = binding;
   if (!discoveryPath || (!workflowId && !binding.studioToken)) return undefined;
   const scope: WorkflowMcpScope = binding.scope
-    ?? (binding.runId && binding.nodeId ? "node_execution" : binding.reviewRevision ? "review" : "planning");
+    ?? (binding.runId && binding.nodeId && binding.reviewRevision
+      ? "runtime_review"
+      : binding.runId && binding.nodeId ? "node_execution" : binding.reviewRevision ? "review" : "planning");
   const mainBundlePath = options.mainBundlePath ?? fileURLToPath(import.meta.url);
   const compiledServer = [
     process.env.AGENT_RECALL_WORKFLOW_MCP_SERVER,

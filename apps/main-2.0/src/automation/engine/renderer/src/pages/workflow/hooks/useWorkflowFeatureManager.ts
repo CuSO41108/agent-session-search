@@ -98,6 +98,7 @@ export function useWorkflowFeatureManager({
     runner,
     language,
     globalReviewEnabled,
+    runtimeReviewEnabled,
     onChooseWorkDir,
     onRefresh,
     onReadOutputFile,

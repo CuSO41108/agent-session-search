@@ -67,6 +67,14 @@ export interface WorkflowRunNodeTelemetry {
   cacheWrite1hInputTokens?: number;
   totalTokens?: number;
   estimatedCost?: number;
+  modelCalls?: number;
+  reviewModelCalls?: number;
+  reviewQualityAttempts?: number;
+  reviewInfrastructureAttempts?: number;
+  reviewInputTokens?: number;
+  reviewOutputTokens?: number;
+  reviewReasoningTokens?: number;
+  reviewEstimatedCost?: number;
 }
 
 export type WorkflowEventType =

@@ -43,7 +43,8 @@ describe("MCP server tools", () => {
 
   test("exposes only read tools to standalone discovery clients", () => {
     delete process.env.AGENT_RECALL_WORKFLOW_MCP_TOKEN;
-    expect(mcpToolDefinitions().map((tool) => tool.name)).toEqual([
+    const tools = mcpToolDefinitions();
+    expect(tools.map((tool) => tool.name)).toEqual([
       "agent_templates_list",
       "skill_templates_list",
       "agents_list",
@@ -56,6 +57,7 @@ describe("MCP server tools", () => {
       "workflow_run_get",
       "workflow_outputs_list",
     ]);
+    expect(tools.every((tool) => tool.annotations?.readOnlyHint === true)).toBe(true);
   });
 
   test("exposes lifecycle writes only to managed MCP sessions", () => {
@@ -146,6 +148,23 @@ describe("MCP server tools", () => {
     expect(properties).not.toHaveProperty("workflowId");
     expect(properties).not.toHaveProperty("reviewedRevision");
     expect((properties.verdict as { enum: string[] }).enum).toEqual(["approve", "revise"]);
+  });
+
+  test("exposes only the bound Runtime Review Gate submission tool", () => {
+    process.env.AGENT_RECALL_WORKFLOW_MCP_TOKEN = "managed-token";
+    process.env.AGENT_RECALL_WORKFLOW_MCP_SCOPE = "runtime_review";
+    process.env.AGENT_RECALL_WORKFLOW_ID = "wf-review";
+    process.env.AGENT_RECALL_WORKFLOW_RUN_ID = "run-1";
+    process.env.AGENT_RECALL_WORKFLOW_NODE_ID = "node-1";
+    process.env.AGENT_RECALL_WORKFLOW_NODE_EXECUTION_ID = "review-1";
+    process.env.AGENT_RECALL_WORKFLOW_REVIEW_REVISION = "2";
+
+    const tools = mcpToolDefinitions();
+    expect(tools.map((tool) => tool.name)).toEqual(["workflow_review_gate_submit"]);
+    const properties = tools[0]!.inputSchema.properties as Record<string, unknown>;
+    expect(properties).not.toHaveProperty("workflowId");
+    expect(properties).not.toHaveProperty("runId");
+    expect(properties).not.toHaveProperty("executionId");
   });
 
   test("uses env override for bridge discovery", () => {
@@ -340,6 +359,22 @@ describe("MCP server tools", () => {
       reviewedRevision: 2,
       verdict: "approve",
     });
+  });
+
+  test("injects the bound Runtime Review Gate execution identity", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "agent-recall-mcp-review-gate-submit-"));
+    const discoveryPath = path.join(dir, "bridge.json");
+    process.env.AGENT_RECALL_WORKFLOW_MCP_BRIDGE = discoveryPath;
+    process.env.AGENT_RECALL_WORKFLOW_ID = "wf-review";
+    process.env.AGENT_RECALL_WORKFLOW_RUN_ID = "run-1";
+    process.env.AGENT_RECALL_WORKFLOW_NODE_EXECUTION_ID = "review-1";
+    await writeFile(discoveryPath, JSON.stringify({ host: "127.0.0.1", port: 48126, token: "secret" }), "utf8");
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue({ ok: true, status: 200, json: async () => ({ ok: true, accepted: true }) } as Response);
+
+    await callMcpTool("workflow_review_gate_submit", { reasons: ["ok"], riskLevel: "low", confidence: "high", dimensionResults: [] });
+
+    const request = fetchMock.mock.calls[0]?.[1] as RequestInit;
+    expect(JSON.parse(String(request.body))).toMatchObject({ workflowId: "wf-review", runId: "run-1", executionId: "review-1" });
   });
 
 });

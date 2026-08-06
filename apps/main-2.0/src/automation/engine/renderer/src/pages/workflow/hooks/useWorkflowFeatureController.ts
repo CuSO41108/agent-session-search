@@ -13,6 +13,7 @@ interface UseWorkflowFeatureControllerOptions {
   runner: WorkflowRunnerController;
   language: "en" | "zh";
   globalReviewEnabled: boolean;
+  runtimeReviewEnabled: boolean;
   onChooseWorkDir: () => Promise<void>;
   onRefresh: () => Promise<void>;
   onReadOutputFile?: WorkflowController["onReadOutputFile"];
@@ -33,6 +34,7 @@ export function useWorkflowFeatureController({
   runner,
   language,
   globalReviewEnabled,
+  runtimeReviewEnabled,
   onChooseWorkDir,
   onRefresh,
   onReadOutputFile,
@@ -76,6 +78,7 @@ export function useWorkflowFeatureController({
       reviewerModelId: draft.workflowReviewerModelId,
       generationReview: activeWorkflow?.generationReview,
       reviewFeatureEnabled: globalReviewEnabled && activeWorkflow?.sourceType !== "official" && activeWorkflow?.topologyLocked !== true,
+      runtimeReviewFeatureEnabled: runtimeReviewEnabled && activeWorkflow?.sourceType !== "official" && activeWorkflow?.topologyLocked !== true,
       runtimes: snapshot.runtimes,
       channels: snapshot.channels,
       configuredAgents: snapshot.configuredAgents,
@@ -276,6 +279,7 @@ export function useWorkflowFeatureController({
       onRefresh,
       runner,
       globalReviewEnabled,
+      runtimeReviewEnabled,
       activeWorkflow?.generationReview,
       setSnapshot,
       snapshot.channels,

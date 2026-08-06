@@ -37,6 +37,7 @@ import {
 import { cloneWorkflowV2Plan } from "../../../shared/workflow-v2/planning";
 import type { WorkflowV2Definition } from "../../../shared/workflow-v2/definition";
 import { validateWorkflowV2Definition } from "../../../shared/workflow-v2/validation";
+import { migrateWorkflowV2ReviewGates } from "../../../shared/workflow-v2/review-gates";
 import type { WorkflowV2PersistedRunState } from "../../../shared/workflow-v2/storage";
 import {
   isWorkflowOperationRecord,
@@ -47,7 +48,7 @@ import {
   type WorkflowRecoveryPreview,
 } from "../../../shared/workflow-v2/transaction";
 import type { WorkflowV2RunNodeState } from "../../../shared/workflow-v2/state";
-import { buildWorkflowV2FinalReport } from "../../workflows/v2/workflow-v2-recovery";
+import { acceptedWorkflowV2WorkerOutputs, buildWorkflowV2FinalReport } from "../../workflows/v2/workflow-v2-recovery";
 import { projectWorkflowV2PausedNodeInteraction } from "../../workflows/v2/workflow-v2-node-interaction";
 
 function restoreWorkflowV2Plan(raw: unknown): WorkflowV2Plan | undefined {
@@ -181,8 +182,20 @@ export function restoreWorkflowDraft(
   if (!record || "agentSessionId" in record) return undefined;
   const definitionRecord = asRecord(record.definition);
   if (!definitionRecord) return undefined;
-  const definition = structuredClone(definitionRecord) as unknown as WorkflowV2Definition;
-  const workflowId = asOptionalString(record.workflowId) ?? definition.workflowId;
+  const legacyDefinition = structuredClone(definitionRecord) as unknown as WorkflowV2Definition;
+  const workflowId = asOptionalString(record.workflowId) ?? legacyDefinition.workflowId;
+  const reviewerConfiguredAgentId = Object.hasOwn(record, "reviewerConfiguredAgentId")
+    ? asOptionalString(record.reviewerConfiguredAgentId) ?? ""
+    : asOptionalString(record.configuredAgentId) ?? "";
+  const reviewerModelId = Object.hasOwn(record, "reviewerModelId")
+    ? asOptionalString(record.reviewerModelId) ?? ""
+    : asOptionalString(record.modelId) ?? "";
+  const officialWorkflow = record.sourceType === "official" || record.topologyLocked === true;
+  const requiresReviewGateMigration = !officialWorkflow && (legacyDefinition.reviewEnabled !== undefined
+    || legacyDefinition.nodes?.some((node) => node.reviewLevel !== undefined || node.reviewMaxRetries !== undefined || node.judgeDimensions !== undefined) === true);
+  const definition = requiresReviewGateMigration
+    ? migrateWorkflowV2ReviewGates(legacyDefinition, reviewerConfiguredAgentId)
+    : legacyDefinition;
   const planningDraft = restoreWorkflowDraftStatus(record.status) === "draft"
     && Array.isArray(definition.nodes)
     && definition.nodes.length === 0
@@ -193,33 +206,30 @@ export function restoreWorkflowDraft(
     && Number.isSafeInteger(definition.graphVersion)
     && definition.graphVersion > 0
     && typeof definition.objective === "string";
-  if (!planningDraft && !validateWorkflowV2Definition(definition).valid) return undefined;
+  if (!planningDraft) {
+    const definitionToValidate = requiresReviewGateMigration ? legacyDefinition : definition;
+    if (!validateWorkflowV2Definition(definitionToValidate).valid) return undefined;
+  }
   const finalReport = asOptionalString(record.finalReport);
   const restoredRuntimeConversation = record.runtimeConversation === undefined
     ? undefined
     : deps.restoreRuntimeConversation(record.runtimeConversation);
   if (record.runtimeConversation !== undefined && !restoredRuntimeConversation) return undefined;
-  const restoredWorkflowV2Plan = record.workflowV2Plan === undefined
+  const restoredWorkflowV2Plan = record.workflowV2Plan === undefined || requiresReviewGateMigration
     ? undefined
     : restoreWorkflowV2Plan(record.workflowV2Plan);
-  if (record.workflowV2Plan !== undefined && !restoredWorkflowV2Plan) return undefined;
+  if (record.workflowV2Plan !== undefined && !requiresReviewGateMigration && !restoredWorkflowV2Plan) return undefined;
   if (workflowId !== definition.workflowId) return undefined;
   const origin = restoreWorkflowOrigin(record.origin);
-  const confirmedRevision = Number.isSafeInteger(record.confirmedRevision) && Number(record.confirmedRevision) > 0 ? Number(record.confirmedRevision) : undefined;
+  const confirmedRevision = !requiresReviewGateMigration && Number.isSafeInteger(record.confirmedRevision) && Number(record.confirmedRevision) > 0 ? Number(record.confirmedRevision) : undefined;
   const generationReview = restoreGenerationReview(record.generationReview);
-  const reviewerConfiguredAgentId = Object.hasOwn(record, "reviewerConfiguredAgentId")
-    ? asOptionalString(record.reviewerConfiguredAgentId) ?? ""
-    : asOptionalString(record.configuredAgentId) ?? "";
-  const reviewerModelId = Object.hasOwn(record, "reviewerModelId")
-    ? asOptionalString(record.reviewerModelId) ?? ""
-    : asOptionalString(record.modelId) ?? "";
   return deps.cloneWorkflowDraft({
     workflowId,
     sourceType: record.sourceType === "official" ? "official" : "user",
     topologyLocked: record.sourceType === "official" || record.topologyLocked === true,
     title: asOptionalString(record.title) ?? definition.objective ?? "Untitled workflow",
     status: restoreWorkflowDraftStatus(record.status),
-    revision: Math.max(1, Math.floor(asNumber(record.revision, 1))),
+    revision: Math.max(1, Math.floor(asNumber(record.revision, 1))) + (requiresReviewGateMigration ? 1 : 0),
     ...(confirmedRevision !== undefined ? { confirmedRevision } : {}),
     ...(origin ? { origin } : {}),
     configuredAgentId: asOptionalString(record.configuredAgentId) ?? "",
@@ -415,7 +425,7 @@ export function reconcileWorkflowV2RunFromDurableState(input: {
   const finalReport = preserveStoppedRun
     ? input.run.finalReport
     : status === "completed" || status === "failed"
-      ? input.persisted.finalReport ?? buildWorkflowV2FinalReport(input.persisted.plan, input.persisted.workerOutputs, durableStatus, input.persisted.recoveryDecisions, input.operations)
+      ? input.persisted.finalReport ?? buildWorkflowV2FinalReport(input.persisted.plan, acceptedWorkflowV2WorkerOutputs(input.persisted.runState, input.persisted.workerOutputs), durableStatus, input.persisted.recoveryDecisions, input.operations)
       : undefined;
   const lastError = status === "failed"
     ? progress.find((item) => item.status === "failed")?.detail ?? "Workflow V2 run failed before app restart."

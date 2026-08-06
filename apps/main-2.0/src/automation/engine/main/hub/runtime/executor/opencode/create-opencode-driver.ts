@@ -29,7 +29,7 @@ export function createOpenCodeDriver(options: RuntimeAgentExecutorFactoryOptions
           args: ["acp", "--cwd", context.workDir],
           modelId: context.runtimeConfig.model,
           mcpServers: [
-            ...acpMcpServers(context.configuredAgentId ? options.mcpServersForAgent?.(context.configuredAgentId) ?? [] : []),
+            ...acpMcpServers(context.configuredAgentId ? options.mcpServersForAgent?.(context.configuredAgentId, context.allowedMcpTools) ?? [] : []),
             ...acpWorkflowMcpServers({
               discoveryPath: options.workflowMcpDiscoveryPath?.(), workflowId: context.planningWorkflowId,
               runId: context.workflowRunId, nodeId: context.workflowNodeId, executionId: context.workflowNodeExecutionId, reviewRevision: context.workflowReviewRevision, managedToken: options.workflowMcpManagedToken?.(),

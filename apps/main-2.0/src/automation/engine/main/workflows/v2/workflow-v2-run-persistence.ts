@@ -10,6 +10,7 @@ import {
 import type { WorkflowV2StorePort } from "../workflow-runtime-ports";
 import type { ExecuteWorkflowV2Checkpoint } from "./workflow-v2-executor";
 import { createWorkflowV2RunState } from "../../../shared/workflow-v2/state";
+import { workflowV2ReviewGateForNode } from "../../../shared/workflow-v2/review-gates";
 import { createWorkflowV2NodeCacheFingerprint } from "./workflow-v2-recovery";
 import { resolveWorkflowNodeAgent, workflowV2ExecutionEnvironment, workflowV2ReviewerPolicy } from "./workflow-v2-node-policy";
 import type { WorkflowV2RecoveryOverride } from "./workflow-v2-execution-contract";
@@ -453,7 +454,8 @@ export class WorkflowV2RunPersistence {
           }),
           reviewerPolicy: workflowV2ReviewerPolicy(
             node,
-            this.input.plan.definition.reviewEnabled === true,
+            workflowV2ReviewGateForNode(this.input.plan.definition, node.id)
+              ?? this.input.plan.definition.reviewEnabled === true,
             recoveryOverride?.forceIndependentReview === true,
           ),
         }),

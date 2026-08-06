@@ -45,7 +45,7 @@ export function createClaudeDriver(
         claudeCliModelForChannel(options.channelById(context.channelId), modelFromRuntimeConfig(context.runtimeConfig)),
         options.requestApproval,
         {
-          ...claudeMcpServers(context.configuredAgentId ? options.mcpServersForAgent?.(context.configuredAgentId) ?? [] : []),
+          ...claudeMcpServers(context.configuredAgentId ? options.mcpServersForAgent?.(context.configuredAgentId, context.allowedMcpTools) ?? [] : []),
           ...claudeWorkflowMcpServers({
             discoveryPath: options.workflowMcpDiscoveryPath?.(), workflowId: context.planningWorkflowId,
             runId: context.workflowRunId, nodeId: context.workflowNodeId, executionId: context.workflowNodeExecutionId, reviewRevision: context.workflowReviewRevision, managedToken: options.workflowMcpManagedToken?.(),

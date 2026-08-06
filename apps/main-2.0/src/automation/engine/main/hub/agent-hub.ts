@@ -296,9 +296,12 @@ import {
 import { abandonWorkflowDraftReplyState as abandonWorkflowDraftReplyStateValue } from "./workflow/agent-hub-workflow-draft-reply-state";
 import { validateWorkflowV2Definition } from "../../shared/workflow-v2/validation";
 import { normalizeWorkflowV2TerminalNode } from "../../shared/workflow-v2/topology";
+import { migrateWorkflowV2ReviewGates } from "../../shared/workflow-v2/review-gates";
 import { WorkflowGenerationReviewCoordinator } from "./workflow/workflow-generation-review-service";
 import { parseWorkflowV2GenerationReviewSubmission } from "../workflows/v2/workflow-v2-generation-review";
+import { finalizeWorkflowV2ReviewGateSubmission, parseWorkflowV2ReviewGateSubmission } from "../workflows/v2/workflow-v2-reviewer";
 import type { WorkflowV2GenerationReviewResult } from "../../shared/workflow-v2/generation-review";
+import type { WorkflowV2ReviewerInput, WorkflowV2ReviewerResponse } from "../../shared/workflow-v2/review";
 import { applyWorkflowImportMappings, sanitizeWorkflowPortableDefinition, WorkflowPortableError } from "./workflow/workflow-portable-file";
 import { inspectWorkflowReadiness, portableWorkflowReadiness } from "./workflow/workflow-readiness";
 import {
@@ -389,6 +392,13 @@ export class AgentHub {
   private activeTeamRunId: string | undefined;
   private activeWorkflowDraftRequests = new Map<string, ActiveWorkflowDraftRequest>();
   private workflowReviewSubmissions = new Map<string, WorkflowV2GenerationReviewResult>();
+  private workflowReviewGateSubmissions = new Map<string, {
+    workflowId: string;
+    runId: string;
+    reviewerNodeId: string;
+    reviewerInput: WorkflowV2ReviewerInput;
+    response?: WorkflowV2ReviewerResponse;
+  }>();
   private workflowDraftSessionBindings = new Map<string, string>();
   private scheduledWorkflowSchedules = new Map<string, ScheduledWorkflowSchedule>();
   private scheduledWorkflowRuns = new Map<string, ScheduledWorkflowRun>();
@@ -448,7 +458,7 @@ export class AgentHub {
         channelById: (channelId) => this.channelById(channelId),
         workflowMcpDiscoveryPath: () => this.workflowMcpDiscoveryPath,
         workflowMcpManagedToken: () => this.workflowMcpManagedToken,
-        mcpServersForAgent: (configuredAgentId) => this.boundMcpServersForAgent(configuredAgentId),
+        mcpServersForAgent: (configuredAgentId, allowedMcpTools) => this.boundMcpServersForAgent(configuredAgentId, allowedMcpTools),
         requestApproval: this.runtimeApprovals.request,
       });
     this.runtimeRouter = new RuntimeRouter(this.runtimeDrivers);
@@ -546,6 +556,21 @@ export class AgentHub {
       runTask: (input, approvalPolicy) => this.runTask(input, approvalPolicy),
       stopTask: (taskId) => this.stopTask(taskId),
       deleteTask: (taskId, options) => this.deleteTask(taskId, options),
+      beginWorkflowReviewGate: (input) => {
+        this.workflowReviewGateSubmissions.set(input.executionId, {
+          workflowId: input.workflowId,
+          runId: input.runId,
+          reviewerNodeId: input.reviewerNodeId,
+          reviewerInput: structuredClone(input.reviewerInput),
+        });
+      },
+      takeWorkflowReviewGateSubmission: (executionId) => {
+        const response = this.workflowReviewGateSubmissions.get(executionId)?.response;
+        return response ? structuredClone(response) : undefined;
+      },
+      clearWorkflowReviewGate: (executionId) => {
+        this.workflowReviewGateSubmissions.delete(executionId);
+      },
       executeWorkflowV2Script: (input) => executeWorkflowV2Script(input),
       executeWorkflowV2BrokeredScript: (input) => {
         if (!this.storagePath) throw new Error("Workflow brokered external execution requires durable storage.");
@@ -893,14 +918,24 @@ export class AgentHub {
       }));
   }
 
-  private boundMcpServersForAgent(configuredAgentId: string): BoundMcpServer[] {
-    const bindings = this.configuredAgents.get(configuredAgentId)?.mcpBindings ?? [];
+  private boundMcpServersForAgent(configuredAgentId: string, allowedMcpTools?: readonly string[]): BoundMcpServer[] {
+    const configuredAgent = this.configuredAgents.get(configuredAgentId);
+    const bindings = configuredAgent?.mcpBindings ?? [];
+    if (allowedMcpTools !== undefined && configuredAgent?.runtimeAgentId !== "codex" && configuredAgent?.runtimeAgentId !== "claude") return [];
     const servers = new Map(
       this.mcpServers.filter((server) => server.enabled && (server.hubBindable ?? true)).map((server) => [server.id, server]),
     );
+    const taskAllowlist = allowedMcpTools === undefined ? undefined : new Set(allowedMcpTools);
     return bindings.flatMap((binding) => {
       const server = servers.get(binding.serverId);
-      return server ? [{ server, toolAllowlist: [...binding.toolAllowlist] }] : [];
+      if (!server) return [];
+      if (!taskAllowlist) return [{ server, toolAllowlist: [...binding.toolAllowlist] }];
+      const bindingTools = binding.toolAllowlist.length > 0
+        ? binding.toolAllowlist
+        : server.tools.map((tool) => tool.name);
+      const readOnlyTools = new Set(server.tools.filter((tool) => tool.readOnly === true).map((tool) => tool.name));
+      const toolAllowlist = bindingTools.filter((tool) => taskAllowlist.has(tool) && readOnlyTools.has(tool));
+      return toolAllowlist.length > 0 ? [{ server, toolAllowlist }] : [];
     });
   }
   private configuredAgentIdForRuntime(runtimeAgentId: AgentId): string {
@@ -1347,7 +1382,10 @@ export class AgentHub {
     if (input.configuredAgentId !== undefined && !configuredAgentId) {
       return { ok: false, error: `Configured Agent ${input.configuredAgentId} was not found.` };
     }
-    const candidate = structuredClone(input.definition);
+    const candidate = migrateWorkflowV2ReviewGates(
+      structuredClone(input.definition),
+      input.reviewerConfiguredAgentId ?? current.reviewerConfiguredAgentId,
+    );
     const normalized = normalizeWorkflowV2TerminalNode({ ...candidate, workflowId, objective: input.objective.trim() || input.definition.objective });
     if (normalized.definition.nodes.some((node) => node.execModel === "llm") && !configuredAgentId) {
       return { ok: false, error: "Configure at least one interactive Agent before creating LLM workflow nodes." };
@@ -2241,12 +2279,13 @@ export class AgentHub {
     return resolved;
   }
 
-  async runTask(input: RunTaskRequest, approvalPolicy?: { allowedFileWriteRoot: string; workspaceOnly?: boolean }): Promise<AppSnapshot> {
+  async runTask(input: RunTaskRequest, approvalPolicy?: { allowedFileWriteRoot: string; workspaceOnly?: boolean; readOnly?: boolean }): Promise<AppSnapshot> {
     const task = this.createTaskState(input);
     dispatchTaskPromptExecutionValue({
       task,
       registerTask: (nextTask) => {
-        if (approvalPolicy?.workspaceOnly) this.runtimeApprovals.restrictToFileWritesWithin(nextTask.id, approvalPolicy.allowedFileWriteRoot);
+        if (approvalPolicy?.readOnly) this.runtimeApprovals.restrictToReadOnly(nextTask.id);
+        else if (approvalPolicy?.workspaceOnly) this.runtimeApprovals.restrictToFileWritesWithin(nextTask.id, approvalPolicy.allowedFileWriteRoot);
         else if (approvalPolicy) this.runtimeApprovals.allowFileWritesWithin(nextTask.id, approvalPolicy.allowedFileWriteRoot);
         this.tasks.set(nextTask.id, nextTask);
         this.activeTaskId = nextTask.id;
@@ -2711,9 +2750,11 @@ export class AgentHub {
     task.contextDocument = input.contextDocument?.trim() || undefined;
     task.runtimeConversation = this.cloneConversationForPolicy(task.continuationPolicy, input.runtimeConversation);
     task.planningWorkflowId = input.planningWorkflowId;
+    task.workflowReviewRevision = input.workflowReviewRevision;
     task.workflowRunId = input.workflowRunId;
     task.workflowNodeId = input.workflowNodeId;
     task.workflowNodeExecutionId = input.workflowNodeExecutionId;
+    task.allowedMcpTools = input.allowedMcpTools ? [...input.allowedMcpTools] : undefined;
     return task;
   }
 
@@ -2902,6 +2943,30 @@ export class AgentHub {
 
   private normalizeWorkflowConfiguredAgentId(configuredAgentId: string | undefined): string {
     return this.configuredAgentById(configuredAgentId)?.id ?? "";
+  }
+
+  submitWorkflowReviewGate(input: { workflowId: string; runId: string; executionId: string; value: unknown }): { ok: boolean; accepted?: true; error?: string } {
+    const context = this.workflowReviewGateSubmissions.get(input.executionId);
+    if (!context || context.workflowId !== input.workflowId || context.runId !== input.runId) {
+      return { ok: false, error: "Workflow Review Gate submission does not match an active bound review execution." };
+    }
+    try {
+      const submission = parseWorkflowV2ReviewGateSubmission(input.value, context.reviewerInput);
+      const response = finalizeWorkflowV2ReviewGateSubmission({
+        reviewerNodeId: context.reviewerNodeId,
+        input: context.reviewerInput,
+        submission,
+      });
+      if (context.response) {
+        return isDeepStrictEqual(context.response, response)
+          ? { ok: true, accepted: true }
+          : { ok: false, error: "Workflow Review Gate already received a different result for this execution." };
+      }
+      context.response = response;
+      return { ok: true, accepted: true };
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : String(error) };
+    }
   }
 
   private defaultWorkflowManagerConfiguredAgentId(): string {

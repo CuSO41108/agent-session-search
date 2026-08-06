@@ -1,4 +1,5 @@
-import type { WorkflowV2LLMNode, WorkflowV2Node, WorkflowV2ScriptNode } from "../../../shared/workflow-v2/definition";
+import type { WorkflowV2LLMNode, WorkflowV2Node, WorkflowV2ReviewGate, WorkflowV2ScriptNode } from "../../../shared/workflow-v2/definition";
+import { workflowV2ReviewGateForNode } from "../../../shared/workflow-v2/review-gates";
 import {
   cloneWorkflowV2WorkerOutput,
   type WorkflowV2WorkerOutput,
@@ -57,7 +58,10 @@ export interface ExecuteWorkflowV2PlanInput {
     planNode: WorkflowV2PlanNode;
     output: WorkflowV2WorkerOutput;
   }) => boolean;
-  reviewNodeOutput?: (input: WorkflowV2ReviewerInput) => Promise<WorkflowV2ReviewerResponse>;
+  reviewNodeOutput?: (input: WorkflowV2ReviewerInput, context?: {
+    initialInfrastructureAttempt: number;
+    onInfrastructureAttempt: (attempt: number) => Promise<void>;
+  }) => Promise<WorkflowV2ReviewerResponse>;
   forceIndependentReviewNodeIds?: ReadonlySet<string>;
   runNodeHooks?: (input: {
     lifecycle: WorkflowV2HookLifecycle;
@@ -101,6 +105,17 @@ export async function executeWorkflowV2Plan(input: ExecuteWorkflowV2PlanInput): 
     ? input.initialCheckpoint.workerOutputs.map(cloneWorkflowV2WorkerOutput)
     : [];
   const workerOutputsByNodeId = new Map(workerOutputs.map((output) => [output.nodeId, output]));
+  const upsertWorkerOutput = (output: WorkflowV2WorkerOutput): void => {
+    const index = workerOutputs.findIndex((candidate) => candidate.nodeId === output.nodeId);
+    if (index >= 0) workerOutputs[index] = cloneWorkflowV2WorkerOutput(output);
+    else workerOutputs.push(cloneWorkflowV2WorkerOutput(output));
+    workerOutputsByNodeId.set(output.nodeId, cloneWorkflowV2WorkerOutput(output));
+  };
+  const removeWorkerOutput = (nodeId: string): void => {
+    const index = workerOutputs.findIndex((candidate) => candidate.nodeId === nodeId);
+    if (index >= 0) workerOutputs.splice(index, 1);
+    workerOutputsByNodeId.delete(nodeId);
+  };
   const reviewFeedbackByNodeId = new Map<string, string>();
   const now = input.now ?? Date.now;
   let runState = input.initialCheckpoint
@@ -109,6 +124,13 @@ export async function executeWorkflowV2Plan(input: ExecuteWorkflowV2PlanInput): 
         definition: input.plan.definition,
         ...(input.maxParallelNodes !== undefined ? { maxParallelNodes: input.maxParallelNodes } : {}),
       });
+  const resumedReviewCandidateNodeIds = new Set<string>();
+  for (const nodeId of runState.nodeOrder) {
+    const nodeState = runState.nodes[nodeId];
+    if (nodeState?.status !== "awaiting_review" || !workerOutputsByNodeId.has(nodeId)) continue;
+    resumedReviewCandidateNodeIds.add(nodeId);
+    runState = { ...runState, nodes: { ...runState.nodes, [nodeId]: { ...nodeState, status: "ready" } } };
+  }
   const checkpoint = async (): Promise<void> => {
     if (!input.onRunCheckpoint) return;
     await input.onRunCheckpoint({
@@ -177,6 +199,11 @@ export async function executeWorkflowV2Plan(input: ExecuteWorkflowV2PlanInput): 
     });
 
     for (const { nodeId } of batch) {
+      if (resumedReviewCandidateNodeIds.has(nodeId)) {
+        const nodeState = runState.nodes[nodeId]!;
+        runState = { ...runState, nodes: { ...runState.nodes, [nodeId]: { ...nodeState, status: "running" } } };
+        continue;
+      }
       runState = transitionWorkflowV2NodeState(runState, {
         nodeId,
         status: "running",
@@ -189,6 +216,7 @@ export async function executeWorkflowV2Plan(input: ExecuteWorkflowV2PlanInput): 
     const runningNodeIds = new Set(batch.map((item) => item.nodeId));
     let cancellationStarted = false;
     const settledBatch = await Promise.allSettled(batch.map(async ({ nodeId, node, planNode, upstreamOutputs }) => {
+      if (resumedReviewCandidateNodeIds.has(nodeId)) return cloneWorkflowV2WorkerOutput(workerOutputsByNodeId.get(nodeId)!);
       try {
         return await executeWorkflowV2Node({
           node,
@@ -370,8 +398,11 @@ export async function executeWorkflowV2Plan(input: ExecuteWorkflowV2PlanInput): 
           continue;
         }
 
-        if (requiresSemanticReview(input.plan.definition.reviewEnabled === true, node, input.forceIndependentReviewNodeIds?.has(nodeId) === true)) {
+        const reviewGate = workflowV2ReviewGateForNode(input.plan.definition, nodeId);
+        if (requiresSemanticReview(reviewGate, input.plan.definition.reviewEnabled === true, node, input.forceIndependentReviewNodeIds?.has(nodeId) === true)) {
+          upsertWorkerOutput(authoritativeWorkerOutput);
           runState = transitionWorkflowV2NodeState(runState, { nodeId, status: "awaiting_review", now: now() });
+          if (input.onRunCheckpoint) await checkpoint();
           if (!input.reviewNodeOutput) {
             const intervention = createIntervention(
               nodeId,
@@ -398,9 +429,16 @@ export async function executeWorkflowV2Plan(input: ExecuteWorkflowV2PlanInput): 
             output: authoritativeWorkerOutput,
             upstreamOutputs,
             reviewAttempt,
+            ...(reviewGate ? { gate: reviewGate } : {}),
           });
           try {
-            reviewerResponse = await input.reviewNodeOutput(reviewerInput);
+            reviewerResponse = await input.reviewNodeOutput(reviewerInput, {
+              initialInfrastructureAttempt: runState.nodes[nodeId]?.reviewInfrastructureAttempt ?? 0,
+              onInfrastructureAttempt: async (infrastructureAttempt) => {
+                runState = transitionWorkflowV2NodeState(runState, { nodeId, status: "awaiting_review", now: now(), reviewInfrastructureAttempt: infrastructureAttempt });
+                if (input.onRunCheckpoint) await checkpoint();
+              },
+            });
           } catch (error) {
             if (
               error instanceof WorkflowV2SupervisionSignal
@@ -441,9 +479,10 @@ export async function executeWorkflowV2Plan(input: ExecuteWorkflowV2PlanInput): 
             input.onNodeStateTransition?.({ nodeId, status: "paused", intervention });
             continue;
           }
-          assertIndependentWorkflowV2Reviewer(nodeId, reviewerResponse);
-          const resolution = resolveWorkflowV2ReviewVerdict(reviewerResponse.verdict, reviewRetryPolicyFor(node, reviewAttempt));
+          assertIndependentWorkflowV2Reviewer(nodeId, reviewerResponse, reviewGate !== undefined);
+          const resolution = resolveWorkflowV2ReviewVerdict(reviewerResponse.verdict, reviewRetryPolicyFor(node, reviewAttempt, reviewGate));
           const reviewRecord: WorkflowV2ReviewAttemptRecord = {
+            ...(reviewGate ? { gateId: reviewGate.id, reviewerConfiguredAgentId: reviewGate.configuredAgentId } : {}),
             reviewAttempt,
             candidate: cloneWorkflowV2WorkerOutput(authoritativeWorkerOutput),
             verdict: structuredClone(resolution.verdict),
@@ -462,6 +501,8 @@ export async function executeWorkflowV2Plan(input: ExecuteWorkflowV2PlanInput): 
           input.onNodeStateTransition?.({ nodeId, status: "reviewed", record: structuredClone(reviewRecord) });
 
           if (resolution.action === "retry") {
+            removeWorkerOutput(nodeId);
+            resumedReviewCandidateNodeIds.delete(nodeId);
             reviewFeedbackByNodeId.set(nodeId, [resolution.reason, ...(resolution.verdict.requiredFixes ?? [])].filter(Boolean).join("\n"));
             runState = transitionWorkflowV2NodeState(runState, {
               nodeId,
@@ -505,8 +546,8 @@ export async function executeWorkflowV2Plan(input: ExecuteWorkflowV2PlanInput): 
           node,
           output: cloneWorkflowV2WorkerOutput(authoritativeWorkerOutput),
         });
-        workerOutputs.push(authoritativeWorkerOutput);
-        workerOutputsByNodeId.set(nodeId, authoritativeWorkerOutput);
+        upsertWorkerOutput(authoritativeWorkerOutput);
+        resumedReviewCandidateNodeIds.delete(nodeId);
         runState = transitionWorkflowV2NodeState(runState, { nodeId, status: "completed", now: now() });
         input.onNodeStateTransition?.({ nodeId, status: "completed", output: cloneWorkflowV2WorkerOutput(authoritativeWorkerOutput) });
       } catch (error) {
@@ -543,8 +584,8 @@ export async function executeWorkflowV2Plan(input: ExecuteWorkflowV2PlanInput): 
 
       function recordSkippedOutput(reason: string): void {
         const skippedOutput = createSkippedOutput(nodeId, reason);
-        workerOutputs.push(skippedOutput);
-        workerOutputsByNodeId.set(nodeId, skippedOutput);
+        upsertWorkerOutput(skippedOutput);
+        resumedReviewCandidateNodeIds.delete(nodeId);
         runState = transitionWorkflowV2NodeState(runState, { nodeId, status: "skipped", now: now() });
         input.onNodeStateTransition?.({ nodeId, status: "skipped", output: cloneWorkflowV2WorkerOutput(skippedOutput) });
       }
@@ -584,8 +625,8 @@ function assertWorkflowV2InitialCheckpoint(
     if (outputNodeIds.has(output.nodeId)) throw new Error(`Workflow V2 initial checkpoint duplicates output ${output.nodeId}.`);
     outputNodeIds.add(output.nodeId);
     const nodeState = runState.nodes[output.nodeId];
-    if (!nodeState || (nodeState.status !== "completed" && nodeState.status !== "completed_with_override" && nodeState.status !== "skipped")) {
-      throw new Error(`Workflow V2 initial checkpoint output ${output.nodeId} is neither completed nor skipped.`);
+    if (!nodeState || (nodeState.status !== "completed" && nodeState.status !== "completed_with_override" && nodeState.status !== "skipped" && nodeState.status !== "awaiting_review" && nodeState.status !== "paused")) {
+      throw new Error(`Workflow V2 initial checkpoint output ${output.nodeId} is neither completed, awaiting review, paused, nor skipped.`);
     }
     cloneWorkflowV2WorkerOutput(output);
   }
@@ -732,8 +773,9 @@ function isNodeOutputSuccessful(
     .every((field) => Object.hasOwn(output.outputs, field.key));
 }
 
-function requiresSemanticReview(reviewEnabled: boolean, node: WorkflowV2Node, forced = false): boolean {
-  return reviewEnabled
+function requiresSemanticReview(reviewGate: WorkflowV2ReviewGate | undefined, legacyReviewEnabled: boolean, node: WorkflowV2Node, forced = false): boolean {
+  if (reviewGate) return node.role !== "reviewer";
+  return legacyReviewEnabled
     && node.role !== "reviewer"
     && node.reviewLevel !== undefined
     && node.reviewLevel !== "none"
@@ -744,10 +786,10 @@ function exhaustedPolicyFor(node: WorkflowV2Node): "fail" | "skip" | "ask_human"
   return node.execModel === "llm" ? node.onExhausted ?? "fail" : node.onError === "retry" ? "fail" : node.onError ?? "fail";
 }
 
-function reviewRetryPolicyFor(node: WorkflowV2Node, reviewAttempt: number): WorkflowV2ReviewRetryPolicy {
+function reviewRetryPolicyFor(node: WorkflowV2Node, reviewAttempt: number, reviewGate?: WorkflowV2ReviewGate): WorkflowV2ReviewRetryPolicy {
   return {
     reviewAttempt,
-    maxReviewRetries: node.reviewMaxRetries ?? 2,
+    maxReviewRetries: reviewGate?.maxQualityRetries ?? node.reviewMaxRetries ?? 2,
   };
 }
 
