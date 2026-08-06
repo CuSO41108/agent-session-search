@@ -949,7 +949,6 @@ export class SessionsStore {
              WHERE session_key = ?`,
           )
           .run(targetKey, targetKey, targetKey, targetKey, targetKey, targetKey, targetKey);
-        this.db.prepare("DELETE FROM sessions WHERE session_key = ?").run(legacyKey);
       }
 
       // Migration ids are globally unique while source_session_key is only indexed, so every
@@ -957,6 +956,19 @@ export class SessionsStore {
       this.db
         .prepare("UPDATE session_migrations SET source_session_key = ? WHERE source_session_key = ?")
         .run(targetKey, legacyKey);
+      this.db
+        .prepare(
+          `UPDATE session_sync_bindings
+           SET local_session_key = ?
+           WHERE local_session_key = ?
+             AND NOT EXISTS (
+               SELECT 1 FROM session_sync_bindings AS target_binding
+               WHERE target_binding.local_session_key = ?
+             )`,
+        )
+        .run(targetKey, legacyKey, targetKey);
+      this.db.prepare("DELETE FROM session_sync_bindings WHERE local_session_key = ?").run(legacyKey);
+      this.db.prepare("DELETE FROM sessions WHERE session_key = ?").run(legacyKey);
       this.db.prepare("DELETE FROM session_fts WHERE session_key IN (?, ?)").run(legacyKey, targetKey);
       this.refreshFtsForSession(targetKey);
       migrated = true;
