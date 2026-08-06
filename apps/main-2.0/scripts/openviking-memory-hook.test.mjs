@@ -772,3 +772,52 @@ test("workspace containment is platform aware and chooses the deepest root", () 
     workspaces: [{ id: "empty", rootPath: "   " }],
   }, process.cwd(), "darwin"), null);
 });
+
+test("lifecycle triggers still commit a fully appended session behind a running task", async (context) => {
+  const testHome = fs.mkdtempSync(path.join(os.tmpdir(), "agent-recall-openviking-lifecycle-"));
+  context.after(() => fs.rmSync(testHome, { recursive: true, force: true }));
+  const rootPath = path.join(testHome, "project");
+  fs.mkdirSync(rootPath, { recursive: true });
+  const manifest = managedManifest(rootPath);
+  const baseOptions = {
+    agent: "codex",
+    manifest,
+    stateDir: path.join(testHome, "state"),
+    realpathSync: (value) => path.resolve(value),
+  };
+  let commitCount = 0;
+  const lifecycleFetch = async (url) => {
+    if (String(url).endsWith("/commit")) {
+      commitCount += 1;
+      return Response.json({ status: "ok", result: { task_id: `task-${commitCount}` } });
+    }
+    return Response.json({ status: "ok", result: {} });
+  };
+
+  await handleHook({ cwd: rootPath, session_id: "session-1" }, {
+    ...baseOptions,
+    event: "PreCompact",
+    fetchImpl: lifecycleFetch,
+  });
+  // A manual/threshold commit with no pending turns behind a running task is skipped.
+  await handleHook({ cwd: rootPath, session_id: "session-1" }, {
+    ...baseOptions,
+    event: "Stop",
+    fetchImpl: lifecycleFetch,
+  });
+  assert.equal(commitCount, 1);
+
+  await handleHook({ cwd: rootPath, session_id: "session-1" }, {
+    ...baseOptions,
+    event: "SessionEnd",
+    fetchImpl: lifecycleFetch,
+  });
+  assert.equal(commitCount, 2);
+
+  await handleHook({ cwd: rootPath, session_id: "session-1" }, {
+    ...baseOptions,
+    event: "SessionEnd",
+    fetchImpl: lifecycleFetch,
+  });
+  assert.equal(commitCount, 3);
+});

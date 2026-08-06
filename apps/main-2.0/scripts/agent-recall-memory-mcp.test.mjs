@@ -170,6 +170,38 @@ test("memory_search filters invalid memories and returns user-locked content fir
   assert.equal(event.details.source, "mcp");
 });
 
+test("memory_search accepts the runtime notes and context type filters", async (context) => {
+  const db = await memoryDatabase();
+  context.after(() => db.close());
+  await db.query(
+    `INSERT INTO agent_recall.openviking_memories
+      (workspace_id, uri, memory_type, authority, lifecycle, locked,
+       evidence_status, source, created_at, updated_at)
+     VALUES
+      ('workspace-1', 'viking://user/memories/manual/setup.md', 'notes', 'user', 'active', false,
+       'verified', 'manual', now(), now()),
+      ('workspace-1', 'viking://user/memories/context/stack.md', 'context', 'model', 'active', false,
+       'verified', 'openviking', now(), now())`,
+  );
+  const result = await memorySearch(db, { query: "stack", scope: "workspace-1", types: ["context"] }, {
+    manifest: manifest(),
+    fetchImpl: async () => Response.json({
+      status: "ok",
+      result: {
+        memories: [
+          { uri: "viking://user/memories/manual/setup.md", abstract: "setup", score: 0.9 },
+          { uri: "viking://user/memories/context/stack.md", abstract: "stack", score: 0.8 },
+        ],
+      },
+    }),
+  });
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.results.map((item) => item.uri), [
+    "viking://user/memories/context/stack.md",
+  ]);
+});
+
 test("memory_read returns the locked user version without a manifest or OpenViking request", async (context) => {
   const db = await memoryDatabase();
   context.after(() => db.close());

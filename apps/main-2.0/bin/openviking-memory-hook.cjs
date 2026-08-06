@@ -11,7 +11,7 @@ const path = require("node:path");
 const MAX_STDIN_BYTES = 1024 * 1024;
 const MAX_PROMPT_CHARS = 2_000;
 const MAX_TURN_CHARS = 12_000;
-const MAX_RECENT_CONTEXT_CHARS = 3_000;
+const MAX_RECENT_CONTEXT_CHARS = 6_000;
 const MAX_CORE_MEMORY_CHARS = 4_000;
 const REQUEST_TIMEOUT_MS = 2_000;
 const DEFAULT_COMMIT_TOKEN_THRESHOLD = 7_000;
@@ -577,7 +577,10 @@ async function prepareCommitRequest(statePath, workspace, sessionId, options, st
       || (Array.isArray(previous.pendingEvidence) && previous.pendingEvidence.length > 0);
     const hasRunningTask = Array.isArray(previous.commitTasks)
       && previous.commitTasks.some((task) => typeof task?.taskId === "string" && task.taskId);
-    if (!hasPending && hasRunningTask) return null;
+    const lifecycleTrigger = options.trigger === "compact"
+      || options.trigger === "session-end"
+      || options.trigger === "session-lifecycle";
+    if (!hasPending && hasRunningTask && !lifecycleTrigger) return null;
 
     const request = commitRequestFromState(previous, options, started);
     writeStateAtomic(statePath, {

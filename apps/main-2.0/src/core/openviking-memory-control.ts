@@ -158,6 +158,7 @@ export function inferOpenVikingMemoryType(uri: string): string {
     .split("/")[0]
     ?.replace(/\.md$/u, "");
   if (segment === "identity" || segment === "soul") return "profile";
+  if (segment === "manual") return "notes";
   if (segment === "context") return "context";
   return segment || "other";
 }

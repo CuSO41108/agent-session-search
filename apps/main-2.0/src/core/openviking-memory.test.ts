@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { inferOpenVikingMemoryType } from "./openviking-memory-control";
 import {
   canonicalOpenVikingMemoryUri,
   normalizeWorkspacePath,
@@ -68,5 +69,15 @@ describe("OpenViking workspace identity", () => {
       ...snapshot,
       model: { ...snapshot.model, downloading: true },
     })).toBe(true);
+  });
+
+  it("infers memory types that match the runtime template vocabulary", () => {
+    expect(inferOpenVikingMemoryType("viking://user/memories/preferences/editor.md")).toBe("preferences");
+    expect(inferOpenVikingMemoryType("viking://user/memories/identity.md")).toBe("profile");
+    expect(inferOpenVikingMemoryType("viking://user/memories/manual/todo.md")).toBe("notes");
+    expect(inferOpenVikingMemoryType("viking://user/memories/context/project.md")).toBe("context");
+    expect(inferOpenVikingMemoryType("viking://user/memories/decisions/db.md")).toBe("decisions");
+    expect(inferOpenVikingMemoryType("viking://user/memories/open_loops/follow-up.md")).toBe("open_loops");
+    expect(inferOpenVikingMemoryType("viking://user/memories/unknown-kind/item.md")).toBe("unknown-kind");
   });
 });

@@ -995,6 +995,8 @@ function canonicalMemoryUri(value, userId) {
 function memoryTypeFromUri(uri) {
   const segment = uri.replace(/^viking:\/\/user\/memories\//u, "").split("/")[0]?.replace(/\.md$/iu, "");
   if (segment === "identity" || segment === "soul") return "profile";
+  if (segment === "manual") return "notes";
+  if (segment === "context") return "context";
   return segment || "other";
 }
 
