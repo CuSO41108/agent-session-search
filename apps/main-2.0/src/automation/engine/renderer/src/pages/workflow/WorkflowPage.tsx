@@ -476,7 +476,7 @@ export function WorkflowPage({ controller: source }: { controller: WorkflowContr
         canApplyReview={Boolean(generationReview?.result && !running && onApplyReviewToManager)}
         {...(reviewDisabledReason ? { reviewDisabledReason } : {})}
         onReview={() => void onReviewWorkflow()}
-        onApplyReview={() => void onApplyReviewToManager?.()}
+        onApplyReview={() => onApplyReviewToManager?.()}
         onInterrupt={() => void source.onInterruptWorkflowReview?.()}
         onClose={() => setReviewDrawerOpen(false)}
       /> : null}

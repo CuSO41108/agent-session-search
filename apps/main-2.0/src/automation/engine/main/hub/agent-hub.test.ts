@@ -3526,12 +3526,10 @@ fs.writeFileSync(${JSON.stringify(argsPath)}, process.argv.slice(2).join("\\n") 
       available: true,
     });
     const before = hub.snapshot();
-    const created = hub.createWorkflowDraft({
-      configuredAgentId: TEST_CODEX_AGENT_ID,
-      reviewerConfiguredAgentId: TEST_CODEX_AGENT_ID,
-    });
+    const created = hub.createWorkflowDraft({ reviewerConfiguredAgentId: TEST_CODEX_AGENT_ID });
     const workflowId = created.workflowDraft?.workflowId;
     expect(workflowId).toBeTruthy();
+    expect(created.workflowDraft?.configuredAgentId).toBe(TEST_CODEX_AGENT_ID);
 
     const first = await hub.sendWorkflowDraftReply({
       workflowId: workflowId!,
@@ -3578,6 +3576,12 @@ fs.writeFileSync(${JSON.stringify(argsPath)}, process.argv.slice(2).join("\\n") 
     expect(calls.filter((call) => call.method === "thread/start")).toHaveLength(1);
     expect(calls.filter((call) => call.method === "thread/resume")).toHaveLength(0);
     expect(calls.filter((call) => call.method === "turn/start")).toHaveLength(2);
+    expect(calls.filter((call) => call.method === "turn/start").every((call) => {
+      const prompt = call.params.input[0].text as string;
+      return prompt.includes("Configured Agent runtime catalog")
+        && prompt.includes(`\"configuredAgentId\": \"${TEST_CODEX_AGENT_ID}\"`)
+        && prompt.includes("Assign an explicit configuredAgentId");
+    })).toBe(true);
     expect((calls.find((call) => call.method === "process/argv")?.params.args as string[]).join("\n"))
       .not.toContain("mcp_servers.agent_recall");
   });
@@ -3614,9 +3618,12 @@ fs.writeFileSync(${JSON.stringify(argsPath)}, process.argv.slice(2).join("\\n") 
         updatedAt: 1,
       },
     });
+    const reviewedWithoutManager = hub.snapshot().workflowDraft!;
+    hub.updateWorkflowDraft({ ...reviewedWithoutManager, configuredAgentId: "", modelId: "" });
     let managerPrompt = "";
     vi.spyOn(hub as any, "askWorkflowDraftAgent").mockImplementation(async (...args: unknown[]) => {
-      const request = args[0] as { prompt: string };
+      const request = args[0] as { prompt: string; configuredAgentId: string };
+      expect(request.configuredAgentId).toBeTruthy();
       const onEvent = args[1] as ((event: { requestId: string; type: "delta" | "tool_call"; content: string; name?: string }) => void) | undefined;
       managerPrompt = request.prompt;
       const requestId = (args[0] as { requestId: string }).requestId;
@@ -3633,6 +3640,7 @@ fs.writeFileSync(${JSON.stringify(argsPath)}, process.argv.slice(2).join("\\n") 
     const next = await hub.applyWorkflowReviewToManager({ workflowId, reviewedRevision: reviewed.revision });
 
     expect(next.workflowStore.workflows.filter((workflow) => workflow.workflowId === workflowId)).toHaveLength(1);
+    expect(next.workflowDraft?.configuredAgentId).toBeTruthy();
     expect(next.workflowDraft?.definition.nodes[0]?.outputFields).toContainEqual({ key: "evidence", required: true });
     expect(next.workflowDraft?.generationReview).toBeUndefined();
     expect(next.workflowDraft?.messages.at(-2)).toMatchObject({

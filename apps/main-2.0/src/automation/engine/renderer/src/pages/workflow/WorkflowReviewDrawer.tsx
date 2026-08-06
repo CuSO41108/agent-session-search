@@ -1,4 +1,4 @@
-import { useEffect, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { AlertTriangle, Bot, CheckCircle2, CircleStop, CircleX, RefreshCw, ShieldAlert, Sparkles, WandSparkles, X } from "lucide-react";
 import type { WorkflowV2GenerationReviewState } from "../../../../shared/workflow-v2/generation-review";
 import { WorkflowReviewTrace } from "./WorkflowReviewTrace";
@@ -12,7 +12,7 @@ interface WorkflowReviewDrawerProps {
   canApplyReview: boolean;
   reviewDisabledReason?: string;
   onReview: () => void;
-  onApplyReview: () => void;
+  onApplyReview: () => void | Promise<void>;
   onInterrupt: () => void;
   onClose: () => void;
 }
@@ -26,6 +26,7 @@ const REVIEW_STATUS = {
 } as const;
 
 export function WorkflowReviewDrawer({ open, review, reviewerControls, canReview, canInterrupt, canApplyReview, reviewDisabledReason, onReview, onApplyReview, onInterrupt, onClose }: WorkflowReviewDrawerProps) {
+  const [applyState, setApplyState] = useState<"idle" | "sending" | "sent">("idle");
   useEffect(() => {
     if (!open) return;
     const closeOnEscape = (event: KeyboardEvent) => {
@@ -34,6 +35,23 @@ export function WorkflowReviewDrawer({ open, review, reviewerControls, canReview
     window.addEventListener("keydown", closeOnEscape);
     return () => window.removeEventListener("keydown", closeOnEscape);
   }, [onClose, open]);
+
+  useEffect(() => {
+    setApplyState("idle");
+  }, [review?.reviewedRevision, review?.status]);
+
+  const applyReview = async () => {
+    if (!canApplyReview || applyState !== "idle") return;
+    setApplyState("sending");
+    try {
+      const pending = onApplyReview();
+      setApplyState("sent");
+      await pending;
+      setApplyState("idle");
+    } catch {
+      setApplyState("idle");
+    }
+  };
 
   if (!open) return null;
 
@@ -129,10 +147,17 @@ export function WorkflowReviewDrawer({ open, review, reviewerControls, canReview
       </div>
 
       <footer className="workflow-review-drawer-footer">
-        <span>{isReviewing ? "You can close this panel; review continues in the background." : reviewDisabledReason ?? "A new review replaces the result for this revision."}</span>
+        <span role={applyState === "sent" ? "status" : undefined}>{isReviewing
+          ? "You can close this panel; review continues in the background."
+          : applyState === "sent"
+            ? "Review result sent. Manager Agent is revising this Workflow."
+            : reviewDisabledReason ?? "A new review replaces the result for this revision."}</span>
         {isReviewing ? <button type="button" className="control-btn danger" disabled={!canInterrupt} onClick={onInterrupt}><CircleStop size={14} /><span>Interrupt review</span></button>
           : <div className="workflow-review-drawer-actions">
-            {result ? <button type="button" className="control-btn" disabled={!canApplyReview} onClick={onApplyReview}><WandSparkles size={14} /><span>Ask Manager to revise</span></button> : null}
+            {result ? <button type="button" className="control-btn" disabled={!canApplyReview || applyState !== "idle"} onClick={() => void applyReview()}>
+              {applyState === "sent" ? <CheckCircle2 size={14} /> : applyState === "sending" ? <RefreshCw className="is-spinning" size={14} /> : <WandSparkles size={14} />}
+              <span>{applyState === "sent" ? "Sent to Manager" : applyState === "sending" ? "Sending" : "Ask Manager to revise"}</span>
+            </button> : null}
             <button type="button" className="send-btn" disabled={!canReview} onClick={onReview}><RefreshCw size={14} /><span>{result ? "Review again" : "Start review"}</span></button>
           </div>}
       </footer>

@@ -627,6 +627,7 @@ export class AgentHub {
       maxWorkflowCount: MAX_WORKFLOW_COUNT,
       createWorkflowId: () => `wf_${randomUUID()}`,
       now: () => Date.now(),
+      defaultConfiguredAgentId: () => this.defaultWorkflowManagerConfiguredAgentId(),
       normalizeConfiguredAgentId: (configuredAgentId) => this.normalizeWorkflowConfiguredAgentId(configuredAgentId),
       normalizeModelId: (configuredAgentId, modelId) => this.normalizeModelIdForConfiguredAgent(configuredAgentId, modelId),
       cloneDraft: (draft) => this.cloneWorkflowDraft(draft),
@@ -1233,6 +1234,8 @@ export class AgentHub {
   }
 
   async sendWorkflowDraftReply(input: SendWorkflowDraftReplyRequest): Promise<AppSnapshot> {
+    const current = this.workflowStore.workflows.get(input.workflowId);
+    if (current) this.ensureWorkflowManagerRoute(current);
     await dispatchWorkflowDraftReplyValue({
       workflow: this.workflowStore.workflows.get(input.workflowId),
       reply: input.reply,
@@ -1263,10 +1266,11 @@ export class AgentHub {
   }
 
   async applyWorkflowReviewToManager(input: ApplyWorkflowReviewToManagerRequest): Promise<AppSnapshot> {
-    const workflow = this.workflowStore.workflows.get(input.workflowId);
-    const review = workflow?.generationReview;
-    if (!workflow || workflow.sourceType === "official" || workflow.topologyLocked || workflow.status === "running") return this.snapshot();
-    if (!review?.result || review.reviewedRevision !== input.reviewedRevision || workflow.revision !== input.reviewedRevision) return this.snapshot();
+    const current = this.workflowStore.workflows.get(input.workflowId);
+    const review = current?.generationReview;
+    if (!current || current.sourceType === "official" || current.topologyLocked || current.status === "running") return this.snapshot();
+    if (!review?.result || review.reviewedRevision !== input.reviewedRevision || current.revision !== input.reviewedRevision) return this.snapshot();
+    const workflow = this.ensureWorkflowManagerRoute(current);
     const reply = [
       "这是一条来自 Review Agent 的审查结果。请作为当前 Workflow 的 Manager Agent，根据该结果修改当前工作流。",
       "只修复审查中明确指出的问题，保留可行的节点结构。必须调用 workflow_create，用相同 workflowId 提交完整的新定义；不要创建其他 Workflow，不要只给建议，也不要修改工作区文件。",
@@ -1337,7 +1341,20 @@ export class AgentHub {
     if (!current) return { ok: false, workflowId, error: `Workflow ${workflowId} was not found.` };
     if (current.status === "running" || current.topologyLocked) return { ok: false, workflowId, revision: current.revision, error: current.status === "running" ? "Cannot modify workflow graph while it is running." : "Official workflow topology is locked." };
     if (!input.definition) return { ok: false, error: "Workflow V2 definition is required." };
-    const normalized = normalizeWorkflowV2TerminalNode({ ...structuredClone(input.definition), workflowId, objective: input.objective.trim() || input.definition.objective });
+    const configuredAgentId = input.configuredAgentId !== undefined
+      ? this.normalizeWorkflowConfiguredAgentId(input.configuredAgentId)
+      : this.normalizeWorkflowConfiguredAgentId(current.configuredAgentId) || this.defaultWorkflowManagerConfiguredAgentId();
+    if (input.configuredAgentId !== undefined && !configuredAgentId) {
+      return { ok: false, error: `Configured Agent ${input.configuredAgentId} was not found.` };
+    }
+    const candidate = structuredClone(input.definition);
+    const normalized = normalizeWorkflowV2TerminalNode({ ...candidate, workflowId, objective: input.objective.trim() || input.definition.objective });
+    if (normalized.definition.nodes.some((node) => node.execModel === "llm") && !configuredAgentId) {
+      return { ok: false, error: "Configure at least one interactive Agent before creating LLM workflow nodes." };
+    }
+    normalized.definition.nodes = normalized.definition.nodes.map((node) => node.execModel === "llm" && !node.configuredAgentId?.trim()
+      ? { ...node, configuredAgentId }
+      : node);
     const definition = versionWorkflowDefinitionValue(current.definition, normalized.definition).definition;
     if (definition.nodes.length > MAX_WORKFLOW_NODE_COUNT) {
       return { ok: false, error: `Workflow V2 definition exceeds ${MAX_WORKFLOW_NODE_COUNT} nodes.` };
@@ -1359,12 +1376,8 @@ export class AgentHub {
       current,
       request: { ...input, workflowId, definition, workflowV2Plan },
       definition,
-      configuredAgentId: input.configuredAgentId !== undefined
-        ? this.normalizeWorkflowConfiguredAgentId(input.configuredAgentId)
-        : current.configuredAgentId,
-      modelId: input.configuredAgentId !== undefined || input.modelId !== undefined
-        ? this.normalizeModelIdForConfiguredAgent(input.configuredAgentId ?? current.configuredAgentId, input.modelId ?? current.modelId)
-        : current.modelId,
+      configuredAgentId,
+      modelId: this.normalizeModelIdForConfiguredAgent(configuredAgentId, input.modelId ?? current.modelId),
       reviewerConfiguredAgentId: input.reviewerConfiguredAgentId !== undefined
         ? this.normalizeWorkflowConfiguredAgentId(input.reviewerConfiguredAgentId)
         : current.reviewerConfiguredAgentId,
@@ -2322,6 +2335,31 @@ export class AgentHub {
       );
     }
     const continuationPolicy = this.defaultContinuationPolicy(resolved.runtimeAgentId, "chat", executionMode);
+    const configuredAgentCatalog = this.listConfiguredAgents().map((agent) => {
+      const target = this.resolveConfiguredAgent(agent.id, agent.modelId);
+      return {
+        configuredAgentId: agent.id,
+        name: agent.name,
+        description: agent.description,
+        tags: agent.tags,
+        runtimeId: target?.runtimeAgentId ?? agent.runtimeAgentId,
+        modelId: target?.modelId ?? agent.modelId,
+        available: Boolean(target?.runtime?.available),
+        supportsInteractivePlanning: target
+          ? this.selectExecutionMode(target.runtimeAgentId, "chat", "interactive") === "interactive"
+          : false,
+        mcpBindings: (agent.mcpBindings ?? []).map((binding) => ({
+          serverId: binding.serverId,
+          toolAllowlist: binding.toolAllowlist,
+        })),
+      };
+    });
+    const prompt = [
+      input.prompt,
+      "Configured Agent runtime catalog (current AgentRecall configuration):",
+      "Assign an explicit configuredAgentId from this catalog to every LLM node. Choose by node responsibility, Agent description/tags, runtime/model, and MCP bindings. Prefer available=true. Do not invent IDs. An empty toolAllowlist means all tools from that MCP server are allowed. Script nodes must not receive configuredAgentId.",
+      JSON.stringify(configuredAgentCatalog, null, 2),
+    ].join("\n\n");
     const runtimeConversation = input.runtimeConversation?.runtimeId === resolved.runtimeAgentId
       ? this.cloneConversationForPolicy(continuationPolicy, input.runtimeConversation)
       : undefined;
@@ -2438,7 +2476,7 @@ export class AgentHub {
       void this.interactiveSessions.dispatch(sessionKey, context, async (session, lease) => {
         await session.ensureAttached();
         lease.syncAttachmentGeneration(session.snapshot().runtimeState.attachmentGeneration);
-        await session.sendPrompt(input.prompt);
+        await session.sendPrompt(prompt);
       }).catch(fail);
     });
   }
@@ -2864,6 +2902,32 @@ export class AgentHub {
 
   private normalizeWorkflowConfiguredAgentId(configuredAgentId: string | undefined): string {
     return this.configuredAgentById(configuredAgentId)?.id ?? "";
+  }
+
+  private defaultWorkflowManagerConfiguredAgentId(): string {
+    const candidates = this.listConfiguredAgents()
+      .map((agent) => this.resolveConfiguredAgent(agent.id, agent.modelId))
+      .filter((resolved): resolved is ResolvedConfiguredAgent => Boolean(
+        resolved
+        && this.selectExecutionMode(resolved.runtimeAgentId, "chat", "interactive") === "interactive",
+      ));
+    return candidates.find((resolved) => resolved.runtime?.available)?.agent.id
+      ?? candidates[0]?.agent.id
+      ?? "";
+  }
+
+  private ensureWorkflowManagerRoute(workflow: WorkflowDraftState): WorkflowDraftState {
+    if (this.configuredAgentById(workflow.configuredAgentId)) return workflow;
+    const configuredAgentId = this.defaultWorkflowManagerConfiguredAgentId();
+    if (!configuredAgentId) return workflow;
+    const next = this.cloneWorkflowDraft({
+      ...workflow,
+      configuredAgentId,
+      modelId: this.normalizeModelIdForConfiguredAgent(configuredAgentId, undefined),
+      updatedAt: Date.now(),
+    });
+    this.workflowStore.workflows.set(workflow.workflowId, next);
+    return next;
   }
 
   private channelById(channelId: string): AgentChannel | undefined {

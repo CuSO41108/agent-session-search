@@ -324,6 +324,47 @@ describe("AgentHub workflow materialization", () => {
     expect(hub.snapshot().workflowDraft?.workflowV2Plan).toBeUndefined();
   });
 
+  test("persists an explicit Manager Agent route on every generated LLM node", () => {
+    const hub = new AgentHub();
+    const draft = hub.createWorkflowDraft().workflowDraft!;
+    const result = hub.materializeWorkflowDraft(draft.workflowId, {
+      title: "Assigned answer",
+      objective: "Answer",
+      definition: {
+        workflowId: draft.workflowId,
+        graphVersion: 1,
+        objective: "Answer",
+        nodes: [
+          {
+            id: "answer-a",
+            kind: "answer",
+            title: "Answer A",
+            execModel: "llm",
+            executionMode: "one-shot",
+            prompt: "Answer part A.",
+            outputFields: [{ key: "answer", required: true }],
+          },
+          {
+            id: "answer-b",
+            kind: "answer",
+            title: "Answer B",
+            execModel: "llm",
+            executionMode: "one-shot",
+            prompt: "Answer part B.",
+            outputFields: [{ key: "answer", required: true }],
+          },
+        ],
+        edges: [],
+      },
+    });
+
+    expect(result.ok).toBe(true);
+    expect(draft.configuredAgentId).toBeTruthy();
+    const llmNodes = hub.snapshot().workflowDraft?.definition.nodes.filter((node) => node.execModel === "llm") ?? [];
+    expect(llmNodes).toHaveLength(3);
+    expect(llmNodes.every((node) => node.configuredAgentId === draft.configuredAgentId)).toBe(true);
+  });
+
   test("lets the planning agent revise a confirmed workflow in place", () => {
     const hub = new AgentHub();
     const workflowId = hub.createWorkflowDraft().workflowDraft!.workflowId;
