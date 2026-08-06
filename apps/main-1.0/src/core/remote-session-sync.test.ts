@@ -86,6 +86,7 @@ describe("remote session sync model", () => {
     expect(sql).toContain("'codewiz'");
     expect(sql).toContain("'cursor'");
     expect(sql).toContain("'hermes'");
+    expect(sql).toContain("'pi'");
     expect(sql).toContain(`${REMOTE_SESSION_TABLE}_source_agent_check`);
     expect(sql).toContain(`grant select, insert, update, delete on table public.${REMOTE_SESSION_TABLE} to anon`);
     expect(sql).toContain("grant select on table storage.buckets to anon");
@@ -240,6 +241,30 @@ describe("remote session sync model", () => {
       source_source: "hermes",
     });
     expect(parsePortableSession(portable).sourceAgent).toBe("hermes");
+  });
+
+  it("builds remote upload payloads for Pi sessions without enabling migration or resume", () => {
+    const piSession: SessionSearchResult = {
+      ...SESSION,
+      sessionKey: "pi:abc",
+      rawId: "abc",
+      source: "pi-cli",
+      filePath: "/home/.pi/agent/sessions/abc.jsonl",
+      projectPath: "/work/pi-project",
+      displayTitle: "Pi review",
+    };
+    const portable = remotePortableSessionFrom(piSession, MESSAGES);
+    const detail = buildRemoteSessionSnapshot(piSession, MESSAGES, [], 10_000);
+    const { payload } = buildRemoteSessionPayload({ session: piSession, detail, portable, now: 11_000 });
+
+    expect(portable.sourceAgent).toBe("pi");
+    expect(portable.projectPath).toBe("/work/pi-project");
+    expect(payload).toMatchObject({
+      source_agent: "pi",
+      source_source: "pi-cli",
+      project_path: "/work/pi-project",
+    });
+    expect(parsePortableSession(portable).sourceAgent).toBe("pi");
   });
 
   it("builds and parses remote upload payloads for CodeWiz sessions", () => {
@@ -732,6 +757,8 @@ describe("remote session sync model", () => {
     expect(parseDetailSnapshot(detail).messages).toHaveLength(2);
     expect(parsePortableSession(PORTABLE).sourceAgent).toBe("codex");
     expect(parsePortableSession({ ...PORTABLE, sourceAgent: "hermes" }).sourceAgent).toBe("hermes");
+    expect(parsePortableSession({ ...PORTABLE, sourceAgent: "pi" }).sourceAgent).toBe("pi");
+    expect(() => parsePortableSession({ ...PORTABLE, sourceAgent: "unknown" as never })).toThrow("unsupported");
   });
 
   it("normalizes legacy trace statuses in old detail snapshots", () => {
