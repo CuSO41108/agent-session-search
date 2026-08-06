@@ -47,6 +47,12 @@ import {
 } from "./sidebar-sections";
 import { LANGUAGE_STORAGE_KEY, localize, readInitialLanguage, type LanguageMode } from "./language";
 import { readInitialTheme, THEME_STORAGE_KEY, type ThemeMode } from "./theme";
+import {
+  MESSAGE_FONT_SIZE_STORAGE_KEY,
+  messageFontSizeCss,
+  readInitialMessageFontSize,
+  type MessageFontSizeScale,
+} from "./message-font-size";
 import { coalesceIndexStatusForRender } from "./index-status";
 import { reduceIndexFeedback } from "./index-status-feedback";
 import { createLatestTaskQueue } from "./latest-task-queue";
@@ -172,6 +178,7 @@ export function App(): ReactElement {
   const automation = useAutomation();
   const [theme, setTheme] = useState<ThemeMode>(() => readInitialTheme());
   const [language, setLanguage] = useState<LanguageMode>(() => readInitialLanguage());
+  const [messageFontSize, setMessageFontSize] = useState<MessageFontSizeScale>(() => readInitialMessageFontSize());
   const skills = useSkillsController(language);
   const remoteSessions = useRemoteSessionsCache();
   const [activePage, setActivePage] = useState<AppPage>("workbench");
@@ -542,6 +549,11 @@ export function App(): ReactElement {
     document.documentElement.lang = language === "zh" ? "zh-CN" : "en";
     window.localStorage.setItem(LANGUAGE_STORAGE_KEY, language);
   }, [language]);
+
+  useLayoutEffect(() => {
+    document.documentElement.style.setProperty("--message-font-size", messageFontSizeCss(messageFontSize));
+    window.localStorage.setItem(MESSAGE_FONT_SIZE_STORAGE_KEY, messageFontSize);
+  }, [messageFontSize]);
 
   useEffect(() => {
     window.localStorage.setItem(SIDEBAR_SECTIONS_STORAGE_KEY, serializeSidebarSections(sidebarSections));
@@ -2076,6 +2088,7 @@ export function App(): ReactElement {
           diagnosingEnvironmentId={diagnosingEnvironmentId}
           theme={theme}
           language={language}
+          messageFontSize={messageFontSize}
           feedback={settingsFeedback}
           onSettingsChange={updateSettings}
           onCheckAppUpdate={() => void checkAppUpdate()}
@@ -2083,6 +2096,7 @@ export function App(): ReactElement {
           onSkipAppUpdate={(untilNextVersion) => void skipAppUpdate(untilNextVersion)}
           onThemeChange={setTheme}
           onLanguageChange={setLanguage}
+          onMessageFontSizeChange={setMessageFontSize}
           sessionHookStatus={sessionHookStatus}
           sessionHookBusy={sessionHookBusy}
           onSessionHookChange={(enabled) => void toggleSessionSyncHook(enabled)}

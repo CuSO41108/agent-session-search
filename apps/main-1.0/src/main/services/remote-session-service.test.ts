@@ -184,6 +184,10 @@ function createHarness(options: {
     if (session) session.sourceAvailable = available;
   });
   const upsertSessionSyncBinding = vi.fn((binding: SessionSyncBinding) => {
+    const remoteIndex = bindings.findIndex((candidate) =>
+      candidate.remoteSessionId === binding.remoteSessionId
+      && candidate.localSessionKey !== binding.localSessionKey);
+    if (remoteIndex >= 0) bindings.splice(remoteIndex, 1);
     const index = bindings.findIndex((candidate) => candidate.localSessionKey === binding.localSessionKey);
     if (index >= 0) bindings[index] = binding;
     else bindings.push(binding);
@@ -727,6 +731,44 @@ describe("RemoteSessionService cloud orchestration", () => {
       [{ session: harness.sessions[0], revision: null }],
       [expect.objectContaining({ id: "remote-1" })],
       [],
+    );
+  });
+
+  it("repairs an orphaned Cursor binding after its workspace key changes", async () => {
+    const current = localSession({
+      sessionKey: "cursor:empty-window:same-composer",
+      rawId: "same-composer",
+      source: "cursor-agent",
+      storageEnvironmentId: "local",
+    });
+    const remote = remoteSession({
+      sourceSessionKey: "cursor:repo-old:same-composer",
+      sourceAgent: "cursor",
+      sourceSource: "cursor-agent",
+    });
+    const oldBinding: SessionSyncBinding = {
+      localSessionKey: remote.sourceSessionKey,
+      remoteSessionId: remote.id,
+      lastLocalRevision: "old-local",
+      lastRemoteRevision: "old-remote",
+      lastSyncedAt: 42,
+      direction: "upload",
+    };
+    const harness = createHarness({
+      settings: configuredSettings(),
+      sessions: [current],
+      bindings: [oldBinding],
+      remote,
+    });
+
+    await harness.service.listSyncItems();
+
+    const repairedBinding = { ...oldBinding, localSessionKey: current.sessionKey };
+    expect(harness.store.upsertSessionSyncBinding).toHaveBeenCalledWith(repairedBinding);
+    expect(harness.buildSyncItems).toHaveBeenCalledWith(
+      [{ session: current, revision: null }],
+      [remote],
+      [repairedBinding],
     );
   });
 

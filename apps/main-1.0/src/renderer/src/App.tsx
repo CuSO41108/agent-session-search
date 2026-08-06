@@ -76,6 +76,12 @@ import { LANGUAGE_STORAGE_KEY, localize, readInitialLanguage, type LanguageMode 
 import { coalesceIndexStatusForRender } from "./index-status";
 import { reduceIndexFeedback } from "./index-status-feedback";
 import { readInitialTheme, THEME_STORAGE_KEY, type ThemeMode } from "./theme";
+import {
+  MESSAGE_FONT_SIZE_STORAGE_KEY,
+  messageFontSizeCss,
+  readInitialMessageFontSize,
+  type MessageFontSizeScale,
+} from "./message-font-size";
 import { loadSkillsPanelData } from "./skills-load";
 import { createLatestTaskQueue, type LatestTaskQueue } from "./latest-task-queue";
 import type {
@@ -278,6 +284,7 @@ function loadInitialSidebarSections(): SidebarSectionsState {
 export function App(): ReactElement {
   const [theme, setTheme] = useState<ThemeMode>(() => readInitialTheme());
   const [language, setLanguage] = useState<LanguageMode>(() => readInitialLanguage());
+  const [messageFontSize, setMessageFontSize] = useState<MessageFontSizeScale>(() => readInitialMessageFontSize());
   const [sidebarSections, setSidebarSections] = useState<SidebarSectionsState>(() => loadInitialSidebarSections());
   const [collapsedProjectGroups, setCollapsedProjectGroups] = useState<Set<string>>(() => loadCollapsedProjectGroups());
   const [collapsedTreeProjects, setCollapsedTreeProjects] = useState<Set<string>>(new Set());
@@ -1061,6 +1068,11 @@ export function App(): ReactElement {
     document.documentElement.lang = language === "zh" ? "zh-CN" : "en";
     window.localStorage.setItem(LANGUAGE_STORAGE_KEY, language);
   }, [language]);
+
+  useLayoutEffect(() => {
+    document.documentElement.style.setProperty("--message-font-size", messageFontSizeCss(messageFontSize));
+    window.localStorage.setItem(MESSAGE_FONT_SIZE_STORAGE_KEY, messageFontSize);
+  }, [messageFontSize]);
 
   useEffect(() => {
     window.localStorage.setItem(SIDEBAR_SECTIONS_STORAGE_KEY, serializeSidebarSections(sidebarSections));
@@ -2707,6 +2719,7 @@ export function App(): ReactElement {
           diagnosingEnvironmentId={diagnosingEnvironmentId}
           theme={theme}
           language={language}
+          messageFontSize={messageFontSize}
           feedback={settingsFeedback}
           onSettingsChange={updateSettings}
           onCheckAppUpdate={() => void checkAppUpdate()}
@@ -2714,6 +2727,7 @@ export function App(): ReactElement {
           onSkipAppUpdate={(untilNextVersion) => void skipAppUpdate(untilNextVersion)}
           onThemeChange={setTheme}
           onLanguageChange={setLanguage}
+          onMessageFontSizeChange={setMessageFontSize}
           skillHookInstalled={skillHookInstalled}
           skillHookBusy={skillHookBusy}
           onSkillHookChange={(enabled) => void toggleSkillUsageHook(enabled)}
