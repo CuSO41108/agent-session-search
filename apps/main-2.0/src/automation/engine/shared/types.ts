@@ -67,6 +67,7 @@ export type {
   CreateWorkflowDraftRequest,
   PatchWorkflowDraftRequest,
   SendWorkflowDraftReplyRequest,
+  ApplyWorkflowReviewToManagerRequest,
   UpdateWorkflowRequest,
   AppendWorkflowContextRequest,
   AppendWorkflowRunContextRequest,

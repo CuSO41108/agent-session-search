@@ -14,7 +14,7 @@ export async function executeWorkflowGenerationReview(input: {
   now?: () => number;
 }): Promise<WorkflowV2GenerationReviewState> {
   const now = input.now ?? Date.now;
-  const prompt = workflowV2GenerationReviewPrompt({ definition: input.workflow.definition, revision: input.workflow.revision });
+  const prompt = workflowV2GenerationReviewPrompt({ definition: input.workflow.definition, revision: input.workflow.revision, conversation: input.workflow.messages });
   const trace: WorkflowV2ReviewTraceEntry[] = [{ id: randomUUID(), kind: "request", at: now(), content: prompt }];
   input.onTrace?.(structuredClone(trace));
   try {

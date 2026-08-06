@@ -94,6 +94,11 @@ export interface SendWorkflowDraftReplyRequest {
   reply: string;
 }
 
+export interface ApplyWorkflowReviewToManagerRequest {
+  workflowId: string;
+  reviewedRevision: number;
+}
+
 export interface UpdateWorkflowRequest {
   workflowId: string;
   expectedRevision?: number;

@@ -132,7 +132,12 @@ describe("Workflow V2 AgentHub durable restore", () => {
       objective: "Plan a workflow",
       definition: { workflowId, graphVersion: 1, objective: "", nodes: [], edges: [] },
       messages: [
-        { id: "message-1", role: "user", content: "Plan a workflow" },
+        {
+          id: "message-1",
+          role: "user",
+          content: "Plan a workflow",
+          events: [{ id: "handoff-1", type: "handoff", content: "Review result", timestamp: 1, metadata: { kind: "review_result", reviewedRevision: 4 } }],
+        },
         {
           id: "message-2",
           role: "assistant",
@@ -169,6 +174,9 @@ describe("Workflow V2 AgentHub durable restore", () => {
       reviewerModelId: "default",
     });
     expect(restored?.messages).toHaveLength(2);
+    expect(restored?.messages[0]?.events).toEqual([
+      expect.objectContaining({ type: "handoff", metadata: { kind: "review_result", reviewedRevision: 4 } }),
+    ]);
     expect(restored?.messages[1]?.events).toEqual([
       expect.objectContaining({
         type: "approval_request",

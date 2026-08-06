@@ -3580,6 +3580,76 @@ fs.writeFileSync(${JSON.stringify(argsPath)}, process.argv.slice(2).join("\\n") 
       .not.toContain("mcp_servers.agent_recall");
   });
 
+  test("hands a Review result to the Manager as a sourced user message and replaces the same draft", async () => {
+    const hub = new AgentHub({ codex: "missing-codex-for-test", claude: "missing-claude-for-test" });
+    const created = hub.createWorkflowDraft({ configuredAgentId: TEST_CODEX_AGENT_ID, reviewerConfiguredAgentId: TEST_CODEX_AGENT_ID });
+    const workflowId = created.workflowDraft!.workflowId;
+    const firstDefinition = {
+      workflowId,
+      graphVersion: 1,
+      objective: "Answer with evidence",
+      nodes: [{ id: "answer", kind: "answer", title: "Answer", execModel: "llm" as const, executionMode: "one-shot" as const, configuredAgentId: TEST_CODEX_AGENT_ID, prompt: "Answer.", outputFields: [{ key: "answer", required: true }] }],
+      edges: [],
+      transactionPolicy: createDirectWorkflowTransactionPolicy(),
+    };
+    expect(hub.materializeWorkflowDraft(workflowId, { title: "Evidence answer", objective: firstDefinition.objective, definition: firstDefinition }).ok).toBe(true);
+    const reviewed = hub.snapshot().workflowDraft!;
+    hub.patchWorkflowDraft({
+      workflowId,
+      generationReview: {
+        status: "changes_requested",
+        reviewerConfiguredAgentId: reviewed.reviewerConfiguredAgentId,
+        reviewerModelId: reviewed.reviewerModelId,
+        reviewedRevision: reviewed.revision,
+        result: {
+          verdict: "revise",
+          reviewedRevision: reviewed.revision,
+          summary: "答案缺少证据字段。",
+          findings: [{ severity: "blocking", nodeIds: ["answer"], summary: "缺少证据", failurePath: "节点只能返回答案。", requiredChange: "增加 evidence 输出。" }],
+          scriptRisks: {},
+          suggestions: [],
+        },
+        updatedAt: 1,
+      },
+    });
+    let managerPrompt = "";
+    vi.spyOn(hub as any, "askWorkflowDraftAgent").mockImplementation(async (...args: unknown[]) => {
+      const request = args[0] as { prompt: string };
+      managerPrompt = request.prompt;
+      const revisedDefinition = structuredClone(hub.snapshot().workflowDraft!.definition);
+      revisedDefinition.nodes[0]!.outputFields.push({ key: "evidence", required: true });
+      const result = hub.materializeWorkflowDraft(workflowId, { title: "Evidence answer", objective: revisedDefinition.objective, definition: revisedDefinition });
+      expect(result.ok).toBe(true);
+      return { content: "已根据 Review Agent 结果更新工作流。" };
+    });
+
+    const next = await hub.applyWorkflowReviewToManager({ workflowId, reviewedRevision: reviewed.revision });
+
+    expect(next.workflowStore.workflows.filter((workflow) => workflow.workflowId === workflowId)).toHaveLength(1);
+    expect(next.workflowDraft?.definition.nodes[0]?.outputFields).toContainEqual({ key: "evidence", required: true });
+    expect(next.workflowDraft?.generationReview).toBeUndefined();
+    expect(next.workflowDraft?.messages.at(-2)).toMatchObject({
+      role: "user",
+      content: expect.stringContaining("来自 Review Agent"),
+      events: [expect.objectContaining({ type: "handoff", metadata: expect.objectContaining({ kind: "review_result", reviewedRevision: reviewed.revision, verdict: "revise" }) })],
+    });
+    expect(next.workflowDraft?.messages.at(-1)).toMatchObject({ role: "assistant", content: "已根据 Review Agent 结果更新工作流。" });
+    expect(managerPrompt).toContain("Apply the user's requested change");
+    expect(managerPrompt).toContain("必须调用 workflow_create");
+  });
+
+  test("does not Review or hand Review results to the Manager for official Workflows", async () => {
+    const hub = new AgentHub({ codex: "missing-codex-for-test", claude: "missing-claude-for-test" });
+    const workflowId = hub.createWorkflowDraft({ configuredAgentId: TEST_CODEX_AGENT_ID }).workflowDraft!.workflowId;
+    const current = hub.snapshot().workflowDraft!;
+    hub.updateWorkflowDraft({ ...current, sourceType: "official", topologyLocked: true });
+
+    const reviewed = await hub.reviewWorkflow({ workflowId, expectedRevision: current.revision, reviewEnabled: true });
+    expect(reviewed.workflowDraft?.generationReview).toBeUndefined();
+    const handedOff = await hub.applyWorkflowReviewToManager({ workflowId, reviewedRevision: current.revision });
+    expect(handedOff.workflowDraft?.messages).toEqual([]);
+  });
+
   test("rejects a one-shot-only generation runtime in the Workflow planning dialog", async () => {
     const hub = new AgentHub({
       codex: "missing-codex-for-test",

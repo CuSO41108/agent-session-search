@@ -58,10 +58,11 @@ const WorkflowTranscriptMessage = memo(function WorkflowTranscriptMessage({ mess
   workflowId?: string;
   onResolveApproval?: WorkflowController["onResolveRuntimeApproval"];
 }) {
+  const reviewHandoff = message.events?.find((event) => event.type === "handoff" && event.metadata?.kind === "review_result");
   return <div className={`cli-message ${message.role}`}>
     <div className="cli-agent-line">
       {message.role === "assistant" ? <span className={`runtime-dot ${agentAccent(workflowRuntimeId)}`} /> : null}
-      <span>{message.role === "assistant" ? "Workflow agent" : "You"}</span>
+      <span>{message.role === "assistant" ? "Workflow agent" : reviewHandoff ? "Review Agent result" : "You"}</span>
     </div>
     {message.role === "user" ? <div className="cli-markdown"><Markdown text={message.content} /></div> : (
       <div className={`cli-markdown ${running && message.content === WORKFLOW_THINKING_MESSAGE ? "is-streaming" : ""}`}>

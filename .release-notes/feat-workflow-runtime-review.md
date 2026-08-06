@@ -9,7 +9,8 @@
 
 ## Bug 修复
 - 官方代码变更审查工作流现在能正确处理包含中文字符的文件名，并按工作区脚本权限运行。
-- 审查结果支持一键交给 Manager Agent，直接根据问题修改当前工作流。
+- 用户 Workflow 的审查结果支持一键交给 Manager Agent，并以 Review Agent 来源消息原位生成最新版本；Review Agent 同时可参考该 Workflow 的完整生成对话。
+- 官方 Workflow 不再显示或启用全局审查和运行时审查，同时仍可配置执行节点使用的 Agent 和模型。
 
 - Workflow 的全局审查和关键节点审查现在统一使用简体中文展示结论、问题、依据和修改建议。
 - Agent 的 Runtime 配置现在合并为一个选择框，避免 Runtime 与执行配置重复显示和相互覆盖。

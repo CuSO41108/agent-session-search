@@ -75,7 +75,7 @@ export function useWorkflowFeatureController({
       reviewerConfiguredAgentId: draft.workflowReviewerConfiguredAgentId,
       reviewerModelId: draft.workflowReviewerModelId,
       generationReview: activeWorkflow?.generationReview,
-      reviewFeatureEnabled: globalReviewEnabled,
+      reviewFeatureEnabled: globalReviewEnabled && activeWorkflow?.sourceType !== "official",
       runtimes: snapshot.runtimes,
       channels: snapshot.channels,
       configuredAgents: snapshot.configuredAgents,
@@ -219,20 +219,7 @@ export function useWorkflowFeatureController({
       onApplyReviewToManager: async () => {
         const review = activeWorkflow?.generationReview;
         if (!draft.workflowId || draft.workflowRunning || !review?.result) return;
-        const reviewPacket = JSON.stringify({
-          revision: review.reviewedRevision,
-          verdict: review.result.verdict,
-          summary: review.result.summary,
-          findings: review.result.findings,
-          scriptRisks: review.result.scriptRisks,
-          suggestions: review.result.suggestions,
-        }, null, 2);
-        await draft.sendWorkflowReply([
-          "请作为当前 Workflow 的 Manager Agent，根据下面这次审查结果修改当前工作流。",
-          "只修复审查中明确指出的问题，保留可行的节点结构；完成后更新当前工作流定义并说明修改内容。不要只给建议，也不要修改工作区文件。",
-          "审查结果：",
-          reviewPacket,
-        ].join("\n\n"));
+        setSnapshot(await workflows.applyReviewToManager({ workflowId: draft.workflowId, reviewedRevision: review.result.reviewedRevision }));
       },
       onBuildDefinition: (objective?: string) => {
         void draft.buildWorkflowDefinition(objective);

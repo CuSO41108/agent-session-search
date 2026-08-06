@@ -1,4 +1,4 @@
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import { AgentHub } from "./agent-hub";
 import { createWorkflowV2InlineScriptSpec } from "../../shared/workflow-v2/definition";
 import { createStrictWorkflowTransactionPolicy } from "../../shared/workflow-v2/transaction";
@@ -33,9 +33,9 @@ describe("AgentHub workflow materialization", () => {
       expectedRevision: bundledWorkflow.revision,
       definition: { ...structuredClone(bundledWorkflow.definition), reviewEnabled: true },
     });
-    expect(reviewUpdate).toMatchObject({ ok: true, revision: bundledWorkflow.revision + 1 });
+    expect(reviewUpdate).toMatchObject({ ok: false, error: "Official workflow topology is locked." });
     const reviewEnabledWorkflow = hub.snapshot().workflowStore.workflows.find((workflow) => workflow.workflowId === "bundled-test")!;
-    expect(reviewEnabledWorkflow.definition.reviewEnabled).toBe(true);
+    expect(reviewEnabledWorkflow.definition.reviewEnabled).not.toBe(true);
 
     const routedDefinition = structuredClone(reviewEnabledWorkflow.definition);
     const routedNode = routedDefinition.nodes[0]!;
@@ -81,6 +81,9 @@ describe("AgentHub workflow materialization", () => {
         definition: { workflowId: "bundled-test" },
       },
     });
+    const run = vi.spyOn((hub as any).workflowRunService, "run").mockReturnValue({ ok: true, workflowId: "bundled-test", runId: "run-1" });
+    expect(hub.runWorkflow({ workflowId: "bundled-test", reviewEnabled: true })).toMatchObject({ ok: true });
+    expect(run).toHaveBeenCalledWith(expect.objectContaining({ workflowId: "bundled-test", reviewEnabled: false }));
   });
 
   test("repairs legacy bundled workflow provenance without replacing customized content", () => {
@@ -145,7 +148,7 @@ describe("AgentHub workflow materialization", () => {
       workflowId: seeded.workflowId,
       expectedRevision: seeded.revision,
       definition: { ...structuredClone(seeded.definition), reviewEnabled: true },
-    })).toMatchObject({ ok: true });
+    })).toMatchObject({ ok: false, error: "Official workflow topology is locked." });
     const before = hub.snapshot().workflowStore.workflows.find((workflow) => workflow.workflowId === "bundled-test")!;
     hub.patchWorkflowDraft({
       workflowId: before.workflowId,
@@ -182,7 +185,7 @@ describe("AgentHub workflow materialization", () => {
       runContextDocument: "",
       definition: {
         objective: "New objective",
-        reviewEnabled: true,
+        reviewEnabled: false,
         nodes: [{ id: "collect" }, { id: "report" }],
       },
     });

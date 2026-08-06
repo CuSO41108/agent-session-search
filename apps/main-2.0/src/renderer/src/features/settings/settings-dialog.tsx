@@ -1176,8 +1176,8 @@ export function SettingsDialog({
                     <span className="settings-field-title">{l("Global Review", "全局 Review")}</span>
                     <span className="settings-field-sub">
                       {l(
-                        "Show the adversarial review action for every workflow before it runs.",
-                        "为所有工作流显示运行前的对抗审查入口。",
+                        "Show the adversarial review action for user workflows before they run.",
+                        "为用户 Workflow 显示运行前的对抗审查入口。",
                       )}
                     </span>
                   </div>
@@ -1194,8 +1194,8 @@ export function SettingsDialog({
                     <span className="settings-field-title">{l("Runtime Review", "运行时 Review")}</span>
                     <span className="settings-field-sub">
                       {l(
-                        "Review configured critical nodes while a workflow runs and retry results that miss their quality threshold.",
-                        "工作流运行时审查已配置的关键节点，未达到质量门槛时自动重试。",
+                        "Review configured critical nodes in user workflows and retry results that miss their quality threshold.",
+                        "用户 Workflow 运行时审查已配置的关键节点，未达到质量门槛时自动重试。",
                       )}
                     </span>
                   </div>
