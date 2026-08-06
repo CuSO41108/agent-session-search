@@ -38,6 +38,7 @@ import {
   formatSessionMarkdown,
   formatSessionPlainText,
   type SessionJsonExportFormat,
+  type SessionMarkdownExportOptions,
 } from "../core/format-session";
 import { normalizeExternalLink } from "../core/external-link";
 import {
@@ -2258,13 +2259,24 @@ function registerIpc(): void {
     if (!session) return;
     clipboard.writeText(formatSessionMarkdown(session, store.getAllMessages(sessionKey), store.getTraceEvents(sessionKey)));
   });
-  ipcMain.handle("command:export-markdown", async (_event, sessionKey: string) => {
+  ipcMain.handle("command:export-markdown", async (
+    _event,
+    sessionKey: string,
+    options?: SessionMarkdownExportOptions,
+  ) => {
     await ensureRemoteSessionDetailsLoaded(sessionKey);
     const session = store.getSession(sessionKey);
     if (!session) return false;
     const exportPath = await chooseMarkdownExportPath(exportFileName(session.displayTitle || session.originalTitle || session.rawId, "md"));
     if (!exportPath) return false;
-    await fs.writeFile(exportPath, formatSessionMarkdown(session, store.getAllMessages(sessionKey), store.getTraceEvents(sessionKey)), "utf-8");
+    const traceEvents = options?.includeToolTrace === false ? [] : store.getTraceEvents(sessionKey);
+    await fs.writeFile(
+      exportPath,
+      formatSessionMarkdown(session, store.getAllMessages(sessionKey), traceEvents, {
+        includeToolTrace: options?.includeToolTrace !== false,
+      }),
+      "utf-8",
+    );
     return true;
   });
   ipcMain.handle("command:export-json", async (_event, sessionKey: string) => {
