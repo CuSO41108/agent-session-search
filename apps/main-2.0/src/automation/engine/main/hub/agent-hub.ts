@@ -3468,6 +3468,7 @@ export class AgentHub {
     try {
       await persist;
     } catch (error) {
+      if (this.persistedStore?.isShutdownError?.(error)) return;
       console.warn(
         this.persistedStore
           ? `Failed to persist app state to ${this.persistedStore.label}:`
