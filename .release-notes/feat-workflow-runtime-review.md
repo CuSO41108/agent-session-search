@@ -9,6 +9,7 @@
 
 ## Bug 修复
 
+- Workflow 的全局审查和关键节点审查现在统一使用简体中文展示结论、问题、依据和修改建议。
 - Agent 的 Runtime 配置现在合并为一个选择框，避免 Runtime 与执行配置重复显示和相互覆盖。
 - Workflow 生成、节点执行与 Review Agent 都只需选择一个 Agent Profile；生成与 Review 配置相互独立，并会在 Review Runtime 不可用时直接说明原因。
 - Workflow 全局审查结果现在通过绑定当前版本的专用工具提交，字段不符合规范时会返回具体位置，避免已有正常审查内容却因自由文本格式而失败。

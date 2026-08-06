@@ -67,6 +67,7 @@ export function workflowV2ReviewerPrompt(input: WorkflowV2ReviewerInput): string
     "Do not continue the executor's work and do not certify based on its self-assessment.",
     "Evaluate the result against the Workflow objective, node constraints, and every configured judge dimension using only concrete evidence in the packet.",
     "Return one result for every judge dimension. Use low, medium, or high. The overall qualityLevel is the lowest dimension level.",
+    "Write every human-readable review field in Simplified Chinese, including reasons, requiredFixes, evidence, and each dimension result's reason and evidence. Keep protocol enums, reviewerNodeId, node IDs, and configured dimension keys unchanged.",
     "Return one JSON object with exactly this contract:",
     '{"reviewerNodeId":"independent-reviewer","verdict":{"decision":"accept|reject","reasons":["string"],"requiredFixes":["optional string"],"riskLevel":"low|medium|high","evidence":["optional string"],"confidence":"high|medium|low","qualityLevel":"low|medium|high","dimensionResults":[{"key":"configured-dimension-key","qualityLevel":"low|medium|high","reason":"string","evidence":["string"]}]}}',
     "Reviewer input:",
