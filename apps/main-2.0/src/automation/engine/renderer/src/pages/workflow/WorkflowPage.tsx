@@ -132,6 +132,7 @@ export function WorkflowPage({ controller: source }: { controller: WorkflowContr
   const onSelectConfiguredAgent = source.onSelectConfiguredAgent;
   const onSelectReviewerConfiguredAgent = source.onSelectReviewerConfiguredAgent;
   const onReviewWorkflow = source.onReviewWorkflow;
+  const onApplyReviewToManager = source.onApplyReviewToManager;
   const onBuildDefinition = source.onBuildDefinition;
   const onSendReply = source.onSendReply;
   const onUpdateDefinition = source.onUpdateDefinition;
@@ -471,8 +472,10 @@ export function WorkflowPage({ controller: source }: { controller: WorkflowContr
         />}
         canReview={validation.valid && !running && reviewerReady}
         canInterrupt={generationReview?.status === "reviewing"}
+        canApplyReview={Boolean(generationReview?.result && !running && onApplyReviewToManager)}
         {...(reviewDisabledReason ? { reviewDisabledReason } : {})}
         onReview={() => void onReviewWorkflow()}
+        onApplyReview={() => void onApplyReviewToManager?.()}
         onInterrupt={() => void source.onInterruptWorkflowReview?.()}
         onClose={() => setReviewDrawerOpen(false)}
       /> : null}

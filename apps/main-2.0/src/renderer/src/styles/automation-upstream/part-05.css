@@ -1608,11 +1608,15 @@
 
 .workflow-review-drawer-footer > span { max-width: 260px; color: var(--muted); font-size: 10px; line-height: 1.4; }
 
+.workflow-review-drawer-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; flex-wrap: wrap; }
+
 @media (max-width: 720px) {
   .workflow-review-drawer { top: 8px; right: 8px; bottom: 8px; width: calc(100vw - 16px); border-radius: 14px; }
   .workflow-review-drawer-footer { align-items: stretch; flex-direction: column; }
   .workflow-review-drawer-footer > span { max-width: none; }
   .workflow-review-drawer-footer .send-btn { justify-content: center; }
+  .workflow-review-drawer-actions { width: 100%; }
+  .workflow-review-drawer-actions > button { flex: 1 1 0; justify-content: center; }
 }
 
 .workflow-script-node-overlay { position:fixed; inset:0; z-index:120; display:grid; place-items:center; padding:28px; background:color-mix(in srgb,var(--bg) 42%,transparent); backdrop-filter:blur(8px); }

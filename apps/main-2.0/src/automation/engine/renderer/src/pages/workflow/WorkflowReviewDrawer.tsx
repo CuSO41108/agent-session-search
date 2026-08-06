@@ -1,5 +1,5 @@
 import { useEffect, type ReactNode } from "react";
-import { AlertTriangle, Bot, CheckCircle2, CircleStop, CircleX, RefreshCw, ShieldAlert, Sparkles, X } from "lucide-react";
+import { AlertTriangle, Bot, CheckCircle2, CircleStop, CircleX, RefreshCw, ShieldAlert, Sparkles, WandSparkles, X } from "lucide-react";
 import type { WorkflowV2GenerationReviewState } from "../../../../shared/workflow-v2/generation-review";
 import { WorkflowReviewTrace } from "./WorkflowReviewTrace";
 
@@ -9,8 +9,10 @@ interface WorkflowReviewDrawerProps {
   reviewerControls: ReactNode;
   canReview: boolean;
   canInterrupt: boolean;
+  canApplyReview: boolean;
   reviewDisabledReason?: string;
   onReview: () => void;
+  onApplyReview: () => void;
   onInterrupt: () => void;
   onClose: () => void;
 }
@@ -23,7 +25,7 @@ const REVIEW_STATUS = {
   failed: { label: "Review failed", detail: "The reviewer could not complete this review.", icon: CircleX },
 } as const;
 
-export function WorkflowReviewDrawer({ open, review, reviewerControls, canReview, canInterrupt, reviewDisabledReason, onReview, onInterrupt, onClose }: WorkflowReviewDrawerProps) {
+export function WorkflowReviewDrawer({ open, review, reviewerControls, canReview, canInterrupt, canApplyReview, reviewDisabledReason, onReview, onApplyReview, onInterrupt, onClose }: WorkflowReviewDrawerProps) {
   useEffect(() => {
     if (!open) return;
     const closeOnEscape = (event: KeyboardEvent) => {
@@ -129,7 +131,10 @@ export function WorkflowReviewDrawer({ open, review, reviewerControls, canReview
       <footer className="workflow-review-drawer-footer">
         <span>{isReviewing ? "You can close this panel; review continues in the background." : reviewDisabledReason ?? "A new review replaces the result for this revision."}</span>
         {isReviewing ? <button type="button" className="control-btn danger" disabled={!canInterrupt} onClick={onInterrupt}><CircleStop size={14} /><span>Interrupt review</span></button>
-          : <button type="button" className="send-btn" disabled={!canReview} onClick={onReview}><RefreshCw size={14} /><span>{result ? "Review again" : "Start review"}</span></button>}
+          : <div className="workflow-review-drawer-actions">
+            {result ? <button type="button" className="control-btn" disabled={!canApplyReview} onClick={onApplyReview}><WandSparkles size={14} /><span>Ask Manager to revise</span></button> : null}
+            <button type="button" className="send-btn" disabled={!canReview} onClick={onReview}><RefreshCw size={14} /><span>{result ? "Review again" : "Start review"}</span></button>
+          </div>}
       </footer>
     </aside>
   );
