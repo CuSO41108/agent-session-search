@@ -55,6 +55,28 @@ describe("resolveOpenVikingExtractionConfig", () => {
     });
   });
 
+  it("falls back to the official Codex API when only an API key is available", () => {
+    expect(resolveOpenVikingExtractionConfig({
+      settings: {
+        ...defaultSettings,
+        summarySource: "codex",
+        openVikingExtractionReasoningEffort: "low",
+      },
+      codex: { activeModel: "gpt-5.5" },
+      codexEndpoint: {
+        baseUrl: "",
+        model: "gpt-5.5",
+        apiKey: "sk-test",
+        apiFormat: "openai_responses",
+      },
+    })).toEqual({
+      provider: "openai-codex",
+      model: "gpt-5.5",
+      api_key: "sk-test",
+      reasoning_effort: "low",
+    });
+  });
+
   it("maps a custom OpenAI Chat Provider", () => {
     expect(resolveOpenVikingExtractionConfig({
       settings: {
