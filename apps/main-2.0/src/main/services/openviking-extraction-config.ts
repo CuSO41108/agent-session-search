@@ -1,6 +1,7 @@
-import type {
-  CodexConfigSnapshot,
-  CodexSummaryEndpointDefaults,
+import {
+  DEFAULT_CODEX_API_BASE_URL,
+  type CodexConfigSnapshot,
+  type CodexSummaryEndpointDefaults,
 } from "../../core/codex-profile";
 import type {
   AppSettings,
@@ -31,12 +32,13 @@ export function resolveOpenVikingExtractionConfig(input: {
       || input.codex.activeModel.trim()
       || DEFAULT_OPENVIKING_CODEX_EXTRACTION_MODEL;
     if (input.codexEndpoint) {
+      const baseUrl = input.codexEndpoint.baseUrl.trim();
       return {
         provider: input.codexEndpoint.apiFormat === "openai_responses"
           ? "openai-codex"
           : "openai",
         model,
-        api_base: input.codexEndpoint.baseUrl,
+        ...(baseUrl ? { api_base: baseUrl } : {}),
         api_key: input.codexEndpoint.apiKey,
         reasoning_effort: input.settings.openVikingExtractionReasoningEffort,
       };
@@ -44,7 +46,7 @@ export function resolveOpenVikingExtractionConfig(input: {
     return {
       provider: "openai-codex",
       model,
-      api_base: "https://chatgpt.com/backend-api/codex",
+      api_base: DEFAULT_CODEX_API_BASE_URL,
       reasoning_effort: input.settings.openVikingExtractionReasoningEffort,
     };
   }
