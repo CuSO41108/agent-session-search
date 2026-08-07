@@ -324,6 +324,7 @@ let automationQuitReady = false;
 let automationQuitStarted = false;
 const startupTasks = createStartupTaskScheduler(() => automationQuitStarted);
 let postgresRuntime: PostgresRuntime | null = null;
+let postgresRuntimeStartup: Promise<PostgresRuntime> | null = null;
 let postgresDatabase: PostgresDatabase | null = null;
 let quickSearchWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
@@ -2629,7 +2630,9 @@ if (!app.requestSingleInstanceLock()) {
 app.whenReady().then(async () => {
   await appUpdateService.registerRunningProcess();
   void installedRuntimeMonitor?.start();
-  postgresRuntime = await startPostgresRuntime({ userDataPath: app.getPath("userData") });
+  postgresRuntimeStartup = startPostgresRuntime({ userDataPath: app.getPath("userData") });
+  postgresRuntime = await postgresRuntimeStartup;
+  if (automationQuitStarted) return;
   postgresDatabase = PostgresDatabase.connect(postgresRuntime.connectionUrl, {
     migrations: POSTGRES_MIGRATIONS,
   });
@@ -2654,6 +2657,7 @@ app.whenReady().then(async () => {
   }
   await providerService.migrateLegacyKeys();
   await pruneDisabledOptionalSources(getSettings());
+  if (automationQuitStarted) return;
   automationService = createAutomationService();
   registerIpc();
   quotaService.start();
@@ -2742,6 +2746,11 @@ app.on("before-quit", (event) => {
     openVikingHookManifestService?.clear() ?? Promise.resolve(),
     openVikingRuntimeService?.stop() ?? Promise.resolve(),
   ]).then(async () => {
+    // Quit can land while startPostgresRuntime is still in flight; adopt the
+    // pending startup so the embedded database is stopped instead of orphaned.
+    if (!postgresRuntime && postgresRuntimeStartup) {
+      postgresRuntime = await postgresRuntimeStartup.catch(() => null);
+    }
     await postgresDatabase?.close().catch((error) => {
       console.error(`Failed to close AgentRecall data store: ${error instanceof Error ? error.message : String(error)}`);
     });
