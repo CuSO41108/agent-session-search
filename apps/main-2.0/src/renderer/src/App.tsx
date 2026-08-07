@@ -21,6 +21,7 @@ import type { InstalledSkill } from "../../core/skill-manager";
 import type { OpenVikingMemorySnapshot } from "../../core/openviking-memory";
 import type { RemoteHealthReport } from "../../core/remote-health";
 import type { SessionSyncHookStatus } from "../../core/session-sync-queue";
+import type { V1ImportResult } from "../../core/v1-import";
 import { liveSessionDeleteKey, type SessionBulkDeletePreview, type SessionBulkDeleteRequest } from "../../core/session-bulk-delete";
 import type { TeamChatRoomSummary } from "../../shared/team-chat";
 import { OPTIONAL_SESSION_SOURCE_DESCRIPTORS } from "../../core/session-sources";
@@ -47,7 +48,15 @@ import {
 } from "./sidebar-sections";
 import { LANGUAGE_STORAGE_KEY, localize, readInitialLanguage, type LanguageMode } from "./language";
 import { readInitialTheme, THEME_STORAGE_KEY, type ThemeMode } from "./theme";
+import {
+  MESSAGE_FONT_SIZE_STORAGE_KEY,
+  messageFontSizeCss,
+  readInitialMessageFontSize,
+  type MessageFontSizeScale,
+} from "./message-font-size";
+import { coalesceIndexStatusForRender } from "./index-status";
 import { reduceIndexFeedback } from "./index-status-feedback";
+import { createLatestTaskQueue } from "./latest-task-queue";
 import type {
   ActionStatus,
   ContextMenuState,
@@ -73,7 +82,7 @@ import {
   migrationProgressMessage,
   migrationStrategyLabel,
 } from "./features/sessions/session-migration-copy";
-import { SESSION_PAGE_SIZE, useSessionCatalog } from "./features/sessions/use-session-catalog";
+import { useSessionCatalog } from "./features/sessions/use-session-catalog";
 import { useSessionDetail } from "./features/sessions/use-session-detail";
 import { useMainSearchShortcut } from "./features/search/use-main-search-shortcut";
 import { SettingsDialog, type SettingsSection } from "./features/settings/settings-dialog";
@@ -82,7 +91,7 @@ import { WslEnvironmentDialog } from "./features/settings/wsl-environment-dialog
 import { WorkbenchPage } from "./features/workbench/workbench-page";
 import { useWorkbenchOverview } from "./features/workbench/use-workbench-overview";
 import { useAutomation } from "./features/automation/automation-provider";
-import { selectWorkbenchWorkflows } from "./features/automation/workbench-workflows";
+import { selectWorkbenchWorkflows, selectWorkbenchWorkflowSummaries } from "./features/automation/workbench-workflows";
 import {
   isBranchTag,
   displayTagName,
@@ -138,6 +147,7 @@ const OPTIONAL_SOURCE_SETTINGS = OPTIONAL_SESSION_SOURCE_DESCRIPTORS.map((descri
   pendingKey: descriptor.pendingKey,
   filter: descriptor.id,
 }));
+const OPTIONAL_SOURCE_REFRESH_SETTLE_MS = 120;
 
 function emptyPendingPersonalSources(): Record<PendingSourceKey, boolean> {
   return Object.fromEntries(
@@ -169,6 +179,7 @@ export function App(): ReactElement {
   const automation = useAutomation();
   const [theme, setTheme] = useState<ThemeMode>(() => readInitialTheme());
   const [language, setLanguage] = useState<LanguageMode>(() => readInitialLanguage());
+  const [messageFontSize, setMessageFontSize] = useState<MessageFontSizeScale>(() => readInitialMessageFontSize());
   const skills = useSkillsController(language);
   const remoteSessions = useRemoteSessionsCache();
   const [activePage, setActivePage] = useState<AppPage>("workbench");
@@ -189,8 +200,15 @@ export function App(): ReactElement {
     }
   }, [activePage]);
   const workbenchWorkflows = useMemo(
-    () => selectWorkbenchWorkflows(automation.snapshot.workflowStore.workflows, automation.snapshot.workflowStore.runs),
-    [automation.snapshot.workflowStore.runs, automation.snapshot.workflowStore.workflows],
+    () => automation.detailsLoaded
+      ? selectWorkbenchWorkflows(automation.snapshot.workflowStore.workflows, automation.snapshot.workflowStore.runs)
+      : selectWorkbenchWorkflowSummaries(automation.workflowSidebar.workflows),
+    [
+      automation.detailsLoaded,
+      automation.snapshot.workflowStore.runs,
+      automation.snapshot.workflowStore.workflows,
+      automation.workflowSidebar.workflows,
+    ],
   );
   const [workbenchMcpServers, setWorkbenchMcpServers] = useState<McpServerDefinition[] | null>(null);
   const [workbenchChatRooms, setWorkbenchChatRooms] = useState<TeamChatRoomSummary[] | null>(null);
@@ -201,44 +219,59 @@ export function App(): ReactElement {
   useEffect(() => {
     if (activePage !== "workbench") return;
     let active = true;
+    const timers: number[] = [];
     setWorkbenchMcpServers(null);
     setWorkbenchChatRooms(null);
     setWorkbenchMemorySnapshot(null);
     setWorkbenchMemoryLoading(true);
     setWorkbenchSkills(null);
-    void automation.api.listMcpServers()
-      .then((servers) => {
-        if (active) setWorkbenchMcpServers(servers);
-      })
-      .catch(() => {
-        if (active) setWorkbenchMcpServers([]);
+    const tasks: Array<() => Promise<void>> = [
+      async () => {
+        try {
+          const servers = await automation.api.listMcpServers();
+          if (active) setWorkbenchMcpServers(servers);
+        } catch {
+          if (active) setWorkbenchMcpServers([]);
+        }
+      },
+      async () => {
+        try {
+          const rooms = await window.sessionSearch.teamChat.listRooms();
+          if (active) setWorkbenchChatRooms(rooms);
+        } catch {
+          if (active) setWorkbenchChatRooms([]);
+        }
+      },
+      async () => {
+        try {
+          const snapshot = await window.sessionSearch.getOpenVikingMemorySnapshot();
+          if (active) setWorkbenchMemorySnapshot(snapshot);
+        } catch {
+          if (active) setWorkbenchMemorySnapshot(null);
+        } finally {
+          if (active) setWorkbenchMemoryLoading(false);
+        }
+      },
+      async () => {
+        try {
+          const snapshot = await window.sessionSearch.listSkills();
+          if (active) setWorkbenchSkills(snapshot.skills);
+        } catch {
+          if (active) setWorkbenchSkills([]);
+        }
+      },
+    ];
+    const frameId = window.requestAnimationFrame(() => {
+      tasks.forEach((task, index) => {
+        timers.push(window.setTimeout(() => {
+          if (active) void task();
+        }, index * 50));
       });
-    void window.sessionSearch.teamChat.listRooms()
-      .then((rooms) => {
-        if (active) setWorkbenchChatRooms(rooms);
-      })
-      .catch(() => {
-        if (active) setWorkbenchChatRooms([]);
-      });
-    void window.sessionSearch.getOpenVikingMemorySnapshot()
-      .then((snapshot) => {
-        if (active) setWorkbenchMemorySnapshot(snapshot);
-      })
-      .catch(() => {
-        if (active) setWorkbenchMemorySnapshot(null);
-      })
-      .finally(() => {
-        if (active) setWorkbenchMemoryLoading(false);
-      });
-    void window.sessionSearch.listSkills()
-      .then((snapshot) => {
-        if (active) setWorkbenchSkills(snapshot.skills);
-      })
-      .catch(() => {
-        if (active) setWorkbenchSkills([]);
-      });
+    });
     return () => {
       active = false;
+      window.cancelAnimationFrame(frameId);
+      for (const timer of timers) window.clearTimeout(timer);
     };
   }, [activePage, automation.api]);
   const [sidebarSections, setSidebarSections] = useState<SidebarSectionsState>(() => loadInitialSidebarSections());
@@ -287,7 +320,6 @@ export function App(): ReactElement {
     liveStatus,
     setLiveStatus,
     sessionTotalCount,
-    hasMoreSessions,
     displayedResults,
     selectedKey,
     setSelectedKey,
@@ -297,7 +329,9 @@ export function App(): ReactElement {
     liveDetectionFailed,
     liveSearchKeys,
     load,
-    loadMore,
+    currentPage,
+    totalPages,
+    goToPage,
     searchAllMatching,
     clearProjectFilter,
     clearProjectScopeFilter,
@@ -315,7 +349,9 @@ export function App(): ReactElement {
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
   const [dialog, setDialog] = useState<DialogState>(null);
   const [migrationDialog, setMigrationDialog] = useState<SessionMigrationDialogState>(null);
+  const migrationDialogRef = useRef<SessionMigrationDialogState>(null);
   const [migrationProgress, setMigrationProgress] = useState<SessionMigrationProgress | null>(null);
+  const [migrationBusy, setMigrationBusy] = useState(false);
   const [deleteTagName, setDeleteTagName] = useState<string | null>(null);
   const [deleteSessionCandidate, setDeleteSessionCandidate] = useState<SessionSearchResult | null>(null);
   const [deleteSessionCascadeCount, setDeleteSessionCascadeCount] = useState<number | null>(null);
@@ -341,6 +377,7 @@ export function App(): ReactElement {
   const [appUpdateProgress, setAppUpdateProgress] = useState<AppUpdateProgress | null>(null);
   const [appUpdateBusy, setAppUpdateBusy] = useState(false);
   const [appUpdateError, setAppUpdateError] = useState<string | null>(null);
+  const indexStatusEventVersionRef = useRef(0);
   const shouldSignalAppUpdate = Boolean(appUpdateStatus?.updateAvailable && !appUpdateStatus.updateSkipped && !appUpdateStatus.promptSnoozed);
   const [sshDialogOpen, setSshDialogOpen] = useState(false);
   const [wslDialogOpen, setWslDialogOpen] = useState(false);
@@ -376,7 +413,28 @@ export function App(): ReactElement {
     emptyPendingPersonalSources,
   );
   const metadataLoadSeqRef = useRef(0);
+  const appSettingsRef = useRef<AppSettings | null>(null);
+  const settingsUpdateQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const optionalSourceRefreshGenerationRef = useRef(0);
+  const optionalSourceIndexRefreshKeysRef = useRef(new Set<PendingSourceKey>());
+  const [optionalSourceRefreshQueue] = useState(() =>
+    createLatestTaskQueue<void>({ settleMs: OPTIONAL_SOURCE_REFRESH_SETTLE_MS }));
   const t = useCallback((en: string, zh: string) => localize(language, en, zh), [language]);
+  appSettingsRef.current = appSettings;
+  migrationDialogRef.current = migrationDialog;
+  const continueRemoteSessionsInBackground = useCallback((): void => {
+    const message = t(
+      "Remote sessions are continuing to load in the background.",
+      "已转到后台，远程会话会继续加载。",
+    );
+    void remoteSessions.ensureLoaded();
+    setRemoteSessionsOpen(false);
+    setActionStatus({ kind: "success", message });
+    window.setTimeout(() => {
+      setActionStatus((current) =>
+        current?.kind === "success" && current.message === message ? null : current);
+    }, 2400);
+  }, [remoteSessions.ensureLoaded, t]);
   const reportSessionDetailError = useCallback((error: unknown): void => {
     setActionStatus({ kind: "error", message: error instanceof Error ? error.message : String(error) });
   }, []);
@@ -430,8 +488,16 @@ export function App(): ReactElement {
   ]);
 
   useEffect(() => {
-    if (remoteSessionsOpen) void remoteSessions.load();
-  }, [remoteSessions.load, remoteSessionsOpen]);
+    if (!remoteSessionsOpen || remoteSessions.cache.initialized) return;
+    let timeoutId: number | null = null;
+    const frameId = window.requestAnimationFrame(() => {
+      timeoutId = window.setTimeout(() => void remoteSessions.ensureLoaded(), 0);
+    });
+    return () => {
+      window.cancelAnimationFrame(frameId);
+      if (timeoutId !== null) window.clearTimeout(timeoutId);
+    };
+  }, [remoteSessions.cache.initialized, remoteSessions.ensureLoaded, remoteSessionsOpen]);
 
   useEffect(() => {
     if (activePage === "skills") skills.ensureLoaded();
@@ -439,8 +505,9 @@ export function App(): ReactElement {
 
   useEffect(() => {
     if (!settingsOpen) return;
+    void automation.ensureDetailsLoaded().catch(() => undefined);
     void window.sessionSearch.getSessionSyncHookStatus().then(setSessionHookStatus).catch(() => setSessionHookStatus(null));
-  }, [settingsOpen]);
+  }, [automation.ensureDetailsLoaded, settingsOpen]);
 
   const toggleSessionSyncHook = useCallback(async (enabled: boolean) => {
     setSessionHookBusy(true);
@@ -484,6 +551,11 @@ export function App(): ReactElement {
     window.localStorage.setItem(LANGUAGE_STORAGE_KEY, language);
   }, [language]);
 
+  useLayoutEffect(() => {
+    document.documentElement.style.setProperty("--message-font-size", messageFontSizeCss(messageFontSize));
+    window.localStorage.setItem(MESSAGE_FONT_SIZE_STORAGE_KEY, messageFontSize);
+  }, [messageFontSize]);
+
   useEffect(() => {
     window.localStorage.setItem(SIDEBAR_SECTIONS_STORAGE_KEY, serializeSidebarSections(sidebarSections));
   }, [sidebarSections]);
@@ -511,9 +583,15 @@ export function App(): ReactElement {
   }, []);
 
   useEffect(() => {
-    const offIndex = window.sessionSearch.onIndexStatus((nextStatus) => {
-      setIndexStatus(nextStatus);
+    let active = true;
+    const snapshotEventVersion = indexStatusEventVersionRef.current;
+    const applyIndexStatus = (nextStatus: IndexStatus): void => {
+      setIndexStatus((current) => coalesceIndexStatusForRender(current, nextStatus));
       setRefreshFeedback((current) => reduceIndexFeedback(current, { type: "index-status", status: nextStatus }));
+    };
+    const offIndex = window.sessionSearch.onIndexStatus((nextStatus) => {
+      indexStatusEventVersionRef.current += 1;
+      applyIndexStatus(nextStatus);
       if (!nextStatus.running) {
         setSessionFamilyRefreshVersion((current) => current + 1);
         if (activePage === "sessions") void load();
@@ -522,6 +600,11 @@ export function App(): ReactElement {
         void loadWorkbenchSessions();
       }
     });
+    void window.sessionSearch.getIndexStatus()
+      .then((nextStatus) => {
+        if (active && indexStatusEventVersionRef.current === snapshotEventVersion) applyIndexStatus(nextStatus);
+      })
+      .catch(() => undefined);
     const offFocus = window.sessionSearch.onFocusSearch(() => {
       void navigateToPage("sessions").then((navigated) => {
         if (navigated) window.requestAnimationFrame(() => searchRef.current?.focus());
@@ -539,6 +622,7 @@ export function App(): ReactElement {
       if (activePage === "sessions") void load();
     });
     return () => {
+      active = false;
       offIndex();
       offFocus();
       offOpenSettings();
@@ -587,9 +671,9 @@ export function App(): ReactElement {
       if (event.key === "Escape") {
         if (sshDialogOpen) setSshDialogOpen(false);
         else if (wslDialogOpen) setWslDialogOpen(false);
-        else if (migrationDialog) setMigrationDialog(null);
+        else if (migrationDialog) closeMigrationDialog();
         else if (dialog) setDialog(null);
-        else if (bulkDeleteDialog && !bulkDeleteBusy) setBulkDeleteDialog(null);
+        else if (bulkDeleteDialog) setBulkDeleteDialog(null);
         else if (deleteSessionCandidate && !deletingSession) setDeleteSessionCandidate(null);
         else if (deleteTagName) setDeleteTagName(null);
         else if (contextMenu) setContextMenu(null);
@@ -864,13 +948,10 @@ export function App(): ReactElement {
       const rawMessage = error instanceof Error ? error.message : String(error);
       const message = rawMessage === "A related session is currently live. Stop it before deleting this session tree."
         ? t(rawMessage, "关联会话正在运行，请先停止后再删除整棵会话树。")
-        : rawMessage === "Live session detection failed. Deletion is disabled."
-        ? t(rawMessage, "Live 会话检测失败，删除操作已禁用。")
         : rawMessage;
-      if (
-        rawMessage === "A related session is currently live. Stop it before deleting this session tree."
-        || rawMessage === "Live session detection failed. Deletion is disabled."
-      ) setDeleteSessionBlockedMessage(message);
+      if (rawMessage === "A related session is currently live. Stop it before deleting this session tree.") {
+        setDeleteSessionBlockedMessage(message);
+      }
       setActionStatus({ kind: "error", message });
     } finally {
       setDeletingSession(false);
@@ -919,9 +1000,28 @@ export function App(): ReactElement {
   }
 
   async function freshLiveKeysForBulkDelete(): Promise<string[]> {
-    const snapshot = await window.sessionSearch.getLiveSessions(true);
-    if (snapshot.error) throw new Error(t("Live session detection failed. Deletion is disabled.", "Live 会话检测失败，删除操作已禁用。"));
-    return snapshot.sessions.map(liveSessionDeleteKey);
+    try {
+      const snapshot = await window.sessionSearch.getLiveSessions(true);
+      if (snapshot.error) {
+        setActionStatus({
+          kind: "error",
+          message: t(
+            "Could not verify running sessions. Confirm that related sessions have stopped before deleting.",
+            "无法确认正在运行的会话，请在删除前确认相关会话已经停止。",
+          ),
+        });
+      }
+      return snapshot.sessions.map(liveSessionDeleteKey);
+    } catch {
+      setActionStatus({
+        kind: "error",
+        message: t(
+          "Could not verify running sessions. Confirm that related sessions have stopped before deleting.",
+          "无法确认正在运行的会话，请在删除前确认相关会话已经停止。",
+        ),
+      });
+      return [];
+    }
   }
 
   async function previewSelectedSessions(): Promise<void> {
@@ -1051,23 +1151,24 @@ export function App(): ReactElement {
     }
   }
 
-  async function uploadRemoteSession(session: SessionSearchResult): Promise<void> {
-    await runAction(
-      t("Uploading remote session", "正在上传远程会话"),
-      () => window.sessionSearch.uploadRemoteSession(session.sessionKey),
-      (result) => {
-        if (result.status === "skipped") return t("Remote session is already up to date.", "远程会话已是最新。");
-        if (result.status === "updated") return t("Remote session updated.", "远程会话已更新。");
-        return t("Remote session uploaded.", "远程会话已上传。");
-      },
-    );
+  function uploadRemoteSession(session: SessionSearchResult): void {
+    remoteSessions.queueUploads([{
+      itemId: session.sessionKey,
+      sessionKey: session.sessionKey,
+      title: session.displayTitle,
+    }]);
+    const message = t("Session upload started in the background.", "会话已开始在后台上传。");
+    setActionStatus({ kind: "success", message });
+    window.setTimeout(() => {
+      setActionStatus((current) => current?.kind === "success" && current.message === message ? null : current);
+    }, 1800);
   }
 
-  async function exportMarkdown(sessionKey: string): Promise<void> {
+  async function exportMarkdown(sessionKey: string, includeToolTrace: boolean): Promise<void> {
     setContextMenu(null);
     setActionStatus({ kind: "running", message: t("Exporting markdown...", "正在导出 Markdown...") });
     try {
-      const exported = await window.sessionSearch.exportMarkdown(sessionKey);
+      const exported = await window.sessionSearch.exportMarkdown(sessionKey, { includeToolTrace });
       if (!exported) {
         setActionStatus(null);
         return;
@@ -1119,9 +1220,15 @@ export function App(): ReactElement {
     });
   }
 
+  function closeMigrationDialog(): void {
+    migrationDialogRef.current = null;
+    setMigrationDialog(null);
+  }
+
   async function runMigration(target: SessionMigrationProgress["target"]): Promise<void> {
     if (!migrationDialog || migrationDialog.kind !== "select") return;
     const session = migrationDialog.session;
+    setMigrationBusy(true);
     setContextMenu(null);
     setMigrationProgress(null);
     setActionStatus({ kind: "running", message: t("Preparing migration...", "正在准备迁移...") });
@@ -1140,14 +1247,20 @@ export function App(): ReactElement {
         `Migrated to ${migrationAgentLabel(result.target)} (${strategyLabel}): ${result.targetSessionId}`,
         `已迁移到 ${migrationAgentLabel(result.target)}（${strategyLabel}）：${result.targetSessionId}`,
       );
-      setActionStatus({ kind: "success", message: result.warning ? `${message}\n${result.warning}` : message });
-      setMigrationDialog(result.launched ? null : { kind: "launch-failed", session, result });
-      window.setTimeout(() => {
-        setActionStatus((current) => (current?.kind === "success" && current.message.startsWith(message) ? null : current));
-      }, 2200);
+      const dialogStillOpen = migrationDialogRef.current?.kind === "select";
+      const backgroundLaunchFailure = !result.launched && !dialogStillOpen;
+      const detail = result.warning || (!result.launched ? result.resumeCommand : "");
+      setActionStatus({ kind: backgroundLaunchFailure ? "error" : "success", message: detail ? `${message}\n${detail}` : message });
+      if (dialogStillOpen) setMigrationDialog(result.launched ? null : { kind: "launch-failed", session, result });
+      if (!backgroundLaunchFailure) {
+        window.setTimeout(() => {
+          setActionStatus((current) => (current?.kind === "success" && current.message.startsWith(message) ? null : current));
+        }, 2200);
+      }
     } catch (error) {
       setActionStatus({ kind: "error", message: error instanceof Error ? error.message : String(error) });
     } finally {
+      setMigrationBusy(false);
       setMigrationProgress(null);
     }
   }
@@ -1181,14 +1294,6 @@ export function App(): ReactElement {
         message: error instanceof Error ? error.message : String(error),
       }));
     }
-  }
-
-  async function updateDefaultTerminal(defaultTerminal: AppSettings["defaultTerminal"]): Promise<void> {
-    await updateSettings({ defaultTerminal });
-  }
-
-  async function updateGlobalShortcut(globalShortcut: AppSettings["globalShortcut"]): Promise<void> {
-    await updateSettings({ globalShortcut });
   }
 
   async function checkAppUpdate(): Promise<void> {
@@ -1228,55 +1333,75 @@ export function App(): ReactElement {
     }
   }
 
-  async function updateSettings(next: AppSettingsUpdate): Promise<void> {
-    const newlyEnabledSources = OPTIONAL_SOURCE_SETTINGS.filter((item) => next[item.key] === true && !appSettings?.[item.key]);
+  function scheduleOptionalSourceRefresh(): void {
+    optionalSourceRefreshGenerationRef.current += 1;
+    setSettingsFeedback({ kind: "success", message: t("Loading sessions in the background...", "正在后台加载会话...") });
+    void optionalSourceRefreshQueue.request(async () => {
+      const generation = optionalSourceRefreshGenerationRef.current;
+      const shouldRefreshIndex = optionalSourceIndexRefreshKeysRef.current.size > 0;
+      optionalSourceIndexRefreshKeysRef.current.clear();
+      try {
+        if (shouldRefreshIndex) {
+          const status = await window.sessionSearch.refreshIndex();
+          if (status.error) throw new Error(status.error);
+        }
+        await Promise.all([load(), loadSidebarMetadata(), loadStats()]);
+        if (optionalSourceRefreshGenerationRef.current !== generation) return;
+        setPendingPersonalSources(emptyPendingPersonalSources());
+        const message = t("Sources ready.", "来源已就绪。");
+        setSettingsFeedback({ kind: "success", message });
+        window.setTimeout(() => {
+          setSettingsFeedback((current) =>
+            current?.kind === "success" && current.message === message ? null : current);
+        }, 1600);
+      } catch (error) {
+        if (optionalSourceRefreshGenerationRef.current !== generation) return;
+        setPendingPersonalSources(emptyPendingPersonalSources());
+        setSettingsFeedback({ kind: "error", message: error instanceof Error ? error.message : String(error) });
+      }
+    }).catch(() => undefined);
+  }
+
+  function updateSettings(next: AppSettingsUpdate): Promise<void> {
+    const request = settingsUpdateQueueRef.current.then(() => performSettingsUpdate(next));
+    settingsUpdateQueueRef.current = request.catch(() => undefined);
+    return request;
+  }
+
+  async function performSettingsUpdate(next: AppSettingsUpdate): Promise<void> {
+    const currentSettings = appSettingsRef.current;
+    const changedSources = OPTIONAL_SOURCE_SETTINGS.filter((item) => item.key in next && next[item.key] !== currentSettings?.[item.key]);
     const quotaVisibilityChanged =
-      ("hideCodexQuota" in next && next.hideCodexQuota !== appSettings?.hideCodexQuota) ||
-      ("hideClaudeQuota" in next && next.hideClaudeQuota !== appSettings?.hideClaudeQuota);
+      ("hideCodexQuota" in next && next.hideCodexQuota !== currentSettings?.hideCodexQuota) ||
+      ("hideClaudeQuota" in next && next.hideClaudeQuota !== currentSettings?.hideClaudeQuota);
+    const remoteSyncConfigurationChanged =
+      ("remoteSyncEnabled" in next && next.remoteSyncEnabled !== currentSettings?.remoteSyncEnabled) ||
+      ("remoteSyncSupabaseUrl" in next && next.remoteSyncSupabaseUrl !== currentSettings?.remoteSyncSupabaseUrl) ||
+      ("remoteSyncSupabaseAnonKey" in next && next.remoteSyncSupabaseAnonKey !== currentSettings?.remoteSyncSupabaseAnonKey);
     setSettingsFeedback({ kind: "running", message: t("Saving settings...", "正在保存设置...") });
     try {
       const nextSettings = await window.sessionSearch.setSettings(next);
+      appSettingsRef.current = nextSettings;
       setAppSettings(nextSettings);
+      if (remoteSyncConfigurationChanged) remoteSessions.invalidate();
       if ("remoteSyncEnabled" in next) {
-        setSessionHookStatus(await window.sessionSearch.getSessionSyncHookStatus());
+        void window.sessionSearch.getSessionSyncHookStatus().then(setSessionHookStatus).catch(() => setSessionHookStatus(null));
       }
       if (quotaVisibilityChanged) void loadQuotas();
 
-      if (newlyEnabledSources.length > 0) {
-        // Keep the toggle responsive: scan optional sources in the background
-        // and only reveal their sidebar filters once that scan finishes.
+      if (changedSources.length > 0) {
         setPendingPersonalSources((current) => {
           const pending = { ...current };
-          for (const item of newlyEnabledSources) pending[item.pendingKey] = true;
+          for (const item of changedSources) pending[item.pendingKey] = nextSettings[item.key];
           return pending;
         });
-        setSettingsFeedback({ kind: "success", message: t("Loading sessions in the background...", "正在后台加载会话...") });
-        void window.sessionSearch
-          .refreshIndex()
-          .then(async () => {
-            setPendingPersonalSources((current) => {
-              const pending = { ...current };
-              for (const item of newlyEnabledSources) pending[item.pendingKey] = false;
-              return pending;
-            });
-            await Promise.all([load(), loadSidebarMetadata(), loadStats()]);
-            setSettingsFeedback({ kind: "success", message: t("Sources ready.", "来源已就绪。") });
-            window.setTimeout(() => {
-              setSettingsFeedback((current) => (current?.kind === "success" ? null : current));
-            }, 1600);
-          })
-          .catch((error) => {
-            setPendingPersonalSources((current) => {
-              const pending = { ...current };
-              for (const item of newlyEnabledSources) pending[item.pendingKey] = false;
-              return pending;
-            });
-            setSettingsFeedback({ kind: "error", message: error instanceof Error ? error.message : String(error) });
-          });
+        for (const item of changedSources) {
+          if (nextSettings[item.key]) optionalSourceIndexRefreshKeysRef.current.add(item.pendingKey);
+          else optionalSourceIndexRefreshKeysRef.current.delete(item.pendingKey);
+        }
+        scheduleOptionalSourceRefresh();
         return;
       }
-
-      await Promise.all([load(), loadSidebarMetadata(), loadStats()]);
       setSettingsFeedback({ kind: "success", message: t("Settings saved.", "设置已保存。") });
       window.setTimeout(() => {
         setSettingsFeedback((current) => (current?.kind === "success" ? null : current));
@@ -1284,6 +1409,23 @@ export function App(): ReactElement {
     } catch (error) {
       setSettingsFeedback({ kind: "error", message: error instanceof Error ? error.message : String(error) });
     }
+  }
+
+  async function importV1Data(): Promise<V1ImportResult> {
+    const result = await window.sessionSearch.importV1Data();
+    const [nextSettings, nextEnvironments] = await Promise.all([
+      window.sessionSearch.getSettings(),
+      window.sessionSearch.listEnvironments(),
+      load(),
+      loadSidebarMetadata(),
+      loadStats(),
+    ]);
+    appSettingsRef.current = nextSettings;
+    setAppSettings(nextSettings);
+    setEnvironments(nextEnvironments);
+    remoteSessions.invalidate();
+    void window.sessionSearch.getSessionSyncHookStatus().then(setSessionHookStatus).catch(() => setSessionHookStatus(null));
+    return result;
   }
 
   async function reloadEnvironmentData(): Promise<void> {
@@ -1489,7 +1631,7 @@ export function App(): ReactElement {
                 setActivePage("sessions");
               }}
               workflows={workbenchWorkflows}
-              workflowsLoading={automation.loading}
+              workflowsLoading={automation.detailsLoaded ? automation.loading : automation.workflowSidebarLoading}
               workflowsError={automation.error}
               onOpenWorkflow={(workflowId) => {
                 void automation.api.selectWorkflow(workflowId).then((next) => {
@@ -1504,8 +1646,9 @@ export function App(): ReactElement {
                 }).catch((error) => setActionStatus({ kind: "error", message: error instanceof Error ? error.message : String(error) }));
               }}
               onShowWorkflows={() => void navigateToPage("workflows")}
-              runtimes={automation.snapshot.runtimes}
-              runtimeChannels={automation.snapshot.channels}
+              runtimes={automation.detailsLoaded ? automation.snapshot.runtimes : []}
+              runtimeChannels={automation.detailsLoaded ? automation.snapshot.channels : []}
+              runtimeOverviewAvailable={automation.detailsLoaded}
               mcpServers={workbenchMcpServers}
               chatRooms={workbenchChatRooms}
               memoryEnabled={Boolean(appSettings?.openVikingMemoryEnabled)}
@@ -1552,8 +1695,8 @@ export function App(): ReactElement {
                 remoteSessionsOpen,
                 selected,
                 sessions: displayedResults,
-                hasMoreSessions,
-                pageSize: SESSION_PAGE_SIZE,
+                currentPage,
+                totalPages,
                 liveSessionKeys,
                 liveDetectionFailed,
                 bulkSelectionActive,
@@ -1611,7 +1754,7 @@ export function App(): ReactElement {
                 renameSession: handleRowRename,
                 toggleFavorite: handleRowFavorite,
                 openContextMenu: handleRowContextMenu,
-                loadMore,
+                goToPage,
                 toggleBulkSession,
                 toggleLoadedSelection,
                 exitBulkSelection,
@@ -1708,7 +1851,7 @@ export function App(): ReactElement {
                 settings={appSettings}
                 language={language}
                 feedback={settingsFeedback}
-                onSettingsChange={(next) => void updateSettings(next)}
+          onSettingsChange={updateSettings}
                 onApplyToCodex={(apiConfig) => void applyApiConfigToCodex(apiConfig)}
                 onApplyToClaude={(claudeApiConfig) => void applyApiConfigToClaude(claudeApiConfig)}
               />
@@ -1785,7 +1928,7 @@ export function App(): ReactElement {
             () => window.sessionSearch.copyMarkdown(session.sessionKey),
             t("Markdown copied.", "Markdown 已复制。"),
           ),
-          exportMarkdown: (session) => void exportMarkdown(session.sessionKey),
+          exportMarkdown: (session, includeToolTrace) => void exportMarkdown(session.sessionKey, includeToolTrace),
           exportJson: (session) => void exportJson(session.sessionKey),
           copyPlain: (session) => void runAction(
             t("Copying plain text", "正在复制纯文本"),
@@ -1845,7 +1988,7 @@ export function App(): ReactElement {
           onCopyMarkdown={() =>
             void runAction(t("Copying markdown", "正在复制 Markdown"), () => window.sessionSearch.copyMarkdown(contextMenu.session.sessionKey), t("Markdown copied.", "Markdown 已复制。"))
           }
-          onExportMarkdown={() => void exportMarkdown(contextMenu.session.sessionKey)}
+          onExportMarkdown={(includeToolTrace) => void exportMarkdown(contextMenu.session.sessionKey, includeToolTrace)}
           onExportJson={() => void exportJson(contextMenu.session.sessionKey)}
           onDelete={() => requestDeleteSession(contextMenu.session)}
           onReveal={() =>
@@ -1863,11 +2006,11 @@ export function App(): ReactElement {
           session={migrationDialog.session}
           targets={migrationTargetsForSession(migrationDialog.session, appSettings ?? DEFAULT_MIGRATION_TARGET_SETTINGS)}
           language={language}
-          busy={actionStatus?.kind === "running"}
+          busy={migrationBusy}
           progress={migrationProgress}
           throughTurnIndex={migrationDialog.throughTurnIndex}
           onSelect={(target) => void runMigration(target)}
-          onClose={() => setMigrationDialog(null)}
+          onClose={closeMigrationDialog}
         />
       ) : null}
 
@@ -1876,7 +2019,7 @@ export function App(): ReactElement {
           session={migrationDialog.session}
           result={migrationDialog.result}
           language={language}
-          onClose={() => setMigrationDialog(null)}
+          onClose={closeMigrationDialog}
         />
       ) : null}
 
@@ -1940,7 +2083,7 @@ export function App(): ReactElement {
           onDateChange={(dateValue) => setBulkDeleteDialog((current) => current ? { ...current, dateValue, request: null, preview: null } : current)}
           onPreview={() => void previewDateCleanup()}
           onConfirm={() => void confirmBulkDelete()}
-          onCancel={() => { if (!bulkDeleteBusy) setBulkDeleteDialog(null); }}
+          onCancel={() => setBulkDeleteDialog(null)}
         />
       ) : null}
 
@@ -1949,7 +2092,7 @@ export function App(): ReactElement {
           platform={RUNTIME_PLATFORM}
           initialSection={settingsInitialSection}
           settings={appSettings}
-          runtimeChannels={automation.snapshot.channels}
+          runtimeChannels={automation.detailsLoaded ? automation.snapshot.channels : []}
           appUpdateStatus={appUpdateStatus}
           appUpdateProgress={appUpdateProgress}
           appUpdateBusy={appUpdateBusy}
@@ -1959,15 +2102,15 @@ export function App(): ReactElement {
           diagnosingEnvironmentId={diagnosingEnvironmentId}
           theme={theme}
           language={language}
+          messageFontSize={messageFontSize}
           feedback={settingsFeedback}
-          onSettingsChange={(next) => void updateSettings(next)}
+          onSettingsChange={updateSettings}
           onCheckAppUpdate={() => void checkAppUpdate()}
           onInstallAppUpdate={() => void installAppUpdate()}
           onSkipAppUpdate={(untilNextVersion) => void skipAppUpdate(untilNextVersion)}
           onThemeChange={setTheme}
           onLanguageChange={setLanguage}
-          onDefaultTerminalChange={(terminal) => void updateDefaultTerminal(terminal)}
-          onGlobalShortcutChange={(shortcut) => void updateGlobalShortcut(shortcut)}
+          onMessageFontSizeChange={setMessageFontSize}
           sessionHookStatus={sessionHookStatus}
           sessionHookBusy={sessionHookBusy}
           onSessionHookChange={(enabled) => void toggleSessionSyncHook(enabled)}
@@ -1976,6 +2119,7 @@ export function App(): ReactElement {
           onDeleteEnvironment={(environment) => void deleteEnvironment(environment)}
           onAddSsh={() => setSshDialogOpen(true)}
           onAddWsl={() => setWslDialogOpen(true)}
+          onImportV1={importV1Data}
           onOpenApiConfig={() => {
             setSettingsOpen(false);
             void navigateToPage("providers");
@@ -2012,9 +2156,10 @@ export function App(): ReactElement {
         <RemoteSessionsDialog
           cache={remoteSessions.cache}
           language={language}
-          onRefresh={remoteSessions.load}
-          onRemoteSessionUploaded={remoteSessions.recordUpload}
-          onRemoteSessionsDeleted={remoteSessions.recordDeletion}
+          onRefresh={remoteSessions.refresh}
+          onQueueUploads={remoteSessions.queueUploads}
+          onQueueDeletions={remoteSessions.queueDeletions}
+          onContinueInBackground={continueRemoteSessionsInBackground}
           onRestored={(result) => {
             if (!result.launched) setActionStatus({ kind: "error", message: result.warning || result.resumeCommand });
             void Promise.all([load(), loadSidebarMetadata()]);

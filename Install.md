@@ -205,6 +205,10 @@ Windows PowerShell 用：
 $env:ELECTRON_MIRROR = "https://npmmirror.com/mirrors/electron/"
 ```
 
+### 常见问题排查
+
+如果安装或启动遇到 Electron 相关错误（如 `Error: ENOENT: no such file or directory, open '.../electron/path.txt'` 或 `dyld: Library not loaded`），请参考 [macOS Electron 安装故障排除指南](docs/troubleshooting-electron-installation.md)。
+
 ### 像普通 App 一样打开（macOS）
 
 ```bash

@@ -6,6 +6,7 @@ import type {
   RemoteSessionDetailSnapshot,
   RemoteSessionListItem,
   RemoteSessionSourceArchive,
+  RemoteSessionStatus,
 } from "../../core/remote-session-sync";
 import type { SessionSyncBinding } from "../../core/session-store";
 import type { SessionSyncQueueEvent } from "../../core/session-sync-queue";
@@ -162,6 +163,7 @@ function createHarness(options: {
   environment?: SessionEnvironment | null;
   queueEvents?: SessionSyncQueueEvent[];
   localRevision?: string;
+  uncachedSessionKeys?: string[];
   now?: number;
 } = {}) {
   const settings = options.settings ?? structuredClone(defaultSettings);
@@ -171,12 +173,21 @@ function createHarness(options: {
   const environment = options.environment ?? null;
   const queueEvents = options.queueEvents ?? [];
   const localRevision = options.localRevision ?? "local-revision";
+  const uncachedSessionKeys = new Set(options.uncachedSessionKeys ?? []);
 
   const getSession = vi.fn((sessionKey: string) =>
     sessions.find((session) => session.sessionKey === sessionKey) ?? null);
   const getSessionSyncBindingForLocalKey = vi.fn((sessionKey: string) =>
     bindings.find((binding) => binding.localSessionKey === sessionKey) ?? null);
+  const setSessionSourceAvailable = vi.fn((sessionKey: string, available: boolean) => {
+    const session = sessions.find((candidate) => candidate.sessionKey === sessionKey);
+    if (session) session.sourceAvailable = available;
+  });
   const upsertSessionSyncBinding = vi.fn((binding: SessionSyncBinding) => {
+    const remoteIndex = bindings.findIndex((candidate) =>
+      candidate.remoteSessionId === binding.remoteSessionId
+      && candidate.localSessionKey !== binding.localSessionKey);
+    if (remoteIndex >= 0) bindings.splice(remoteIndex, 1);
     const index = bindings.findIndex((candidate) => candidate.localSessionKey === binding.localSessionKey);
     if (index >= 0) bindings[index] = binding;
     else bindings.push(binding);
@@ -189,13 +200,16 @@ function createHarness(options: {
     getSession,
     getAllMessages: vi.fn(() => []),
     getTraceEvents: vi.fn(() => []),
+    getAttachmentFile: vi.fn(() => null),
     getSessionSourceArtifacts: vi.fn(() => []),
+    isSessionContentFresh: vi.fn((sessionKey: string) => !uncachedSessionKeys.has(sessionKey)),
     searchSessions: vi.fn((searchOptions?: { excludeSubagents?: boolean }) =>
       searchOptions?.excludeSubagents
         ? sessions.filter((session) => session.isSubagent !== true)
         : sessions),
     getEnvironment: vi.fn((environmentId: string) =>
       environment?.id === environmentId ? environment : null),
+    setSessionSourceAvailable,
     getSessionSyncBindingForLocalKey,
     listSessionSyncBindings: vi.fn(() => bindings),
     upsertSessionSyncBinding,
@@ -205,6 +219,7 @@ function createHarness(options: {
   const client: RemoteSessionClientPort = {
     checkStatus: vi.fn(async () => ({ kind: "ready" as const, setupSql: "setup sql" })),
     listRemoteSessions: vi.fn(async () => [remote]),
+    listRemoteSessionsForSync: vi.fn(async () => [remote]),
     getRemoteSession: vi.fn(async () => remote),
     uploadSession: vi.fn(async () => ({ status: "uploaded" as const, remoteSession: remote })),
     getDetailSnapshot: vi.fn(async () => ({} as RemoteSessionDetailSnapshot)),
@@ -250,7 +265,7 @@ function createHarness(options: {
     })),
     sessionSyncHookStatus: vi.fn(() => ({ installed: true, claude: true, codex: true })),
   };
-  const ensureSessionDetails = vi.fn(async () => undefined);
+  const ensureSessionDetails = vi.fn(async (_sessionKey: string) => undefined);
   const runIndexSync = vi.fn(async () => undefined);
   const localRestoreDependencies = restoreDependencies();
   const sourceRestoreDependencies = restoreDependencies();
@@ -308,6 +323,7 @@ function createHarness(options: {
     intervalCallbacks,
     intervalToken,
     logError,
+    setSessionSourceAvailable,
   };
 }
 
@@ -322,6 +338,20 @@ describe("RemoteSessionService cloud orchestration", () => {
       message: "Configure Supabase URL and anon key in Settings to sync remote sessions.",
     });
     expect(harness.createClient).not.toHaveBeenCalled();
+  });
+
+  it("loads readiness and sync items concurrently", async () => {
+    const harness = createHarness({ settings: configuredSettings() });
+    let resolveStatus!: (status: RemoteSessionStatus) => void;
+    vi.mocked(harness.client.checkStatus).mockImplementation(() => new Promise((resolve) => {
+      resolveStatus = resolve;
+    }));
+
+    const snapshot = harness.service.loadSyncSnapshot();
+    await vi.waitFor(() => expect(harness.client.listRemoteSessionsForSync).toHaveBeenCalledOnce());
+    resolveStatus({ kind: "ready", setupSql: "setup sql" });
+
+    await expect(snapshot).resolves.toEqual({ status: { kind: "ready", setupSql: "setup sql" }, items: [] });
   });
 
   it("hydrates details before building an upload and records the resulting binding", async () => {
@@ -371,6 +401,52 @@ describe("RemoteSessionService cloud orchestration", () => {
       "{}",
       [sourceObject, attachmentObject],
     );
+  });
+
+  it("uploads a cached SSH session when its original file has disappeared", async () => {
+    const cached = localSession({
+      sessionKey: "ssh:cached",
+      rawId: "cached",
+      environmentId: "ssh-1",
+      environmentKind: "ssh",
+      environmentLabel: "SSH",
+    });
+    const harness = createHarness({ settings: configuredSettings(), sessions: [cached] });
+    harness.ensureSessionDetails.mockRejectedValue(
+      new Error("SSH remote sync failed with exit code 1. Traceback: FileNotFoundError: No such file or directory"),
+    );
+
+    await expect(harness.service.upload(cached.sessionKey)).resolves.toMatchObject({ status: "uploaded" });
+
+    expect(harness.setSessionSourceAvailable).toHaveBeenCalledWith(cached.sessionKey, false);
+    expect(harness.buildUpload).toHaveBeenCalled();
+    expect(harness.client.uploadSession).toHaveBeenCalled();
+  });
+
+  it("rejects a missing SSH session when only its summary is cached", async () => {
+    const unavailable = localSession({
+      sessionKey: "ssh:uncached",
+      rawId: "uncached",
+      environmentId: "ssh-1",
+      environmentKind: "ssh",
+      environmentLabel: "SSH",
+    });
+    const harness = createHarness({
+      settings: configuredSettings(),
+      sessions: [unavailable],
+      uncachedSessionKeys: [unavailable.sessionKey],
+    });
+    harness.ensureSessionDetails.mockRejectedValue(
+      new Error("SSH remote sync failed with exit code 1. Traceback: FileNotFoundError: No such file or directory"),
+    );
+
+    await expect(harness.service.upload(unavailable.sessionKey)).rejects.toThrow(
+      "its full transcript is not cached locally",
+    );
+
+    expect(harness.setSessionSourceAvailable).toHaveBeenCalledWith(unavailable.sessionKey, false);
+    expect(harness.buildUpload).not.toHaveBeenCalled();
+    expect(harness.client.uploadSession).not.toHaveBeenCalled();
   });
 
   it("uploads a cached Cursor conversation while preserving an existing cloud source archive", async () => {
@@ -475,17 +551,24 @@ describe("RemoteSessionService cloud orchestration", () => {
     expect(harness.createClient).not.toHaveBeenCalled();
   });
 
-  it("rejects Pi uploads before creating a client or hydrating content", async () => {
+  it("uploads Pi sessions through manual remote sync", async () => {
     const harness = createHarness({
       settings: configuredSettings(),
       sessions: [localSession({ sessionKey: "pi:session-1", rawId: "session-1", source: "pi-cli" })],
     });
 
-    await expect(harness.service.upload("pi:session-1")).rejects.toThrow("Pi sessions cannot be saved remotely yet.");
-    expect(harness.createClient).not.toHaveBeenCalled();
-    expect(harness.ensureSessionDetails).not.toHaveBeenCalled();
-    expect(harness.buildUpload).not.toHaveBeenCalled();
-    expect(harness.client.uploadSession).not.toHaveBeenCalled();
+    await expect(harness.service.upload("pi:session-1")).resolves.toMatchObject({ status: "uploaded" });
+    expect(harness.createClient).toHaveBeenCalledOnce();
+    expect(harness.ensureSessionDetails).toHaveBeenCalledWith("pi:session-1");
+    expect(harness.buildUpload).toHaveBeenCalledWith(
+      harness.store,
+      "pi:session-1",
+      123,
+      undefined,
+      true,
+      undefined,
+    );
+    expect(harness.client.uploadSession).toHaveBeenCalledOnce();
   });
 
   it("rejects an upload when both the bound local and cloud revisions changed", async () => {
@@ -528,7 +611,7 @@ describe("RemoteSessionService cloud orchestration", () => {
     expect(harness.store.deleteSessionSyncBindingForRemoteId).toHaveBeenNthCalledWith(2, "remote-2");
   });
 
-  it("hydrates subagent bundles before excluding them from the top-level sync comparison", async () => {
+  it("excludes subagents without hydrating or hashing unrelated local-only sessions", async () => {
     const regular = localSession();
     const subagent = localSession({
       sessionKey: "local:subagent",
@@ -544,67 +627,174 @@ describe("RemoteSessionService cloud orchestration", () => {
 
     await harness.service.listSyncItems();
 
+    expect(harness.client.listRemoteSessionsForSync).toHaveBeenCalledOnce();
+    expect(harness.client.listRemoteSessions).not.toHaveBeenCalled();
     expect(harness.store.searchSessions).toHaveBeenCalledWith({
       limit: 100_000,
       excludeSubagents: false,
     });
-    expect(harness.ensureSessionDetails).toHaveBeenCalledTimes(2);
-    expect(harness.ensureSessionDetails).toHaveBeenCalledWith(regular.sessionKey);
-    expect(harness.ensureSessionDetails).toHaveBeenCalledWith(subagent.sessionKey);
-    expect(Math.max(...harness.ensureSessionDetails.mock.invocationCallOrder)).toBeLessThan(
-      harness.buildRevision.mock.invocationCallOrder[0],
-    );
+    expect(harness.ensureSessionDetails).not.toHaveBeenCalled();
+    expect(harness.buildRevision).not.toHaveBeenCalled();
     expect(harness.buildSyncItems).toHaveBeenCalledWith(
-      [{ session: regular, revision: "local-revision" }],
+      [{ session: regular, revision: null }],
       [],
       [],
     );
   });
 
-  it("uses the attachment sync setting when comparing local and cloud revisions", async () => {
+  it("lists indexed sessions without hydrating or hashing their full contents", async () => {
+    const healthy = localSession();
+    const unavailable = localSession({
+      sessionKey: "ssh:unavailable",
+      rawId: "unavailable",
+      displayTitle: "Unavailable SSH session",
+      environmentId: "ssh-1",
+      environmentKind: "ssh",
+      environmentLabel: "SSH",
+    });
+    const harness = createHarness({
+      settings: configuredSettings(),
+      sessions: [healthy, unavailable],
+      uncachedSessionKeys: [unavailable.sessionKey],
+    });
+    harness.ensureSessionDetails.mockImplementation(async (sessionKey) => {
+      if (sessionKey === unavailable.sessionKey) {
+        throw new Error("SSH remote sync failed with exit code 1. Traceback (most recent call last):\nFileNotFoundError: [Errno 2] No such file or directory");
+      }
+    });
+
+    await harness.service.listSyncItems();
+
+    expect(harness.ensureSessionDetails).not.toHaveBeenCalled();
+    expect(harness.buildRevision).not.toHaveBeenCalled();
+    expect(harness.client.getDetailSnapshot).not.toHaveBeenCalled();
+    expect(harness.buildSyncItems).toHaveBeenCalledWith(
+      [
+        { session: healthy, revision: null },
+        { session: unavailable, revision: null },
+      ],
+      [expect.objectContaining({ id: "remote-1" })],
+      [],
+    );
+    expect(harness.setSessionSourceAvailable).not.toHaveBeenCalled();
+    expect(harness.logError).not.toHaveBeenCalled();
+  });
+
+  it("excludes an unavailable SSH summary without a cached transcript from later comparisons", async () => {
+    const unavailable = localSession({
+      sessionKey: "ssh:uncached",
+      rawId: "uncached",
+      environmentId: "ssh-1",
+      environmentKind: "ssh",
+      environmentLabel: "SSH",
+      sourceAvailable: false,
+    });
+    const harness = createHarness({
+      settings: configuredSettings(),
+      sessions: [unavailable],
+      uncachedSessionKeys: [unavailable.sessionKey],
+    });
+    vi.mocked(harness.client.listRemoteSessionsForSync).mockResolvedValue([]);
+
+    await harness.service.listSyncItems();
+
+    expect(harness.ensureSessionDetails).not.toHaveBeenCalled();
+    expect(harness.buildRevision).not.toHaveBeenCalled();
+    expect(harness.buildSyncItems).toHaveBeenCalledWith([], [], []);
+  });
+
+  it("does not force one event-loop turn per local-only session", async () => {
+    const sessions = Array.from({ length: 16 }, (_, index) => localSession({
+      sessionKey: `local:session-${index}`,
+      rawId: `session-${index}`,
+      filePath: `/tmp/session-${index}.jsonl`,
+    }));
+    const harness = createHarness({ settings: configuredSettings(), sessions });
+    vi.mocked(harness.client.listRemoteSessionsForSync).mockResolvedValue([]);
+    const setImmediateSpy = vi.spyOn(globalThis, "setImmediate");
+    await harness.service.listSyncItems();
+    expect(setImmediateSpy).not.toHaveBeenCalled();
+    setImmediateSpy.mockRestore();
+    expect(harness.ensureSessionDetails).not.toHaveBeenCalled();
+    expect(harness.buildRevision).not.toHaveBeenCalled();
+    expect(harness.buildSyncItems).toHaveBeenCalledWith(
+      sessions.map((session) => ({ session, revision: null })),
+      [],
+      [],
+    );
+  });
+
+  it("does not inspect attachments while preparing the sync overview", async () => {
     const settings = configuredSettings();
     settings.syncSessionAttachments = false;
     const harness = createHarness({ settings });
 
     await harness.service.listSyncItems();
 
-    expect(harness.buildRevision).toHaveBeenCalledWith(
-      harness.store,
-      "local:session-1",
-      undefined,
-      false,
-      undefined,
+    expect(harness.buildRevision).not.toHaveBeenCalled();
+    expect(harness.store.getAttachmentFile).not.toHaveBeenCalled();
+    expect(harness.store.getSessionSourceArtifacts).not.toHaveBeenCalled();
+    expect(harness.buildSyncItems).toHaveBeenCalledWith(
+      [{ session: harness.sessions[0], revision: null }],
+      [expect.objectContaining({ id: "remote-1" })],
+      [],
     );
   });
 
-  it("compares a cached Cursor conversation without failing the cloud session list", async () => {
+  it("repairs an orphaned Cursor binding after its workspace key changes", async () => {
+    const current = localSession({
+      sessionKey: "cursor:empty-window:same-composer",
+      rawId: "same-composer",
+      source: "cursor-agent",
+      storageEnvironmentId: "local",
+    });
+    const remote = remoteSession({
+      sourceSessionKey: "cursor:repo-old:same-composer",
+      sourceAgent: "cursor",
+      sourceSource: "cursor-agent",
+    });
+    const oldBinding: SessionSyncBinding = {
+      localSessionKey: remote.sourceSessionKey,
+      remoteSessionId: remote.id,
+      lastLocalRevision: "old-local",
+      lastRemoteRevision: "old-remote",
+      lastSyncedAt: 42,
+      direction: "upload",
+    };
+    const harness = createHarness({
+      settings: configuredSettings(),
+      sessions: [current],
+      bindings: [oldBinding],
+      remote,
+    });
+
+    await harness.service.listSyncItems();
+
+    const repairedBinding = { ...oldBinding, localSessionKey: current.sessionKey };
+    expect(harness.store.upsertSessionSyncBinding).toHaveBeenCalledWith(repairedBinding);
+    expect(harness.buildSyncItems).toHaveBeenCalledWith(
+      [{ session: current, revision: null }],
+      [remote],
+      [repairedBinding],
+    );
+  });
+
+  it("lists a cached Cursor conversation without downloading its source archive", async () => {
     const cached = localSession({
       source: "cursor-agent",
       sourceAvailable: false,
     });
-    const archive: RemoteSessionSourceArchive = {
-      schemaVersion: 1,
-      entries: [],
-    };
     const harness = createHarness({
       settings: configuredSettings(),
       sessions: [cached],
     });
-    vi.mocked(harness.client.getDetailSnapshot).mockResolvedValue({
-      sourceArchive: archive,
-    } as RemoteSessionDetailSnapshot);
 
     await expect(harness.service.listSyncItems()).resolves.toEqual([]);
 
-    expect(harness.buildRevision).toHaveBeenCalledWith(
-      harness.store,
-      cached.sessionKey,
-      undefined,
-      true,
-      archive,
-    );
+    expect(harness.client.getDetailSnapshot).not.toHaveBeenCalled();
+    expect(harness.buildRevision).not.toHaveBeenCalled();
     expect(harness.buildSyncItems).toHaveBeenCalledWith(
-      [{ session: cached, revision: "local-revision" }],
+      [{ session: cached, revision: null }],
       [expect.objectContaining({ id: "remote-1" })],
       [],
     );
@@ -616,9 +806,10 @@ describe("RemoteSessionService cloud orchestration", () => {
 
     await harness.service.listSyncItems();
 
-    expect(harness.ensureSessionDetails).toHaveBeenCalledWith(session.sessionKey);
+    expect(harness.ensureSessionDetails).not.toHaveBeenCalled();
+    expect(harness.buildRevision).not.toHaveBeenCalled();
     expect(harness.buildSyncItems).toHaveBeenCalledWith(
-      [{ session, revision: "local-revision" }],
+      [{ session, revision: null }],
       expect.any(Array),
       [],
     );
@@ -749,22 +940,43 @@ describe("RemoteSessionService automatic queue lifecycle", () => {
     await harness.service.drainQueue();
 
     expect(harness.removeQueueFiles).toHaveBeenCalledWith([event.filePath]);
+    expect(harness.ensureSessionDetails).toHaveBeenCalledTimes(2);
     expect(harness.ensureSessionDetails).toHaveBeenCalledWith(parent.sessionKey);
     expect(harness.ensureSessionDetails).toHaveBeenCalledWith(child.sessionKey);
-    expect(harness.buildRevision).toHaveBeenCalledWith(
-      harness.store,
-      parent.sessionKey,
-      undefined,
-    );
+    expect(harness.buildRevision).not.toHaveBeenCalled();
+    expect(harness.buildUpload).toHaveBeenCalledOnce();
     expect(harness.client.uploadSession).toHaveBeenCalledOnce();
   });
 
-  it("removes an unchanged revision without creating a cloud client", async () => {
+  it("coalesces parent and subagent queue events into one upload", async () => {
+    const parent = localSession();
+    const child = localSession({
+      sessionKey: "local:child",
+      rawId: "child",
+      filePath: "/tmp/child.jsonl",
+      isSubagent: true,
+      parentSessionId: parent.rawId,
+    });
+    const events = [
+      queueEvent(),
+      queueEvent({ sessionId: child.rawId, transcriptPath: child.filePath, filePath: "/tmp/queue/child.json" }),
+    ];
+    const harness = createHarness({ settings: configuredSettings(), sessions: [parent, child], queueEvents: events });
+
+    await harness.service.drainQueue();
+
+    expect(harness.buildUpload).toHaveBeenCalledOnce();
+    expect(harness.client.uploadSession).toHaveBeenCalledOnce();
+    expect(harness.removeQueueFiles).toHaveBeenCalledWith(events.map((event) => event.filePath));
+  });
+
+  it("removes an unchanged revision without uploading storage objects", async () => {
     const event = queueEvent();
     const harness = createHarness({
       settings: configuredSettings(),
       queueEvents: [event],
       localRevision: "same-revision",
+      remote: remoteSession({ contentHash: "same-revision" }),
       bindings: [{
         localSessionKey: "local:session-1",
         remoteSessionId: "remote-1",
@@ -778,7 +990,8 @@ describe("RemoteSessionService automatic queue lifecycle", () => {
     await harness.service.drainQueue();
 
     expect(harness.removeQueueFiles).toHaveBeenCalledWith([event.filePath]);
-    expect(harness.createClient).not.toHaveBeenCalled();
+    expect(harness.createClient).toHaveBeenCalledOnce();
+    expect(harness.client.uploadSession).not.toHaveBeenCalled();
     expect(harness.service.getHookStatus()).toMatchObject({ lastProcessedAt: 123, lastError: null });
   });
 
@@ -827,6 +1040,8 @@ describe("RemoteSessionService automatic queue lifecycle", () => {
     harness.runIndexSync.mockRejectedValueOnce(new Error("index unavailable"));
 
     harness.service.startQueue();
+    expect(harness.runIndexSync).not.toHaveBeenCalled();
+    harness.intervalCallbacks[0]();
     await vi.waitFor(() => {
       expect(harness.logError).toHaveBeenCalledWith(
         "Failed to drain the session sync queue: index unavailable",

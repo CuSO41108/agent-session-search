@@ -21,6 +21,7 @@ function createStore(targets: SessionBulkDeleteTarget[], environments: SessionEn
   return {
     getSessionDeletionTargets: vi.fn(async () => targets),
     listEnvironments: vi.fn(async () => environments),
+    invalidateOpenVikingEvidenceForSessions: vi.fn(async () => []),
     deleteSessionRecords: vi.fn(async (keys: readonly string[]) => [...keys]),
   } as unknown as SessionStore;
 }
@@ -92,6 +93,7 @@ describe("SessionBulkDeleteService", () => {
       deletedSessionKeys: ["parent", "child"],
       failed: [],
     });
+    expect(store.invalidateOpenVikingEvidenceForSessions).toHaveBeenCalledWith(targets);
     expect(store.deleteSessionRecords).toHaveBeenCalledWith(["parent", "child"], false);
   });
 
@@ -155,7 +157,7 @@ describe("SessionBulkDeleteService", () => {
     expect(preview.skipped).toMatchObject([{ sessionKey: remoteKey, reason: "live" }]);
   });
 
-  it("blocks a source family when a running process cannot be mapped to one session", async () => {
+  it("ignores unresolved local family guards", async () => {
     const preview = await new SessionBulkDeleteService(createStore([target("claude:closed", {
       rawId: "closed",
       source: "claude-cli",
@@ -164,11 +166,11 @@ describe("SessionBulkDeleteService", () => {
       liveSessionKeys: ["claude:*"],
     });
 
-    expect(preview.deletableCount).toBe(0);
-    expect(preview.skipped).toMatchObject([{ sessionKey: "claude:closed", reason: "live" }]);
+    expect(preview.deletableCount).toBe(1);
+    expect(preview.skipped).toEqual([]);
   });
 
-  it("scopes unresolved remote process guards to their environment", async () => {
+  it("ignores unresolved remote family guards", async () => {
     const remoteKey = "wsl:ubuntu:claude-cli:closed";
     const service = new SessionBulkDeleteService(createStore([target(remoteKey, {
       rawId: "closed",
@@ -184,7 +186,7 @@ describe("SessionBulkDeleteService", () => {
     await expect(service.preview({
       sessionKeys: [remoteKey],
       liveSessionKeys: ["ubuntu\0claude:*"],
-    })).resolves.toMatchObject({ deletableCount: 0 });
+    })).resolves.toMatchObject({ deletableCount: 1 });
   });
 
   it("refuses WSL deletion when the environment is disabled and therefore was not scanned", async () => {

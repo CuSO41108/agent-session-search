@@ -19,7 +19,10 @@ function makeEvaluationServiceMock(overrides: Record<string, unknown> = {}) {
     listRuns: vi.fn(async () => ({ items: [], total: 0, offset: 0, limit: 1 })),
     saveDataset: vi.fn(async (value: unknown) => value),
     saveExperiment: vi.fn(async (value: unknown) => value),
-    runExperiment: vi.fn(async (id: string) => ({ id, status: "completed", results: [] })),
+    startExperiment: vi.fn(async () => "run-1"),
+    getRun: vi.fn(async () => null),
+    cancelRun: vi.fn(),
+    ensureBuiltinJudge: vi.fn(async (agentId: string) => ({ id: `builtin-judge-${agentId}` })),
     ...overrides,
   };
 }
@@ -58,6 +61,7 @@ describe("SkillService skill regression suites (phase four)", () => {
         name: "suite",
         agentId: "agent-1",
         evaluatorIds: [],
+        useBuiltinJudge: false,
         repetitions: 1,
         cases: [{ input: "hello" }],
       }),
@@ -94,6 +98,7 @@ describe("SkillService skill regression suites (phase four)", () => {
         name: "basic regression",
         agentId: "agent-1",
         evaluatorIds: ["eval-1", "eval-2"],
+        useBuiltinJudge: false,
         repetitions: 3,
         cases: [
           { input: "case one" },
@@ -136,6 +141,7 @@ describe("SkillService skill regression suites (phase four)", () => {
         name: "suite",
         agentId: "agent-1",
         evaluatorIds: [],
+        useBuiltinJudge: true,
         repetitions: 1,
         cases: [],
       }),
@@ -147,10 +153,23 @@ describe("SkillService skill regression suites (phase four)", () => {
         name: " ",
         agentId: "agent-1",
         evaluatorIds: [],
+        useBuiltinJudge: true,
         repetitions: 1,
         cases: [{ input: "hello" }],
       }),
     ).rejects.toThrow("A suite name is required.");
+
+    await expect(
+      service.createSkillEvalSuite({
+        skill: "review",
+        name: "suite",
+        agentId: "agent-1",
+        evaluatorIds: [],
+        useBuiltinJudge: false,
+        repetitions: 1,
+        cases: [{ input: "hello" }],
+      }),
+    ).rejects.toThrow("At least one evaluator is required.");
 
     const root = installSkillFixture("review", "x");
     try {
@@ -162,6 +181,7 @@ describe("SkillService skill regression suites (phase four)", () => {
         name: "suite",
         agentId: "agent-1",
         evaluatorIds: [],
+        useBuiltinJudge: true,
         repetitions: 99,
         cases: [{ input: "hello" }],
       });
@@ -181,12 +201,35 @@ describe("SkillService skill regression suites (phase four)", () => {
       name: "suite",
       agentId: "agent-1",
       evaluatorIds: [],
+      useBuiltinJudge: true,
       repetitions: 1,
       cases: [{ input: "hello" }],
     });
     expect(suite.skillHash).toBeNull();
     expect(suite.currentHash).toBeNull();
     expect(suite.drifted).toBe(false);
+  });
+
+  it("provisions the built-in judge on the execution agent's channel when requested", async () => {
+    const evaluations = makeEvaluationServiceMock();
+    const service = makeService(true, evaluations);
+    vi.spyOn(service, "listSkills").mockResolvedValue({ skills: [] } as never);
+
+    const suite = await service.createSkillEvalSuite({
+      skill: "review",
+      name: "suite",
+      agentId: "agent-1",
+      evaluatorIds: ["eval-custom"],
+      useBuiltinJudge: true,
+      repetitions: 1,
+      cases: [{ input: "hello" }],
+    });
+
+    expect(evaluations.ensureBuiltinJudge).toHaveBeenCalledWith("agent-1");
+    const experimentArg = (evaluations.saveExperiment as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    // Built-in judge leads so it reads as the primary scoring signal.
+    expect(experimentArg.evaluatorIds).toEqual(["builtin-judge-agent-1", "eval-custom"]);
+    expect(suite.evaluatorIds).toContain("builtin-judge-agent-1");
   });
 
   // ── runSkillEvalSuite ──────────────────────────────────────────────
@@ -221,7 +264,9 @@ describe("SkillService skill regression suites (phase four)", () => {
       const refreshed = (evaluations.saveExperiment as ReturnType<typeof vi.fn>).mock.calls[0][0];
       expect(refreshed.skillHash).not.toBe("stale-hash");
       expect(refreshed.skillHash).toMatch(/^[0-9a-f]{64}$/);
-      expect(evaluations.runExperiment).toHaveBeenCalledWith("experiment-1");
+      expect(evaluations.startExperiment).toHaveBeenCalledWith("experiment-1", {
+        skillHash: expect.stringMatching(/^[0-9a-f]{64}$/),
+      });
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -256,13 +301,57 @@ describe("SkillService skill regression suites (phase four)", () => {
         skills: [{ name: "review", path: path.join(root, "review", "SKILL.md") }],
       } as never);
 
-      await service.runSkillEvalSuite("experiment-1");
+      const started = await service.runSkillEvalSuite("experiment-1");
 
       expect(evaluations.saveExperiment).not.toHaveBeenCalled();
-      expect(evaluations.runExperiment).toHaveBeenCalledWith("experiment-1");
+      expect(evaluations.startExperiment).toHaveBeenCalledWith("experiment-1", {
+        skillHash: expect.stringMatching(/^[0-9a-f]{64}$/),
+      });
+      // The run executes in the background; callers get the id immediately.
+      expect(started).toEqual({ runId: "run-1" });
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  });
+
+  it("exposes run polling and cancellation behind the Eval gate", async () => {
+    const evaluations = makeEvaluationServiceMock({
+      getRun: vi.fn(async (id: string) => id === "run-1"
+        ? { id: "run-1", status: "running", results: [] }
+        : null),
+    });
+    const gated = makeService(false, evaluations);
+    await expect(gated.getSkillEvalRun("run-1")).rejects.toThrow("Eval is disabled");
+    expect(() => gated.cancelSkillEvalRun("run-1")).toThrow("Eval is disabled");
+
+    const service = makeService(true, evaluations);
+    await expect(service.getSkillEvalRun("run-1")).resolves.toMatchObject({ id: "run-1" });
+    await expect(service.getSkillEvalRun("missing")).resolves.toBeNull();
+    service.cancelSkillEvalRun("run-1");
+    expect(evaluations.cancelRun).toHaveBeenCalledWith("run-1");
+  });
+
+  it("lists a suite's runs newest-first and rejects suites not bound to a skill", async () => {
+    const fixture = suiteFixtureMocks();
+    fixture.evaluations.listRuns = vi.fn(async () => ({
+      items: [{ id: "run-2" }, { id: "run-1" }],
+      total: 2,
+      offset: 0,
+      limit: 10,
+    })) as never;
+    const service = makeService(true, fixture.evaluations);
+
+    await expect(service.getSkillEvalSuiteRuns("missing")).rejects.toThrow("Evaluation suite not found");
+    await expect(service.getSkillEvalSuiteRuns("experiment-1")).resolves.toEqual([
+      { id: "run-2" },
+      { id: "run-1" },
+    ]);
+    expect(fixture.evaluations.listRuns).toHaveBeenCalledWith({ experimentId: "experiment-1", limit: 10 });
+
+    fixture.listExperiments.mockResolvedValueOnce([
+      { ...fixture.experiment, id: "generic-1", skillName: "" },
+    ]);
+    await expect(service.getSkillEvalSuiteRuns("generic-1")).rejects.toThrow("not bound to a skill");
   });
 
   it("rejects when the experiment is missing or not skill-bound", async () => {
@@ -362,5 +451,152 @@ describe("SkillService skill regression suites (phase four)", () => {
     const service = makeService(true, evaluations);
     vi.spyOn(service, "listSkills").mockResolvedValue({ skills: [] } as never);
     await expect(service.getSkillEvalSuites("nothing")).resolves.toEqual([]);
+  });
+
+  // ── Suite lifecycle: cases, update, delete ─────────────────────────
+
+  function suiteFixtureMocks() {
+    const experiment = {
+      id: "experiment-1",
+      name: "suite",
+      datasetId: "dataset-1",
+      agentId: "agent-1",
+      evaluatorIds: ["builtin-judge-old-channel", "eval-x"],
+      repetitions: 2,
+      skillName: "review",
+      skillHash: null,
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    const dataset = {
+      id: "dataset-1",
+      name: "suite",
+      description: "review",
+      items: [
+        { id: "case-a", input: "first", expectedOutput: "want first", metadata: {}, sequence: 0 },
+        { id: "case-b", input: "second", metadata: {}, sequence: 1 },
+      ],
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    const listExperiments = vi.fn(async () => [experiment]);
+    const listDatasets = vi.fn(async () => [dataset]);
+    const deleteRun = vi.fn(async () => true);
+    const deleteExperiment = vi.fn(async () => true);
+    const deleteDataset = vi.fn(async () => true);
+    return {
+      experiment,
+      dataset,
+      listExperiments,
+      deleteRun,
+      deleteExperiment,
+      deleteDataset,
+      evaluations: makeEvaluationServiceMock({
+        listExperiments,
+        listDatasets,
+        deleteRun,
+        deleteExperiment,
+        deleteDataset,
+      }),
+    };
+  }
+
+  it("returns a suite's cases, keeping expectedOutput optional", async () => {
+    const fixture = suiteFixtureMocks();
+    const service = makeService(true, fixture.evaluations);
+    await expect(service.getSkillEvalSuiteCases("experiment-1")).resolves.toEqual([
+      { input: "first", expectedOutput: "want first" },
+      { input: "second" },
+    ]);
+  });
+
+  it("updates a suite in place: preserved case ids, appended ids, and a re-bound built-in judge", async () => {
+    const fixture = suiteFixtureMocks();
+    const service = makeService(true, fixture.evaluations);
+    vi.spyOn(service, "listSkills").mockResolvedValue({ skills: [] } as never);
+
+    await service.updateSkillEvalSuite({
+      id: "experiment-1",
+      name: "renamed suite",
+      agentId: "agent-1",
+      evaluatorIds: ["eval-x"],
+      useBuiltinJudge: true,
+      repetitions: 9,
+      cases: [
+        { input: "first edited" },
+        { input: "second" },
+        { input: "third added", expectedOutput: "want third" },
+      ],
+    });
+
+    // Stale built-in id from the old channel is replaced by the one bound to
+    // the current execution agent; custom evaluators pass through.
+    expect(fixture.evaluations.ensureBuiltinJudge).toHaveBeenCalledWith("agent-1");
+    const datasetArg = (fixture.evaluations.saveDataset as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    expect(datasetArg.id).toBe("dataset-1");
+    // Existing ids survive positionally; only the appended case gets a fresh id.
+    expect(datasetArg.items[0].id).toBe("case-a");
+    expect(datasetArg.items[0].input).toBe("first edited");
+    expect(datasetArg.items[0].expectedOutput).toBeUndefined();
+    expect(datasetArg.items[1].id).toBe("case-b");
+    expect(datasetArg.items[2].id).toMatch(/^case-/);
+    expect(datasetArg.items[2].expectedOutput).toBe("want third");
+
+    const experimentArg = (fixture.evaluations.saveExperiment as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    expect(experimentArg.id).toBe("experiment-1");
+    expect(experimentArg.name).toBe("renamed suite");
+    expect(experimentArg.evaluatorIds).toEqual(["builtin-judge-agent-1", "eval-x"]);
+    expect(experimentArg.repetitions).toBe(5);
+  });
+
+  it("rejects updates for unknown suites", async () => {
+    const fixture = suiteFixtureMocks();
+    const service = makeService(true, fixture.evaluations);
+    await expect(service.updateSkillEvalSuite({
+      id: "missing",
+      name: "suite",
+      agentId: "agent-1",
+      evaluatorIds: [],
+      useBuiltinJudge: true,
+      repetitions: 1,
+      cases: [{ input: "hello" }],
+    })).rejects.toThrow("Evaluation suite not found");
+  });
+
+  it("deletes a suite with its runs and orphaned dataset", async () => {
+    const fixture = suiteFixtureMocks();
+    fixture.evaluations.listRuns = vi.fn(async () => ({
+      items: [{ id: "run-1" }, { id: "run-2" }],
+      total: 2,
+      offset: 0,
+      limit: 100,
+    })) as never;
+    // Mirror the real store: after deleteExperiment the listing no longer
+    // contains it, so the dataset is seen as orphaned.
+    fixture.listExperiments
+      .mockResolvedValueOnce([fixture.experiment])
+      .mockResolvedValueOnce([]);
+    const service = makeService(true, fixture.evaluations);
+
+    await service.deleteSkillEvalSuite("experiment-1");
+
+    expect(fixture.deleteRun).toHaveBeenCalledTimes(2);
+    expect(fixture.deleteExperiment).toHaveBeenCalledWith("experiment-1");
+    expect(fixture.deleteDataset).toHaveBeenCalledWith("dataset-1");
+  });
+
+  it("keeps a dataset shared with another experiment when deleting a suite", async () => {
+    const fixture = suiteFixtureMocks();
+    fixture.listExperiments
+      .mockResolvedValueOnce([fixture.experiment])
+      .mockResolvedValueOnce([
+        { ...fixture.experiment, id: "experiment-2", datasetId: "dataset-1" },
+      ]);
+    const service = makeService(true, fixture.evaluations);
+
+    await service.deleteSkillEvalSuite("experiment-1");
+
+    expect(fixture.deleteExperiment).toHaveBeenCalledWith("experiment-1");
+    expect(fixture.deleteDataset).not.toHaveBeenCalled();
   });
 });

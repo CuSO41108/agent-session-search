@@ -179,14 +179,14 @@ export function BulkDeleteDialog({
   const skippedCounts = preview ? countIssueReasons(preview) : [];
   return (
     <div className="dialog-backdrop" onMouseDown={onCancel}>
-      <div className="command-dialog bulk-delete-dialog" onMouseDown={(event) => event.stopPropagation()}>
+      <div className={`command-dialog bulk-delete-dialog${mode === "orphans" ? " orphan-delete-dialog" : ""}`} onMouseDown={(event) => event.stopPropagation()}>
         <div className="dialog-title">
           <span>{mode === "cleanup"
             ? l("Clean Up Sessions", "按日期清理会话")
             : mode === "orphans"
             ? l("Clean Up Leftover Subagent Chats", "清理残留子对话")
             : l("Delete Selected Sessions", "删除所选会话")}</span>
-          <button type="button" className="icon-button" onClick={onCancel} disabled={busy} aria-label={l("Close", "关闭")}><X size={16} /></button>
+          <button type="button" className="icon-button" onClick={onCancel} aria-label={busy ? l("Continue in background", "转到后台") : l("Close", "关闭")}><X size={16} /></button>
         </div>
         {mode === "cleanup" && !preview ? (
           <label className="bulk-delete-date">
@@ -229,7 +229,7 @@ export function BulkDeleteDialog({
           </>
         ) : null}
         <div className="dialog-actions">
-          <button type="button" onClick={onCancel} disabled={busy}>{preview && !hasDeletableSessions ? l("Close", "关闭") : l("Cancel", "取消")}</button>
+          <button type="button" onClick={onCancel}>{busy ? l("Continue in background", "转到后台") : preview && !hasDeletableSessions ? l("Close", "关闭") : l("Cancel", "取消")}</button>
           {!preview ? (
             mode === "cleanup"
               ? <button type="button" className="primary-action" onClick={onPreview} disabled={busy || !dateValue}>{busy ? l("Loading...", "正在加载...") : l("Preview", "预览")}</button>

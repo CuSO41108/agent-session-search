@@ -10,7 +10,10 @@ import type { LiveSession, LiveSessionFamily, LiveSessionSnapshot } from "./type
 const require = createRequire(import.meta.url);
 const { DatabaseSync } = require("node:sqlite") as { DatabaseSync: new (path: string, options?: { readOnly?: boolean }) => import("node:sqlite").DatabaseSync };
 const CLAUDE_SESSION_START_SKEW_MS = 2 * 60 * 1000;
-const CODEX_LIFECYCLE_READ_CHUNK_SIZE = 64 * 1024;
+const CODEX_LIFECYCLE_READ_CHUNK_SIZE = 1024 * 1024;
+const CODEX_LIFECYCLE_MAX_LINE_SIZE = 512 * 1024;
+const CODEX_LIFECYCLE_MAX_READ_SIZE = 8 * 1024 * 1024;
+const CODEX_RECENT_ACTIVITY_FALLBACK_MS = 2 * 60 * 1000;
 
 type ProcessListRunner = (command: string, args: string[]) => Promise<string>;
 type LiveSessionSnapshotLoader = (options?: LoadLiveSessionOptions) => Promise<LiveSessionSnapshot>;
@@ -129,38 +132,6 @@ export function detectLiveSessionsFromProcessLines(
   return sessions;
 }
 
-function addUnresolvedPlainSessionGuards(
-  lines: string[],
-  sessions: LiveSession[],
-  options: LoadLiveSessionOptions,
-): LiveSession[] {
-  const result = [...sessions];
-  const resolvedPids = new Set(sessions.map((session) => session.pid));
-  const guardedFamilies = new Set(
-    sessions.filter((session) => session.rawId === "*").map((session) => session.family),
-  );
-  for (const line of lines) {
-    const entry = parseProcessLine(line);
-    if (!entry || resolvedPids.has(entry.pid)) continue;
-    const family = unresolvedPlainSessionFamily(splitCommandLine(entry.command));
-    if (!family || !liveSessionFamilyEnabled(family, options) || guardedFamilies.has(family)) continue;
-    guardedFamilies.add(family);
-    result.push({ family, rawId: "*", pid: entry.pid });
-  }
-  return result;
-}
-
-function liveSessionFamilyEnabled(family: LiveSessionFamily, options: LoadLiveSessionOptions): boolean {
-  if (family === "openclaw") return options.includeOpenClaw !== false;
-  if (family === "hermes") return options.includeHermes !== false;
-  if (family === "opencode") return options.includeOpenCode !== false;
-  if (family === "zcode") return options.includeZcode !== false;
-  if (family === "cursor") return options.includeCursor !== false;
-  if (family === "codebuddy") return options.includeCodeBuddy !== false;
-  if (family === "codewiz") return options.includeCodeWiz !== false;
-  return true;
-}
-
 function liveSessionSnapshotCacheKey(options: LoadLiveSessionOptions): string {
   return JSON.stringify({
     platform: options.platform ?? process.platform,
@@ -243,7 +214,7 @@ export async function loadLiveSessionSnapshot(options: LoadLiveSessionOptions = 
     );
     return {
       generatedAt,
-      sessions: addUnresolvedPlainSessionGuards(lines, sessions, options),
+      sessions,
     };
   } catch (error) {
     return {
@@ -673,21 +644,6 @@ function isPlainCodeBuddyCommand(tokens: string[]): boolean {
   return false;
 }
 
-function unresolvedPlainSessionFamily(tokens: string[]): LiveSessionFamily | null {
-  const commandIndex = isNodeExecutable(tokens[0]) ? 1 : 0;
-  const token = tokens[commandIndex];
-  const family = executableFamily(token);
-  if (!family || family === "trae" || family === "qoder") return null;
-  const args = tokens.slice(commandIndex + 1);
-  const resumedId = family === "codex" || family === "tcodex" ? codexResumeId(args) : flagResumeId(args);
-  if (resumedId) return null;
-  if (family === "codex" || family === "tcodex") {
-    if (isCodexAppServerCommand(tokens) || isCodexDesktopProcess(token)) return null;
-    if (normalizedExecutableName(token) !== family) return null;
-  }
-  return family;
-}
-
 function isDbBackedCommand(tokens: string[]): boolean {
   const commandStartIndexes = isNodeExecutable(tokens[0]) ? [1] : [0];
 
@@ -809,30 +765,53 @@ function isCodexAgentWorking(sessionFile: string, nowMs: number): boolean {
   let fileDescriptor: number | null = null;
   try {
     fileDescriptor = fs.openSync(sessionFile, "r");
-    const fileStat = fs.fstatSync(fileDescriptor);
-    if (nowMs - fileStat.mtimeMs >= LIVE_SESSION_INACTIVITY_TIMEOUT_MS) return false;
-    let position = fileStat.size;
+    const stat = fs.fstatSync(fileDescriptor);
+    if (nowMs - stat.mtimeMs >= LIVE_SESSION_INACTIVITY_TIMEOUT_MS) return false;
+    let position = stat.size;
+    const earliestPosition = Math.max(0, stat.size - CODEX_LIFECYCLE_MAX_READ_SIZE);
     let partialLine = Buffer.alloc(0);
+    let skippingOversizedLine = false;
 
-    while (position > 0) {
-      const bytesToRead = Math.min(CODEX_LIFECYCLE_READ_CHUNK_SIZE, position);
+    while (position > earliestPosition) {
+      const bytesToRead = Math.min(
+        CODEX_LIFECYCLE_READ_CHUNK_SIZE,
+        position - earliestPosition,
+      );
       position -= bytesToRead;
       const chunk = Buffer.allocUnsafe(bytesToRead);
       fs.readSync(fileDescriptor, chunk, 0, bytesToRead, position);
-      const content = Buffer.concat([chunk, partialLine]);
+      const content = partialLine.length > 0
+        ? Buffer.concat([chunk, partialLine])
+        : chunk;
       let lineEnd = content.length;
+      let skipCurrentLine = skippingOversizedLine;
 
       for (let index = content.length - 1; index >= 0; index--) {
         if (content[index] !== 0x0a) continue;
-        const state = codexAgentWorkingStateFromLine(content.subarray(index + 1, lineEnd).toString("utf8"));
-        if (state !== null) return state;
+        const line = content.subarray(index + 1, lineEnd);
+        if (!skipCurrentLine && line.length <= CODEX_LIFECYCLE_MAX_LINE_SIZE) {
+          const state = codexAgentWorkingStateFromLine(line.toString("utf8"));
+          if (state !== null) return state;
+        }
+        skipCurrentLine = false;
         lineEnd = index;
       }
 
-      partialLine = Buffer.from(content.subarray(0, lineEnd));
+      const leadingPartial = content.subarray(0, lineEnd);
+      if (skipCurrentLine || leadingPartial.length > CODEX_LIFECYCLE_MAX_LINE_SIZE) {
+        partialLine = Buffer.alloc(0);
+        skippingOversizedLine = true;
+      } else {
+        partialLine = Buffer.from(leadingPartial);
+        skippingOversizedLine = false;
+      }
     }
 
-    return codexAgentWorkingStateFromLine(partialLine.toString("utf8")) ?? false;
+    if (!skippingOversizedLine && partialLine.length <= CODEX_LIFECYCLE_MAX_LINE_SIZE) {
+      const state = codexAgentWorkingStateFromLine(partialLine.toString("utf8"));
+      if (state !== null) return state;
+    }
+    return nowMs - stat.mtimeMs <= CODEX_RECENT_ACTIVITY_FALLBACK_MS;
   } catch {
     return false;
   } finally {

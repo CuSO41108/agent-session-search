@@ -1,4 +1,4 @@
-import type { RemoteSessionDeleteResult, RemoteSessionDetailSnapshot, RemoteSessionListItem, RemoteSessionStatus, RemoteSessionUploadResult, SessionSyncItem } from "../../core/remote-session-sync";
+import type { RemoteSessionDeleteResult, RemoteSessionDetailSnapshot, RemoteSessionListItem, RemoteSessionStatus, RemoteSessionSyncSnapshot, RemoteSessionUploadResult, SessionSyncItem } from "../../core/remote-session-sync";
 import type { SessionSyncHookStatus } from "../../core/session-sync-queue";
 import type { MigrationAgent, SessionMigrationProgress, SessionMigrationResult } from "../../core/types";
 import { REMOTE_SESSIONS_IPC } from "../../shared/ipc/remote-sessions";
@@ -12,6 +12,7 @@ export interface RemoteSessionsIpcService {
   uninstallHooks(): SessionSyncHookStatus;
   upload(sessionKey: string, force: boolean): Promise<RemoteSessionUploadResult>;
   list(query: string): Promise<RemoteSessionListItem[]>;
+  loadSyncSnapshot(): Promise<RemoteSessionSyncSnapshot>;
   listSyncItems(): Promise<SessionSyncItem[]>;
   getDetail(remoteId: string): Promise<RemoteSessionDetailSnapshot>;
   previewAttachment(
@@ -36,6 +37,7 @@ export function registerRemoteSessionsIpc(ipc: IpcMainRegistrar, service: Remote
     registerIpcHandler(ipc, REMOTE_SESSIONS_IPC.uninstallHooks, () => service.uninstallHooks()),
     registerIpcHandler(ipc, REMOTE_SESSIONS_IPC.upload, (_event, key, force) => service.upload(key, force)),
     registerIpcHandler(ipc, REMOTE_SESSIONS_IPC.list, (_event, query) => service.list(query)),
+    registerIpcHandler(ipc, REMOTE_SESSIONS_IPC.loadSyncSnapshot, () => service.loadSyncSnapshot()),
     registerIpcHandler(ipc, REMOTE_SESSIONS_IPC.listSyncItems, () => service.listSyncItems()),
     registerIpcHandler(ipc, REMOTE_SESSIONS_IPC.getDetail, (_event, id) => service.getDetail(id)),
     registerIpcHandler(ipc, REMOTE_SESSIONS_IPC.previewAttachment, (_event, objectKey, sha256, mimeType, previewKind) =>

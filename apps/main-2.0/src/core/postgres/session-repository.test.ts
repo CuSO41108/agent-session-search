@@ -7,6 +7,7 @@ import type {
   TokenUsageEvent,
 } from "../types";
 import { PostgresDatabase } from "./database";
+import { PostgresMetadataRepository } from "./metadata-repository";
 import { PostgresSessionRepository } from "./session-repository";
 import { PostgresSessionStatsRepository } from "./session-stats-repository";
 import { PostgresSessionTurnRepository } from "./session-turn-repository";
@@ -89,6 +90,7 @@ const tokens: TokenUsageEvent[] = [{
 describe("PostgresSessionRepository", () => {
   let database: PostgresDatabase;
   let repository: PostgresSessionRepository;
+  let metadataRepository: PostgresMetadataRepository;
   let statsRepository: PostgresSessionStatsRepository;
   let turnsRepository: PostgresSessionTurnRepository;
 
@@ -99,6 +101,7 @@ describe("PostgresSessionRepository", () => {
     });
     await database.initialize();
     repository = new PostgresSessionRepository(database);
+    metadataRepository = new PostgresMetadataRepository(database);
     statsRepository = new PostgresSessionStatsRepository(database);
     turnsRepository = new PostgresSessionTurnRepository(database);
   });
@@ -138,6 +141,14 @@ describe("PostgresSessionRepository", () => {
         activeTurnIds: ["legacy-turn-1"],
       },
     );
+    await metadataRepository.upsertSessionSyncBinding({
+      localSessionKey: legacyKey,
+      remoteSessionId: "remote-legacy-paginated",
+      lastLocalRevision: "local-revision",
+      lastRemoteRevision: "remote-revision",
+      lastSyncedAt: 300,
+      direction: "upload",
+    });
 
     await expect(repository.migrateSessionKeyPreservingUserState(legacyKey, targetKey))
       .resolves.toBe(true);
@@ -147,6 +158,12 @@ describe("PostgresSessionRepository", () => {
       historyMode: "paginated",
       messageProvenance: [{ messageIndex: 0, sourceRecordId: "response_item:legacy-answer" }],
       activeTurnIds: ["legacy-turn-1"],
+    });
+    await expect(metadataRepository.getSessionSyncBindingForLocalKey(legacyKey)).resolves.toBeNull();
+    await expect(metadataRepository.getSessionSyncBindingForLocalKey(targetKey)).resolves.toMatchObject({
+      remoteSessionId: "remote-legacy-paginated",
+      lastLocalRevision: "local-revision",
+      lastRemoteRevision: "remote-revision",
     });
   });
 

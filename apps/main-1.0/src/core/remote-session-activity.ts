@@ -241,13 +241,11 @@ for pid, tokens in process_rows():
   command_index = codex_command_index(tokens)
   if command_index is not None:
     args = tokens[command_index + 1:]
-    resumed_id = None
     if "resume" in args:
       resume_index = args.index("resume")
       if resume_index + 1 < len(args):
         raw_id = args[resume_index + 1].strip()
         if raw_id and not raw_id.startswith("-"):
-          resumed_id = raw_id
           emit_session("codex", raw_id, pid)
     if "app-server" in args:
       for file_name in open_files(pid):
@@ -256,8 +254,6 @@ for pid, tokens in process_rows():
         match = SESSION_ID_PATTERN.search(file_name)
         if match and agent_is_working(Path(file_name)):
           emit_session("codex", match.group(1), pid)
-    elif resumed_id is None and normalized_executable(tokens[command_index]) == "codex":
-      emit_session("codex", "*", pid)
 
   command_index = claude_command_index(tokens)
   if command_index is None:
@@ -275,7 +271,6 @@ for pid, tokens in process_rows():
   fallback_id = fallback_claude_session_id(pid)
   if fallback_id:
     emit_session("claude", fallback_id, pid)
-  emit_session("claude", "*", pid)
 `;
 
 const remoteScriptPayload = deflateRawSync(Buffer.from(REMOTE_CODEX_ACTIVITY_SCRIPT, "utf8")).toString("base64");
@@ -283,27 +278,47 @@ const REMOTE_CODEX_ACTIVITY_COMMAND =
   `python3 -c 'import base64,zlib; exec(zlib.decompress(base64.b64decode("${remoteScriptPayload}"), -15).decode("utf-8"))'`;
 
 type RemoteCommandRunner = (environment: SessionEnvironment, remoteCommand: string) => Promise<string>;
+const REMOTE_LIVE_SESSION_CONCURRENCY = 3;
+
+export interface RemoteLiveSessionOptions {
+  includePasswordAuthenticated?: boolean;
+}
 
 export async function loadRemoteLiveSessions(
   environments: readonly SessionEnvironment[],
   runRemoteCommand: RemoteCommandRunner,
+  options: RemoteLiveSessionOptions = {},
 ): Promise<LiveSession[]> {
-  const outputs = await Promise.all(
-    environments
-      .filter((environment) => (environment.kind === "ssh" || environment.kind === "wsl") && environment.enabled)
-      .map(async (environment) => {
+  const candidates = environments
+    .filter((environment) =>
+      (environment.kind === "ssh" || environment.kind === "wsl")
+      && environment.enabled
+      && (environment.authMode !== "password" || options.includePasswordAuthenticated === true));
+  const outputs: LiveSession[][] = Array.from({ length: candidates.length }, () => []);
+  let cursor = 0;
+  let wslFailure: Error | null = null;
+  const workers = Array.from(
+    { length: Math.min(REMOTE_LIVE_SESSION_CONCURRENCY, candidates.length) },
+    async () => {
+      while (true) {
+        const index = cursor;
+        if (index >= candidates.length) return;
+        cursor += 1;
+        const environment = candidates[index];
         try {
           const output = await runRemoteCommand(environment, REMOTE_CODEX_ACTIVITY_COMMAND);
-          return parseRemoteLiveSessions(output, environment.id);
+          outputs[index] = parseRemoteLiveSessions(output, environment.id);
         } catch (error) {
-          if (environment.kind === "wsl") {
+          if (environment.kind === "wsl" && !wslFailure) {
             const detail = error instanceof Error ? error.message : String(error);
-            throw new Error(`Could not inspect live sessions in WSL environment ${environment.label}: ${detail}`);
+            wslFailure = new Error(`Could not inspect live sessions in WSL environment ${environment.label}: ${detail}`);
           }
-          return [];
         }
-      }),
+      }
+    },
   );
+  await Promise.all(workers);
+  if (wslFailure) throw wslFailure;
 
   const sessions: LiveSession[] = [];
   const seen = new Set<string>();

@@ -1,8 +1,16 @@
 import { createHash } from "node:crypto";
 import path from "node:path";
 
+import type {
+  OpenVikingControlDiagnostics,
+  OpenVikingMemoryAuthority,
+  OpenVikingMemoryEvidenceStatus,
+  OpenVikingMemoryLifecycle,
+} from "./openviking-memory-control";
+
 export const OPENVIKING_ACCOUNT_ID = "agent-recall-v2";
 export const OPENVIKING_LOCAL_EMBEDDING_MODEL = "BAAI/bge-small-zh-v1.5";
+export const OPENVIKING_MEMORY_URI_PREFIX = "viking://user/memories/";
 
 export type OpenVikingEmbeddingMode = "local" | "remote";
 export type OpenVikingIntegration = "claude" | "codex" | "opencode";
@@ -13,19 +21,6 @@ export type OpenVikingRuntimeState =
   | "starting"
   | "running"
   | "error";
-export type OpenVikingImportState = "idle" | "queued" | "running" | "paused" | "failed" | "completed";
-export type OpenVikingImportPhase = "scanning" | "uploading" | "extracting";
-
-export interface OpenVikingImportActivity {
-  phase: OpenVikingImportPhase;
-  sessionTitle?: string;
-  currentSession?: number;
-  totalSessions?: number;
-  currentBatch?: number;
-  totalBatches?: number;
-  currentTask?: number;
-  totalTasks?: number;
-}
 export type OpenVikingRuntimeInstallPhase =
   | "resolving-runtime"
   | "downloading-python"
@@ -49,13 +44,6 @@ export interface OpenVikingWorkspace {
   identity: string;
   displayName: string;
   managed: boolean;
-  importState: OpenVikingImportState;
-  importedTurns: number;
-  totalTurns: number;
-  completedTasks?: number;
-  totalTasks?: number;
-  importActivity?: OpenVikingImportActivity;
-  lastError?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -69,6 +57,12 @@ export interface OpenVikingMemoryItem {
   score?: number;
   createdAt?: string;
   updatedAt?: string;
+  memoryType?: string;
+  authority?: OpenVikingMemoryAuthority;
+  lifecycle?: OpenVikingMemoryLifecycle;
+  locked?: boolean;
+  evidenceStatus?: OpenVikingMemoryEvidenceStatus;
+  evidenceCount?: number;
 }
 
 export interface OpenVikingRuntimeStatus {
@@ -116,38 +110,12 @@ export interface OpenVikingRuntimeDiagnostics {
   events: OpenVikingRuntimeEvent[];
 }
 
-export interface OpenVikingImportTaskDiagnostics {
-  id: string;
-  workspaceId: string;
-  sessionKey: string;
-  sessionTitle: string;
-  position: number;
-  turnCount: number;
-  state: "queued" | "uploading" | "waiting" | "completed" | "failed";
-  attemptCount: number;
-  remoteTaskId?: string;
-  remoteState?: string;
-  remoteStage?: string;
-  remoteError?: string;
-  lastError?: string;
-  createdAt: string;
-  updatedAt: string;
-}
-
 export interface OpenVikingDiagnosticsSnapshot {
   capturedAt: string;
   runtime: OpenVikingRuntimeDiagnostics;
   model: OpenVikingModelStatus;
   workspaces: OpenVikingWorkspace[];
-  tasks: OpenVikingImportTaskDiagnostics[];
-}
-
-export interface ImportTurnFingerprintInput {
-  source: string;
-  sessionId: string;
-  turnIndex: number;
-  user: string;
-  assistant: string;
+  control: OpenVikingControlDiagnostics;
 }
 
 export function workspaceUserId(identity: string): string {
@@ -156,24 +124,58 @@ export function workspaceUserId(identity: string): string {
   return `workspace_${sha256(normalizedIdentity).slice(0, 24)}`;
 }
 
+export function canonicalOpenVikingMemoryUri(uri: string, userId?: string): string {
+  const normalized = uri.trim();
+  if (
+    !normalized.startsWith("viking://user/")
+    || normalized.includes("\0")
+    || normalized.includes("\\")
+    || normalized.includes("?")
+    || normalized.includes("#")
+  ) {
+    throw new Error("Memory URI must stay inside the OpenViking user memory scope.");
+  }
+
+  const segments = normalized.slice("viking://user/".length).split("/");
+  let memoryIndex = -1;
+  if (segments[0] === "memories") {
+    memoryIndex = 0;
+  } else if (segments[0] && segments[1] === "memories") {
+    if (userId && segments[0] !== userId) {
+      throw new Error("Memory URI does not belong to the selected OpenViking workspace.");
+    }
+    memoryIndex = 1;
+  }
+
+  const memoryPath = segments.slice(memoryIndex + 1);
+  if (
+    memoryIndex < 0
+    || memoryPath.length === 0
+    || memoryPath.some((segment) => !segment || segment === "." || segment === "..")
+  ) {
+    throw new Error("Memory URI must stay inside the OpenViking user memory scope.");
+  }
+
+  return `${OPENVIKING_MEMORY_URI_PREFIX}${memoryPath.join("/")}`;
+}
+
+export function tryCanonicalOpenVikingMemoryUri(uri: string, userId?: string): string | null {
+  try {
+    return canonicalOpenVikingMemoryUri(uri, userId);
+  } catch {
+    return null;
+  }
+}
+
 export function normalizeWorkspacePath(
   rootPath: string,
   platform: NodeJS.Platform = process.platform,
 ): string {
   if (rootPath.includes("\0")) throw new Error("Workspace path cannot contain NUL characters.");
-  const normalized = (platform === "win32" ? path.win32 : path.posix).resolve(rootPath.trim());
-  if (!normalized) throw new Error("Workspace path is required.");
+  const input = rootPath.trim();
+  if (!input) throw new Error("Workspace path is required.");
+  const normalized = (platform === "win32" ? path.win32 : path.posix).resolve(input);
   return normalized;
-}
-
-export function importTurnFingerprint(input: ImportTurnFingerprintInput): string {
-  return sha256(JSON.stringify([
-    input.source,
-    input.sessionId,
-    input.turnIndex,
-    input.user,
-    input.assistant,
-  ]));
 }
 
 function sha256(value: string): string {

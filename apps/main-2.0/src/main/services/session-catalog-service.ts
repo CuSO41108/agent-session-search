@@ -227,10 +227,13 @@ export class SessionCatalogService {
   }
 
   private async withFreshLiveSessions(request: SessionBulkDeleteRequest): Promise<SessionBulkDeleteRequest> {
-    const snapshot = await this.dependencies.loadLiveSessions(true);
-    if (snapshot.error) throw new Error("Live session detection failed. Deletion is disabled.");
     const liveSessionKeys = new Set(request.liveSessionKeys);
-    for (const session of snapshot.sessions) liveSessionKeys.add(liveSessionDeleteKey(session));
+    try {
+      const snapshot = await this.dependencies.loadLiveSessions(true);
+      for (const session of snapshot.sessions) liveSessionKeys.add(liveSessionDeleteKey(session));
+    } catch {
+      // Keep the exact live-session keys from the confirmed preview when a refresh fails.
+    }
     return {
       ...request,
       liveSessionKeys: [...liveSessionKeys],

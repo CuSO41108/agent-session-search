@@ -1,6 +1,11 @@
 import type { IpcRenderer } from "electron";
 
 import type {
+  OpenVikingMemoryControl,
+  OpenVikingMemoryDetails,
+  OpenVikingMemoryFeedbackKind,
+} from "../core/openviking-memory-control";
+import type {
   OpenVikingDiagnosticsSnapshot,
   OpenVikingMemoryItem,
   OpenVikingMemorySnapshot,
@@ -8,11 +13,7 @@ import type {
   OpenVikingRuntimeStatus,
   OpenVikingWorkspace,
 } from "../core/openviking-memory";
-import type { OpenVikingImportJob } from "../core/postgres/openviking-memory-repository";
-import type {
-  OpenVikingDirectoryPreview,
-  OpenVikingImportSessionPreview,
-} from "../main/services/openviking-memory-service";
+import type { OpenVikingDirectoryPreview } from "../main/services/openviking-memory-service";
 import type { SaveOpenVikingMemoryInput } from "../main/services/openviking-client";
 import { OPENVIKING_MEMORY_IPC } from "../shared/ipc/openviking-memory";
 
@@ -30,17 +31,6 @@ export function createOpenVikingMemoryApi(ipc: OpenVikingMemoryIpcRenderer) {
       ipc.invoke(OPENVIKING_MEMORY_IPC.previewDirectory.channel, rootPath),
     addOpenVikingWorkspace: (rootPath: string): Promise<OpenVikingWorkspace> =>
       ipc.invoke(OPENVIKING_MEMORY_IPC.addWorkspace.channel, rootPath),
-    listOpenVikingImportSessions: (workspaceId: string): Promise<OpenVikingImportSessionPreview[]> =>
-      ipc.invoke(OPENVIKING_MEMORY_IPC.listImportSessions.channel, workspaceId),
-    importOpenVikingWorkspace: (
-      workspaceId: string,
-      selectedSessionKeys?: string[],
-    ): Promise<OpenVikingImportJob> =>
-      ipc.invoke(OPENVIKING_MEMORY_IPC.importWorkspace.channel, workspaceId, selectedSessionKeys),
-    pauseOpenVikingImport: (workspaceId: string): Promise<OpenVikingImportJob> =>
-      ipc.invoke(OPENVIKING_MEMORY_IPC.pauseImport.channel, workspaceId),
-    resumeOpenVikingImport: (workspaceId: string): Promise<OpenVikingImportJob> =>
-      ipc.invoke(OPENVIKING_MEMORY_IPC.resumeImport.channel, workspaceId),
     searchOpenVikingMemories: (
       workspaceId: string,
       query: string,
@@ -49,11 +39,23 @@ export function createOpenVikingMemoryApi(ipc: OpenVikingMemoryIpcRenderer) {
       ipc.invoke(OPENVIKING_MEMORY_IPC.search.channel, workspaceId, query, limit),
     readOpenVikingMemory: (workspaceId: string, uri: string): Promise<string> =>
       ipc.invoke(OPENVIKING_MEMORY_IPC.read.channel, workspaceId, uri),
+    getOpenVikingMemoryDetails: (
+      workspaceId: string,
+      uri: string,
+    ): Promise<OpenVikingMemoryDetails> =>
+      ipc.invoke(OPENVIKING_MEMORY_IPC.details.channel, workspaceId, uri),
     saveOpenVikingMemory: (
       workspaceId: string,
       input: SaveOpenVikingMemoryInput,
     ): Promise<OpenVikingMemoryItem> =>
       ipc.invoke(OPENVIKING_MEMORY_IPC.save.channel, workspaceId, input),
+    sendOpenVikingMemoryFeedback: (
+      workspaceId: string,
+      uri: string,
+      feedback: OpenVikingMemoryFeedbackKind,
+      note?: string,
+    ): Promise<OpenVikingMemoryControl> =>
+      ipc.invoke(OPENVIKING_MEMORY_IPC.feedback.channel, workspaceId, uri, { feedback, note }),
     deleteOpenVikingMemory: (workspaceId: string, uri: string): Promise<void> =>
       ipc.invoke(OPENVIKING_MEMORY_IPC.deleteMemory.channel, workspaceId, uri),
     stopManagingOpenVikingWorkspace: (workspaceId: string): Promise<OpenVikingWorkspace> =>

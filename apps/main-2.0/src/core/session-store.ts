@@ -16,12 +16,9 @@ import { PostgresEnvironmentRepository } from "./postgres/environment-repository
 import {
   PostgresOpenVikingMemoryRepository,
   type AddOpenVikingWorkspaceInput,
-  type CreateOpenVikingImportTaskInput,
-  type OpenVikingImportedTurnCheckpoint,
-  type OpenVikingImportJob,
-  type OpenVikingImportTask,
-  type OpenVikingSessionCheckpoint,
-  type UpdateOpenVikingImportJobInput,
+  type OpenVikingSourceSessionReference,
+  type RecordOpenVikingMemoryFeedbackInput,
+  type SaveOpenVikingMemoryControlInput,
 } from "./postgres/openviking-memory-repository";
 import {
   PostgresMetadataRepository,
@@ -73,6 +70,17 @@ import type {
   TokenUsageEvent,
 } from "./types";
 import type { OpenVikingWorkspace } from "./openviking-memory";
+import type {
+  OpenVikingApplyCommitInput,
+  OpenVikingCommitRun,
+  OpenVikingControlDiagnostics,
+  OpenVikingLockedMemoryConflict,
+  OpenVikingMemoryControl,
+  OpenVikingMemoryEvidence,
+  OpenVikingMemoryFeedback,
+  OpenVikingOperationEvent,
+  OpenVikingRecallTrace,
+} from "./openviking-memory-control";
 import type { SessionBulkDeleteTarget } from "./session-bulk-delete";
 
 export type {
@@ -87,7 +95,9 @@ export type {
   SubagentSessionNode,
   SubagentSessionSummary,
 } from "./session-family";
-export type { TraceEventQueryOptions } from "./postgres/session-turn-repository";
+export type {
+  TraceEventQueryOptions,
+} from "./postgres/session-turn-repository";
 export type {
   SkillPerformanceSignals,
   SkillSyncBinding,
@@ -110,6 +120,7 @@ export class SessionStore {
   private readonly skills: PostgresSkillRepository;
   private readonly savedSearches: SavedSearchStore;
   private readonly historyStore: SearchHistoryStore;
+  private openVikingControlChangedHandler: (() => void | Promise<void>) | null = null;
 
   constructor(
     private readonly database: PostgresDatabase,
@@ -131,6 +142,10 @@ export class SessionStore {
   async close(): Promise<void> {
     await this.ready;
     await this.database.close();
+  }
+
+  setOpenVikingControlChangedHandler(handler: (() => void | Promise<void>) | null): void {
+    this.openVikingControlChangedHandler = handler;
   }
 
   async upsertIndexedSession(
@@ -231,22 +246,22 @@ export class SessionStore {
         }
       }
       for (const [filePath, rawIds] of idsByFilePath) deleteZcodeSessions(filePath, rawIds);
-      return (await this.sessions.deleteSessionRecords(targets.map((item) => item.sessionKey), false)).includes(sessionKey);
+      return this.deleteSessionTargetRecords(targets, sessionKey);
     }
     if (target.source === "hermes") {
       if (target.sourceAvailable) deleteHermesSession(target.filePath, target.rawId);
-      return (await this.sessions.deleteSessionRecords(targets.map((item) => item.sessionKey), false)).includes(sessionKey);
+      return this.deleteSessionTargetRecords(targets, sessionKey);
     }
     if (target.source === "opencode-cli") throw new Error("Cannot delete shared OpenCode source database.");
     if (target.source === "codewiz-cli") throw new Error("Cannot delete shared CodeWiz source database.");
     if (target.source === "cursor-agent" && /(^|[\\/])state\.vscdb$/iu.test(target.filePath)) {
       if (!target.sourceAvailable) {
-        return (await this.sessions.deleteSessionRecords(targets.map((item) => item.sessionKey), false)).includes(sessionKey);
+        return this.deleteSessionTargetRecords(targets, sessionKey);
       }
       throw new Error("Cannot delete shared Cursor source database.");
     }
     if (target.sourceAvailable) deleteLocalSessionSources(targets.filter((item) => item.sourceAvailable));
-    return (await this.sessions.deleteSessionRecords(targets.map((item) => item.sessionKey), false)).includes(sessionKey);
+    return this.deleteSessionTargetRecords(targets, sessionKey);
   }
 
   async deleteSessionRecord(sessionKey: string): Promise<boolean> {
@@ -265,6 +280,28 @@ export class SessionStore {
   async deleteSessionRecords(sessionKeys: readonly string[], expandDescendants = true): Promise<string[]> {
     await this.ready;
     return this.sessions.deleteSessionRecords(sessionKeys, expandDescendants);
+  }
+
+  async invalidateOpenVikingEvidenceForSessions(
+    targets: readonly Pick<SessionBulkDeleteTarget, "rawId" | "source">[],
+  ): Promise<string[]> {
+    await this.ready;
+    const references = targets.flatMap((target): OpenVikingSourceSessionReference[] => {
+      const sourceAgent = openVikingAgentForSessionSource(target.source);
+      return sourceAgent && target.rawId ? [{ sourceSessionId: target.rawId, sourceAgent }] : [];
+    });
+    const workspaceIds = await this.openVikingMemory.invalidateSourceSessionEvidence(references);
+    if (workspaceIds.length > 0) await this.openVikingControlChangedHandler?.();
+    return workspaceIds;
+  }
+
+  private async deleteSessionTargetRecords(
+    targets: readonly SessionBulkDeleteTarget[],
+    requestedSessionKey: string,
+  ): Promise<boolean> {
+    await this.invalidateOpenVikingEvidenceForSessions(targets);
+    const deleted = await this.sessions.deleteSessionRecords(targets.map((item) => item.sessionKey), false);
+    return deleted.includes(requestedSessionKey);
   }
 
   async migrateSessionKeyPreservingUserState(
@@ -416,106 +453,79 @@ export class SessionStore {
     return this.openVikingMemory.deleteWorkspace(id);
   }
 
-  async updateOpenVikingImportJob(
+  async listOpenVikingMemoryControls(workspaceId: string): Promise<OpenVikingMemoryControl[]> {
+    await this.ready;
+    return this.openVikingMemory.listMemoryControls(workspaceId);
+  }
+
+  async getOpenVikingMemoryControl(
     workspaceId: string,
-    input: UpdateOpenVikingImportJobInput,
-  ): Promise<OpenVikingImportJob> {
+    uri: string,
+  ): Promise<OpenVikingMemoryControl | null> {
     await this.ready;
-    return this.openVikingMemory.updateImportJob(workspaceId, input);
+    return this.openVikingMemory.getMemoryControl(workspaceId, uri);
   }
 
-  async getOpenVikingImportJob(workspaceId: string): Promise<OpenVikingImportJob | null> {
+  async saveOpenVikingUserMemory(
+    input: SaveOpenVikingMemoryControlInput,
+  ): Promise<OpenVikingMemoryControl> {
     await this.ready;
-    return this.openVikingMemory.getImportJob(workspaceId);
+    return this.openVikingMemory.saveUserMemory(input);
   }
 
-  async setOpenVikingImportSelection(
+  async markOpenVikingMemoryDeleted(workspaceId: string, uri: string): Promise<void> {
+    await this.ready;
+    await this.openVikingMemory.markMemoryDeleted(workspaceId, uri);
+  }
+
+  async listOpenVikingMemoryEvidence(
     workspaceId: string,
-    sessionKeys: string[],
-  ): Promise<OpenVikingImportJob> {
+    uri: string,
+  ): Promise<OpenVikingMemoryEvidence[]> {
     await this.ready;
-    return this.openVikingMemory.setImportSelection(workspaceId, sessionKeys);
+    return this.openVikingMemory.listMemoryEvidence(workspaceId, uri);
   }
 
-  async hasOpenVikingImportedTurn(
+  async listOpenVikingMemoryFeedback(
     workspaceId: string,
-    sourceTurnId: string,
-    fingerprint: string,
-  ): Promise<boolean> {
+    uri: string,
+  ): Promise<OpenVikingMemoryFeedback[]> {
     await this.ready;
-    return this.openVikingMemory.hasImportedTurn(workspaceId, sourceTurnId, fingerprint);
+    return this.openVikingMemory.listMemoryFeedback(workspaceId, uri);
   }
 
-  async recordOpenVikingImportedTurn(
-    workspaceId: string,
-    sourceTurnId: string,
-    fingerprint: string,
-  ): Promise<void> {
+  async recordOpenVikingMemoryFeedback(
+    input: RecordOpenVikingMemoryFeedbackInput,
+  ): Promise<OpenVikingMemoryControl> {
     await this.ready;
-    await this.openVikingMemory.recordImportedTurn(workspaceId, sourceTurnId, fingerprint);
+    return this.openVikingMemory.recordMemoryFeedback(input);
   }
 
-  async listOpenVikingImportedTurns(
-    workspaceId: string,
-  ): Promise<OpenVikingImportedTurnCheckpoint[]> {
+  async upsertOpenVikingCommitRun(run: OpenVikingCommitRun): Promise<void> {
     await this.ready;
-    return this.openVikingMemory.listImportedTurns(workspaceId);
+    await this.openVikingMemory.upsertCommitRun(run);
   }
 
-  async listOpenVikingSessionCheckpoints(
-    workspaceId: string,
-  ): Promise<OpenVikingSessionCheckpoint[]> {
+  async applyOpenVikingCommitResult(
+    input: OpenVikingApplyCommitInput,
+  ): Promise<OpenVikingLockedMemoryConflict[]> {
     await this.ready;
-    return this.openVikingMemory.listSessionCheckpoints(workspaceId);
+    return this.openVikingMemory.applyCommitResult(input);
   }
 
-  async recordOpenVikingSessionCheckpoint(
-    workspaceId: string,
-    sessionKey: string,
-    sourceRevision: string,
-    importedTurns: number,
-  ): Promise<void> {
+  async recordOpenVikingOperationEvent(event: OpenVikingOperationEvent): Promise<void> {
     await this.ready;
-    await this.openVikingMemory.recordSessionCheckpoint(
-      workspaceId,
-      sessionKey,
-      sourceRevision,
-      importedTurns,
-    );
+    await this.openVikingMemory.recordOperationEvent(event);
   }
 
-  async syncOpenVikingImportTasks(
-    workspaceId: string,
-    inputs: CreateOpenVikingImportTaskInput[],
-    activeRevisions: Array<{ sessionKey: string; sourceRevision: string }>,
-  ): Promise<OpenVikingImportTask[]> {
+  async recordOpenVikingRecallTrace(trace: OpenVikingRecallTrace): Promise<void> {
     await this.ready;
-    return this.openVikingMemory.syncImportTasks(workspaceId, inputs, activeRevisions);
+    await this.openVikingMemory.recordRecallTrace(trace);
   }
 
-  async listOpenVikingImportTasks(workspaceId: string): Promise<OpenVikingImportTask[]> {
+  async getOpenVikingControlDiagnostics(limit?: number): Promise<OpenVikingControlDiagnostics> {
     await this.ready;
-    return this.openVikingMemory.listImportTasks(workspaceId);
-  }
-
-  async beginOpenVikingImportTaskAttempt(taskId: string): Promise<OpenVikingImportTask> {
-    await this.ready;
-    return this.openVikingMemory.beginImportTaskAttempt(taskId);
-  }
-
-  async waitForOpenVikingImportTask(taskId: string, remoteTaskId: string): Promise<void> {
-    await this.ready;
-    await this.openVikingMemory.waitForImportTask(taskId, remoteTaskId);
-  }
-
-  async completeOpenVikingImportTask(taskId: string): Promise<void> {
-    await this.ready;
-    await this.openVikingMemory.completeImportTask(taskId);
-  }
-
-  async failOpenVikingImportTask(taskId: string, error: string): Promise<void> {
-    await this.ready;
-    await this.openVikingMemory.failImportTask(taskId, error);
+    return this.openVikingMemory.getControlDiagnostics(limit);
   }
 
   async getSession(sessionKey: string): Promise<SessionSearchResult | null> {
@@ -809,4 +819,11 @@ export class SessionStore {
     await this.ready;
     return findSessionFamily(this.database, sessionKey);
   }
+}
+
+function openVikingAgentForSessionSource(source: SessionSource): string | null {
+  if (source === "codex-cli" || source === "codex-app") return "codex";
+  if (source === "claude-cli" || source === "claude-app") return "claude";
+  if (source === "opencode-cli") return "opencode";
+  return null;
 }

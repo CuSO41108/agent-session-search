@@ -146,6 +146,105 @@ describe("SessionsStore", () => {
     }
   });
 
+  it("chunks very large FTS content while preserving metadata and migrated keys", () => {
+    const db = new DatabaseSync(":memory:");
+    try {
+      migrateSessionStore(db);
+      const store = new SessionsStore(db, new EnvironmentStore(db));
+      const session = indexedSession({ fileSize: 900_000 });
+      store.upsertIndexedSession(session, [{
+        role: "user",
+        content: `start marker ${"x".repeat(700_000)} end marker`,
+        timestamp: "2026-07-16T00:00:00.000Z",
+        index: 0,
+      }]);
+
+      const fts = db.prepare(`
+        SELECT COUNT(*) AS count, MAX(length(content_text)) AS max_length
+        FROM session_fts
+        WHERE session_key = ?
+      `).get(session.sessionKey) as { count: number; max_length: number };
+      expect(fts.count).toBeGreaterThan(1);
+      expect(fts.max_length).toBeLessThanOrEqual(256 * 1024);
+      expect(store.searchSessions({ query: "end marker" })).toHaveLength(1);
+      expect(store.searchSessions({ query: "start marker end marker" })).toHaveLength(1);
+      expect(store.isIndexedSessionFresh(session)).toBe(true);
+
+      store.setCustomTitle(session.sessionKey, "Chunked session title");
+      expect(store.setAiSummary(session.sessionKey, "Chunked summary marker", "test-model")).toBe(true);
+      expect(store.searchSessions({ query: "Chunked session title" })).toHaveLength(1);
+      expect(store.searchSessions({ query: "Chunked summary marker" })).toHaveLength(1);
+      expect(store.searchSessions({ query: "end marker" })).toHaveLength(1);
+
+      const targetKey = `${session.sessionKey}:migrated`;
+      expect(store.migrateSessionKeyPreservingUserState(session.sessionKey, targetKey)).toBe(true);
+      for (const query of ["Chunked session title", "Chunked summary marker", "end marker"]) {
+        expect(store.searchSessions({ query })).toEqual([
+          expect.objectContaining({ sessionKey: targetKey }),
+        ]);
+      }
+      const migratedFts = db.prepare(`
+        SELECT
+          COUNT(*) AS count,
+          MAX(length(content_text)) AS max_length,
+          SUM(CASE WHEN title <> '' THEN 1 ELSE 0 END) AS title_rows
+        FROM session_fts
+        WHERE session_key = ?
+      `).get(targetKey) as { count: number; max_length: number; title_rows: number };
+      expect(migratedFts.count).toBeGreaterThan(1);
+      expect(migratedFts.max_length).toBeLessThanOrEqual(256 * 1024);
+      expect(migratedFts.title_rows).toBe(1);
+      const migratedSession = { ...session, sessionKey: targetKey };
+      expect(store.isIndexedSessionFresh(migratedSession)).toBe(true);
+
+      db.prepare(`
+        UPDATE sessions
+        SET content_indexed_mtime_ms = 0, content_indexed_size = 0
+        WHERE session_key = ?
+      `).run(targetKey);
+      expect(store.isIndexedSessionFresh(migratedSession)).toBe(false);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("moves metadata off a legacy oversized FTS row without retaining stale matches", () => {
+    const db = new DatabaseSync(":memory:");
+    try {
+      migrateSessionStore(db);
+      const store = new SessionsStore(db, new EnvironmentStore(db));
+      const session = indexedSession({ fileSize: 400_000 });
+      store.upsertIndexedSession(session, [{
+        role: "user",
+        content: "current searchable content",
+        timestamp: "2026-07-16T00:00:00.000Z",
+        index: 0,
+      }]);
+      db.prepare("DELETE FROM session_fts WHERE session_key = ?").run(session.sessionKey);
+      db.prepare(`
+        INSERT INTO session_fts (session_key, title, first_question, content_text, project_path)
+        VALUES (?, 'legacy stale marker', '', ?, '')
+      `).run(session.sessionKey, "x".repeat(300_000));
+
+      store.setCustomTitle(session.sessionKey, "Fresh title marker");
+
+      expect(store.searchSessions({ query: "legacy stale marker" })).toHaveLength(0);
+      expect(store.searchSessions({ query: "Fresh title marker" })).toHaveLength(1);
+      const rows = db.prepare(`
+        SELECT title, length(content_text) AS content_length
+        FROM session_fts
+        WHERE session_key = ?
+        ORDER BY CASE WHEN content_text = '' THEN 0 ELSE 1 END, rowid
+      `).all(session.sessionKey) as Array<{ title: string; content_length: number }>;
+      expect(rows).toEqual([
+        { title: "Fresh title marker", content_length: 0 },
+        { title: "", content_length: 300_000 },
+      ]);
+    } finally {
+      db.close();
+    }
+  });
+
   it("smart sort ranks recent partial matches above ancient exact title matches", () => {
     const db = new DatabaseSync(":memory:");
     try {

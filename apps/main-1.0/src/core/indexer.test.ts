@@ -57,6 +57,22 @@ describe("indexer", () => {
     expect(store.searchSessions({ query: "Question", limit: 10 })).toHaveLength(3);
   });
 
+  it("accepts asynchronously loaded sessions without blocking batch processing", async () => {
+    const store = createInMemoryStore();
+    let producerYielded = false;
+    const loaded = (async function* () {
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      producerYielded = true;
+      yield session(1);
+      yield session(2);
+    })();
+
+    const status = await syncLoadedSessionsInBatches(store, loaded, { batchSize: 1 });
+
+    expect(producerYielded).toBe(true);
+    expect(status).toMatchObject({ indexed: 2, skipped: 0, total: 2, error: null });
+  });
+
   it("yields when the time budget is exhausted before the batch limit", async () => {
     const store = createInMemoryStore();
     const progress: number[] = [];
@@ -297,6 +313,43 @@ describe("indexer", () => {
     }
   });
 
+  it("yields before writing a large Codex session with inline image output", async () => {
+    const store = createInMemoryStore();
+    const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "agent-recall-codex-async-index-"));
+    try {
+      const filePath = writeCodexSession(homeDir, "codex-async-index", "responsive indexing", "Async Index");
+      fs.appendFileSync(filePath, `\n${JSON.stringify({
+        type: "response_item",
+        timestamp: "2026-06-01T10:00:03Z",
+        payload: {
+          type: "function_call_output",
+          call_id: "image-output",
+          output: [{ type: "input_image", image_url: `data:image/png;base64,${"x".repeat(2 * 1024 * 1024)}` }],
+        },
+      })}\n`);
+      let heartbeat = false;
+      setImmediate(() => {
+        heartbeat = true;
+      });
+      const originalUpsert = store.upsertIndexedSession.bind(store);
+      vi.spyOn(store, "upsertIndexedSession").mockImplementation((...args) => {
+        expect(heartbeat).toBe(true);
+        return originalUpsert(...args);
+      });
+
+      const status = await syncDefaultSessionsInBatches(store, {
+        batchSize: 1,
+        loadOptions: { homeDir },
+      });
+
+      expect(status).toMatchObject({ indexed: 1, skipped: 0, total: 1, error: null });
+      expect(store.searchSessions({ query: "responsive indexing", limit: 10 })).toHaveLength(1);
+    } finally {
+      store.close();
+      fs.rmSync(homeDir, { recursive: true, force: true });
+    }
+  });
+
   it("skips unchanged default session files before reading them", async () => {
     const store = createInMemoryStore();
     const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "agent-recall-default-skip-"));
@@ -310,10 +363,12 @@ describe("indexer", () => {
       fs.utimesSync(filePath, previousStat.fileMtimeMs / 1000, previousStat.fileMtimeMs / 1000);
       const oldIndexTime = new Date(Math.max(0, previousStat.indexedAt - 1000));
       fs.utimesSync(path.join(homeDir, ".codex", "session_index.jsonl"), oldIndexTime, oldIndexTime);
+      const getAllMessages = vi.spyOn(store, "getAllMessages");
 
       const warm = await syncDefaultSessionsInBatches(store, { batchSize: 1, loadOptions: { homeDir } });
 
       expect(warm).toMatchObject({ indexed: 0, skipped: 1, total: 1 });
+      expect(getAllMessages).not.toHaveBeenCalled();
       expect(store.searchSessions({ query: "original question", limit: 10 })).toHaveLength(1);
     } finally {
       fs.rmSync(homeDir, { recursive: true, force: true });
@@ -815,6 +870,14 @@ describe("indexer", () => {
     store.setCustomTitle(cached.session.sessionKey, "Remembered Cursor title");
     store.setFavorited(cached.session.sessionKey, true);
     store.addTag(cached.session.sessionKey, "cursor-work");
+    store.upsertSessionSyncBinding({
+      localSessionKey: cached.session.sessionKey,
+      remoteSessionId: "cursor-remote",
+      lastLocalRevision: "local-revision",
+      lastRemoteRevision: "remote-revision",
+      lastSyncedAt: 123,
+      direction: "upload",
+    });
 
     try {
       await syncDefaultSessionsInBatches(store, {
@@ -837,6 +900,12 @@ describe("indexer", () => {
       });
       expect(store.searchSessions({ query: "Cached Cursor prompt", limit: 10 })).toHaveLength(0);
       expect(store.searchSessions({ query: "Current Cursor prompt", limit: 10 })).toHaveLength(1);
+      expect(store.getSessionSyncBindingForLocalKey("cursor:repo-old:same-composer")).toBeNull();
+      expect(store.getSessionSyncBindingForLocalKey("cursor:repo-new:same-composer")).toMatchObject({
+        remoteSessionId: "cursor-remote",
+        lastLocalRevision: "local-revision",
+        lastRemoteRevision: "remote-revision",
+      });
     } finally {
       fs.rmSync(homeDir, { recursive: true, force: true });
     }

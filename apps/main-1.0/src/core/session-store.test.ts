@@ -210,6 +210,14 @@ describe("SessionStore", () => {
       migrationRecord({ id: "legacy-migration-b", sourceSessionKey: legacyKey, createdAt: 200 }),
     ];
     for (const migration of migrations) store.recordSessionMigration(migration);
+    store.upsertSessionSyncBinding({
+      localSessionKey: legacyKey,
+      remoteSessionId: "remote-legacy-all-data",
+      lastLocalRevision: "local-revision",
+      lastRemoteRevision: "remote-revision",
+      lastSyncedAt: 300,
+      direction: "upload",
+    });
 
     expect(store.migrateSessionKeyPreservingUserState(legacyKey, targetKey)).toBe(true);
 
@@ -234,6 +242,12 @@ describe("SessionStore", () => {
     expect(store.listSessionMigrations(targetKey)).toEqual(
       [...migrations].reverse().map((migration) => ({ ...migration, sourceSessionKey: targetKey })),
     );
+    expect(store.getSessionSyncBindingForLocalKey(legacyKey)).toBeNull();
+    expect(store.getSessionSyncBindingForLocalKey(targetKey)).toMatchObject({
+      remoteSessionId: "remote-legacy-all-data",
+      lastLocalRevision: "local-revision",
+      lastRemoteRevision: "remote-revision",
+    });
     expect(store.getStats({ period: "today" }, new Date("2026-07-15T12:00:00Z").getTime()).total).toMatchObject({
       messageCount: 2,
       inputTokens: 10,
@@ -3055,6 +3069,20 @@ describe("SessionStore", () => {
     expect(page.sessions.map((session) => session.sessionKey)).toEqual(["codex:one", "codex:two"]);
     expect(page.totalCount).toBe(3);
     expect(page.hasMore).toBe(true);
+
+    const secondPage = store.searchSessionPage({ query: "", sortBy: "created", limit: 2, offset: 2 });
+    expect(secondPage.sessions.map((session) => session.sessionKey)).toEqual(["codex:three"]);
+    expect(secondPage.totalCount).toBe(3);
+    expect(secondPage.hasMore).toBe(false);
+
+    const normalizedPage = store.searchSessionPage({ query: "", sortBy: "created", limit: 1.9, offset: 2.9 });
+    expect(normalizedPage.sessions.map((session) => session.sessionKey)).toEqual(["codex:three"]);
+    expect(normalizedPage.totalCount).toBe(3);
+
+    const emptyPage = store.searchSessionPage({ query: "", sortBy: "created", limit: 2, offset: 10 });
+    expect(emptyPage.sessions).toEqual([]);
+    expect(emptyPage.totalCount).toBe(3);
+    expect(emptyPage.hasMore).toBe(false);
   });
 
   it("applies live status filtering before page limits", () => {

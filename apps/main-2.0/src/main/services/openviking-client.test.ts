@@ -21,12 +21,14 @@ describe("OpenVikingGateway", () => {
   let closeServer: (() => Promise<void>) | undefined;
   let failure: { path: string; status: number; body: unknown } | undefined;
   let busyUserRegistryResponses = 0;
+  let replaceWriteNotFoundResponses = 0;
   let manualContent = "";
 
   beforeEach(async () => {
     requests.length = 0;
     failure = undefined;
     busyUserRegistryResponses = 0;
+    replaceWriteNotFoundResponses = 0;
     manualContent = `<!-- agent-recall-title:${Buffer.from("Pinned title", "utf8").toString("base64url")} -->\nPinned body`;
     const server = createServer(async (request, response) => {
       const body = await readBody(request);
@@ -54,6 +56,18 @@ describe("OpenVikingGateway", () => {
       }
       if (failure?.path === url.pathname) {
         sendJson(response, failure.status, failure.body);
+        return;
+      }
+      if (
+        url.pathname === "/api/v1/content/write"
+        && (body as { mode?: string } | undefined)?.mode === "replace"
+        && replaceWriteNotFoundResponses > 0
+      ) {
+        replaceWriteNotFoundResponses -= 1;
+        sendJson(response, 404, {
+          status: "error",
+          error: { code: "NOT_FOUND", message: "memory was deleted" },
+        });
         return;
       }
       route(url, request, response);
@@ -202,9 +216,20 @@ describe("OpenVikingGateway", () => {
       source: "session-1",
       score: 0.91,
     }]);
-    await expect(gateway.readMemory(auth, "viking://user/memories/memory-1.md")).resolves.toBe(
+    await expect(gateway.readMemory(
+      auth,
+      "viking://user/workspace_abcd/memories/memory-1.md",
+    )).resolves.toBe(
       "Use migration 4",
     );
+    await expect(gateway.readSessionArtifact(
+      auth,
+      "viking://user/workspace_abcd/sessions/session-1/history/archive_001/memory_diff.json",
+    )).resolves.toBe("Use migration 4");
+    await expect(gateway.readSessionArtifact(
+      auth,
+      "viking://user/workspace_other/sessions/session-1/history/archive_001/memory_diff.json",
+    )).rejects.toThrow("selected OpenViking workspace");
     const saved = await gateway.saveMemory(auth, {
       id: "manual-1",
       title: "Manual note",
@@ -222,6 +247,8 @@ describe("OpenVikingGateway", () => {
     });
     await expect(gateway.readMemory(auth, saved.id)).resolves.toBe("Keep directory isolation");
     await gateway.deleteMemory(auth, saved.id);
+    expect(requests.find((request) => request.path.startsWith("/api/v1/content/read"))?.path)
+      .toContain(encodeURIComponent("viking://user/memories/memory-1.md"));
   });
 
   it("updates an editable identity memory in place", async () => {
@@ -247,7 +274,7 @@ describe("OpenVikingGateway", () => {
     });
   });
 
-  it("does not allow arbitrary generated memories to be overwritten", async () => {
+  it("allows a user to replace any safe memory URI", async () => {
     const gateway = new OpenVikingGateway({ baseUrl, rootApiKey: "root-key" });
 
     await expect(gateway.saveMemory({
@@ -258,8 +285,62 @@ describe("OpenVikingGateway", () => {
       uri: "viking://user/memories/experiences/generated.md",
       title: "generated.md",
       content: "overwrite",
-    })).rejects.toThrow("Only manual, identity, and soul memories can be edited.");
-    expect(requests).toHaveLength(0);
+    })).resolves.toMatchObject({
+      id: "viking://user/memories/experiences/generated.md",
+      content: "overwrite",
+    });
+    expect(requests.find((request) => request.path === "/api/v1/content/write")?.body).toMatchObject({
+      uri: "viking://user/memories/experiences/generated.md",
+      content: "overwrite",
+      mode: "replace",
+      wait: true,
+    });
+  });
+
+  it("recreates a locked memory when automatic extraction deleted its URI", async () => {
+    replaceWriteNotFoundResponses = 1;
+    const gateway = new OpenVikingGateway({ baseUrl, rootApiKey: "root-key" });
+    const auth: OpenVikingWorkspaceAuth = {
+      accountId: "agent-recall-v2",
+      userId: "workspace_abcd",
+      apiKey: "workspace-key",
+    };
+
+    await expect(gateway.writeMemoryContent(
+      auth,
+      "viking://user/memories/preferences/editor.md",
+      "Keep the user-authored version.",
+    )).resolves.toBeUndefined();
+
+    expect(requests
+      .filter((request) => request.path === "/api/v1/content/write")
+      .map((request) => (request.body as { mode?: string }).mode))
+      .toEqual(["replace", "create"]);
+  });
+
+  it("restores the encoded title when a locked manual memory is recreated", async () => {
+    replaceWriteNotFoundResponses = 1;
+    const gateway = new OpenVikingGateway({ baseUrl, rootApiKey: "root-key" });
+    const auth: OpenVikingWorkspaceAuth = {
+      accountId: "agent-recall-v2",
+      userId: "workspace_abcd",
+      apiKey: "workspace-key",
+    };
+
+    await gateway.writeMemoryContent(
+      auth,
+      "viking://user/memories/manual/manual-1.md",
+      "Keep the user-authored version.",
+      "人工标题",
+    );
+
+    const writes = requests.filter((request) => request.path === "/api/v1/content/write");
+    expect(writes).toHaveLength(2);
+    expect(writes[1]?.body).toMatchObject({
+      uri: "viking://user/memories/manual/manual-1.md",
+      mode: "create",
+      content: expect.stringMatching(/^<!-- agent-recall-title:[A-Za-z0-9_-]+ -->\nKeep the user-authored version\.$/u),
+    });
   });
 
   it("lists nested event memories when the query is empty", async () => {
@@ -365,6 +446,39 @@ describe("OpenVikingGateway", () => {
     expect(requests[6].headers["x-api-key"]).toBe("root-key");
   });
 
+  it("treats already-removed workspace data as an idempotent delete", async () => {
+    failure = {
+      path: "/api/v1/fs",
+      status: 404,
+      body: { status: "error", error: { code: "NOT_FOUND", message: "already removed" } },
+    };
+    const gateway = new OpenVikingGateway({ baseUrl, rootApiKey: "root-key" });
+
+    await expect(gateway.deleteWorkspaceUser({
+      accountId: "agent-recall-v2",
+      userId: "workspace_abcd",
+      apiKey: "workspace-key",
+    })).resolves.toBeUndefined();
+
+    expect(requests.filter((request) => request.path.startsWith("/api/v1/fs?"))).toHaveLength(6);
+    expect(requests.at(-1)?.path).toBe("/api/v1/admin/accounts/agent-recall-v2/users/workspace_abcd");
+  });
+
+  it("treats deleting an already-removed memory as successful", async () => {
+    failure = {
+      path: "/api/v1/fs",
+      status: 404,
+      body: { status: "error", error: { code: "NOT_FOUND", message: "already removed" } },
+    };
+    const gateway = new OpenVikingGateway({ baseUrl, rootApiKey: "root-key" });
+
+    await expect(gateway.deleteMemory({
+      accountId: "agent-recall-v2",
+      userId: "workspace_abcd",
+      apiKey: "workspace-key",
+    }, "viking://user/memories/events/deleted.md")).resolves.toBeUndefined();
+  });
+
   function route(url: URL, request: IncomingMessage, response: ServerResponse): void {
     if (url.pathname === "/health") return sendJson(response, 200, { status: "ok" });
     if (url.pathname === "/api/v1/admin/accounts" && request.method === "GET") {
@@ -433,7 +547,7 @@ describe("OpenVikingGateway", () => {
         status: "ok",
         result: {
           memories: [{
-            uri: "viking://user/memories/memory-1.md",
+            uri: "viking://user/workspace_abcd/memories/memory-1.md",
             title: "Migration decision",
             content: "Use migration 4",
             source: "session-1",
@@ -482,7 +596,7 @@ describe("OpenVikingGateway", () => {
         status: "ok",
         result: {
           matches: [
-            "viking://user/memories/manual/manual-1.md",
+            "viking://user/workspace_abcd/memories/manual/manual-1.md",
             "viking://user/memories/cases/older.md",
             "viking://user/memories/events/2026/07/24/import_completed.md",
             "viking://user/memories/experiences/newest.md",

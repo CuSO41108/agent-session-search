@@ -7,6 +7,9 @@ import type { ResumeRouteResult } from "../core/resume-router";
 import type { TraceEventQueryOptions } from "../core/session-store";
 import type { SessionBulkDeletePreview, SessionBulkDeleteRequest, SessionBulkDeleteResult } from "../core/session-bulk-delete";
 import type { SshConfigHost } from "../core/ssh-config";
+import type { SessionContextComponents } from "../core/session-context-components";
+import type { SessionMarkdownExportOptions } from "../core/format-session";
+import type { V1ImportResult } from "../core/v1-import";
 import type {
   EnvironmentUpsertInput,
   LiveSessionSnapshot,
@@ -55,6 +58,8 @@ const api = {
   searchSessions: (options: SearchOptions): Promise<SessionSearchResult[]> => ipcRenderer.invoke("search:sessions", options),
   searchSessionPage: (options: SearchOptions): Promise<SessionSearchPage> => ipcRenderer.invoke("search:session-page", options),
   getSession: (sessionKey: string): Promise<SessionSearchResult | null> => ipcRenderer.invoke("session:get", sessionKey),
+  getSessionContextComponents: (sessionKey: string): Promise<SessionContextComponents> =>
+    ipcRenderer.invoke("session:context-components", sessionKey),
   getMessages: (sessionKey: string, offset?: number, limit?: number): Promise<SessionMessage[]> =>
     ipcRenderer.invoke("session:messages", sessionKey, offset, limit),
   previewAttachment: (
@@ -115,6 +120,7 @@ const api = {
   ...createOpenVikingMemoryApi(ipcRenderer),
   getSettings: (): Promise<AppSettings> => ipcRenderer.invoke("settings:get"),
   setSettings: (settings: AppSettingsUpdate): Promise<AppSettings> => ipcRenderer.invoke("settings:set", settings),
+  importV1Data: (): Promise<V1ImportResult> => ipcRenderer.invoke("v1-import:run"),
   ...createProvidersApi(ipcRenderer),
   ...createSkillsApi(ipcRenderer),
   ...createRulesApi(ipcRenderer),
@@ -131,7 +137,8 @@ const api = {
   openNativeApp: (sessionKey: string): Promise<void> => ipcRenderer.invoke("command:open-app", sessionKey),
   revealSession: (sessionKey: string): Promise<void> => ipcRenderer.invoke("command:reveal", sessionKey),
   copyMarkdown: (sessionKey: string): Promise<void> => ipcRenderer.invoke("command:copy-markdown", sessionKey),
-  exportMarkdown: (sessionKey: string): Promise<boolean> => ipcRenderer.invoke("command:export-markdown", sessionKey),
+  exportMarkdown: (sessionKey: string, options: SessionMarkdownExportOptions): Promise<boolean> =>
+    ipcRenderer.invoke("command:export-markdown", sessionKey, options),
   exportJson: (sessionKey: string): Promise<{
     exported: boolean;
     fidelity?: "exact-trace" | "reconstructed" | "normalized";

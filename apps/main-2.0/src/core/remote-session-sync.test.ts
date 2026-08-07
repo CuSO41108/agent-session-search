@@ -12,6 +12,7 @@ import {
   buildRemoteSessionUploadFromStore,
   buildSessionSyncItems,
   filterRemoteSessions,
+  findCursorSessionSyncBindingRepairs,
   parseDetailSnapshot,
   parsePortableSession,
   remotePortableSessionFrom,
@@ -20,6 +21,7 @@ import {
   REMOTE_SESSION_TABLE,
   SupabaseRemoteSessionClient,
 } from "./remote-session-sync";
+import { sessionSourceDescriptor } from "./session-sources";
 import type { PortableSession, SessionSearchResult, SessionTurnSummary } from "./types";
 import { deriveSessionTimeline } from "./turns/derive-turns";
 
@@ -82,8 +84,10 @@ describe("remote session sync model", () => {
     expect(sql).toContain("agent-session-remote");
     expect(sql).toContain("storage.buckets");
     expect(sql).toContain("to anon");
+    expect(sql).toContain("'codewiz'");
     expect(sql).toContain("'cursor'");
     expect(sql).toContain("'hermes'");
+    expect(sql).toContain("'pi'");
     expect(sql).toContain(`${REMOTE_SESSION_TABLE}_source_agent_check`);
     expect(sql).toContain(`grant select, insert, update, delete on table public.${REMOTE_SESSION_TABLE} to anon`);
     expect(sql).toContain("grant select on table storage.buckets to anon");
@@ -107,6 +111,22 @@ describe("remote session sync model", () => {
     expect(bucketRequest?.headers.get("authorization")).toBe("Bearer anon-key");
   });
 
+  it("omits large search text when listing sessions for sync comparison", async () => {
+    let requestUrl = "";
+    const client = new SupabaseRemoteSessionClient({
+      url: "https://example.supabase.co",
+      anonKey: "anon-key",
+      fetchImpl: async (url) => {
+        requestUrl = String(url);
+        return new Response("[]", { status: 200 });
+      },
+    });
+
+    await expect(client.listRemoteSessionsForSync()).resolves.toEqual([]);
+    expect(requestUrl).toContain("select=id,source_session_key");
+    expect(requestUrl).not.toContain("search_text");
+  });
+
   it("marks database setup failures as SQL-remediable", async () => {
     const missingTableClient = new SupabaseRemoteSessionClient({
       url: "https://example.supabase.co",
@@ -122,11 +142,11 @@ describe("remote session sync model", () => {
     const missingBucketClient = new SupabaseRemoteSessionClient({
       url: "https://example.supabase.co",
       anonKey: "anon-key",
-      fetchImpl: async () => {
+      fetchImpl: async (url) => {
         requestCount += 1;
-        return requestCount === 1
-          ? new Response("[]", { status: 200 })
-          : new Response(JSON.stringify({ message: "Bucket not found" }), { status: 404 });
+        return String(url).includes("/storage/v1/bucket/")
+          ? new Response(JSON.stringify({ message: "Bucket not found" }), { status: 404 })
+          : new Response("[]", { status: 200 });
       },
     });
 
@@ -386,6 +406,53 @@ describe("remote session sync model", () => {
       source_source: "hermes",
     });
     expect(parsePortableSession(portable).sourceAgent).toBe("hermes");
+  });
+
+  it("builds remote upload payloads for Pi sessions without enabling migration or resume", () => {
+    const piSession: SessionSearchResult = {
+      ...SESSION,
+      sessionKey: "pi:abc",
+      rawId: "abc",
+      source: "pi-cli",
+      filePath: "/home/.pi/agent/sessions/abc.jsonl",
+      projectPath: "/work/pi-project",
+      displayTitle: "Pi review",
+    };
+    const portable = remotePortableSessionFrom(piSession, MESSAGES);
+    const detail = buildRemoteSessionSnapshot(piSession, MESSAGES, [], 10_000);
+    const { payload } = buildRemoteSessionPayload({ session: piSession, detail, portable, now: 11_000 });
+
+    expect(sessionSourceDescriptor("pi-cli")).toMatchObject({
+      migrationAgent: null,
+      resumeTarget: null,
+      capabilities: { live: false, resume: false, migrate: false, sessionSync: true, openApp: false },
+    });
+    expect(portable.sourceAgent).toBe("pi");
+    expect(portable.projectPath).toBe("/work/pi-project");
+    expect(payload).toMatchObject({
+      source_agent: "pi",
+      source_source: "pi-cli",
+      project_path: "/work/pi-project",
+    });
+    expect(parsePortableSession(portable).sourceAgent).toBe("pi");
+  });
+
+  it("builds and parses remote upload payloads for CodeWiz sessions", () => {
+    const codeWizSession: SessionSearchResult = {
+      ...SESSION,
+      sessionKey: "codewiz:abc",
+      rawId: "abc",
+      source: "codewiz-cli",
+      filePath: "/home/.codewiz/sessions.db#abc",
+      displayTitle: "CodeWiz review",
+    };
+    const portable = remotePortableSessionFrom(codeWizSession, MESSAGES);
+    const detail = buildRemoteSessionSnapshot(codeWizSession, MESSAGES, [], 10_000);
+    const { payload } = buildRemoteSessionPayload({ session: codeWizSession, detail, portable, now: 11_000 });
+
+    expect(portable.sourceAgent).toBe("codewiz");
+    expect(payload.source_agent).toBe("codewiz");
+    expect(parsePortableSession(portable).sourceAgent).toBe("codewiz");
   });
 
   it("builds upload payloads for indexed SSH remote sessions", async () => {
@@ -712,6 +779,94 @@ describe("remote session sync model", () => {
     expect(Object.fromEntries(buildSessionSyncItems(locals, remotes, bindings).map((item) => [item.local?.sessionKey ?? item.remote?.sourceSessionKey, item.state]))).toEqual({
       "local-only": "local-only", synced: "synced", "local-newer": "local-newer", "remote-newer": "remote-newer", conflict: "conflict", "remote-only": "remote-only",
     });
+  });
+
+  it("classifies lightweight sync overviews without rebuilding full revisions", () => {
+    const remote = {
+      id: "remote-overview", sourceSessionKey: SESSION.sessionKey, sourceAgent: "codex" as const,
+      sourceSource: SESSION.source, sourceEnvironmentId: "local", sourceEnvironmentKind: "local",
+      sourceEnvironmentLabel: "Local", title: SESSION.displayTitle, projectPath: SESSION.projectPath,
+      startedAt: "x", updatedAt: SESSION.lastActivityAt, contentHash: "base", revisionVersion: 2,
+      messageCount: SESSION.messageCount, traceEventCount: 0, aiSummary: SESSION.aiSummary, tags: SESSION.tags,
+      searchText: "", detailObjectKey: "d", portableObjectKey: "p", detailSha256: "dh",
+      portableSha256: "ph", createdAt: 1, syncedAt: 4_000,
+    };
+    const binding = {
+      localSessionKey: SESSION.sessionKey, remoteSessionId: remote.id, lastLocalRevision: "base",
+      lastRemoteRevision: "base", lastSyncedAt: 4_000, direction: "upload" as const,
+    };
+    const stateFor = (
+      session: SessionSearchResult,
+      remoteOverrides: Partial<typeof remote> = {},
+      bindings = [binding],
+    ) => buildSessionSyncItems([{ session, revision: null }], [{ ...remote, ...remoteOverrides }], bindings)[0].state;
+
+    expect(stateFor(SESSION)).toBe("synced");
+    expect(stateFor(SESSION, { updatedAt: SESSION.lastActivityAt + 319 })).toBe("synced");
+    expect(stateFor({ ...SESSION, displayTitle: "Renamed locally" })).toBe("local-newer");
+    expect(stateFor({ ...SESSION, environmentKind: "ssh", fileMtimeMs: 5_000 })).toBe("local-newer");
+    expect(stateFor(SESSION, { contentHash: "cloud-change" })).toBe("remote-newer");
+    expect(stateFor({ ...SESSION, fileMtimeMs: 5_000 }, { contentHash: "cloud-change" })).toBe("conflict");
+    expect(stateFor(SESSION, {}, [])).toBe("synced");
+    expect(stateFor({ ...SESSION, displayTitle: "Renamed by another app" }, {}, [])).toBe("remote-newer");
+    expect(stateFor({ ...SESSION, displayTitle: "Changed locally", fileMtimeMs: 5_000 }, {}, [])).toBe("conflict");
+  });
+
+  it("repairs only an unambiguous Cursor session identity", () => {
+    const local = {
+      session: {
+        ...SESSION,
+        sessionKey: "cursor:empty-window:same-composer",
+        rawId: "same-composer",
+        source: "cursor-agent" as const,
+      },
+      revision: null,
+    };
+    const remote = {
+      id: "cursor-remote",
+      sourceSessionKey: "cursor:repo-old:same-composer",
+      sourceAgent: "cursor" as const,
+      sourceSource: "cursor-agent",
+      sourceEnvironmentId: "local",
+      sourceEnvironmentKind: "local",
+      sourceEnvironmentLabel: "Local",
+      title: "Cursor session",
+      projectPath: "/repo",
+      startedAt: "x",
+      updatedAt: 1,
+      contentHash: "remote",
+      revisionVersion: 2,
+      messageCount: 1,
+      traceEventCount: 0,
+      aiSummary: null,
+      tags: [],
+      searchText: "",
+      detailObjectKey: "d",
+      portableObjectKey: "p",
+      detailSha256: "dh",
+      portableSha256: "ph",
+      createdAt: 1,
+      syncedAt: 2,
+    };
+
+    expect(findCursorSessionSyncBindingRepairs([local], [remote], [])).toEqual([{
+      localSessionKey: local.session.sessionKey,
+      remoteSessionId: remote.id,
+      lastLocalRevision: "",
+      lastRemoteRevision: "",
+      lastSyncedAt: remote.syncedAt,
+      direction: "upload",
+    }]);
+    expect(findCursorSessionSyncBindingRepairs(
+      [local],
+      [remote, { ...remote, id: "cursor-duplicate" }],
+      [],
+    )).toEqual([]);
+    expect(findCursorSessionSyncBindingRepairs(
+      [local],
+      [{ ...remote, sourceEnvironmentId: "ssh-other" }],
+      [],
+    )).toEqual([]);
   });
 
   it("uses an explicit restore binding without duplicating the same remote session", () => {
@@ -1058,6 +1213,27 @@ describe("remote session sync model", () => {
 
     await expect(client.uploadSession(payload, detailJson, portableJson)).rejects.toThrow("temporary gateway failure");
     expect(storageWrites).toBe(0);
+  });
+
+  it("explains how to repair an outdated source agent constraint", async () => {
+    const detail = buildRemoteSessionSnapshot(SESSION, MESSAGES, [], 10_000);
+    const { payload, detailJson, portableJson } = buildRemoteSessionPayload({ session: SESSION, detail, portable: PORTABLE, now: 11_000 });
+    const client = new SupabaseRemoteSessionClient({
+      url: "https://example.supabase.co",
+      anonKey: "anon",
+      fetchImpl: async (url, init) => {
+        if (String(url).includes("/storage/v1/object/")) return new Response("{}", { status: 200 });
+        if (init?.method !== "POST") return new Response("[]", { status: 200 });
+        return new Response(JSON.stringify({
+          code: "23514",
+          message: `new row for relation "${REMOTE_SESSION_TABLE}" violates check constraint "${REMOTE_SESSION_TABLE}_source_agent_check"`,
+        }), { status: 400 });
+      },
+    });
+
+    await expect(client.uploadSession(payload, detailJson, portableJson)).rejects.toThrow(
+      "Copy and run the latest setup SQL, then try again.",
+    );
   });
 
   it("uploads source chunks with bounded concurrency", async () => {

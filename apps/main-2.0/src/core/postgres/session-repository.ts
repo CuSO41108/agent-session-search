@@ -467,7 +467,7 @@ async function insertRawEvents(
           payload jsonb
         )
       `,
-      [sessionKey, JSON.stringify(batch.map((event) => ({
+      [sessionKey, JSON.stringify(batch.map((event) => postgresJsonValue({
         event_index: event.eventIndex,
         event_id: event.eventId,
         kind: event.kind,
@@ -1714,6 +1714,23 @@ export class PostgresSessionRepository {
           where source_session_key = $1
         `,
         [legacyKey, targetKey],
+      );
+      await client.query(
+        `
+          update agent_recall.session_sync_bindings as legacy_binding
+          set local_session_key = $2
+          where legacy_binding.local_session_key = $1
+            and not exists (
+              select 1
+              from agent_recall.session_sync_bindings as target_binding
+              where target_binding.local_session_key = $2
+            )
+        `,
+        [legacyKey, targetKey],
+      );
+      await client.query(
+        "delete from agent_recall.session_sync_bindings where local_session_key = $1",
+        [legacyKey],
       );
       await client.query("delete from agent_recall.sessions where session_key = $1", [legacyKey]);
       return true;

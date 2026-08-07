@@ -27,7 +27,9 @@ import {
 import { sessionSourceDescriptor } from "./session-sources";
 import type { MigrationTarget, SessionSearchResult, SessionSource } from "./types";
 import {
+  DEFAULT_OPENVIKING_RECALL_TOKEN_BUDGET,
   OPENVIKING_EXTRACTION_REASONING_EFFORTS,
+  normalizeOpenVikingRecallTokenBudget,
   type OpenVikingExtractionReasoningEffort,
 } from "./openviking-settings";
 
@@ -102,6 +104,7 @@ export interface AppSettings {
   openVikingLocalEmbeddingModel: "BAAI/bge-small-zh-v1.5";
   openVikingExtractionModel: string;
   openVikingExtractionReasoningEffort: OpenVikingExtractionReasoningEffort;
+  openVikingRecallTokenBudget: number;
   hideCodexQuota: boolean;
   hideClaudeQuota: boolean;
   autoCheckUpdates: boolean;
@@ -174,6 +177,7 @@ export const defaultSettings: AppSettings = {
   openVikingLocalEmbeddingModel: "BAAI/bge-small-zh-v1.5",
   openVikingExtractionModel: "",
   openVikingExtractionReasoningEffort: "medium",
+  openVikingRecallTokenBudget: DEFAULT_OPENVIKING_RECALL_TOKEN_BUDGET,
   hideCodexQuota: false,
   hideClaudeQuota: false,
   autoCheckUpdates: true,
@@ -225,6 +229,9 @@ export function mergeAppSettings(previous: AppSettings, updates: AppSettingsUpda
     )
       ? merged.openVikingExtractionReasoningEffort
       : "medium",
+    openVikingRecallTokenBudget: normalizeOpenVikingRecallTokenBudget(
+      merged.openVikingRecallTokenBudget,
+    ),
     showInDock: merged.showInDock !== false,
     summarySource: merged.summarySource === "claude" || merged.summarySource === "custom" ? merged.summarySource : "codex",
     summaryCodexModel: String(merged.summaryCodexModel ?? "").trim(),

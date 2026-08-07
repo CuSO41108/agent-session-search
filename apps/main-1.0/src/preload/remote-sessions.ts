@@ -1,5 +1,5 @@
 import type { IpcRenderer } from "electron";
-import type { RemoteSessionDeleteResult, RemoteSessionDetailSnapshot, RemoteSessionListItem, RemoteSessionStatus, RemoteSessionUploadResult, SessionSyncItem } from "../core/remote-session-sync";
+import type { RemoteSessionDeleteResult, RemoteSessionDetailSnapshot, RemoteSessionListItem, RemoteSessionStatus, RemoteSessionSyncSnapshot, RemoteSessionUploadResult, SessionSyncItem } from "../core/remote-session-sync";
 import type { SessionSyncHookStatus } from "../core/session-sync-queue";
 import type { MigrationAgent, SessionMigrationResult } from "../core/types";
 import { REMOTE_SESSIONS_IPC } from "../shared/ipc/remote-sessions";
@@ -16,6 +16,7 @@ export function createRemoteSessionsApi(ipc: RemoteSessionsIpcRenderer) {
     uploadRemoteSession: (sessionKey: string, force?: boolean): Promise<RemoteSessionUploadResult> =>
       ipc.invoke(REMOTE_SESSIONS_IPC.upload.channel, sessionKey, force),
     listRemoteSessions: (query?: string): Promise<RemoteSessionListItem[]> => ipc.invoke(REMOTE_SESSIONS_IPC.list.channel, query),
+    loadRemoteSessionSyncSnapshot: (): Promise<RemoteSessionSyncSnapshot> => ipc.invoke(REMOTE_SESSIONS_IPC.loadSyncSnapshot.channel),
     listSessionSyncItems: (): Promise<SessionSyncItem[]> => ipc.invoke(REMOTE_SESSIONS_IPC.listSyncItems.channel),
     getRemoteSessionDetail: (remoteId: string): Promise<RemoteSessionDetailSnapshot> =>
       ipc.invoke(REMOTE_SESSIONS_IPC.getDetail.channel, remoteId),

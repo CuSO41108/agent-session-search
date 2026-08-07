@@ -32,8 +32,8 @@ import {
   type SkillVersionBasePayload,
 } from "../../core/skill-sync";
 import {
-  listSkillUsageSources,
-  readSkillUsageSourceEvents,
+  listSkillUsageSourcesAsync,
+  readSkillUsageSourceEventsAsync,
   usageForSkill,
   type SkillUsageEvent,
   type SkillUsageRefreshStatus,
@@ -76,8 +76,8 @@ export interface SkillServiceOperations {
   listInstalledSkills: typeof listInstalledSkills;
   skillProjectDirsFromIndexedProjects: typeof skillProjectDirsFromIndexedProjects;
   usageForSkill: typeof usageForSkill;
-  listSkillUsageSources: typeof listSkillUsageSources;
-  readSkillUsageSourceEvents: typeof readSkillUsageSourceEvents;
+  listSkillUsageSources: typeof listSkillUsageSourcesAsync;
+  readSkillUsageSourceEvents: typeof readSkillUsageSourceEventsAsync;
   isSyncableSkill: typeof isSyncableSkill;
   portableSkillLocation: typeof portableSkillLocation;
   skillSyncLocalContentHash: typeof skillSyncLocalContentHash;
@@ -98,6 +98,7 @@ export interface SkillServiceDependencies {
   createSyncClient?(options: { url: string; anonKey: string }): SkillSyncClientPort;
   copyText(text: string): void;
   revealPath(path: string): Promise<void>;
+  homeDir?: string;
   now(): number;
   logError(message: string): void;
   operations?: Partial<SkillServiceOperations>;
@@ -113,8 +114,8 @@ const defaultOperations: SkillServiceOperations = {
   listInstalledSkills,
   skillProjectDirsFromIndexedProjects,
   usageForSkill,
-  listSkillUsageSources,
-  readSkillUsageSourceEvents,
+  listSkillUsageSources: listSkillUsageSourcesAsync,
+  readSkillUsageSourceEvents: readSkillUsageSourceEventsAsync,
   isSyncableSkill,
   portableSkillLocation,
   skillSyncLocalContentHash,
@@ -140,6 +141,7 @@ export class SkillService {
   private readonly timers: NonNullable<SkillServiceDependencies["timers"]>;
   private initialUsageTimer: ReturnType<typeof setTimeout> | null = null;
   private autoUsageTimer: ReturnType<typeof setInterval> | null = null;
+  private usageRefreshPromise: Promise<SkillUsageRefreshStatus> | null = null;
 
   constructor(private readonly dependencies: SkillServiceDependencies) {
     this.operations = { ...defaultOperations, ...dependencies.operations };
@@ -166,10 +168,21 @@ export class SkillService {
     };
   }
 
-  refreshUsage(): SkillUsageRefreshStatus {
+  refreshUsage(): Promise<SkillUsageRefreshStatus> {
+    if (this.usageRefreshPromise) return this.usageRefreshPromise;
+    const request = this.performUsageRefresh();
+    this.usageRefreshPromise = request;
+    void request.finally(() => {
+      if (this.usageRefreshPromise === request) this.usageRefreshPromise = null;
+    }).catch(() => undefined);
+    return request;
+  }
+
+  private async performUsageRefresh(): Promise<SkillUsageRefreshStatus> {
     const store = this.dependencies.getStore();
     const settings = this.dependencies.getSettings();
-    const sources = this.operations.listSkillUsageSources({
+    const sources = await this.operations.listSkillUsageSources({
+      homeDir: this.dependencies.homeDir,
       includeTclaude: settings.includeTclaude,
       includeTcodex: settings.includeTcodex,
       includeCodeBuddyCli: settings.includeCodeBuddyCli,
@@ -188,8 +201,9 @@ export class SkillService {
         skipped += 1;
         continue;
       }
-      store.upsertSkillUsageSource(source, this.operations.readSkillUsageSourceEvents(source));
+      store.upsertSkillUsageSource(source, await this.operations.readSkillUsageSourceEvents(source));
       refreshed += 1;
+      await new Promise<void>((resolve) => setImmediate(resolve));
     }
     store.pruneSkillUsageSources(sources.map((source) => source.path));
     return {
@@ -201,9 +215,9 @@ export class SkillService {
     };
   }
 
-  refreshUsageSafely(): void {
+  async refreshUsageSafely(): Promise<void> {
     try {
-      this.refreshUsage();
+      await this.refreshUsage();
     } catch (error) {
       this.dependencies.logError(`Failed to refresh skill usage: ${error instanceof Error ? error.message : String(error)}`);
     }
@@ -213,12 +227,12 @@ export class SkillService {
     if (!this.initialUsageTimer) {
       this.initialUsageTimer = this.timers.setTimeout(() => {
         this.initialUsageTimer = null;
-        this.refreshUsageSafely();
+        void this.refreshUsageSafely();
       }, INITIAL_SKILL_USAGE_REFRESH_DELAY_MS);
     }
     if (this.autoUsageTimer) return;
     this.autoUsageTimer = this.timers.setInterval(
-      () => this.refreshUsageSafely(),
+      () => void this.refreshUsageSafely(),
       AUTO_SKILL_USAGE_REFRESH_INTERVAL_MS,
     );
   }

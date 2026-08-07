@@ -240,25 +240,49 @@ export function useSkillsController(language: LanguageMode): {
     const remainingSkillIds: string[] = [];
     const failureDetails: string[] = [];
     try {
-      for (const skill of uploadable) {
-        try {
-          const result = await window.sessionSearch.uploadSkillToSync(skill.path, false);
-          if (result.status === "uploaded") uploaded += 1;
-          else if (result.status === "skipped") skipped += 1;
-          else {
-            conflicts += 1;
-            remainingSkillIds.push(skill.id);
-            failureDetails.push(t(
-              `${skill.name}: confirm before replacing the existing remote source.`,
-              `${skill.name}：需要确认是否替换现有远程来源。`,
-            ));
+      const outcomes = new Array<{ skill: InstalledSkill; result?: SkillSyncUploadOutcome; error?: unknown }>(uploadable.length);
+      let nextIndex = 0;
+      let completed = 0;
+      const worker = async (): Promise<void> => {
+        while (true) {
+          const index = nextIndex;
+          nextIndex += 1;
+          const skill = uploadable[index];
+          if (!skill) return;
+          try {
+            outcomes[index] = { skill, result: await window.sessionSearch.uploadSkillToSync(skill.path, false) };
+          } catch (error) {
+            outcomes[index] = { skill, error };
           }
-        } catch (error) {
+          completed += 1;
+          setFeedback({
+            kind: "running",
+            message: t(
+              `Uploading selected skills: ${completed}/${uploadable.length}...`,
+              `正在上传所选 Skills：${completed}/${uploadable.length}...`,
+            ),
+          });
+        }
+      };
+      await Promise.all(Array.from({ length: Math.min(2, uploadable.length) }, () => worker()));
+      for (const outcome of outcomes) {
+        const { skill, result, error } = outcome;
+        if (error) {
           failed += 1;
           remainingSkillIds.push(skill.id);
-          failureDetails.push(
-            `${skill.name}: ${error instanceof Error ? error.message : String(error)}`,
-          );
+          failureDetails.push(`${skill.name}: ${error instanceof Error ? error.message : String(error)}`);
+          continue;
+        }
+        if (!result) continue;
+        if (result.status === "uploaded") uploaded += 1;
+        else if (result.status === "skipped") skipped += 1;
+        else {
+          conflicts += 1;
+          remainingSkillIds.push(skill.id);
+          failureDetails.push(t(
+            `${skill.name}: confirm before replacing the existing remote source.`,
+            `${skill.name}：需要确认是否替换现有远程来源。`,
+          ));
         }
       }
       await load({ silent: true });

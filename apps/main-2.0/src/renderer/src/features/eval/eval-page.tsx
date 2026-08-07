@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useState } from "react";
 import type { ReactElement } from "react";
-import { AlertTriangle, Beaker, CheckCircle2, ChevronDown, ChevronRight, EyeOff, Link2Off, Lock, MousePointerClick, Play, Plus, RefreshCw, Settings2, Trash2, X } from "lucide-react";
+import { AlertTriangle, Beaker, CheckCircle2, ChevronDown, ChevronRight, EyeOff, Link2Off, Lock, MousePointerClick, Pencil, Play, Plus, RefreshCw, Settings2, Trash2, X } from "lucide-react";
 
 import type { SkillTriggerLink } from "../../../../core/session-store";
 import type { SkillFinding } from "../../../../core/skill-eval-findings";
-import type { SkillEvalDetail, SkillEvalOverview, SkillEvalOverviewItem, SkillEvalSuite, CreateSkillEvalSuiteInput } from "../../../../main/services/skill-service";
-import type { EvaluationEvaluator, ConfiguredAgent } from "../../../../automation/contracts";
+import type { SkillEvalDetail, SkillEvalOverview, SkillEvalOverviewItem, SkillEvalSuite } from "../../../../main/services/skill-service";
+import type { EvaluationEvaluator, EvaluationRun, EvaluationRunSummary, ConfiguredAgent } from "../../../../automation/contracts";
 import { formatRelativeTime } from "../../../../core/format-session";
 import { localize, type LanguageMode } from "../../language";
 import { EvaluationFeaturePage } from "../automation/evaluation-feature-page";
@@ -416,9 +416,17 @@ function EvalSuitesCard({
 }): ReactElement {
   const l = (en: string, zh: string) => localize(language, en, zh);
   const [suites, setSuites] = useState<SkillEvalSuite[] | null>(null);
-  const [runningId, setRunningId] = useState<string | null>(null);
+  const [activeRun, setActiveRun] = useState<{
+    suiteId: string;
+    runId: string;
+    done: number;
+    total: number;
+    status: string;
+  } | null>(null);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [createOpen, setCreateOpen] = useState(false);
+  // null = closed; editing null = creating a new suite.
+  const [dialog, setDialog] = useState<{ editing: SkillEvalSuite | null } | null>(null);
 
   const reload = useCallback(async () => {
     setError(null);
@@ -434,18 +442,77 @@ function EvalSuitesCard({
     void reload();
   }, [reload]);
 
-  const run = useCallback(async (suiteId: string) => {
-    setRunningId(suiteId);
+  const run = useCallback(async (suite: SkillEvalSuite) => {
     setError(null);
     try {
-      await window.sessionSearch.runSkillEvalSuite(suiteId);
+      const { runId } = await window.sessionSearch.runSkillEvalSuite(suite.id);
+      setActiveRun({
+        suiteId: suite.id,
+        runId,
+        done: 0,
+        total: suite.caseCount * suite.repetitions,
+        status: "running",
+      });
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    }
+  }, []);
+
+  // The run executes in the main process; poll its persisted snapshot for
+  // progress and stop once it reaches a terminal status.
+  const activeRunId = activeRun?.runId ?? null;
+  useEffect(() => {
+    if (!activeRunId) return;
+    let cancelled = false;
+    const timer = setInterval(() => {
+      void (async () => {
+        try {
+          const run = await window.sessionSearch.getSkillEvalRun(activeRunId);
+          if (cancelled || !run) return;
+          setActiveRun((current) => current && current.runId === run.id
+            ? { ...current, done: run.results.length, status: run.status }
+            : current);
+          if (run.status !== "running") {
+            clearInterval(timer);
+            await reload();
+          }
+        } catch {
+          // Polling is best-effort; the next tick retries.
+        }
+      })();
+    }, 2000);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [activeRunId, reload]);
+
+  const cancelRun = useCallback(async () => {
+    if (!activeRun) return;
+    try {
+      await window.sessionSearch.cancelSkillEvalRun(activeRun.runId);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    }
+  }, [activeRun]);
+
+  const remove = useCallback(async (suite: SkillEvalSuite) => {
+    const confirmed = window.confirm(l(
+      `Delete suite "${suite.name}" and its run history?`,
+      `删除方案「${suite.name}」及其运行历史？`,
+    ));
+    if (!confirmed) return;
+    setDeletingId(suite.id);
+    setError(null);
+    try {
+      await window.sessionSearch.deleteSkillEvalSuite(suite.id);
       await reload();
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
     } finally {
-      setRunningId(null);
+      setDeletingId(null);
     }
-  }, [reload]);
+  }, [l, reload]);
 
   return (
     <div className="eval-card eval-suites-card">
@@ -455,7 +522,7 @@ function EvalSuitesCard({
           {suites !== null && suites.length > 0 ? (
             <span className="eval-evidence-tag">{l(`${suites.length} suite(s)`, `${suites.length} 个方案`)}</span>
           ) : null}
-          <button type="button" className="eval-create-button" onClick={() => setCreateOpen(true)}>
+          <button type="button" className="eval-create-button" onClick={() => setDialog({ editing: null })}>
             <Plus size={13} />{l("New suite", "新建方案")}
           </button>
         </div>
@@ -497,28 +564,61 @@ function EvalSuitesCard({
                     : l("Never run", "从未运行")}
                   {" · "}×{suite.repetitions}
                 </span>
+                {activeRun && activeRun.suiteId === suite.id && activeRun.status === "running" ? (
+                  <>
+                    <span className="eval-evidence-tag">
+                      {l(`Running ${activeRun.done}/${activeRun.total}`, `运行中 ${activeRun.done}/${activeRun.total}`)}
+                    </span>
+                    <button
+                      type="button"
+                      className="eval-run-button eval-suite-delete"
+                      onClick={() => void cancelRun()}
+                    >
+                      <X size={12} />{l("Cancel", "取消")}
+                    </button>
+                  </>
+                ) : (
+                  <button
+                    type="button"
+                    className="eval-run-button"
+                    disabled={Boolean(activeRun && activeRun.status === "running")}
+                    onClick={() => void run(suite)}
+                  >
+                    <Play size={12} />{l("Run", "运行")}
+                  </button>
+                )}
                 <button
                   type="button"
                   className="eval-run-button"
-                  disabled={runningId === suite.id}
-                  onClick={() => void run(suite.id)}
+                  aria-label={l(`Edit suite ${suite.name}`, `编辑方案 ${suite.name}`)}
+                  onClick={() => setDialog({ editing: suite })}
                 >
-                  <Play size={12} />
-                  {runningId === suite.id ? l("Running...", "运行中...") : l("Run", "运行")}
+                  <Pencil size={12} />{l("Edit", "编辑")}
+                </button>
+                <button
+                  type="button"
+                  className="eval-run-button eval-suite-delete"
+                  aria-label={l(`Delete suite ${suite.name}`, `删除方案 ${suite.name}`)}
+                  disabled={deletingId === suite.id}
+                  onClick={() => void remove(suite)}
+                >
+                  <Trash2 size={12} />{deletingId === suite.id ? l("Deleting...", "删除中...") : l("Delete", "删除")}
                 </button>
               </div>
+              <SuiteRunsSection language={language} suite={suite} />
             </li>
           ))}
         </ul>
       )}
 
-      {createOpen ? (
+      {dialog ? (
         <CreateSuiteDialog
           language={language}
           skill={skill}
-          onClose={() => setCreateOpen(false)}
-          onCreated={() => {
-            setCreateOpen(false);
+          editing={dialog.editing}
+          onClose={() => setDialog(null)}
+          onSaved={() => {
+            setDialog(null);
             void reload();
           }}
         />
@@ -530,19 +630,26 @@ function EvalSuitesCard({
 function CreateSuiteDialog({
   language,
   skill,
+  editing,
   onClose,
-  onCreated,
+  onSaved,
 }: {
   language: LanguageMode;
   skill: string;
+  editing: SkillEvalSuite | null;
   onClose: () => void;
-  onCreated: () => void;
+  onSaved: () => void;
 }): ReactElement {
   const l = (en: string, zh: string) => localize(language, en, zh);
-  const [name, setName] = useState("");
-  const [agentId, setAgentId] = useState("");
-  const [repetitions, setRepetitions] = useState(1);
-  const [evaluatorIds, setEvaluatorIds] = useState<string[]>([]);
+  const [name, setName] = useState(editing?.name ?? "");
+  const [agentId, setAgentId] = useState(editing?.agentId ?? "");
+  const [repetitions, setRepetitions] = useState(editing?.repetitions ?? 1);
+  const [useBuiltinJudge, setUseBuiltinJudge] = useState(
+    editing ? editing.evaluatorIds.some((id) => id.startsWith("builtin-judge-")) : true,
+  );
+  const [evaluatorIds, setEvaluatorIds] = useState<string[]>(
+    editing ? editing.evaluatorIds.filter((id) => !id.startsWith("builtin-judge-")) : [],
+  );
   const [cases, setCases] = useState<Array<{ input: string; expectedOutput: string }>>([
     { input: "", expectedOutput: "" },
   ]);
@@ -560,9 +667,21 @@ function CreateSuiteDialog({
           window.sessionSearch.automation.getSnapshot(),
         ]);
         if (cancelled) return;
-        setEvaluators(nextEvaluators.filter((item) => item.enabled));
+        // The built-in judge covers auto-provisioned ones, which users should
+        // not have to manage by hand.
+        setEvaluators(nextEvaluators.filter((item) => item.enabled && !item.id.startsWith("builtin-judge-")));
         setAgents(snapshot.configuredAgents);
-        if (snapshot.configuredAgents[0]) setAgentId(snapshot.configuredAgents[0].id);
+        if (!editing) {
+          const preferred = snapshot.configuredAgents.find((agent) => agent.managed)
+            ?? snapshot.configuredAgents[0];
+          if (preferred) setAgentId(preferred.id);
+        }
+        if (editing) {
+          const savedCases = await window.sessionSearch.getSkillEvalSuiteCases(editing.id);
+          if (!cancelled && savedCases.length > 0) {
+            setCases(savedCases.map((item) => ({ input: item.input, expectedOutput: item.expectedOutput ?? "" })));
+          }
+        }
       } catch (cause) {
         if (!cancelled) setError(cause instanceof Error ? cause.message : String(cause));
       }
@@ -570,40 +689,54 @@ function CreateSuiteDialog({
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [editing]);
 
   const save = useCallback(async () => {
     setSaving(true);
     setError(null);
     try {
-      const input: CreateSkillEvalSuiteInput = {
-        skill,
-        name,
-        agentId,
-        evaluatorIds,
-        repetitions,
-        cases: cases
-          .filter((item) => item.input.trim())
-          .map((item) => ({
-            input: item.input,
-            ...(item.expectedOutput.trim() ? { expectedOutput: item.expectedOutput } : {}),
-          })),
-      };
-      await window.sessionSearch.createSkillEvalSuite(input);
-      onCreated();
+      const caseList = cases
+        .filter((item) => item.input.trim())
+        .map((item) => ({
+          input: item.input,
+          ...(item.expectedOutput.trim() ? { expectedOutput: item.expectedOutput } : {}),
+        }));
+      if (editing) {
+        await window.sessionSearch.updateSkillEvalSuite({
+          id: editing.id,
+          name,
+          agentId,
+          evaluatorIds,
+          useBuiltinJudge,
+          repetitions,
+          cases: caseList,
+        });
+      } else {
+        await window.sessionSearch.createSkillEvalSuite({
+          skill,
+          name,
+          agentId,
+          evaluatorIds,
+          useBuiltinJudge,
+          repetitions,
+          cases: caseList,
+        });
+      }
+      onSaved();
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
       setSaving(false);
     }
-  }, [skill, name, agentId, evaluatorIds, repetitions, cases, onCreated]);
+  }, [editing, skill, name, agentId, evaluatorIds, useBuiltinJudge, repetitions, cases, onSaved]);
 
-  const canSave = name.trim() && agentId && cases.some((item) => item.input.trim());
+  const canSave = name.trim() && agentId && cases.some((item) => item.input.trim())
+    && (useBuiltinJudge || evaluatorIds.length > 0);
 
   return (
     <div className="eval-suite-dialog-backdrop" onClick={onClose}>
       <div className="eval-suite-dialog" onClick={(event) => event.stopPropagation()}>
         <header>
-          <h4>{l("New regression suite", "新建回归方案")} · {skill}</h4>
+          <h4>{editing ? l("Edit regression suite", "编辑回归方案") : l("New regression suite", "新建回归方案")} · {skill}</h4>
           <button type="button" onClick={onClose} aria-label={l("Close", "关闭")}>
             <X size={15} />
           </button>
@@ -619,22 +752,37 @@ function CreateSuiteDialog({
         <label className="eval-suite-field">
           <span>{l("Execution Agent", "执行 Agent")}</span>
           <select value={agentId} onChange={(event) => setAgentId(event.target.value)}>
-            {agents.length === 0 ? <option value="">{l("No configured Agent", "暂无已配置 Agent")}</option> : null}
+            {agents.length === 0 ? <option value="">{l("No execution Agent detected", "未检测到可用 Agent")}</option> : null}
             {agents.map((agent) => (
               <option key={agent.id} value={agent.id}>{agent.name}</option>
             ))}
           </select>
+          {agents.length === 0 ? (
+            <p className="eval-muted">{l(
+              "Install an agent runtime such as Claude Code or Codex, then reopen this dialog.",
+              "请先安装 Claude Code 或 Codex 等 Agent 运行时，再重新打开此对话框。",
+            )}</p>
+          ) : null}
         </label>
 
         <div className="eval-suite-field">
           <span>{l("Evaluators", "评分器")}</span>
           <div className="eval-suite-evaluators">
-            {evaluators.length === 0 ? (
+            <label className="eval-suite-evaluator-option">
+              <input
+                type="checkbox"
+                checked={useBuiltinJudge}
+                onChange={(event) => setUseBuiltinJudge(event.target.checked)}
+              />
+              {l("Built-in LLM Judge (recommended)", "内置 LLM Judge（推荐）")}
+            </label>
+            {useBuiltinJudge ? (
               <p className="eval-muted">{l(
-                "No evaluators yet. Create one in the Experiments tab first.",
-                "还没有评分器。请先在实验页创建。",
+                "Judges each case with the execution Agent's own model. No setup needed; scores may be lenient about style.",
+                "用执行 Agent 同款模型逐条评审，无需任何配置；对文风差异可能偏宽松。",
               )}</p>
-            ) : evaluators.map((evaluator) => {
+            ) : null}
+            {evaluators.map((evaluator) => {
               const checked = evaluatorIds.includes(evaluator.id);
               return (
                 <label key={evaluator.id} className="eval-suite-evaluator-option">
@@ -649,6 +797,12 @@ function CreateSuiteDialog({
                 </label>
               );
             })}
+            {!useBuiltinJudge && evaluators.length === 0 ? (
+              <p className="eval-muted">{l(
+                "Select at least one evaluator, or keep the built-in judge enabled.",
+                "请至少选择一个评分器，或保持内置 Judge 勾选。",
+              )}</p>
+            ) : null}
           </div>
         </div>
 
@@ -700,7 +854,7 @@ function CreateSuiteDialog({
             disabled={!canSave || saving}
             onClick={() => void save()}
           >
-            {saving ? l("Saving...", "保存中...") : l("Create", "创建")}
+            {saving ? l("Saving...", "保存中...") : editing ? l("Save", "保存") : l("Create", "创建")}
           </button>
         </footer>
       </div>
@@ -770,8 +924,8 @@ function FindingsCard({
                 </button>
                 {isExpanded ? (
                   <div className="eval-finding-body">
-                    <p>{f.observation}</p>
-                    <p className="eval-finding-repair">{f.repairDirection}</p>
+                    <p>{l(f.observation.en, f.observation.zh)}</p>
+                    <p className="eval-finding-repair">{l(f.repairDirection.en, f.repairDirection.zh)}</p>
                     {f.evidence.spanIds && f.evidence.spanIds.length > 0 ? (
                       <p className="eval-muted">{l("Evidence spans:", "证据 span：")} {f.evidence.spanIds.slice(0, 3).join(", ")}</p>
                     ) : null}
@@ -782,6 +936,346 @@ function FindingsCard({
           })}
         </ul>
       )}
+    </div>
+  );
+}
+
+// Run history drill-down for one suite: summaries first, then per-case evidence
+// (input / output / every evaluator's score, reason and failedCriteria).
+function SuiteRunsSection({
+  language,
+  suite,
+}: {
+  language: LanguageMode;
+  suite: SkillEvalSuite;
+}): ReactElement {
+  const l = (en: string, zh: string) => localize(language, en, zh);
+  const [open, setOpen] = useState(false);
+  const [runs, setRuns] = useState<EvaluationRunSummary[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [expandedRunId, setExpandedRunId] = useState<string | null>(null);
+  const [baseRunId, setBaseRunId] = useState("");
+  const [compareRunId, setCompareRunId] = useState("");
+  const [comparison, setComparison] = useState<{ base: EvaluationRun; compare: EvaluationRun } | null>(null);
+  const [comparing, setComparing] = useState(false);
+
+  const toggle = useCallback(() => {
+    setOpen((value) => !value);
+    if (!open && runs === null) {
+      void (async () => {
+        try {
+          const nextRuns = await window.sessionSearch.getSkillEvalSuiteRuns(suite.id);
+          setRuns(nextRuns);
+          // Default to comparing the two newest runs.
+          if (nextRuns.length >= 2) {
+            setCompareRunId(nextRuns[0].id);
+            setBaseRunId(nextRuns[1].id);
+          }
+        } catch (cause) {
+          setError(cause instanceof Error ? cause.message : String(cause));
+        }
+      })();
+    }
+  }, [open, runs, suite.id]);
+
+  const compare = useCallback(async () => {
+    if (!baseRunId || !compareRunId || baseRunId === compareRunId) return;
+    setComparing(true);
+    setError(null);
+    try {
+      const [base, compareRun] = await Promise.all([
+        window.sessionSearch.getSkillEvalRun(baseRunId),
+        window.sessionSearch.getSkillEvalRun(compareRunId),
+      ]);
+      if (!base || !compareRun) throw new Error("Run not found.");
+      setComparison({ base, compare: compareRun });
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setComparing(false);
+    }
+  }, [baseRunId, compareRunId]);
+
+  return (
+    <div className="eval-suite-runs">
+      <button type="button" className="eval-suite-runs-toggle" onClick={toggle}>
+        {open ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+        {l("Run history", "运行历史")}
+        {runs !== null && runs.length > 0 ? ` · ${runs.length}` : ""}
+      </button>
+      {open ? (
+        error ? <p className="eval-error" role="alert">{error}</p>
+        : runs === null ? <p className="eval-muted">{l("Loading...", "加载中...")}</p>
+        : runs.length === 0 ? <p className="eval-muted">{l("No runs yet.", "还没有运行记录。")}</p>
+        : (
+          <>
+            {runs.length >= 2 ? (
+              <div className="eval-run-compare-bar">
+                <label>
+                  <span>{l("Base run", "基准运行")}</span>
+                  <select value={baseRunId} onChange={(event) => setBaseRunId(event.target.value)}>
+                    {runs.map((run) => (
+                      <option key={run.id} value={run.id}>
+                        {formatRelativeTime(run.startedAt)}{run.skillHash ? ` · ${run.skillHash.slice(0, 8)}` : ""}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <span className="eval-muted">→</span>
+                <label>
+                  <span>{l("Compare run", "对比运行")}</span>
+                  <select value={compareRunId} onChange={(event) => setCompareRunId(event.target.value)}>
+                    {runs.map((run) => (
+                      <option key={run.id} value={run.id}>
+                        {formatRelativeTime(run.startedAt)}{run.skillHash ? ` · ${run.skillHash.slice(0, 8)}` : ""}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <button
+                  type="button"
+                  className="eval-run-button"
+                  disabled={comparing || !baseRunId || !compareRunId || baseRunId === compareRunId}
+                  onClick={() => void compare()}
+                >
+                  {comparing ? l("Comparing...", "对比中...") : l("Compare", "对比")}
+                </button>
+              </div>
+            ) : null}
+            {comparison ? (
+              <RunComparison
+                language={language}
+                base={comparison.base}
+                compare={comparison.compare}
+                onClose={() => setComparison(null)}
+              />
+            ) : null}
+            <ul className="eval-run-list">
+            {runs.map((run) => (
+              <li key={run.id} className="eval-run-item">
+                <button
+                  type="button"
+                  className="eval-run-row"
+                  onClick={() => setExpandedRunId((current) => current === run.id ? null : run.id)}
+                >
+                  {expandedRunId === run.id ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+                  <span className={`eval-badge ${run.status === "completed" ? "eval-badge-current" : run.status === "running" || run.status === "pending" ? "eval-badge-dim" : "eval-badge-warn"}`}>
+                    {runStatusText(language, run.status)}
+                  </span>
+                  <span className="eval-muted">{formatRelativeTime(run.startedAt)}</span>
+                  {run.passRate != null ? (
+                    <span>{l("pass", "通过")} {Math.round(run.passRate * 100)}%</span>
+                  ) : null}
+                  {run.failedResultCount > 0 ? (
+                    <span className="eval-badge eval-badge-warn">{l(`${run.failedResultCount} failed`, `${run.failedResultCount} 条失败`)}</span>
+                  ) : null}
+                </button>
+                {expandedRunId === run.id ? <RunCaseDetail language={language} runId={run.id} /> : null}
+              </li>
+            ))}
+          </ul>
+          </>
+        )
+      ) : null}
+    </div>
+  );
+}
+
+function runStatusText(language: LanguageMode, status: string): string {
+  const l = (en: string, zh: string) => localize(language, en, zh);
+  if (status === "completed") return l("Completed", "完成");
+  if (status === "failed") return l("Failed", "失败");
+  if (status === "cancelled") return l("Cancelled", "已取消");
+  if (status === "running") return l("Running", "运行中");
+  return l("Pending", "等待中");
+}
+
+function RunCaseDetail({
+  language,
+  runId,
+}: {
+  language: LanguageMode;
+  runId: string;
+}): ReactElement {
+  const l = (en: string, zh: string) => localize(language, en, zh);
+  const [run, setRun] = useState<EvaluationRun | null>(null);
+  const [evaluatorNames, setEvaluatorNames] = useState<Map<string, string>>(new Map());
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const [nextRun, evaluators] = await Promise.all([
+          window.sessionSearch.getSkillEvalRun(runId),
+          window.sessionSearch.automation.listEvaluationEvaluators(),
+        ]);
+        if (cancelled) return;
+        setRun(nextRun);
+        setEvaluatorNames(new Map(evaluators.map((item) => [item.id, item.name])));
+      } catch (cause) {
+        if (!cancelled) setError(cause instanceof Error ? cause.message : String(cause));
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [runId]);
+
+  if (error) return <p className="eval-error" role="alert">{error}</p>;
+  if (!run) return <p className="eval-muted">{l("Loading...", "加载中...")}</p>;
+  if (run.error) return <p className="eval-error" role="alert">{run.error}</p>;
+
+  return (
+    <div className="eval-run-cases">
+      {run.results.length === 0 ? (
+        <p className="eval-muted">{l("No case results were recorded.", "没有记录到用例结果。")}</p>
+      ) : run.results.map((result, index) => {
+        const passed = !result.error && result.scores.length > 0 && result.scores.every((score) => score.passed);
+        return (
+          <div key={result.id} className="eval-run-case">
+            <header className="eval-run-case-header">
+              <span className="eval-run-case-title">{l(`Case ${index + 1}`, `用例 ${index + 1}`)}{run.results.filter((item) => item.datasetItemId === result.datasetItemId).length > 1 ? ` · #${result.repetition}` : ""}</span>
+              <span className={`eval-badge ${passed ? "eval-badge-current" : "eval-badge-warn"}`}>
+                {passed ? l("Passed", "通过") : l("Failed", "未通过")}
+              </span>
+              <span className="eval-muted">{formatDuration(result.durationMs)}</span>
+            </header>
+            {result.error ? <p className="eval-error">{result.error}</p> : null}
+            <details className="eval-run-text">
+              <summary>{l("Input", "输入")}</summary>
+              <pre>{result.input}</pre>
+            </details>
+            {result.expectedOutput ? (
+              <details className="eval-run-text">
+                <summary>{l("Expected output", "期望输出")}</summary>
+                <pre>{result.expectedOutput}</pre>
+              </details>
+            ) : null}
+            <details className="eval-run-text" open={result.scores.some((score) => !score.passed)}>
+              <summary>{l("Actual output", "实际输出")}</summary>
+              <pre>{result.output || l("(empty)", "（空）")}</pre>
+            </details>
+            {result.scores.map((score) => (
+              <div key={score.evaluatorId} className="eval-run-score">
+                <header>
+                  <span className="eval-run-score-name">{evaluatorNames.get(score.evaluatorId) ?? score.evaluatorId}</span>
+                  <span className={`eval-badge ${score.passed ? "eval-badge-current" : "eval-badge-warn"}`}>
+                    {score.score.toFixed(2)}{score.passed ? "" : ` · ${l("below threshold", "未达标")}`}
+                  </span>
+                </header>
+                {score.reason ? <p className="eval-run-score-reason">{score.reason}</p> : null}
+                {score.failedCriteria && score.failedCriteria.length > 0 ? (
+                  <ul className="eval-run-score-criteria">
+                    {score.failedCriteria.map((criteria) => <li key={criteria}>{criteria}</li>)}
+                  </ul>
+                ) : null}
+              </div>
+            ))}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// Side-by-side comparison of two runs of the same suite. Case results pair by
+// dataset item + repetition; the view presents per-case facts (score deltas,
+// both outputs) and never turns them into advice.
+function RunComparison({
+  language,
+  base,
+  compare,
+  onClose,
+}: {
+  language: LanguageMode;
+  base: EvaluationRun;
+  compare: EvaluationRun;
+  onClose: () => void;
+}): ReactElement {
+  const l = (en: string, zh: string) => localize(language, en, zh);
+  const caseScore = (result: { scores: Array<{ score: number }> } | undefined): number | null => {
+    if (!result || result.scores.length === 0) return null;
+    return result.scores.reduce((sum, score) => sum + score.score, 0) / result.scores.length;
+  };
+  const pairKey = (result: { datasetItemId: string; repetition: number }) =>
+    `${result.datasetItemId}:${result.repetition}`;
+  const baseByKey = new Map(base.results.map((result) => [pairKey(result), result]));
+  const compareByKey = new Map(compare.results.map((result) => [pairKey(result), result]));
+  const keys = [
+    ...base.results.map(pairKey),
+    ...compare.results.map(pairKey).filter((key) => !baseByKey.has(key)),
+  ];
+  const sameVersion = Boolean(base.skillHash && base.skillHash === compare.skillHash);
+  const totalDelta = base.averageScore != null && compare.averageScore != null
+    ? compare.averageScore - base.averageScore
+    : null;
+
+  return (
+    <div className="eval-run-comparison">
+      <header className="eval-run-comparison-header">
+        <span className="eval-run-case-title">{l("Run comparison", "运行对比")}</span>
+        {sameVersion ? (
+          <span className="eval-badge eval-badge-dim">{l("Same skill version", "同一 Skill 版本")}</span>
+        ) : (
+          <span className="eval-badge eval-badge-current">
+            {(base.skillHash ?? "?").slice(0, 8)} → {(compare.skillHash ?? "?").slice(0, 8)}
+          </span>
+        )}
+        {totalDelta != null ? (
+          <span className={`eval-badge ${totalDelta >= 0 ? "eval-badge-current" : "eval-badge-warn"}`}>
+            {l("avg score", "平均分")} {totalDelta >= 0 ? "+" : ""}{totalDelta.toFixed(2)}
+          </span>
+        ) : null}
+        <button type="button" className="eval-run-button" onClick={onClose} aria-label={l("Close comparison", "关闭对比")}>
+          <X size={12} />{l("Close", "关闭")}
+        </button>
+      </header>
+      {keys.length === 0 ? (
+        <p className="eval-muted">{l("Neither run recorded case results.", "两次运行都没有用例结果。")}</p>
+      ) : keys.map((key) => {
+        const baseResult = baseByKey.get(key);
+        const compareResult = compareByKey.get(key);
+        const present = baseResult ?? compareResult;
+        if (!present) return null;
+        const baseScore = caseScore(baseResult);
+        const compareScore = caseScore(compareResult);
+        const delta = baseScore != null && compareScore != null ? compareScore - baseScore : null;
+        return (
+          <div key={key} className="eval-run-case">
+            <header className="eval-run-case-header">
+              <span className="eval-run-case-title">
+                {present.input.length > 60 ? `${present.input.slice(0, 60)}…` : present.input}
+              </span>
+              {delta != null ? (
+                <span className={`eval-badge ${delta > 0 ? "eval-badge-current" : delta < 0 ? "eval-badge-warn" : "eval-badge-dim"}`}>
+                  {delta > 0 ? "+" : ""}{delta.toFixed(2)}
+                </span>
+              ) : !baseResult ? (
+                <span className="eval-badge eval-badge-dim">{l("Only in compare run", "仅对比运行存在")}</span>
+              ) : (
+                <span className="eval-badge eval-badge-dim">{l("Not re-run", "未在对比运行中重跑")}</span>
+              )}
+            </header>
+            <div className="eval-run-compare-columns">
+              <details className="eval-run-text">
+                <summary>
+                  {l("Base output", "基准输出")}
+                  {baseScore != null ? ` · ${baseScore.toFixed(2)}` : ""}
+                </summary>
+                <pre>{baseResult ? baseResult.output || l("(empty)", "（空）") : l("(not run)", "（未运行）")}</pre>
+              </details>
+              <details className="eval-run-text">
+                <summary>
+                  {l("Compare output", "对比输出")}
+                  {compareScore != null ? ` · ${compareScore.toFixed(2)}` : ""}
+                </summary>
+                <pre>{compareResult ? compareResult.output || l("(empty)", "（空）") : l("(not run)", "（未运行）")}</pre>
+              </details>
+            </div>
+          </div>
+        );
+      })}
     </div>
   );
 }

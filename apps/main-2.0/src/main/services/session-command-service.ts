@@ -9,6 +9,7 @@ import {
   formatSessionMarkdown,
   formatSessionPlainText,
   type SessionJsonExportFormat,
+  type SessionMarkdownExportOptions,
 } from "../../core/format-session";
 import {
   getResumeCommand,
@@ -19,6 +20,10 @@ import {
   type AppSettings,
 } from "../../core/platform";
 import { routeResumeSession, type ResumeRouteResult } from "../../core/resume-router";
+import {
+  extractSessionContextComponents,
+  type SessionContextComponents,
+} from "../../core/session-context-components";
 import { focusLiveSessionTerminal } from "../../core/session-focus";
 import { isLocalSessionEnvironment } from "../../core/session-environment";
 import type { SessionStore } from "../../core/session-store";
@@ -67,6 +72,32 @@ type SessionExportContent = {
  */
 export class SessionCommandService {
   constructor(private readonly dependencies: SessionCommandServiceDependencies) {}
+
+  async getContextComponents(sessionKey: string): Promise<SessionContextComponents> {
+    const session = await this.dependencies.store.getSession(sessionKey);
+    if (!session) {
+      return {
+        status: "source_unavailable",
+        source: "codex-cli",
+        format: null,
+        components: [],
+      };
+    }
+    try {
+      return await extractSessionContextComponents({
+        source: session.source,
+        filePath: isLocalSessionEnvironment(session) ? session.filePath : null,
+        sourceAvailable: session.sourceAvailable,
+      });
+    } catch {
+      return {
+        status: "source_unavailable",
+        source: session.source,
+        format: null,
+        components: [],
+      };
+    }
+  }
 
   async copyResumeCommand(sessionKey: string): Promise<void> {
     const session = await this.dependencies.store.getSession(sessionKey);
@@ -151,8 +182,11 @@ export class SessionCommandService {
     ));
   }
 
-  async exportMarkdown(sessionKey: string): Promise<boolean> {
-    const content = await this.loadExportContent(sessionKey);
+  async exportMarkdown(
+    sessionKey: string,
+    options?: SessionMarkdownExportOptions,
+  ): Promise<boolean> {
+    const content = await this.loadExportContent(sessionKey, options?.includeToolTrace !== false);
     if (!content) return false;
     const exportPath = await this.dependencies.chooseMarkdownPath(
       exportFileName(content.session, "md"),
@@ -160,7 +194,9 @@ export class SessionCommandService {
     if (!exportPath) return false;
     await this.dependencies.writeTextFile(
       exportPath,
-      formatSessionMarkdown(content.session, content.messages, content.traceEvents),
+      formatSessionMarkdown(content.session, content.messages, content.traceEvents, {
+        includeToolTrace: options?.includeToolTrace !== false,
+      }),
     );
     return true;
   }
@@ -206,13 +242,18 @@ export class SessionCommandService {
     return { route: "resume" };
   }
 
-  private async loadExportContent(sessionKey: string): Promise<SessionExportContent | null> {
+  private async loadExportContent(
+    sessionKey: string,
+    includeToolTrace = true,
+  ): Promise<SessionExportContent | null> {
     await this.dependencies.remoteAccess.ensureDetails(sessionKey);
     const session = await this.dependencies.store.getSession(sessionKey);
     if (!session) return null;
     const [messages, traceEvents] = await Promise.all([
       this.dependencies.store.getAllMessages(sessionKey),
-      this.dependencies.store.getTraceEvents(sessionKey),
+      includeToolTrace
+        ? this.dependencies.store.getTraceEvents(sessionKey)
+        : Promise.resolve([]),
     ]);
     return { session, messages, traceEvents };
   }

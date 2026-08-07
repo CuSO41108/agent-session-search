@@ -19,6 +19,7 @@ export interface PostgresClient extends PostgresQueryable {
 export interface PostgresPool extends PostgresQueryable {
   connect(): Promise<PostgresClient>;
   end(): Promise<void>;
+  on?(event: "error", listener: (error: Error) => void): unknown;
 }
 
 export interface PostgresMigration {
@@ -38,6 +39,7 @@ export class PostgresDatabase implements PostgresQueryable {
   private readonly migrations: readonly PostgresMigration[];
   private readonly migrationLock: boolean;
   private initializePromise: Promise<void> | undefined;
+  private closePromise: Promise<void> | undefined;
   private closed = false;
 
   constructor(
@@ -46,6 +48,7 @@ export class PostgresDatabase implements PostgresQueryable {
   ) {
     this.migrations = [...(options.migrations ?? [])].sort((left, right) => left.version - right.version);
     this.migrationLock = options.migrationLock ?? true;
+    this.pool.on?.("error", (error) => this.handlePoolError(error));
   }
 
   static connect(connectionUrl: string, options: PostgresDatabaseOptions = {}): PostgresDatabase {
@@ -93,10 +96,23 @@ export class PostgresDatabase implements PostgresQueryable {
     }
   }
 
-  async close(): Promise<void> {
-    if (this.closed) return;
+  close(): Promise<void> {
+    if (this.closePromise) return this.closePromise;
     this.closed = true;
-    await this.pool.end();
+    this.closePromise = this.pool.end();
+    return this.closePromise;
+  }
+
+  isClosedError(error: unknown): boolean {
+    if (!this.closed || !(error instanceof Error)) return false;
+    if (error.message === "PostgreSQL database is closed") return true;
+    return isPostgresShutdownError(error);
+  }
+
+  private handlePoolError(error: Error): void {
+    if (this.closed && isPostgresShutdownError(error)) return;
+    const detail = redactPostgresConnectionText(error.stack ?? error.message);
+    console.warn(`PostgreSQL background connection failed: ${detail}`);
   }
 
   private async applyMigrations(): Promise<void> {
@@ -141,6 +157,12 @@ export class PostgresDatabase implements PostgresQueryable {
       client.release();
     }
   }
+}
+
+function isPostgresShutdownError(error: Error): boolean {
+  const code = (error as Error & { code?: unknown }).code;
+  if (code === "57P01") return true;
+  return /terminating connection due to administrator command|connection terminated unexpectedly/iu.test(error.message);
 }
 
 export function redactPostgresConnectionText(text: string): string {

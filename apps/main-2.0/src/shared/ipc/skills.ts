@@ -45,6 +45,23 @@ const evalSuiteCreateInput = z.tuple([
     name: z.string().trim().min(1).max(200),
     agentId: z.string().trim().min(1).max(512),
     evaluatorIds: z.array(z.string().trim().min(1).max(512)).max(20),
+    useBuiltinJudge: z.boolean(),
+    repetitions: z.number().int().min(1).max(5),
+    cases: z.array(
+      z.object({
+        input: z.string().trim().min(1).max(32_768),
+        expectedOutput: z.string().max(32_768).optional(),
+      }).strict(),
+    ).min(1).max(50),
+  }).strict(),
+]);
+const evalSuiteUpdateInput = z.tuple([
+  z.object({
+    id: z.string().trim().min(1).max(512),
+    name: z.string().trim().min(1).max(200),
+    agentId: z.string().trim().min(1).max(512),
+    evaluatorIds: z.array(z.string().trim().min(1).max(512)).max(20),
+    useBuiltinJudge: z.boolean(),
     repetitions: z.number().int().min(1).max(5),
     cases: z.array(
       z.object({
@@ -55,7 +72,7 @@ const evalSuiteCreateInput = z.tuple([
   }).strict(),
 ]);
 const skillNameInput = z.tuple([z.string().trim().min(1).max(200)]);
-const evalSuiteIdInput = z.tuple([z.string().trim().min(1).max(512)]);
+const evalIdInput = z.tuple([z.string().trim().min(1).max(512)]);
 
 export const SKILLS_IPC = {
   list: defineIpcRequest("skills:list", noInput),
@@ -88,5 +105,11 @@ export const SKILLS_IPC = {
   getEvalFindingCounts: defineIpcRequest("skills:eval-finding-counts", noInput),
   listEvalSuites: defineIpcRequest("skills:eval-suites", skillNameInput),
   createEvalSuite: defineIpcRequest("skills:eval-suite-create", evalSuiteCreateInput),
-  runEvalSuite: defineIpcRequest("skills:eval-suite-run", evalSuiteIdInput),
+  updateEvalSuite: defineIpcRequest("skills:eval-suite-update", evalSuiteUpdateInput),
+  deleteEvalSuite: defineIpcRequest("skills:eval-suite-delete", evalIdInput),
+  getEvalSuiteCases: defineIpcRequest("skills:eval-suite-cases", evalIdInput),
+  runEvalSuite: defineIpcRequest("skills:eval-suite-run", evalIdInput),
+  getEvalSuiteRuns: defineIpcRequest("skills:eval-suite-runs", evalIdInput),
+  getEvalRun: defineIpcRequest("skills:eval-run-get", evalIdInput),
+  cancelEvalRun: defineIpcRequest("skills:eval-run-cancel", evalIdInput),
 } as const;

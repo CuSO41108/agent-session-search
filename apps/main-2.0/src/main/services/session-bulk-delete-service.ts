@@ -42,6 +42,9 @@ export class SessionBulkDeleteService {
       .map((target) => target.sessionKey)
       .filter((sessionKey) => successfulKeys.has(sessionKey));
     if (successfulSessionKeys.length === 0) return { ...preview, deletedSessionKeys: [], failed };
+    await this.store.invalidateOpenVikingEvidenceForSessions(
+      targets.filter((target) => successfulKeys.has(target.sessionKey)),
+    );
     const deletedSessionKeys = await this.store.deleteSessionRecords(successfulSessionKeys, false);
     return { ...preview, deletedSessionKeys, failed };
   }
@@ -141,8 +144,6 @@ function classifyTarget(
     || (familyKey !== null && liveKeys.has(familyKey))
     || (scopedFamilyKey !== null && liveKeys.has(scopedFamilyKey))
     || ancestorIsLive
-    || (liveFamily !== null && liveKeys.has(`${target.environmentId}\0${liveFamily}:*`))
-    || (liveFamily !== null && target.environmentKind === "local" && liveKeys.has(`${liveFamily}:*`))
   ) return issueFor(target.sessionKey, "live", "Live sessions cannot be deleted.");
   if ((request.protectFavorites || request.inactiveBefore !== undefined) && target.favorited) {
     return issueFor(target.sessionKey, "favorite", "Favorite session was protected.");

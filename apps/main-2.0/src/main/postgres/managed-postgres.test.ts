@@ -137,4 +137,48 @@ describe("startPostgresRuntime", () => {
     })).rejects.toThrow("cannot create");
     expect(instance.stop).toHaveBeenCalledOnce();
   });
+
+  it("removes process lifecycle hooks installed by embedded-postgres", async () => {
+    const exitHook = vi.fn();
+    const signalHook = vi.fn();
+    const initialise = vi.fn(async () => undefined);
+    const start = vi.fn(async () => undefined);
+    const createDatabase = vi.fn(async () => undefined);
+    const stop = vi.fn(async () => undefined);
+    const exitListeners = process.listeners("exit");
+    const signalListeners = process.listeners("SIGTERM");
+    vi.doMock("embedded-postgres", () => {
+      process.on("exit", exitHook);
+      process.on("SIGTERM", signalHook);
+      return {
+        default: class MockEmbeddedPostgres {
+          initialise = initialise;
+          start = start;
+          createDatabase = createDatabase;
+          stop = stop;
+        },
+      };
+    });
+
+    try {
+      const runtime = await startPostgresRuntime({
+        userDataPath: await temporaryUserData(),
+        environment: {},
+        choosePort: async () => 55442,
+        createPassword: () => "local-test-secret",
+      });
+
+      expect(process.listeners("exit")).toEqual(exitListeners);
+      expect(process.listeners("SIGTERM")).toEqual(signalListeners);
+      expect(initialise).toHaveBeenCalledOnce();
+      expect(start).toHaveBeenCalledOnce();
+      expect(createDatabase).toHaveBeenCalledWith("agent_recall");
+      await runtime.stop();
+      expect(stop).toHaveBeenCalledOnce();
+    } finally {
+      process.removeListener("exit", exitHook);
+      process.removeListener("SIGTERM", signalHook);
+      vi.doUnmock("embedded-postgres");
+    }
+  });
 });

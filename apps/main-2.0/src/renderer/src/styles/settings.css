@@ -502,6 +502,60 @@
   color: var(--text);
 }
 
+.v1-import-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 16px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 12px;
+  background: var(--panel-subtle);
+}
+
+.update-v1-import {
+  display: grid;
+  gap: 10px;
+  width: min(100%, 560px);
+}
+
+.v1-import-copy {
+  display: grid;
+  gap: 5px;
+}
+
+.v1-import-copy strong {
+  color: var(--text);
+  font-size: 13.5px;
+}
+
+.v1-import-copy span,
+.v1-import-result {
+  color: var(--text-muted);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
+.v1-import-button {
+  min-width: 132px;
+}
+
+.v1-import-result {
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: var(--panel-subtle);
+}
+
+.v1-import-result.success {
+  background: var(--success-bg);
+  color: var(--success-text);
+}
+
+.v1-import-result.error {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
 .connection-list {
   display: grid;
   gap: 8px;
@@ -986,7 +1040,8 @@
 }
 
 .theme-setting-toggle,
-.language-setting-toggle {
+.language-setting-toggle,
+.message-font-size-setting-toggle {
   display: inline-flex;
   flex: 0 0 auto;
   gap: 2px;
@@ -996,8 +1051,14 @@
   background: var(--panel-bg);
 }
 
+.message-font-size-setting-toggle {
+  flex-wrap: wrap;
+  max-width: 360px;
+}
+
 .theme-setting-toggle button,
-.language-setting-toggle button {
+.language-setting-toggle button,
+.message-font-size-setting-toggle button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -1013,19 +1074,22 @@
 }
 
 .theme-setting-toggle button:hover,
-.language-setting-toggle button:hover {
+.language-setting-toggle button:hover,
+.message-font-size-setting-toggle button:hover {
   color: var(--text);
 }
 
 .theme-setting-toggle button.active,
-.language-setting-toggle button.active {
+.language-setting-toggle button.active,
+.message-font-size-setting-toggle button.active {
   background: var(--accent-soft);
   color: var(--accent-bright);
   box-shadow: inset 0 0 0 1px var(--border-subtle);
 }
 
 .theme-setting-toggle button.active svg,
-.language-setting-toggle button.active svg {
+.language-setting-toggle button.active svg,
+.message-font-size-setting-toggle button.active svg {
   color: var(--accent);
 }
 
@@ -1426,6 +1490,41 @@
 .bulk-delete-dialog {
   width: min(460px, calc(100vw - 32px));
   padding: 14px;
+}
+
+.orphan-delete-dialog {
+  width: min(380px, calc(100vw - 32px));
+}
+
+.orphan-delete-dialog .dialog-title {
+  margin-bottom: 8px;
+  font-size: 14px;
+}
+
+.orphan-delete-dialog .dialog-copy {
+  margin: 8px 0 10px;
+  font-size: 12.5px;
+  line-height: 1.42;
+}
+
+.orphan-delete-dialog .bulk-delete-summary {
+  margin: 0 0 10px;
+}
+
+.orphan-delete-dialog .dialog-copy.danger-copy,
+.orphan-delete-dialog .delete-confirmation-field {
+  margin: 0 0 10px;
+}
+
+.orphan-delete-dialog .dialog-actions {
+  margin-top: 12px;
+}
+
+.orphan-delete-dialog .dialog-actions button {
+  min-width: 68px;
+  min-height: 30px;
+  padding: 0 11px;
+  font-size: 12px;
 }
 
 .bulk-delete-date {

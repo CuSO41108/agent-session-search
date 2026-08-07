@@ -1,8 +1,25 @@
-import type {
-  OpenVikingImportState,
-  OpenVikingWorkspace,
-} from "../openviking-memory";
-import type { PostgresDatabase } from "./database";
+import { createHash, randomUUID } from "node:crypto";
+
+import {
+  defaultOpenVikingMemoryControl,
+  inferOpenVikingMemoryType,
+  type OpenVikingApplyCommitInput,
+  type OpenVikingCommitRun,
+  type OpenVikingControlDiagnostics,
+  type OpenVikingLockedMemoryConflict,
+  type OpenVikingMemoryAuthority,
+  type OpenVikingMemoryControl,
+  type OpenVikingMemoryEvidence,
+  type OpenVikingMemoryEvidenceStatus,
+  type OpenVikingMemoryFeedback,
+  type OpenVikingMemoryFeedbackKind,
+  type OpenVikingMemoryLifecycle,
+  type OpenVikingOperationEvent,
+  type OpenVikingRecallCandidateTrace,
+  type OpenVikingRecallTrace,
+} from "../openviking-memory-control";
+import type { OpenVikingWorkspace } from "../openviking-memory";
+import type { PostgresDatabase, PostgresQueryable } from "./database";
 
 export interface AddOpenVikingWorkspaceInput {
   id: string;
@@ -12,84 +29,29 @@ export interface AddOpenVikingWorkspaceInput {
   displayName: string;
 }
 
-export interface OpenVikingImportJob {
+export interface SaveOpenVikingMemoryControlInput {
   workspaceId: string;
-  state: OpenVikingImportState;
-  importedTurns: number;
-  totalTurns: number;
-  completedTasks?: number;
-  totalTasks?: number;
-  cursorSessionKey: string | null;
-  selectedSessionKeys?: string[] | null;
-  lastError: string | null;
-  updatedAt: string;
+  uri: string;
+  title: string;
+  content: string;
+  source: "manual" | "user-edit";
+  now?: string;
 }
 
-export interface OpenVikingImportTaskTurn {
-  sourceTurnId: string;
-  fingerprint: string;
-  user: string;
-  assistant: string;
-  startedAt?: string;
-  endedAt?: string;
-}
-
-export interface OpenVikingImportTaskPayload {
-  context: OpenVikingImportTaskTurn[];
-  primary: OpenVikingImportTaskTurn[];
-  keepRecentCount?: number;
-}
-
-export type OpenVikingImportTaskState =
-  | "queued"
-  | "uploading"
-  | "waiting"
-  | "completed"
-  | "failed";
-
-export interface OpenVikingImportTask {
+export interface RecordOpenVikingMemoryFeedbackInput {
   id: string;
-  position: number;
   workspaceId: string;
-  sessionKey: string;
-  sourceRevision: string;
-  sessionTitle: string;
-  payload: OpenVikingImportTaskPayload;
-  state: OpenVikingImportTaskState;
-  attemptCount: number;
-  remoteTaskId: string | null;
-  lastError: string | null;
+  memoryUri: string;
+  feedback: OpenVikingMemoryFeedbackKind;
+  actor: string;
+  note?: string;
   createdAt: string;
-  updatedAt: string;
 }
 
-export interface CreateOpenVikingImportTaskInput {
-  id: string;
-  position: number;
-  workspaceId: string;
-  sessionKey: string;
-  sourceRevision: string;
-  sessionTitle: string;
-  payload: OpenVikingImportTaskPayload;
+export interface OpenVikingSourceSessionReference {
+  sourceSessionId: string;
+  sourceAgent: string;
 }
-
-export interface OpenVikingImportedTurnCheckpoint {
-  sourceTurnId: string;
-  fingerprint: string;
-}
-
-export interface OpenVikingSessionCheckpoint {
-  workspaceId: string;
-  sessionKey: string;
-  sourceRevision: string;
-  importedTurns: number;
-  updatedAt: string;
-}
-
-export type UpdateOpenVikingImportJobInput = Pick<
-  OpenVikingImportJob,
-  "state" | "importedTurns" | "totalTurns" | "cursorSessionKey" | "lastError"
->;
 
 interface WorkspaceRow extends Record<string, unknown> {
   id: string;
@@ -98,71 +60,136 @@ interface WorkspaceRow extends Record<string, unknown> {
   identity: string;
   display_name: string;
   managed: boolean;
-  import_state: OpenVikingImportState;
-  imported_turns: number;
-  total_turns: number;
-  completed_tasks: number;
-  total_tasks: number;
-  last_error: string | null;
   created_at: Date | string;
   updated_at: Date | string;
 }
 
-interface ImportJobRow extends Record<string, unknown> {
+interface MemoryRow extends Record<string, unknown> {
   workspace_id: string;
-  state: OpenVikingImportState;
-  imported_turns: number;
-  total_turns: number;
-  completed_tasks: number;
-  total_tasks: number;
-  cursor_session_key: string | null;
-  selected_session_keys: unknown;
-  last_error: string | null;
+  uri: string;
+  memory_type: string;
+  authority: OpenVikingMemoryAuthority;
+  lifecycle: OpenVikingMemoryLifecycle;
+  locked: boolean;
+  evidence_status: OpenVikingMemoryEvidenceStatus;
+  source: OpenVikingMemoryControl["source"];
+  title: string | null;
+  locked_content: string | null;
+  evidence_count: number | string;
+  created_at: Date | string;
   updated_at: Date | string;
 }
 
-interface ImportTaskRow extends Record<string, unknown> {
+interface EvidenceRow extends Record<string, unknown> {
   id: string;
-  position: number;
   workspace_id: string;
-  session_key: string;
-  source_revision: string;
-  session_title: string;
-  payload: OpenVikingImportTaskPayload;
-  state: OpenVikingImportTaskState;
-  attempt_count: number;
+  memory_uri: string;
+  source_session_id: string | null;
+  source_agent: string | null;
+  source_turn_ids: unknown;
+  archive_uri: string | null;
+  memory_diff_uri: string | null;
   remote_task_id: string | null;
-  last_error: string | null;
+  model_snapshot: unknown;
+  policy_snapshot: unknown;
+  state: OpenVikingMemoryEvidence["state"];
   created_at: Date | string;
   updated_at: Date | string;
 }
 
-interface SessionCheckpointRow extends Record<string, unknown> {
+interface FeedbackRow extends Record<string, unknown> {
+  id: string;
   workspace_id: string;
-  session_key: string;
-  source_revision: string;
-  imported_turns: number;
+  memory_uri: string;
+  feedback: OpenVikingMemoryFeedbackKind;
+  actor: string;
+  note: string | null;
+  created_at: Date | string;
+}
+
+interface CommitRow extends Record<string, unknown> {
+  task_id: string;
+  workspace_id: string;
+  session_id: string;
+  agent: string | null;
+  trigger: string;
+  state: OpenVikingCommitRun["state"];
+  source_turn_ids: unknown;
+  token_estimate: number | string;
+  archive_uri: string | null;
+  memory_diff_uri: string | null;
+  memories_extracted: unknown;
+  token_usage: unknown;
+  error: string | null;
+  started_at: Date | string;
+  completed_at: Date | string | null;
   updated_at: Date | string;
+}
+
+interface EventRow extends Record<string, unknown> {
+  id: string;
+  workspace_id: string;
+  phase: string;
+  status: OpenVikingOperationEvent["status"];
+  session_id: string | null;
+  task_id: string | null;
+  started_at: Date | string;
+  completed_at: Date | string | null;
+  duration_ms: number | string | null;
+  details: unknown;
+}
+
+interface RecallTraceRow extends Record<string, unknown> {
+  id: string;
+  workspace_id: string;
+  agent: string;
+  query: string;
+  contextual_query: string;
+  searched_scopes: unknown;
+  searched_types: unknown;
+  candidates: unknown;
+  injected_uris: unknown;
+  injected_token_count: number | string;
+  duration_ms: number | string;
+  degraded_reason: string | null;
+  created_at: Date | string;
 }
 
 const WORKSPACE_SELECT = `
   select
-    workspace.id,
-    workspace.user_id,
-    workspace.root_path,
-    workspace.identity,
-    workspace.display_name,
-    workspace.managed,
-    job.state as import_state,
-    job.imported_turns,
-    job.total_turns,
-    job.completed_tasks,
-    job.total_tasks,
-    job.last_error,
-    workspace.created_at,
-    workspace.updated_at
-  from agent_recall.openviking_workspaces workspace
-  join agent_recall.openviking_import_jobs job on job.workspace_id = workspace.id
+    id,
+    user_id,
+    root_path,
+    identity,
+    display_name,
+    managed,
+    created_at,
+    updated_at
+  from agent_recall.openviking_workspaces
+`;
+
+const MEMORY_SELECT = `
+  select
+    memories.workspace_id,
+    memories.uri,
+    memories.memory_type,
+    memories.authority,
+    memories.lifecycle,
+    memories.locked,
+    memories.evidence_status,
+    memories.source,
+    memories.title,
+    memories.locked_content,
+    memories.created_at,
+    memories.updated_at,
+    (
+      select count(*)
+      from agent_recall.openviking_memory_evidence evidence
+      where evidence.workspace_id = memories.workspace_id
+        and evidence.memory_uri = memories.uri
+        and evidence.state = 'active'
+    ) as evidence_count
+  from agent_recall.openviking_memories memories
 `;
 
 export class PostgresOpenVikingMemoryRepository {
@@ -170,26 +197,15 @@ export class PostgresOpenVikingMemoryRepository {
 
   async addWorkspace(input: AddOpenVikingWorkspaceInput): Promise<OpenVikingWorkspace> {
     const now = new Date().toISOString();
-    await this.database.transaction(async (client) => {
-      await client.query(
-        `
-          insert into agent_recall.openviking_workspaces (
-            id, user_id, root_path, identity, display_name, managed, created_at, updated_at
-          )
-          values ($1, $2, $3, $4, $5, true, $6, $6)
-        `,
-        [input.id, input.userId, input.rootPath, input.identity, input.displayName, now],
-      );
-      await client.query(
-        `
-          insert into agent_recall.openviking_import_jobs (
-            workspace_id, state, imported_turns, total_turns, updated_at
-          )
-          values ($1, 'idle', 0, 0, $2)
-        `,
-        [input.id, now],
-      );
-    });
+    await this.database.query(
+      `
+        insert into agent_recall.openviking_workspaces (
+          id, user_id, root_path, identity, display_name, managed, created_at, updated_at
+        )
+        values ($1, $2, $3, $4, $5, true, $6, $6)
+      `,
+      [input.id, input.userId, input.rootPath, input.identity, input.displayName, now],
+    );
     const created = await this.getWorkspace(input.id);
     if (!created) throw new Error("OpenViking workspace was not created.");
     return created;
@@ -197,21 +213,21 @@ export class PostgresOpenVikingMemoryRepository {
 
   async listWorkspaces(): Promise<OpenVikingWorkspace[]> {
     const result = await this.database.query<WorkspaceRow>(
-      `${WORKSPACE_SELECT} order by workspace.created_at, workspace.id`,
+      `${WORKSPACE_SELECT} order by created_at, id`,
     );
     return result.rows.map(mapWorkspace);
   }
 
   async getWorkspace(id: string): Promise<OpenVikingWorkspace | null> {
-    return this.findWorkspace("workspace.id = $1", id);
+    return this.findWorkspace("id = $1", id);
   }
 
   async findWorkspaceByRootPath(rootPath: string): Promise<OpenVikingWorkspace | null> {
-    return this.findWorkspace("workspace.root_path = $1", rootPath);
+    return this.findWorkspace("root_path = $1", rootPath);
   }
 
   async findWorkspaceByIdentity(identity: string): Promise<OpenVikingWorkspace | null> {
-    return this.findWorkspace("workspace.identity = $1", identity);
+    return this.findWorkspace("identity = $1", identity);
   }
 
   async relinkWorkspace(id: string, rootPath: string, displayName: string): Promise<OpenVikingWorkspace> {
@@ -244,345 +260,6 @@ export class PostgresOpenVikingMemoryRepository {
     return workspace;
   }
 
-  async updateImportJob(
-    workspaceId: string,
-    input: UpdateOpenVikingImportJobInput,
-  ): Promise<OpenVikingImportJob> {
-    const result = await this.database.query<ImportJobRow>(
-      `
-        update agent_recall.openviking_import_jobs
-        set
-          state = $2,
-          imported_turns = $3,
-          total_turns = $4,
-          cursor_session_key = $5,
-          last_error = $6,
-          updated_at = $7
-        where workspace_id = $1
-        returning *
-      `,
-      [
-        workspaceId,
-        input.state,
-        input.importedTurns,
-        input.totalTurns,
-        input.cursorSessionKey,
-        input.lastError,
-        new Date().toISOString(),
-      ],
-    );
-    if (!result.rows[0]) throw new Error("OpenViking import job was not found.");
-    return mapImportJob(result.rows[0]);
-  }
-
-  async getImportJob(workspaceId: string): Promise<OpenVikingImportJob | null> {
-    const result = await this.database.query<ImportJobRow>(
-      "select * from agent_recall.openviking_import_jobs where workspace_id = $1",
-      [workspaceId],
-    );
-    return result.rows[0] ? mapImportJob(result.rows[0]) : null;
-  }
-
-  async setImportSelection(
-    workspaceId: string,
-    sessionKeys: string[],
-  ): Promise<OpenVikingImportJob> {
-    const result = await this.database.query<ImportJobRow>(
-      `
-        update agent_recall.openviking_import_jobs
-        set selected_session_keys = $2::jsonb, updated_at = $3
-        where workspace_id = $1
-        returning *
-      `,
-      [workspaceId, JSON.stringify(sessionKeys), new Date().toISOString()],
-    );
-    if (!result.rows[0]) throw new Error("OpenViking import job was not found.");
-    return mapImportJob(result.rows[0]);
-  }
-
-  async recordImportedTurn(workspaceId: string, sourceTurnId: string, fingerprint: string): Promise<void> {
-    await this.database.query(
-      `
-        insert into agent_recall.openviking_imported_turns (
-          workspace_id, source_turn_id, fingerprint, imported_at
-        )
-        values ($1, $2, $3, $4)
-        on conflict do nothing
-      `,
-      [workspaceId, sourceTurnId, fingerprint, new Date().toISOString()],
-    );
-  }
-
-  async hasImportedTurn(workspaceId: string, sourceTurnId: string, fingerprint: string): Promise<boolean> {
-    const result = await this.database.query<{ exists: boolean }>(
-      `
-        select exists (
-          select 1
-          from agent_recall.openviking_imported_turns
-          where workspace_id = $1 and source_turn_id = $2 and fingerprint = $3
-        ) as exists
-      `,
-      [workspaceId, sourceTurnId, fingerprint],
-    );
-    return Boolean(result.rows[0]?.exists);
-  }
-
-  async listImportedTurns(workspaceId: string): Promise<OpenVikingImportedTurnCheckpoint[]> {
-    const result = await this.database.query<{
-      source_turn_id: string;
-      fingerprint: string;
-    }>(
-      `
-        select source_turn_id, fingerprint
-        from agent_recall.openviking_imported_turns
-        where workspace_id = $1
-      `,
-      [workspaceId],
-    );
-    return result.rows.map((row) => ({
-      sourceTurnId: row.source_turn_id,
-      fingerprint: row.fingerprint,
-    }));
-  }
-
-  async listSessionCheckpoints(workspaceId: string): Promise<OpenVikingSessionCheckpoint[]> {
-    const result = await this.database.query<SessionCheckpointRow>(
-      `
-        select workspace_id, session_key, source_revision, imported_turns, updated_at
-        from agent_recall.openviking_imported_sessions
-        where workspace_id = $1
-      `,
-      [workspaceId],
-    );
-    return result.rows.map(mapSessionCheckpoint);
-  }
-
-  async recordSessionCheckpoint(
-    workspaceId: string,
-    sessionKey: string,
-    sourceRevision: string,
-    importedTurns: number,
-  ): Promise<void> {
-    await this.database.query(
-      `
-        insert into agent_recall.openviking_imported_sessions (
-          workspace_id, session_key, source_revision, imported_turns, updated_at
-        )
-        values ($1, $2, $3, $4, $5)
-        on conflict (workspace_id, session_key) do update
-        set
-          source_revision = excluded.source_revision,
-          imported_turns = excluded.imported_turns,
-          updated_at = excluded.updated_at
-      `,
-      [workspaceId, sessionKey, sourceRevision, importedTurns, new Date().toISOString()],
-    );
-  }
-
-  async syncImportTasks(
-    workspaceId: string,
-    inputs: CreateOpenVikingImportTaskInput[],
-    activeRevisions: Array<{ sessionKey: string; sourceRevision: string }>,
-  ): Promise<OpenVikingImportTask[]> {
-    const now = new Date().toISOString();
-    await this.database.transaction(async (client) => {
-      const taskIds = inputs.map((input) => input.id);
-      const activeRevisionKeys = new Set(activeRevisions.map(
-        (entry) => `${entry.sessionKey}\0${entry.sourceRevision}`,
-      ));
-      const existing = await client.query<Pick<
-        ImportTaskRow,
-        "id" | "session_key" | "source_revision" | "state"
-      >>(
-        `
-          select id, session_key, source_revision, state
-          from agent_recall.openviking_import_tasks
-          where workspace_id = $1
-        `,
-        [workspaceId],
-      );
-      const retainedTaskIds = new Set(taskIds);
-      const staleTaskIds = existing.rows
-        .filter((task) => {
-          const revisionIsActive = activeRevisionKeys.has(
-            `${task.session_key}\0${task.source_revision}`,
-          );
-          return !revisionIsActive || (task.state !== "completed" && !retainedTaskIds.has(task.id));
-        })
-        .map((task) => task.id);
-      if (staleTaskIds.length > 0) {
-        await client.query(
-          `
-            delete from agent_recall.openviking_import_tasks
-            where workspace_id = $1 and id = any($2::text[])
-          `,
-          [workspaceId, staleTaskIds],
-        );
-      }
-      for (const input of inputs) {
-        await client.query(
-          `
-            insert into agent_recall.openviking_import_tasks (
-              id, workspace_id, session_key, source_revision, session_title, position,
-              payload, state, attempt_count, created_at, updated_at
-            )
-            values ($1, $2, $3, $4, $5, $6, $7, 'queued', 0, $8, $8)
-            on conflict (id) do update
-            set
-              session_title = excluded.session_title,
-              position = excluded.position,
-              payload = excluded.payload,
-              updated_at = excluded.updated_at
-          `,
-          [
-            input.id,
-            input.workspaceId,
-            input.sessionKey,
-            input.sourceRevision,
-            input.sessionTitle,
-            input.position,
-            JSON.stringify(input.payload),
-            now,
-          ],
-        );
-      }
-      await client.query(
-        `
-          update agent_recall.openviking_import_jobs
-          set
-            completed_tasks = (
-              select count(*)::int
-              from agent_recall.openviking_import_tasks
-              where workspace_id = $1 and state = 'completed'
-            ),
-            total_tasks = (
-              select count(*)::int
-              from agent_recall.openviking_import_tasks
-              where workspace_id = $1
-            ),
-            updated_at = $2
-          where workspace_id = $1
-        `,
-        [workspaceId, now],
-      );
-    });
-    return this.listImportTasks(workspaceId);
-  }
-
-  async listImportTasks(workspaceId: string): Promise<OpenVikingImportTask[]> {
-    const result = await this.database.query<ImportTaskRow>(
-      `
-        select *
-        from agent_recall.openviking_import_tasks
-        where workspace_id = $1
-        order by position, created_at, id
-      `,
-      [workspaceId],
-    );
-    return result.rows.map(mapImportTask);
-  }
-
-  async beginImportTaskAttempt(taskId: string): Promise<OpenVikingImportTask> {
-    const result = await this.database.query<ImportTaskRow>(
-      `
-        update agent_recall.openviking_import_tasks
-        set
-          state = 'uploading',
-          attempt_count = attempt_count + 1,
-          remote_task_id = null,
-          last_error = null,
-          updated_at = $2
-        where id = $1
-        returning *
-      `,
-      [taskId, new Date().toISOString()],
-    );
-    if (!result.rows[0]) throw new Error("OpenViking import task was not found.");
-    return mapImportTask(result.rows[0]);
-  }
-
-  async waitForImportTask(taskId: string, remoteTaskId: string): Promise<void> {
-    const result = await this.database.query(
-      `
-        update agent_recall.openviking_import_tasks
-        set state = 'waiting', remote_task_id = $2, last_error = null, updated_at = $3
-        where id = $1
-      `,
-      [taskId, remoteTaskId, new Date().toISOString()],
-    );
-    if (result.rowCount === 0) throw new Error("OpenViking import task was not found.");
-  }
-
-  async completeImportTask(taskId: string): Promise<void> {
-    const now = new Date().toISOString();
-    await this.database.transaction(async (client) => {
-      const result = await client.query<ImportTaskRow>(
-        "select * from agent_recall.openviking_import_tasks where id = $1 for update",
-        [taskId],
-      );
-      const task = result.rows[0];
-      if (!task) throw new Error("OpenViking import task was not found.");
-      if (task.state === "completed") return;
-      for (const turn of task.payload.primary) {
-        await client.query(
-          `
-            insert into agent_recall.openviking_imported_turns (
-              workspace_id, source_turn_id, fingerprint, imported_at
-            )
-            values ($1, $2, $3, $4)
-            on conflict do nothing
-          `,
-          [task.workspace_id, turn.sourceTurnId, turn.fingerprint, now],
-        );
-      }
-      await client.query(
-        `
-          update agent_recall.openviking_import_tasks
-          set state = 'completed', last_error = null, updated_at = $2
-          where id = $1
-        `,
-        [taskId, now],
-      );
-      await client.query(
-        `
-          update agent_recall.openviking_import_jobs
-          set
-            completed_tasks = (
-              select count(*)::int
-              from agent_recall.openviking_import_tasks
-              where workspace_id = $1 and state = 'completed'
-            ),
-            updated_at = $2
-          where workspace_id = $1
-        `,
-        [task.workspace_id, now],
-      );
-    });
-  }
-
-  async failImportTask(taskId: string, error: string): Promise<void> {
-    await this.database.query(
-      `
-        update agent_recall.openviking_import_tasks
-        set state = 'failed', last_error = $2, updated_at = $3
-        where id = $1
-      `,
-      [taskId, error, new Date().toISOString()],
-    );
-  }
-
-  async countImportedTurns(workspaceId: string): Promise<number> {
-    const result = await this.database.query<{ count: number }>(
-      `
-        select count(*)::int as count
-        from agent_recall.openviking_imported_turns
-        where workspace_id = $1
-      `,
-      [workspaceId],
-    );
-    return Number(result.rows[0]?.count ?? 0);
-  }
-
   async deleteWorkspace(id: string): Promise<boolean> {
     const result = await this.database.query(
       "delete from agent_recall.openviking_workspaces where id = $1",
@@ -591,10 +268,538 @@ export class PostgresOpenVikingMemoryRepository {
     return result.rowCount > 0;
   }
 
+  async listMemoryControls(workspaceId: string): Promise<OpenVikingMemoryControl[]> {
+    const result = await this.database.query<MemoryRow>(
+      `${MEMORY_SELECT} where memories.workspace_id = $1 order by memories.updated_at desc, memories.uri`,
+      [workspaceId],
+    );
+    return result.rows.map(mapMemoryControl);
+  }
+
+  async getMemoryControl(workspaceId: string, uri: string): Promise<OpenVikingMemoryControl | null> {
+    const result = await this.database.query<MemoryRow>(
+      `${MEMORY_SELECT} where memories.workspace_id = $1 and memories.uri = $2`,
+      [workspaceId, uri],
+    );
+    return result.rows[0] ? mapMemoryControl(result.rows[0]) : null;
+  }
+
+  async saveUserMemory(input: SaveOpenVikingMemoryControlInput): Promise<OpenVikingMemoryControl> {
+    const now = input.now ?? new Date().toISOString();
+    await this.database.transaction(async (client) => {
+      await client.query(
+        `
+          insert into agent_recall.openviking_memories (
+            workspace_id, uri, memory_type, authority, lifecycle, locked,
+            evidence_status, source, title, locked_content, created_at, updated_at
+          )
+          values ($1, $2, $3, 'user', 'active', true, 'verified', $4, $5, $6, $7, $7)
+          on conflict (workspace_id, uri) do update set
+            memory_type = excluded.memory_type,
+            authority = 'user',
+            lifecycle = 'active',
+            locked = true,
+            evidence_status = 'verified',
+            source = excluded.source,
+            title = excluded.title,
+            locked_content = excluded.locked_content,
+            updated_at = excluded.updated_at
+        `,
+        [
+          input.workspaceId,
+          input.uri,
+          inferOpenVikingMemoryType(input.uri),
+          input.source,
+          input.title,
+          input.content,
+          now,
+        ],
+      );
+      await client.query(
+        `
+          update agent_recall.openviking_memory_evidence
+          set state = 'invalidated', updated_at = $3
+          where workspace_id = $1 and memory_uri = $2 and state = 'active'
+        `,
+        [input.workspaceId, input.uri, now],
+      );
+    });
+    const control = await this.getMemoryControl(input.workspaceId, input.uri);
+    if (!control) throw new Error("OpenViking memory control record was not saved.");
+    return control;
+  }
+
+  async markMemoryDeleted(workspaceId: string, uri: string, now = new Date().toISOString()): Promise<void> {
+    const fallback = defaultOpenVikingMemoryControl(workspaceId, uri);
+    await this.database.query(
+      `
+        insert into agent_recall.openviking_memories (
+          workspace_id, uri, memory_type, authority, lifecycle, locked,
+          evidence_status, source, created_at, updated_at
+        )
+        values ($1, $2, $3, $4, 'deleted', false, 'invalid', $5, $6, $6)
+        on conflict (workspace_id, uri) do update set
+          lifecycle = 'deleted',
+          locked = false,
+          evidence_status = 'invalid',
+          locked_content = null,
+          updated_at = excluded.updated_at
+      `,
+      [workspaceId, uri, fallback.memoryType, fallback.authority, fallback.source, now],
+    );
+    await this.database.query(
+      `
+        update agent_recall.openviking_memory_evidence
+        set state = 'invalidated', updated_at = $3
+        where workspace_id = $1 and memory_uri = $2 and state = 'active'
+      `,
+      [workspaceId, uri, now],
+    );
+  }
+
+  async listMemoryEvidence(workspaceId: string, uri: string): Promise<OpenVikingMemoryEvidence[]> {
+    const result = await this.database.query<EvidenceRow>(
+      `
+        select id, workspace_id, memory_uri, source_session_id, source_agent,
+               source_turn_ids, archive_uri, memory_diff_uri, remote_task_id,
+               model_snapshot, policy_snapshot, state, created_at, updated_at
+        from agent_recall.openviking_memory_evidence
+        where workspace_id = $1 and memory_uri = $2
+        order by created_at desc, id desc
+      `,
+      [workspaceId, uri],
+    );
+    return result.rows.map(mapEvidence);
+  }
+
+  async listMemoryFeedback(workspaceId: string, uri: string): Promise<OpenVikingMemoryFeedback[]> {
+    const result = await this.database.query<FeedbackRow>(
+      `
+        select id, workspace_id, memory_uri, feedback, actor, note, created_at
+        from agent_recall.openviking_memory_feedback
+        where workspace_id = $1 and memory_uri = $2
+        order by created_at desc, id desc
+      `,
+      [workspaceId, uri],
+    );
+    return result.rows.map(mapFeedback);
+  }
+
+  async recordMemoryFeedback(
+    input: RecordOpenVikingMemoryFeedbackInput,
+  ): Promise<OpenVikingMemoryControl> {
+    const fallback = defaultOpenVikingMemoryControl(input.workspaceId, input.memoryUri);
+    await this.database.transaction(async (client) => {
+      await client.query(
+        `
+          insert into agent_recall.openviking_memories (
+            workspace_id, uri, memory_type, authority, lifecycle, locked,
+            evidence_status, source, created_at, updated_at
+          )
+          values ($1, $2, $3, $4, 'active', false, $5, $6, $7, $7)
+          on conflict (workspace_id, uri) do nothing
+        `,
+        [
+          input.workspaceId,
+          input.memoryUri,
+          fallback.memoryType,
+          fallback.authority,
+          fallback.evidenceStatus,
+          fallback.source,
+          input.createdAt,
+        ],
+      );
+      const lifecycle = input.feedback === "helpful"
+        ? "active"
+        : input.feedback === "wrong"
+          ? "invalidated"
+          : "superseded";
+      const evidenceStatus = input.feedback === "helpful" ? null : "invalid";
+      await client.query(
+        `
+          update agent_recall.openviking_memories
+          set lifecycle = $3,
+              evidence_status = coalesce($4, evidence_status),
+              updated_at = $5
+          where workspace_id = $1 and uri = $2
+        `,
+        [input.workspaceId, input.memoryUri, lifecycle, evidenceStatus, input.createdAt],
+      );
+      if (input.feedback !== "helpful") {
+        await client.query(
+          `
+            update agent_recall.openviking_memory_evidence
+            set state = 'invalidated', updated_at = $3
+            where workspace_id = $1 and memory_uri = $2 and state = 'active'
+          `,
+          [input.workspaceId, input.memoryUri, input.createdAt],
+        );
+      }
+      await client.query(
+        `
+          insert into agent_recall.openviking_memory_feedback (
+            id, workspace_id, memory_uri, feedback, actor, note, created_at
+          ) values ($1, $2, $3, $4, $5, $6, $7)
+          on conflict (id) do nothing
+        `,
+        [
+          input.id,
+          input.workspaceId,
+          input.memoryUri,
+          input.feedback,
+          input.actor,
+          input.note ?? null,
+          input.createdAt,
+        ],
+      );
+    });
+    const control = await this.getMemoryControl(input.workspaceId, input.memoryUri);
+    if (!control) throw new Error("OpenViking memory feedback target was not found.");
+    return control;
+  }
+
+  async invalidateSourceSessionEvidence(
+    references: readonly OpenVikingSourceSessionReference[],
+    now = new Date().toISOString(),
+  ): Promise<string[]> {
+    const unique = [...new Map(references
+      .filter((reference) => reference.sourceSessionId && reference.sourceAgent)
+      .map((reference) => [`${reference.sourceAgent}\0${reference.sourceSessionId}`, reference])).values()];
+    if (unique.length === 0) return [];
+
+    return this.database.transaction(async (client) => {
+      const invalidated = await client.query<{ workspace_id: string; memory_uri: string }>(
+        `
+          with source_refs as (
+            select *
+            from jsonb_to_recordset($1::jsonb)
+              as refs(source_session_id text, source_agent text)
+          )
+          update agent_recall.openviking_memory_evidence evidence
+          set state = 'invalidated', updated_at = $2
+          from source_refs refs
+          where evidence.state = 'active'
+            and evidence.source_session_id = refs.source_session_id
+            and evidence.source_agent = refs.source_agent
+          returning evidence.workspace_id, evidence.memory_uri
+        `,
+        [JSON.stringify(unique.map((reference) => ({
+          source_session_id: reference.sourceSessionId,
+          source_agent: reference.sourceAgent,
+        }))), now],
+      );
+      if (invalidated.rows.length === 0) return [];
+
+      const affected = [...new Map(invalidated.rows.map((row) => [
+        `${row.workspace_id}\0${row.memory_uri}`,
+        row,
+      ])).values()];
+      await client.query(
+        `
+          with affected as (
+            select *
+            from jsonb_to_recordset($1::jsonb)
+              as memories(workspace_id text, memory_uri text)
+          )
+          update agent_recall.openviking_memories memories
+          set lifecycle = 'invalidated', evidence_status = 'invalid', updated_at = $2
+          from affected
+          where memories.workspace_id = affected.workspace_id
+            and memories.uri = affected.memory_uri
+            and memories.authority = 'model'
+            and memories.locked = false
+            and not exists (
+              select 1
+              from agent_recall.openviking_memory_evidence evidence
+              where evidence.workspace_id = memories.workspace_id
+                and evidence.memory_uri = memories.uri
+                and evidence.state = 'active'
+            )
+        `,
+        [JSON.stringify(affected), now],
+      );
+
+      const workspaceIds = [...new Set(affected.map((row) => row.workspace_id))];
+      await Promise.all(workspaceIds.map((workspaceId) => client.query(
+        `
+          insert into agent_recall.openviking_operation_events (
+            id, workspace_id, phase, status, started_at, completed_at, duration_ms, details
+          ) values ($1, $2, 'evidence-invalidate', 'completed', $3, $3, 0, $4)
+        `,
+        [
+          randomUUID(),
+          workspaceId,
+          now,
+          JSON.stringify({
+            source: "session-delete",
+            sourceSessionCount: unique.length,
+            affectedMemoryCount: affected.filter((row) => row.workspace_id === workspaceId).length,
+          }),
+        ],
+      )));
+      return workspaceIds;
+    });
+  }
+
+  async upsertCommitRun(run: OpenVikingCommitRun): Promise<void> {
+    await upsertCommitRun(this.database, run);
+  }
+
+  async applyCommitResult(input: OpenVikingApplyCommitInput): Promise<OpenVikingLockedMemoryConflict[]> {
+    return this.database.transaction(async (client) => {
+      const uris = [...new Set(input.changes.map((change) => change.uri))];
+      const controls = uris.length === 0
+        ? []
+        : (await client.query<MemoryRow>(
+          `${MEMORY_SELECT} where memories.workspace_id = $1 and memories.uri = any($2::text[])`,
+          [input.run.workspaceId, uris],
+        )).rows.map(mapMemoryControl);
+      const controlsByUri = new Map(controls.map((control) => [control.uri, control]));
+      const conflicts: OpenVikingLockedMemoryConflict[] = [];
+      const completedAt = input.run.completedAt ?? input.run.updatedAt;
+
+      for (const change of input.changes) {
+        const existing = controlsByUri.get(change.uri);
+        if (existing?.locked && existing.lockedContent !== undefined) {
+          conflicts.push({
+            uri: change.uri,
+            content: existing.lockedContent,
+            ...(existing.title ? { title: existing.title } : {}),
+            change,
+          });
+          continue;
+        }
+
+        if (change.kind === "delete") {
+          const fallback = existing ?? defaultOpenVikingMemoryControl(input.run.workspaceId, change.uri);
+          await client.query(
+            `
+              insert into agent_recall.openviking_memories (
+                workspace_id, uri, memory_type, authority, lifecycle, locked,
+                evidence_status, source, created_at, updated_at
+              )
+              values ($1, $2, $3, $4, 'invalidated', false, 'invalid', $5, $6, $6)
+              on conflict (workspace_id, uri) do update set
+                lifecycle = 'invalidated',
+                evidence_status = 'invalid',
+                updated_at = excluded.updated_at
+            `,
+            [
+              input.run.workspaceId,
+              change.uri,
+              change.memoryType || fallback.memoryType,
+              fallback.authority,
+              fallback.source,
+              completedAt,
+            ],
+          );
+        } else {
+          await client.query(
+            `
+              insert into agent_recall.openviking_memories (
+                workspace_id, uri, memory_type, authority, lifecycle, locked,
+                evidence_status, source, created_at, updated_at
+              )
+              values ($1, $2, $3, 'model', 'active', false, 'verified', 'openviking', $4, $4)
+              on conflict (workspace_id, uri) do update set
+                memory_type = excluded.memory_type,
+                authority = 'model',
+                lifecycle = 'active',
+                locked = false,
+                evidence_status = 'verified',
+                source = 'openviking',
+                title = null,
+                locked_content = null,
+                updated_at = excluded.updated_at
+            `,
+            [input.run.workspaceId, change.uri, change.memoryType, completedAt],
+          );
+        }
+
+        const evidenceId = commitEvidenceId(input.run.taskId, change.uri, change.kind);
+        await client.query(
+          `
+            insert into agent_recall.openviking_memory_evidence (
+              id, workspace_id, memory_uri, source_session_id, source_agent,
+              source_turn_ids, archive_uri, memory_diff_uri, remote_task_id,
+              model_snapshot, policy_snapshot, state, created_at, updated_at
+            ) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $13)
+            on conflict (id) do update set
+              archive_uri = excluded.archive_uri,
+              memory_diff_uri = excluded.memory_diff_uri,
+              model_snapshot = excluded.model_snapshot,
+              policy_snapshot = excluded.policy_snapshot,
+              state = excluded.state,
+              updated_at = excluded.updated_at
+          `,
+          [
+            evidenceId,
+            input.run.workspaceId,
+            change.uri,
+            input.run.sourceSessionId ?? input.run.sessionId,
+            input.run.agent ?? null,
+            JSON.stringify(input.run.sourceTurnIds),
+            input.archiveUri ?? null,
+            input.memoryDiffUri ?? null,
+            input.run.taskId,
+            input.modelSnapshot ? JSON.stringify(input.modelSnapshot) : null,
+            input.policySnapshot ? JSON.stringify(input.policySnapshot) : null,
+            change.kind === "delete" ? "invalidated" : "active",
+            completedAt,
+          ],
+        );
+      }
+
+      await upsertCommitRun(client, {
+        ...input.run,
+        state: "completed",
+        archiveUri: input.archiveUri ?? input.run.archiveUri,
+        memoryDiffUri: input.memoryDiffUri ?? input.run.memoryDiffUri,
+        completedAt,
+        updatedAt: completedAt,
+      });
+      return conflicts;
+    });
+  }
+
+  async recordOperationEvent(event: OpenVikingOperationEvent): Promise<void> {
+    await this.database.query(
+      `
+        insert into agent_recall.openviking_operation_events (
+          id, workspace_id, phase, status, session_id, task_id,
+          started_at, completed_at, duration_ms, details
+        ) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+        on conflict (id) do nothing
+      `,
+      [
+        event.id,
+        event.workspaceId,
+        event.phase,
+        event.status,
+        event.sessionId ?? null,
+        event.taskId ?? null,
+        event.startedAt,
+        event.completedAt ?? null,
+        event.durationMs ?? null,
+        event.details ? JSON.stringify(event.details) : null,
+      ],
+    );
+  }
+
+  async recordRecallTrace(trace: OpenVikingRecallTrace): Promise<void> {
+    await this.database.query(
+      `
+        insert into agent_recall.openviking_recall_traces (
+          id, workspace_id, agent, query, contextual_query, searched_scopes,
+          searched_types, candidates, injected_uris, injected_token_count,
+          duration_ms, degraded_reason, created_at
+        ) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+        on conflict (id) do nothing
+      `,
+      [
+        trace.id,
+        trace.workspaceId,
+        trace.agent,
+        trace.query,
+        trace.contextualQuery,
+        JSON.stringify(trace.searchedScopes),
+        JSON.stringify(trace.searchedTypes),
+        JSON.stringify(trace.candidates),
+        JSON.stringify(trace.injectedUris),
+        trace.injectedTokenCount,
+        trace.durationMs,
+        trace.degradedReason ?? null,
+        trace.createdAt,
+      ],
+    );
+  }
+
+  async getControlDiagnostics(limit = 30): Promise<OpenVikingControlDiagnostics> {
+    const cap = Math.max(1, Math.min(100, Math.floor(limit)));
+    const [events, traces, commits] = await Promise.all([
+      this.database.query<EventRow>(
+        `
+          select id, workspace_id, phase, status, session_id, task_id,
+                 started_at, completed_at, duration_ms, details
+          from agent_recall.openviking_operation_events
+          order by started_at desc, id desc
+          limit $1
+        `,
+        [cap],
+      ),
+      this.database.query<RecallTraceRow>(
+        `
+          select id, workspace_id, agent, query, contextual_query, searched_scopes,
+                 searched_types, candidates, injected_uris, injected_token_count,
+                 duration_ms, degraded_reason, created_at
+          from agent_recall.openviking_recall_traces
+          order by created_at desc, id desc
+          limit $1
+        `,
+        [cap],
+      ),
+      this.database.query<CommitRow>(
+        `
+          select task_id, workspace_id, session_id, agent, trigger, state,
+                 source_turn_ids, token_estimate, archive_uri, memory_diff_uri,
+                 memories_extracted, token_usage, error, started_at, completed_at, updated_at
+          from agent_recall.openviking_commit_runs
+          order by updated_at desc, task_id desc
+          limit $1
+        `,
+        [cap],
+      ),
+    ]);
+    return {
+      recentEvents: events.rows.map(mapEvent),
+      recentRecallTraces: traces.rows.map(mapRecallTrace),
+      recentCommits: commits.rows.map(mapCommitRun),
+    };
+  }
+
   private async findWorkspace(clause: string, value: string): Promise<OpenVikingWorkspace | null> {
     const result = await this.database.query<WorkspaceRow>(`${WORKSPACE_SELECT} where ${clause}`, [value]);
     return result.rows[0] ? mapWorkspace(result.rows[0]) : null;
   }
+}
+
+async function upsertCommitRun(database: PostgresQueryable, run: OpenVikingCommitRun): Promise<void> {
+  await database.query(
+    `
+      insert into agent_recall.openviking_commit_runs (
+        task_id, workspace_id, session_id, agent, trigger, state,
+        source_turn_ids, token_estimate, archive_uri, memory_diff_uri,
+        memories_extracted, token_usage, error, started_at, completed_at, updated_at
+      ) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+      on conflict (task_id) do update set
+        state = excluded.state,
+        archive_uri = coalesce(excluded.archive_uri, agent_recall.openviking_commit_runs.archive_uri),
+        memory_diff_uri = coalesce(excluded.memory_diff_uri, agent_recall.openviking_commit_runs.memory_diff_uri),
+        memories_extracted = coalesce(excluded.memories_extracted, agent_recall.openviking_commit_runs.memories_extracted),
+        token_usage = coalesce(excluded.token_usage, agent_recall.openviking_commit_runs.token_usage),
+        error = excluded.error,
+        completed_at = coalesce(excluded.completed_at, agent_recall.openviking_commit_runs.completed_at),
+        updated_at = excluded.updated_at
+    `,
+    [
+      run.taskId,
+      run.workspaceId,
+      run.sessionId,
+      run.agent ?? null,
+      run.trigger,
+      run.state,
+      JSON.stringify(run.sourceTurnIds),
+      run.tokenEstimate,
+      run.archiveUri ?? null,
+      run.memoryDiffUri ?? null,
+      run.memoriesExtracted ? JSON.stringify(run.memoriesExtracted) : null,
+      run.tokenUsage ? JSON.stringify(run.tokenUsage) : null,
+      run.error ?? null,
+      run.startedAt,
+      run.completedAt ?? null,
+      run.updatedAt,
+    ],
+  );
 }
 
 function mapWorkspace(row: WorkspaceRow): OpenVikingWorkspace {
@@ -605,62 +810,146 @@ function mapWorkspace(row: WorkspaceRow): OpenVikingWorkspace {
     identity: row.identity,
     displayName: row.display_name,
     managed: row.managed,
-    importState: row.import_state,
-    importedTurns: Number(row.imported_turns),
-    totalTurns: Number(row.total_turns),
-    completedTasks: Number(row.completed_tasks),
-    totalTasks: Number(row.total_tasks),
-    ...(row.last_error ? { lastError: row.last_error } : {}),
     createdAt: iso(row.created_at),
     updatedAt: iso(row.updated_at),
   };
 }
 
-function mapImportJob(row: ImportJobRow): OpenVikingImportJob {
+function mapMemoryControl(row: MemoryRow): OpenVikingMemoryControl {
   return {
     workspaceId: row.workspace_id,
-    state: row.state,
-    importedTurns: Number(row.imported_turns),
-    totalTurns: Number(row.total_turns),
-    completedTasks: Number(row.completed_tasks),
-    totalTasks: Number(row.total_tasks),
-    cursorSessionKey: row.cursor_session_key,
-    selectedSessionKeys: Array.isArray(row.selected_session_keys)
-      ? row.selected_session_keys.filter((value): value is string => typeof value === "string")
-      : null,
-    lastError: row.last_error,
+    uri: row.uri,
+    memoryType: row.memory_type,
+    authority: row.authority,
+    lifecycle: row.lifecycle,
+    locked: row.locked,
+    evidenceStatus: row.evidence_status,
+    source: row.source,
+    ...(row.title ? { title: row.title } : {}),
+    ...(row.locked_content !== null ? { lockedContent: row.locked_content } : {}),
+    evidenceCount: Number(row.evidence_count),
+    createdAt: iso(row.created_at),
     updatedAt: iso(row.updated_at),
   };
 }
 
-function mapSessionCheckpoint(row: SessionCheckpointRow): OpenVikingSessionCheckpoint {
-  return {
-    workspaceId: row.workspace_id,
-    sessionKey: row.session_key,
-    sourceRevision: row.source_revision,
-    importedTurns: Number(row.imported_turns),
-    updatedAt: iso(row.updated_at),
-  };
-}
-
-function mapImportTask(row: ImportTaskRow): OpenVikingImportTask {
+function mapEvidence(row: EvidenceRow): OpenVikingMemoryEvidence {
   return {
     id: row.id,
-    position: Number(row.position),
     workspaceId: row.workspace_id,
-    sessionKey: row.session_key,
-    sourceRevision: row.source_revision,
-    sessionTitle: row.session_title,
-    payload: row.payload,
+    memoryUri: row.memory_uri,
+    ...(row.source_session_id ? { sourceSessionId: row.source_session_id } : {}),
+    ...(row.source_agent ? { sourceAgent: row.source_agent } : {}),
+    sourceTurnIds: stringArray(row.source_turn_ids),
+    ...(row.archive_uri ? { archiveUri: row.archive_uri } : {}),
+    ...(row.memory_diff_uri ? { memoryDiffUri: row.memory_diff_uri } : {}),
+    ...(row.remote_task_id ? { remoteTaskId: row.remote_task_id } : {}),
+    ...(recordValue(row.model_snapshot) ? { modelSnapshot: recordValue(row.model_snapshot)! } : {}),
+    ...(recordValue(row.policy_snapshot) ? { policySnapshot: recordValue(row.policy_snapshot)! } : {}),
     state: row.state,
-    attemptCount: Number(row.attempt_count),
-    remoteTaskId: row.remote_task_id,
-    lastError: row.last_error,
     createdAt: iso(row.created_at),
     updatedAt: iso(row.updated_at),
   };
+}
+
+function mapFeedback(row: FeedbackRow): OpenVikingMemoryFeedback {
+  return {
+    id: row.id,
+    workspaceId: row.workspace_id,
+    memoryUri: row.memory_uri,
+    feedback: row.feedback,
+    actor: row.actor,
+    ...(row.note ? { note: row.note } : {}),
+    createdAt: iso(row.created_at),
+  };
+}
+
+function mapCommitRun(row: CommitRow): OpenVikingCommitRun {
+  return {
+    taskId: row.task_id,
+    workspaceId: row.workspace_id,
+    sessionId: row.session_id,
+    ...(row.agent ? { agent: row.agent } : {}),
+    trigger: row.trigger,
+    state: row.state,
+    sourceTurnIds: stringArray(row.source_turn_ids),
+    tokenEstimate: Number(row.token_estimate),
+    ...(row.archive_uri ? { archiveUri: row.archive_uri } : {}),
+    ...(row.memory_diff_uri ? { memoryDiffUri: row.memory_diff_uri } : {}),
+    ...(numberRecord(row.memories_extracted) ? { memoriesExtracted: numberRecord(row.memories_extracted)! } : {}),
+    ...(recordValue(row.token_usage) ? { tokenUsage: recordValue(row.token_usage)! } : {}),
+    ...(row.error ? { error: row.error } : {}),
+    startedAt: iso(row.started_at),
+    ...(row.completed_at ? { completedAt: iso(row.completed_at) } : {}),
+    updatedAt: iso(row.updated_at),
+  };
+}
+
+function mapEvent(row: EventRow): OpenVikingOperationEvent {
+  return {
+    id: row.id,
+    workspaceId: row.workspace_id,
+    phase: row.phase,
+    status: row.status,
+    ...(row.session_id ? { sessionId: row.session_id } : {}),
+    ...(row.task_id ? { taskId: row.task_id } : {}),
+    startedAt: iso(row.started_at),
+    ...(row.completed_at ? { completedAt: iso(row.completed_at) } : {}),
+    ...(row.duration_ms === null ? {} : { durationMs: Number(row.duration_ms) }),
+    ...(recordValue(row.details) ? { details: recordValue(row.details)! } : {}),
+  };
+}
+
+function mapRecallTrace(row: RecallTraceRow): OpenVikingRecallTrace {
+  return {
+    id: row.id,
+    workspaceId: row.workspace_id,
+    agent: row.agent,
+    query: row.query,
+    contextualQuery: row.contextual_query,
+    searchedScopes: stringArray(row.searched_scopes),
+    searchedTypes: stringArray(row.searched_types),
+    candidates: recallCandidates(row.candidates),
+    injectedUris: stringArray(row.injected_uris),
+    injectedTokenCount: Number(row.injected_token_count),
+    durationMs: Number(row.duration_ms),
+    ...(row.degraded_reason ? { degradedReason: row.degraded_reason } : {}),
+    createdAt: iso(row.created_at),
+  };
+}
+
+function recallCandidates(value: unknown): OpenVikingRecallCandidateTrace[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((candidate): candidate is OpenVikingRecallCandidateTrace => (
+    Boolean(candidate)
+      && typeof candidate === "object"
+      && typeof (candidate as OpenVikingRecallCandidateTrace).uri === "string"
+  ));
+}
+
+function stringArray(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+}
+
+function recordValue(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function numberRecord(value: unknown): Record<string, number> | null {
+  const record = recordValue(value);
+  if (!record) return null;
+  return Object.fromEntries(
+    Object.entries(record).filter((entry): entry is [string, number] => typeof entry[1] === "number"),
+  );
+}
+
+function commitEvidenceId(taskId: string, uri: string, kind: string): string {
+  const digest = createHash("sha256").update(`${taskId}\0${kind}\0${uri}`, "utf8").digest("hex");
+  return `commit-${digest.slice(0, 40)}`;
 }
 
 function iso(value: Date | string): string {
-  return value instanceof Date ? value.toISOString() : new Date(value).toISOString();
+  return value instanceof Date ? value.toISOString() : value;
 }

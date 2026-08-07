@@ -187,6 +187,32 @@ describe("PostgreSQL Turn search", () => {
     expect(limited.sessions).toHaveLength(2);
     expect(limited.totalCount).toBe(4);
     expect(limited.hasMore).toBe(true);
+
+    const secondPage = await searchRepository.searchSessionPage({
+      excludeSubagents: false,
+      limit: 2,
+      offset: 2,
+    });
+    expect(secondPage.sessions.map((item) => item.sessionKey)).toEqual(["codex:two", "codex:one"]);
+    expect(secondPage.totalCount).toBe(4);
+    expect(secondPage.hasMore).toBe(false);
+
+    const normalizedPage = await searchRepository.searchSessionPage({
+      excludeSubagents: false,
+      limit: 1.9,
+      offset: 1.9,
+    });
+    expect(normalizedPage.sessions.map((item) => item.sessionKey)).toEqual(["codex:subagent"]);
+    expect(normalizedPage.totalCount).toBe(4);
+
+    const emptyPage = await searchRepository.searchSessionPage({
+      excludeSubagents: false,
+      limit: 2,
+      offset: 10,
+    });
+    expect(emptyPage.sessions).toEqual([]);
+    expect(emptyPage.totalCount).toBe(4);
+    expect(emptyPage.hasMore).toBe(false);
   });
 
   it("prioritizes exact phrase hits over messages that only contain all terms", async () => {

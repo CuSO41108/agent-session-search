@@ -60,6 +60,9 @@ export interface OpenVikingServerConfig {
     api_key?: string;
     reasoning_effort?: OpenVikingExtractionReasoningEffort;
   };
+  memory?: {
+    custom_templates_dir: string;
+  };
 }
 
 interface RuntimeChild {
@@ -444,6 +447,7 @@ export class OpenVikingRuntimeService {
     return this.start({
       embedding: persisted.embedding,
       vlm: persisted.vlm,
+      ...(persisted.memory ? { memory: persisted.memory } : {}),
     });
   }
 

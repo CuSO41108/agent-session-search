@@ -7,11 +7,13 @@ import {
   buildRemoteSessionRevisionFromStore,
   buildRemoteSessionUploadFromStore,
   buildSessionSyncItems,
+  findCursorSessionSyncBindingRepairs,
   remoteSessionId,
   SupabaseRemoteSessionClient,
   type RemoteSessionDeleteResult,
   type RemoteSessionDetailSnapshot,
   type RemoteSessionListItem,
+  type RemoteSessionSyncSnapshot,
   type RemoteSessionStatus,
   type RemoteSessionUploadResult,
   type SessionSyncItem,
@@ -47,8 +49,10 @@ export type RemoteSessionStorePort = Pick<
   | "getTraceEvents"
   | "getAttachmentFile"
   | "getSessionSourceArtifacts"
+  | "isSessionContentFresh"
   | "searchSessions"
   | "getEnvironment"
+  | "setSessionSourceAvailable"
   | "getSessionSyncBindingForLocalKey"
   | "listSessionSyncBindings"
   | "upsertSessionSyncBinding"
@@ -69,6 +73,7 @@ export interface SessionSyncHookSetup {
 export interface RemoteSessionClientPort {
   checkStatus(): Promise<RemoteSessionStatus>;
   listRemoteSessions(query?: string): Promise<RemoteSessionListItem[]>;
+  listRemoteSessionsForSync(): Promise<RemoteSessionListItem[]>;
   getRemoteSession(remoteId: string): Promise<RemoteSessionListItem>;
   uploadSession(
     payload: Parameters<SupabaseRemoteSessionClient["uploadSession"]>[0],
@@ -136,6 +141,21 @@ const defaultTimers = {
   clearInterval: (timer: ReturnType<typeof setInterval>) => clearInterval(timer),
 };
 
+const MISSING_SOURCE_UPLOAD_MESSAGE =
+  "The original session file no longer exists, and its full transcript is not cached locally, so it cannot be uploaded.";
+
+function cloudComparisonSkip(error: unknown): { reason: string; sourceUnavailable: boolean } {
+  if (error instanceof SessionSourceUnavailableError) {
+    return { reason: error.message, sourceUnavailable: true };
+  }
+  const message = error instanceof Error ? error.message : String(error);
+  if (message.includes("FileNotFoundError") && message.includes("No such file or directory")) {
+    return { reason: "The original session file no longer exists.", sourceUnavailable: true };
+  }
+  const reason = message.split(/\r?\n/, 1)[0].replace(/\s+Traceback.*$/u, "").trim();
+  return { reason: reason || "The session details could not be loaded.", sourceUnavailable: false };
+}
+
 export class RemoteSessionService {
   private readonly operations: RemoteSessionServiceOperations;
   private readonly timers: NonNullable<RemoteSessionServiceDependencies["timers"]>;
@@ -161,6 +181,20 @@ export class RemoteSessionService {
       };
     }
     return this.createClient().checkStatus();
+  }
+
+  async loadSyncSnapshot(): Promise<RemoteSessionSyncSnapshot> {
+    if (!this.syncConfigured(this.dependencies.getSettings())) {
+      return { status: await this.getStatus(), items: [] };
+    }
+    const [statusResult, itemsResult] = await Promise.allSettled([
+      this.getStatus(),
+      this.listSyncItems(),
+    ]);
+    if (statusResult.status === "rejected") throw statusResult.reason;
+    if (statusResult.value.kind !== "ready") return { status: statusResult.value, items: [] };
+    if (itemsResult.status === "rejected") throw itemsResult.reason;
+    return { status: statusResult.value, items: itemsResult.value };
   }
 
   copySetupSql(): void {
@@ -207,21 +241,21 @@ export class RemoteSessionService {
 
   async upload(sessionKey: string, force = false): Promise<RemoteSessionUploadResult> {
     const store = this.dependencies.getStore();
-    const session = await store.getSession(sessionKey);
-    if (!session) throw new Error("Session not found.");
-    const sourceDescriptor = sessionSourceDescriptor(session.source);
+    const initialSession = await store.getSession(sessionKey);
+    if (!initialSession) throw new Error("Session not found.");
+    const sourceDescriptor = sessionSourceDescriptor(initialSession.source);
     if (!sourceDescriptor.capabilities.sessionSync) {
       throw new Error(`${sourceDescriptor.label} sessions cannot be saved remotely yet.`);
     }
-    if (session.environmentKind === "wsl") throw new Error("WSL sessions cannot be saved to cloud yet.");
+    if (initialSession.environmentKind === "wsl") throw new Error("WSL sessions cannot be saved to cloud yet.");
     const client = this.createClient();
-    await this.dependencies.ensureSessionDetails(sessionKey);
+    const session = await this.prepareSessionForUpload(store, initialSession);
     const descendants = descendantSessions(
       session,
       await store.searchSessions({ limit: 100_000, excludeSubagents: false }),
     );
     await this.runBounded(descendants, 4, async (descendant) => {
-      await this.dependencies.ensureSessionDetails(descendant.sessionKey);
+      await this.prepareSessionForUpload(store, descendant);
     });
     const binding = await store.getSessionSyncBindingForLocalKey(sessionKey);
     const targetRemoteId = binding?.remoteSessionId ?? remoteSessionId(sessionKey);
@@ -247,6 +281,17 @@ export class RemoteSessionService {
       this.dependencies.getSettings().syncSessionAttachments,
       preservedSourceArchive,
     );
+    if (existingRemote?.contentHash === payload.content_hash) {
+      await store.upsertSessionSyncBinding({
+        localSessionKey: sessionKey,
+        remoteSessionId: existingRemote.id,
+        lastLocalRevision: payload.content_hash,
+        lastRemoteRevision: existingRemote.contentHash,
+        lastSyncedAt: this.dependencies.now(),
+        direction: "upload",
+      });
+      return { status: "skipped", remoteSession: existingRemote };
+    }
     if (binding && !force) {
       const remote = existingRemote ?? await client.getRemoteSession(binding.remoteSessionId).catch((error) => {
         if (error instanceof Error && error.message === "Remote session was not found.") return null;
@@ -272,68 +317,60 @@ export class RemoteSessionService {
     return result;
   }
 
+  private async prepareSessionForUpload(
+    store: RemoteSessionStorePort,
+    session: SessionSearchResult,
+  ): Promise<SessionSearchResult> {
+    if (session.sourceAvailable === false) {
+      if (!await store.isSessionContentFresh(session.sessionKey, session.fileMtimeMs, session.fileSize)) {
+        throw new SessionSourceUnavailableError(MISSING_SOURCE_UPLOAD_MESSAGE);
+      }
+      return await store.getSession(session.sessionKey) ?? session;
+    }
+    try {
+      await this.dependencies.ensureSessionDetails(session.sessionKey);
+    } catch (error) {
+      const skipped = cloudComparisonSkip(error);
+      if (!skipped.sourceUnavailable) throw error;
+      await store.setSessionSourceAvailable(session.sessionKey, false);
+      if (!await store.isSessionContentFresh(session.sessionKey, session.fileMtimeMs, session.fileSize)) {
+        throw new SessionSourceUnavailableError(MISSING_SOURCE_UPLOAD_MESSAGE);
+      }
+    }
+    return await store.getSession(session.sessionKey) ?? session;
+  }
+
   list(query = ""): Promise<RemoteSessionListItem[]> {
     return this.createClient().listRemoteSessions(query);
   }
 
   async listSyncItems(): Promise<SessionSyncItem[]> {
     const store = this.dependencies.getStore();
-    const client = this.createClient();
-    const remoteCandidates = await client.listRemoteSessions();
-    const remoteSessions = await Promise.all(
-      remoteCandidates.map((remote) => store.getSession(remote.sourceSessionKey)),
-    );
-    const remotes = remoteCandidates.filter((_, index) => remoteSessions[index]?.isSubagent !== true);
-    const includeAttachments = this.dependencies.getSettings().syncSessionAttachments;
+    const remoteCandidates = await this.createClient().listRemoteSessionsForSync();
+    const bindings = await store.listSessionSyncBindings();
     const indexedSessions = (await store.searchSessions({ limit: 100_000, excludeSubagents: false }))
       .filter((session) =>
         session.environmentKind !== "wsl"
         && remoteSessionAgentForSource(session.source) !== null);
-    await this.runBounded(indexedSessions, 4, async (session) => {
-      try {
-        await this.dependencies.ensureSessionDetails(session.sessionKey);
-      } catch (error) {
-        if (error instanceof SessionSourceUnavailableError) {
-          this.dependencies.logError(
-            `Skipping unavailable local session ${session.sessionKey} during cloud comparison: ${error.message}`,
-          );
-          return;
-        }
-        throw new Error(`Could not load ${session.displayTitle || session.sessionKey} before comparing it with the cloud copy: ${error instanceof Error ? error.message : String(error)}`);
+    const indexedBySessionKey = new Map(indexedSessions.map((session) => [session.sessionKey, session]));
+    const remotes = remoteCandidates
+      .filter((remote) => indexedBySessionKey.get(remote.sourceSessionKey)?.isSubagent !== true);
+    const rootSessions = indexedSessions.filter((session) => session.isSubagent !== true);
+    const unavailableSessionKeys = new Set<string>();
+    await this.runBounded(rootSessions.filter((session) => session.sourceAvailable === false), 4, async (session) => {
+      if (!await store.isSessionContentFresh(session.sessionKey, session.fileMtimeMs, session.fileSize)) {
+        unavailableSessionKeys.add(session.sessionKey);
       }
     });
-    const locals: Array<{ session: SessionSearchResult; revision: string }> = [];
-    await this.runBounded(indexedSessions.filter((session) => session.isSubagent !== true), 4, async (session) => {
-      try {
-        const hydrated = await store.getSession(session.sessionKey);
-        if (!hydrated) return;
-        const binding = await store.getSessionSyncBindingForLocalKey(session.sessionKey);
-        const matchingRemote = hydrated.sourceAvailable === false
-          ? remotes.find((remote) =>
-              remote.id === binding?.remoteSessionId || remote.sourceSessionKey === hydrated.sessionKey)
-          : undefined;
-        const preservedSourceArchive = matchingRemote
-          ? (await client.getDetailSnapshot(matchingRemote.id)).sourceArchive
-          : undefined;
-        const built = await this.operations.buildRevision(
-          store,
-          session.sessionKey,
-          binding?.remoteSessionId,
-          includeAttachments,
-          preservedSourceArchive,
-        );
-        locals.push({ session: hydrated, revision: built.payload.content_hash });
-      } catch (error) {
-        if (error instanceof SessionSourceUnavailableError) {
-          this.dependencies.logError(
-            `Skipping unavailable local session ${session.sessionKey} during cloud comparison: ${error.message}`,
-          );
-          return;
-        }
-        throw new Error(`Could not load ${session.displayTitle || session.sessionKey} before comparing it with the cloud copy: ${error instanceof Error ? error.message : String(error)}`);
-      }
-    });
-    return this.operations.buildSyncItems(locals, remotes, await store.listSessionSyncBindings());
+    const locals = rootSessions
+      .filter((session) => !unavailableSessionKeys.has(session.sessionKey))
+      .map((session) => ({ session, revision: null as null }));
+    const bindingRepairs = findCursorSessionSyncBindingRepairs(locals, remotes, bindings);
+    for (const binding of bindingRepairs) await store.upsertSessionSyncBinding(binding);
+    const effectiveBindings = bindingRepairs.length > 0
+      ? await store.listSessionSyncBindings()
+      : bindings;
+    return this.operations.buildSyncItems(locals, remotes, effectiveBindings);
   }
 
   getDetail(remoteId: string): Promise<RemoteSessionDetailSnapshot> {
@@ -434,7 +471,6 @@ export class RemoteSessionService {
   startQueue(): void {
     if (this.queueTimer) return;
     this.queueTimer = this.timers.setInterval(() => this.drainQueueInBackground(), AUTO_SESSION_SYNC_QUEUE_INTERVAL_MS);
-    this.drainQueueInBackground();
   }
 
   stopQueue(): void {
@@ -457,41 +493,41 @@ export class RemoteSessionService {
       const store = this.dependencies.getStore();
       const localSessions = (await store.searchSessions({ limit: 100_000, excludeSubagents: false }))
         .filter((session) => isLocalSessionEnvironment(session));
-      for (const event of coalesced.events) await this.processQueueEvent(event, localSessions);
+      const grouped = new Map<string, { session: SessionSearchResult; events: SessionSyncQueueEvent[] }>();
+      for (const event of coalesced.events) {
+        const session = localSessions.find((candidate) =>
+          remoteSessionAgentForSource(candidate.source) === event.agent
+          && ((event.transcriptPath && path.resolve(candidate.filePath) === path.resolve(event.transcriptPath))
+            || candidate.rawId === event.sessionId));
+        if (!session) {
+          if (this.dependencies.now() - Date.parse(event.queuedAt) >= STALE_SESSION_SYNC_EVENT_AGE_MS) {
+            this.operations.removeQueueFiles([event.filePath]);
+          }
+          continue;
+        }
+        const syncSession = rootSessionFor(session, localSessions);
+        const group = grouped.get(syncSession.sessionKey) ?? { session: syncSession, events: [] };
+        group.events.push(event);
+        grouped.set(syncSession.sessionKey, group);
+      }
+      for (const group of grouped.values()) await this.processQueueSession(group.session, group.events);
     } finally {
       this.queueRunning = false;
     }
   }
 
-  private async processQueueEvent(event: SessionSyncQueueEvent, localSessions: SessionSearchResult[]): Promise<void> {
+  private async processQueueSession(syncSession: SessionSearchResult, events: SessionSyncQueueEvent[]): Promise<void> {
     if (!this.dependencies.getSettings().remoteSyncEnabled
       || !this.dependencies.getHookSetup().sessionSyncHookStatus().installed) return;
-    const store = this.dependencies.getStore();
-    const session = localSessions.find((candidate) =>
-      remoteSessionAgentForSource(candidate.source) === event.agent
-      && ((event.transcriptPath && path.resolve(candidate.filePath) === path.resolve(event.transcriptPath))
-        || candidate.rawId === event.sessionId));
-    if (!session) {
-      if (this.dependencies.now() - Date.parse(event.queuedAt) >= STALE_SESSION_SYNC_EVENT_AGE_MS) {
-        this.operations.removeQueueFiles([event.filePath]);
-      }
-      return;
-    }
-    const syncSession = rootSessionFor(session, localSessions);
     try {
-      await this.dependencies.ensureSessionDetails(syncSession.sessionKey);
-      const binding = await store.getSessionSyncBindingForLocalKey(syncSession.sessionKey);
-      const built = await this.operations.buildRevision(store, syncSession.sessionKey, binding?.remoteSessionId);
-      if (!binding || binding.lastLocalRevision !== built.payload.content_hash) {
-        await this.upload(syncSession.sessionKey);
-      }
-      this.operations.removeQueueFiles([event.filePath]);
+      await this.upload(syncSession.sessionKey);
+      this.operations.removeQueueFiles(events.map((event) => event.filePath));
       this.hookLastProcessedAt = this.dependencies.now();
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       this.hookLastError = message;
       if (message.includes("Both local and cloud copies changed")) {
-        this.operations.removeQueueFiles([event.filePath]);
+        this.operations.removeQueueFiles(events.map((event) => event.filePath));
       }
     }
   }
@@ -539,7 +575,12 @@ export class RemoteSessionService {
   private async runBounded<T>(items: T[], concurrency: number, action: (item: T) => Promise<void>): Promise<void> {
     let cursor = 0;
     const workers = Array.from({ length: Math.min(Math.max(1, concurrency), items.length) }, async () => {
-      while (cursor < items.length) await action(items[cursor++]);
+      while (true) {
+        const index = cursor;
+        if (index >= items.length) return;
+        cursor += 1;
+        await action(items[index]);
+      }
     });
     await Promise.all(workers);
   }

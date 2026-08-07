@@ -132,38 +132,6 @@ export function detectLiveSessionsFromProcessLines(
   return sessions;
 }
 
-function addUnresolvedPlainSessionGuards(
-  lines: string[],
-  sessions: LiveSession[],
-  options: LoadLiveSessionOptions,
-): LiveSession[] {
-  const result = [...sessions];
-  const resolvedPids = new Set(sessions.map((session) => session.pid));
-  const guardedFamilies = new Set(
-    sessions.filter((session) => session.rawId === "*").map((session) => session.family),
-  );
-  for (const line of lines) {
-    const entry = parseProcessLine(line);
-    if (!entry || resolvedPids.has(entry.pid)) continue;
-    const family = unresolvedPlainSessionFamily(splitCommandLine(entry.command));
-    if (!family || !liveSessionFamilyEnabled(family, options) || guardedFamilies.has(family)) continue;
-    guardedFamilies.add(family);
-    result.push({ family, rawId: "*", pid: entry.pid });
-  }
-  return result;
-}
-
-function liveSessionFamilyEnabled(family: LiveSessionFamily, options: LoadLiveSessionOptions): boolean {
-  if (family === "openclaw") return options.includeOpenClaw !== false;
-  if (family === "hermes") return options.includeHermes !== false;
-  if (family === "opencode") return options.includeOpenCode !== false;
-  if (family === "zcode") return options.includeZcode !== false;
-  if (family === "cursor") return options.includeCursor !== false;
-  if (family === "codebuddy") return options.includeCodeBuddy !== false;
-  if (family === "codewiz") return options.includeCodeWiz !== false;
-  return true;
-}
-
 function liveSessionSnapshotCacheKey(options: LoadLiveSessionOptions): string {
   return JSON.stringify({
     platform: options.platform ?? process.platform,
@@ -246,7 +214,7 @@ export async function loadLiveSessionSnapshot(options: LoadLiveSessionOptions = 
     );
     return {
       generatedAt,
-      sessions: addUnresolvedPlainSessionGuards(lines, sessions, options),
+      sessions,
     };
   } catch (error) {
     return {
@@ -674,21 +642,6 @@ function isPlainCodeBuddyCommand(tokens: string[]): boolean {
   }
 
   return false;
-}
-
-function unresolvedPlainSessionFamily(tokens: string[]): LiveSessionFamily | null {
-  const commandIndex = isNodeExecutable(tokens[0]) ? 1 : 0;
-  const token = tokens[commandIndex];
-  const family = executableFamily(token);
-  if (!family || family === "trae" || family === "qoder") return null;
-  const args = tokens.slice(commandIndex + 1);
-  const resumedId = family === "codex" || family === "tcodex" ? codexResumeId(args) : flagResumeId(args);
-  if (resumedId) return null;
-  if (family === "codex" || family === "tcodex") {
-    if (isCodexAppServerCommand(tokens) || isCodexDesktopProcess(token)) return null;
-    if (normalizedExecutableName(token) !== family) return null;
-  }
-  return family;
 }
 
 function isDbBackedCommand(tokens: string[]): boolean {
