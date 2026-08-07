@@ -892,7 +892,6 @@ function sessionSyncStateFromOverview(
 function localSessionOverviewMatchesRemote(local: SessionSearchResult, remote: RemoteSessionListItem): boolean {
   return remote.sourceSource === local.source
     && remote.title === local.displayTitle
-    && remote.updatedAt === integerTimestamp(local.lastActivityAt)
     && remote.messageCount === local.messageCount
     && remote.aiSummary === local.aiSummary
     && sameTags(remote.tags, local.tags);

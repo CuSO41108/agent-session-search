@@ -771,6 +771,7 @@ describe("remote session sync model", () => {
     ) => buildSessionSyncItems([{ session, revision: null }], [{ ...remote, ...remoteOverrides }], bindings)[0].state;
 
     expect(stateFor(SESSION)).toBe("synced");
+    expect(stateFor(SESSION, { updatedAt: SESSION.lastActivityAt + 319 })).toBe("synced");
     expect(stateFor({ ...SESSION, displayTitle: "Renamed locally" })).toBe("local-newer");
     expect(stateFor({ ...SESSION, environmentKind: "ssh", fileMtimeMs: 5_000 })).toBe("local-newer");
     expect(stateFor(SESSION, { contentHash: "cloud-change" })).toBe("remote-newer");
