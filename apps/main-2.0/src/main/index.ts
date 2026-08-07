@@ -469,6 +469,14 @@ function bundledAutomationWorkflowsPath(): string {
   return candidates.find((candidate) => existsSync(candidate)) ?? candidates[0]!;
 }
 
+function bundledSkillsPath(): string {
+  const candidates = [
+    path.join(app.getAppPath(), "assets", "bundled-skills"),
+    path.join(app.getAppPath(), "src", "automation", "engine", "shared", "bundled-skills"),
+  ];
+  return candidates.find((candidate) => existsSync(candidate)) ?? candidates[0]!;
+}
+
 function createAutomationService(): NativeAutomationService {
   if (!postgresDatabase) throw new Error("PostgreSQL must be ready before automation starts.");
   return new NativeAutomationService({
@@ -644,6 +652,12 @@ const skillService = new SkillService({
   now: () => Date.now(),
   logError: (message) => console.error(message),
 });
+
+try {
+  skillService.ensureBuiltinSkills(bundledSkillsPath());
+} catch (error) {
+  console.error(`Failed to seed built-in Skills: ${error instanceof Error ? error.message : String(error)}`);
+}
 
 const remoteSessionAccess = new RemoteSessionAccess({
   getStore: () => store,
