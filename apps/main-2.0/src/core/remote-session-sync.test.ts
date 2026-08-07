@@ -1133,6 +1133,71 @@ describe("remote session sync model", () => {
     });
   });
 
+  it("deletes the remote row when Supabase reports an already missing storage object", async () => {
+    const detail = buildRemoteSessionSnapshot(SESSION, MESSAGES, [], 10_000);
+    const { payload, detailJson } = buildRemoteSessionPayload({ session: SESSION, detail, portable: PORTABLE, now: 11_000 });
+    let storageDeletes = 0;
+    let rowDeletes = 0;
+    const client = new SupabaseRemoteSessionClient({
+      url: "https://example.supabase.co",
+      anonKey: "anon",
+      fetchImpl: async (url, init) => {
+        const method = init?.method ?? "GET";
+        if (String(url).includes("/storage/v1/object/")) {
+          if (method === "GET") return new Response(gzipSync(detailJson), { status: 200 });
+          storageDeletes += 1;
+          return storageDeletes === 1
+            ? new Response(JSON.stringify({ statusCode: "404", error: "not_found", message: "Object not found" }), { status: 400 })
+            : new Response("{}", { status: 200 });
+        }
+        if (method === "DELETE") {
+          rowDeletes += 1;
+          return new Response(JSON.stringify([]), { status: 200 });
+        }
+        return new Response(JSON.stringify([payload]), { status: 200 });
+      },
+    });
+
+    await expect(client.deleteRemoteSessions([payload.id])).resolves.toEqual({
+      requested: 1,
+      deletedIds: [payload.id],
+      missingIds: [],
+      failures: [],
+    });
+    expect(storageDeletes).toBe(2);
+    expect(rowDeletes).toBe(1);
+  });
+
+  it("keeps the remote row when storage deletion fails for another reason", async () => {
+    const detail = buildRemoteSessionSnapshot(SESSION, MESSAGES, [], 10_000);
+    const { payload, detailJson } = buildRemoteSessionPayload({ session: SESSION, detail, portable: PORTABLE, now: 11_000 });
+    let rowDeletes = 0;
+    const client = new SupabaseRemoteSessionClient({
+      url: "https://example.supabase.co",
+      anonKey: "anon",
+      fetchImpl: async (url, init) => {
+        const method = init?.method ?? "GET";
+        if (String(url).includes("/storage/v1/object/")) {
+          if (method === "GET") return new Response(gzipSync(detailJson), { status: 200 });
+          return new Response(JSON.stringify({ message: "permission denied" }), { status: 403 });
+        }
+        if (method === "DELETE") {
+          rowDeletes += 1;
+          return new Response(JSON.stringify([]), { status: 200 });
+        }
+        return new Response(JSON.stringify([payload]), { status: 200 });
+      },
+    });
+
+    await expect(client.deleteRemoteSessions([payload.id])).resolves.toEqual({
+      requested: 1,
+      deletedIds: [],
+      missingIds: [],
+      failures: [{ id: payload.id, message: "permission denied" }],
+    });
+    expect(rowDeletes).toBe(0);
+  });
+
   it("does not treat a failed remote lookup as a missing row during upload", async () => {
     const detail = buildRemoteSessionSnapshot(SESSION, MESSAGES, [], 10_000);
     const { payload, detailJson, portableJson } = buildRemoteSessionPayload({ session: SESSION, detail, portable: PORTABLE, now: 11_000 });
