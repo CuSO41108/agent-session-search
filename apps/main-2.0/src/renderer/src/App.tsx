@@ -1164,11 +1164,11 @@ export function App(): ReactElement {
     }, 1800);
   }
 
-  async function exportMarkdown(sessionKey: string): Promise<void> {
+  async function exportMarkdown(sessionKey: string, includeToolTrace: boolean): Promise<void> {
     setContextMenu(null);
     setActionStatus({ kind: "running", message: t("Exporting markdown...", "正在导出 Markdown...") });
     try {
-      const exported = await window.sessionSearch.exportMarkdown(sessionKey);
+      const exported = await window.sessionSearch.exportMarkdown(sessionKey, { includeToolTrace });
       if (!exported) {
         setActionStatus(null);
         return;
@@ -1928,7 +1928,7 @@ export function App(): ReactElement {
             () => window.sessionSearch.copyMarkdown(session.sessionKey),
             t("Markdown copied.", "Markdown 已复制。"),
           ),
-          exportMarkdown: (session) => void exportMarkdown(session.sessionKey),
+          exportMarkdown: (session, includeToolTrace) => void exportMarkdown(session.sessionKey, includeToolTrace),
           exportJson: (session) => void exportJson(session.sessionKey),
           copyPlain: (session) => void runAction(
             t("Copying plain text", "正在复制纯文本"),
@@ -1988,7 +1988,7 @@ export function App(): ReactElement {
           onCopyMarkdown={() =>
             void runAction(t("Copying markdown", "正在复制 Markdown"), () => window.sessionSearch.copyMarkdown(contextMenu.session.sessionKey), t("Markdown copied.", "Markdown 已复制。"))
           }
-          onExportMarkdown={() => void exportMarkdown(contextMenu.session.sessionKey)}
+          onExportMarkdown={(includeToolTrace) => void exportMarkdown(contextMenu.session.sessionKey, includeToolTrace)}
           onExportJson={() => void exportJson(contextMenu.session.sessionKey)}
           onDelete={() => requestDeleteSession(contextMenu.session)}
           onReveal={() =>
