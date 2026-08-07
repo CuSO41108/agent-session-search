@@ -537,7 +537,6 @@
 }
 
 .openviking-result-group-body > button {
-  position: relative;
   display: grid;
   width: 100%;
   min-width: 0;
@@ -557,29 +556,44 @@
   box-shadow: inset 3px 0 var(--accent);
 }
 
-.openviking-result-group-body strong,
-.openviking-result-group-body span {
+.openviking-result-primary,
+.openviking-result-secondary {
+  display: flex;
+  min-width: 0;
+  align-items: baseline;
+  gap: 8px;
+  overflow: visible;
+  color: inherit;
+  font-size: inherit;
+  white-space: normal;
+}
+
+.openviking-result-primary > strong,
+.openviking-result-secondary > span {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.openviking-result-group-body strong {
+.openviking-result-primary > strong {
+  flex: 1;
   color: var(--text);
   font-size: 12.5px;
 }
 
-.openviking-result-group-body span {
+.openviking-result-secondary > span {
+  flex: 1;
   color: var(--text-muted);
   font-size: 11px;
 }
 
+.openviking-result-group-body time,
 .openviking-result-group-body em {
-  position: absolute;
-  top: 10px;
-  right: 10px;
+  flex: none;
   color: var(--text-faint);
   font-size: 9.5px;
+  font-variant-numeric: tabular-nums;
   font-style: normal;
 }
 
