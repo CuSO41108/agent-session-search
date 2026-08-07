@@ -14,7 +14,7 @@ import type {
   SessionTraceEvent,
   TokenUsageEvent,
 } from "../../core/types";
-import { V1SessionImportService, type V1SessionImportStore } from "./v1-session-import-service";
+import { V1SessionImportService } from "./v1-session-import-service";
 
 const require = createRequire(import.meta.url);
 const { DatabaseSync } = require("node:sqlite") as { DatabaseSync: typeof DatabaseSyncType };
@@ -131,7 +131,7 @@ interface ImportedSessionRecord {
   tags: string[];
 }
 
-class FakeImportStore implements V1SessionImportStore {
+class FakeImportStore {
   readonly sessions = new Map<string, ImportedSessionRecord>();
   readonly environments: EnvironmentUpsertInput[] = [];
   readonly bindings: SessionSyncBinding[] = [];

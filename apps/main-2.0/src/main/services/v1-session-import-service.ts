@@ -107,7 +107,7 @@ interface V1SessionBundle {
   tags: string[];
 }
 
-export interface V1SessionImportStore {
+interface V1SessionImportStore {
   getSession(sessionKey: string): ReturnType<SessionStore["getSession"]>;
   upsertIndexedSession(
     session: IndexedSession,
