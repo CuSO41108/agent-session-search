@@ -1715,6 +1715,23 @@ export class PostgresSessionRepository {
         `,
         [legacyKey, targetKey],
       );
+      await client.query(
+        `
+          update agent_recall.session_sync_bindings as legacy_binding
+          set local_session_key = $2
+          where legacy_binding.local_session_key = $1
+            and not exists (
+              select 1
+              from agent_recall.session_sync_bindings as target_binding
+              where target_binding.local_session_key = $2
+            )
+        `,
+        [legacyKey, targetKey],
+      );
+      await client.query(
+        "delete from agent_recall.session_sync_bindings where local_session_key = $1",
+        [legacyKey],
+      );
       await client.query("delete from agent_recall.sessions where session_key = $1", [legacyKey]);
       return true;
     });

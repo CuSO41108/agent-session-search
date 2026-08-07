@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { ReactElement } from "react";
 import {
   Activity,
@@ -15,11 +15,16 @@ import {
 
 import type {
   OpenVikingDiagnosticsSnapshot,
-  OpenVikingImportTaskDiagnostics,
   OpenVikingRuntimeHealth,
   OpenVikingRuntimeState,
   OpenVikingWorkspace,
 } from "../../../../core/openviking-memory";
+import type {
+  OpenVikingCommitRun,
+  OpenVikingControlDiagnostics,
+  OpenVikingOperationEvent,
+  OpenVikingRecallTrace,
+} from "../../../../core/openviking-memory-control";
 import { localize, type LanguageMode } from "../../language";
 
 type RuntimeAction = "start" | "restart" | "stop" | "refresh" | null;
@@ -65,29 +70,7 @@ export function OpenVikingRuntimeMonitor({
     };
   }, [refresh]);
 
-  const activeImports = useMemo(
-    () => snapshot?.workspaces.filter((workspace) =>
-      workspace.importState === "queued" || workspace.importState === "running") ?? [],
-    [snapshot?.workspaces],
-  );
-  const tasksByWorkspace = useMemo(() => {
-    const grouped = new Map<string, OpenVikingImportTaskDiagnostics[]>();
-    for (const task of snapshot?.tasks ?? []) {
-      const tasks = grouped.get(task.workspaceId) ?? [];
-      tasks.push(task);
-      grouped.set(task.workspaceId, tasks);
-    }
-    return grouped;
-  }, [snapshot?.tasks]);
-
   const controlRuntime = async (nextAction: Exclude<RuntimeAction, "refresh" | null>) => {
-    if ((nextAction === "stop" || nextAction === "restart") && activeImports.length > 0) {
-      const confirmed = window.confirm(l(
-        `${activeImports.length} import operation(s) are active. Continue?`,
-        `当前有 ${activeImports.length} 个目录正在导入，仍要继续吗？`,
-      ));
-      if (!confirmed) return;
-    }
     setAction(nextAction);
     setError(null);
     try {
@@ -122,8 +105,8 @@ export function OpenVikingRuntimeMonitor({
               {runtime ? <HealthBadge health={runtime.health} language={language} /> : null}
             </div>
             <p>{l(
-              "Local memory runtime, extraction queue and import activity.",
-              "本地记忆服务、提取队列与导入活动的实时状态。",
+              "Local memory runtime and directory-level incremental tracking.",
+              "本地记忆服务与目录级增量跟踪的实时状态。",
             )}</p>
           </div>
         </div>
@@ -181,8 +164,8 @@ export function OpenVikingRuntimeMonitor({
         <div className="openviking-runtime-warning compatibility">
           <AlertTriangle size={15} />
           <span>{l(
-            "Basic status and controls are available now. Restart V2 normally when imports are idle to load process health, task details and runtime events.",
-            "基础状态与控制现在已可用；请在没有导入任务运行时正常重启 V2，以加载进程健康、任务明细与运行事件。",
+            "Basic status and controls are available now. Restart V2 normally to load process health and runtime events.",
+            "基础状态与控制现在已可用；请正常重启 V2，以加载进程健康与运行事件。",
           )}</span>
         </div>
       ) : null}
@@ -242,16 +225,13 @@ export function OpenVikingRuntimeMonitor({
           <section className="openviking-runtime-section">
             <header>
               <div>
-                <h3>{l("Import activity", "导入活动")}</h3>
+                <h3>{l("Directory tracking", "目录跟踪")}</h3>
                 <p>{l(
-                  "Local checkpoints and the latest OpenViking task state; no session content is exposed here.",
-                  "显示本地检查点与最新的 OpenViking 任务状态；此处不会展示会话正文。",
+                  "Only future turns in managed directories are captured; historical sessions are not bulk-imported.",
+                  "只捕获受管理目录中未来产生的对话；历史会话不会被批量导入。",
                 )}</p>
               </div>
-              <span>{l(
-                `${snapshot.workspaces.length} directories · ${snapshot.tasks.length} tasks`,
-                `${snapshot.workspaces.length} 个目录 · ${snapshot.tasks.length} 个任务`,
-              )}</span>
+              <span>{l(`${snapshot.workspaces.length} directories`, `${snapshot.workspaces.length} 个目录`)}</span>
             </header>
             {snapshot.workspaces.length === 0 ? (
               <div className="openviking-runtime-empty">
@@ -263,13 +243,18 @@ export function OpenVikingRuntimeMonitor({
                   <WorkspaceDiagnostics
                     key={workspace.id}
                     workspace={workspace}
-                    tasks={tasksByWorkspace.get(workspace.id) ?? []}
                     language={language}
                   />
                 ))}
               </div>
             )}
           </section>
+
+          <ControlDiagnostics
+            control={snapshot.control}
+            workspaces={snapshot.workspaces}
+            language={language}
+          />
 
           <section className="openviking-runtime-section openviking-runtime-events">
             <header>
@@ -299,6 +284,166 @@ export function OpenVikingRuntimeMonitor({
   );
 }
 
+function ControlDiagnostics({
+  control,
+  workspaces,
+  language,
+}: {
+  control: OpenVikingControlDiagnostics;
+  workspaces: OpenVikingWorkspace[];
+  language: LanguageMode;
+}): ReactElement {
+  const l = (en: string, zh: string) => localize(language, en, zh);
+  const workspaceNames = new Map(workspaces.map((workspace) => [workspace.id, workspace.displayName]));
+  return (
+    <section className="openviking-runtime-section openviking-control-diagnostics">
+      <header>
+        <div>
+          <h3>{l("Memory pipeline", "记忆流水线")}</h3>
+          <p>{l(
+            "Commit extraction, stage timing and recall decisions recorded by AgentRecall.",
+            "AgentRecall 记录的提交提炼、阶段耗时与召回决策。",
+          )}</p>
+        </div>
+        <span>{l(
+          `${control.recentCommits.length} commits · ${control.recentRecallTraces.length} recalls`,
+          `${control.recentCommits.length} 次提交 · ${control.recentRecallTraces.length} 次召回`,
+        )}</span>
+      </header>
+      <div className="openviking-control-columns">
+        <ControlColumn title={l("Extraction runs", "提炼任务")} empty={l("No extraction runs yet.", "暂无提炼任务。")}>
+          {control.recentCommits.slice(0, 8).map((run) => (
+            <CommitRow
+              key={run.taskId}
+              run={run}
+              workspaceName={workspaceNames.get(run.workspaceId) ?? run.workspaceId}
+              language={language}
+            />
+          ))}
+        </ControlColumn>
+        <ControlColumn title={l("Pipeline stages", "处理阶段")} empty={l("No stage events yet.", "暂无阶段事件。")}>
+          {control.recentEvents.slice(0, 10).map((event) => (
+            <OperationRow
+              key={event.id}
+              event={event}
+              workspaceName={workspaceNames.get(event.workspaceId) ?? event.workspaceId}
+              language={language}
+            />
+          ))}
+        </ControlColumn>
+        <ControlColumn title={l("Recall traces", "召回记录")} empty={l("No recall traces yet.", "暂无召回记录。")}>
+          {control.recentRecallTraces.slice(0, 8).map((trace) => (
+            <RecallRow
+              key={trace.id}
+              trace={trace}
+              workspaceName={workspaceNames.get(trace.workspaceId) ?? trace.workspaceId}
+              language={language}
+            />
+          ))}
+        </ControlColumn>
+      </div>
+    </section>
+  );
+}
+
+function ControlColumn({
+  title,
+  empty,
+  children,
+}: {
+  title: string;
+  empty: string;
+  children: ReactElement[];
+}): ReactElement {
+  return (
+    <div className="openviking-control-column">
+      <strong>{title}</strong>
+      <div>{children.length > 0 ? children : <span className="openviking-control-empty">{empty}</span>}</div>
+    </div>
+  );
+}
+
+function CommitRow({
+  run,
+  workspaceName,
+  language,
+}: {
+  run: OpenVikingCommitRun;
+  workspaceName: string;
+  language: LanguageMode;
+}): ReactElement {
+  const l = (en: string, zh: string) => localize(language, en, zh);
+  return (
+    <article className="openviking-control-row">
+      <div>
+        <strong title={run.taskId}>{workspaceName} · {triggerLabel(run.trigger, language)}</strong>
+        <span>{l(
+          `${run.sourceTurnIds.length} turns · ~${run.tokenEstimate} tokens`,
+          `${run.sourceTurnIds.length} 个 Turn · 约 ${run.tokenEstimate} Token`,
+        )}</span>
+        {run.error ? <em className="error">{run.error}</em> : null}
+      </div>
+      <aside>
+        <span className={`openviking-runtime-state ${run.state}`}>{commitStateLabel(run.state, language)}</span>
+        <time>{formatTime(run.updatedAt, language)}</time>
+      </aside>
+    </article>
+  );
+}
+
+function OperationRow({
+  event,
+  workspaceName,
+  language,
+}: {
+  event: OpenVikingOperationEvent;
+  workspaceName: string;
+  language: LanguageMode;
+}): ReactElement {
+  return (
+    <article className="openviking-control-row">
+      <div>
+        <strong>{phaseLabel(event.phase, language)}</strong>
+        <span>{workspaceName}{event.taskId ? ` · ${shortId(event.taskId)}` : ""}</span>
+      </div>
+      <aside>
+        <span className={`openviking-runtime-state ${event.status}`}>{operationStateLabel(event.status, language)}</span>
+        <time>{event.durationMs === undefined ? formatTime(event.startedAt, language) : formatDurationMs(event.durationMs)}</time>
+      </aside>
+    </article>
+  );
+}
+
+function RecallRow({
+  trace,
+  workspaceName,
+  language,
+}: {
+  trace: OpenVikingRecallTrace;
+  workspaceName: string;
+  language: LanguageMode;
+}): ReactElement {
+  const l = (en: string, zh: string) => localize(language, en, zh);
+  return (
+    <article className="openviking-control-row">
+      <div>
+        <strong title={trace.query}>{trace.query || l("Empty query", "空查询")}</strong>
+        <span>{workspaceName} · {trace.agent} · {l(
+          `${trace.injectedUris.length}/${trace.candidates.length} injected · ${trace.injectedTokenCount} tokens`,
+          `注入 ${trace.injectedUris.length}/${trace.candidates.length} 条 · ${trace.injectedTokenCount} Token`,
+        )}</span>
+        {trace.degradedReason ? <em>{l("Degraded", "已降级")}: {trace.degradedReason}</em> : null}
+      </div>
+      <aside>
+        <span className={`openviking-runtime-state ${trace.degradedReason ? "degraded" : "completed"}`}>
+          {trace.degradedReason ? l("Degraded", "降级") : l("Complete", "完成")}
+        </span>
+        <time>{formatDurationMs(trace.durationMs)}</time>
+      </aside>
+    </article>
+  );
+}
+
 function RuntimeFact({
   icon,
   label,
@@ -324,11 +469,9 @@ function RuntimeFact({
 
 function WorkspaceDiagnostics({
   workspace,
-  tasks,
   language,
 }: {
   workspace: OpenVikingWorkspace;
-  tasks: OpenVikingImportTaskDiagnostics[];
   language: LanguageMode;
 }): ReactElement {
   const l = (en: string, zh: string) => localize(language, en, zh);
@@ -340,47 +483,23 @@ function WorkspaceDiagnostics({
           <span title={workspace.rootPath}>{workspace.rootPath}</span>
         </div>
         <div>
-          <span className={`openviking-runtime-state ${workspace.importState}`}>
-            {workspaceStateLabel(workspace.importState, language)}
+          <span className={`openviking-runtime-state ${workspace.managed ? "tracking" : "stopped"}`}>
+            {workspace.managed ? l("Tracking", "跟踪中") : l("Stopped", "已停止")}
           </span>
-          <em>{workspace.importedTurns} / {workspace.totalTurns} {l("turns", "轮")}</em>
-          {(workspace.totalTasks ?? 0) > 0
-            ? <em>{workspace.completedTasks ?? 0} / {workspace.totalTasks} {l("tasks", "任务")}</em>
-            : null}
+          <em>{workspace.managed
+            ? l("New turns only", "仅跟踪新对话")
+            : l("Memory retained", "记忆已保留")}</em>
         </div>
       </header>
-      {workspace.importActivity ? (
-        <div className="openviking-runtime-current">
-          <Activity size={13} className="pulse" />
-          <strong>{activityLabel(workspace.importActivity.phase, language)}</strong>
-          {workspace.importActivity.sessionTitle ? <span>{workspace.importActivity.sessionTitle}</span> : null}
-          {workspace.importActivity.currentTask !== undefined
-            && workspace.importActivity.totalTasks !== undefined
-            ? <em>{workspace.importActivity.currentTask} / {workspace.importActivity.totalTasks}</em>
-            : null}
-        </div>
-      ) : null}
-      {workspace.lastError ? (
-        <div className="openviking-runtime-task-error"><AlertTriangle size={13} />{workspace.lastError}</div>
-      ) : null}
-      {tasks.length > 0 ? (
-        <div className="openviking-runtime-task-list">
-          {tasks.map((task) => (
-            <div key={task.id}>
-              <span className={`openviking-runtime-task-dot ${task.state}`} aria-hidden="true" />
-              <span title={task.sessionTitle}>{task.sessionTitle}</span>
-              <em>{task.turnCount} {l("turns", "轮")}</em>
-              <strong>{remoteTaskLabel(task, language)}</strong>
-              <small>{l(`attempt ${task.attemptCount}`, `第 ${task.attemptCount} 次`)}</small>
-              {task.remoteError || task.lastError
-                ? <p>{task.remoteError ?? task.lastError}</p>
-                : null}
-            </div>
-          ))}
-        </div>
-      ) : (
-        <div className="openviking-runtime-no-tasks">{l("No recorded import tasks.", "暂无已记录的导入任务。")}</div>
-      )}
+      <div className="openviking-runtime-no-tasks">{workspace.managed
+        ? l(
+          "Agent hooks append new turns incrementally. OpenViking then runs model-based extraction in the background only when enough context is available, so upload completion is not memory completion.",
+          "Agent Hook 会先增量追加新对话；上下文足够时 OpenViking 才在后台运行模型提炼，因此上传完成不代表记忆已经生成。",
+        )
+        : l(
+          "Existing memories remain available, but this directory no longer captures new turns.",
+          "已有记忆仍可使用，但此目录不会继续捕获新对话。",
+        )}</div>
     </article>
   );
 }
@@ -422,6 +541,69 @@ function healthLabel(
   return localize(language, "Not running", "未运行");
 }
 
+function triggerLabel(trigger: string, language: LanguageMode): string {
+  const labels: Record<string, [string, string]> = {
+    "explicit-remember": ["Explicit remember", "明确记住"],
+    "token-threshold": ["Token threshold", "Token 阈值"],
+    idle: ["Idle flush", "空闲提交"],
+    compact: ["Before compact", "压缩前提交"],
+    "session-end": ["Session end", "会话结束"],
+    manual: ["Manual", "手动"],
+  };
+  const label = labels[trigger];
+  return label ? localize(language, label[0], label[1]) : trigger;
+}
+
+function phaseLabel(phase: string, language: LanguageMode): string {
+  const labels: Record<string, [string, string]> = {
+    append: ["Append turns", "追加 Turn"],
+    commit: ["Commit accepted", "提交已接收"],
+    summary: ["Summary", "摘要"],
+    "long-term-memory": ["Long-term memory", "长期记忆"],
+    experience: ["Experience extraction", "经验提炼"],
+    vectorize: ["Vector indexing", "向量索引"],
+    verify: ["Verify and reconcile", "校验与对账"],
+    recall: ["Automatic recall", "自动召回"],
+    search: ["Memory search", "记忆搜索"],
+    read: ["Memory read", "记忆读取"],
+    save: ["Memory save", "记忆保存"],
+    delete: ["Memory delete", "记忆删除"],
+    feedback: ["Memory feedback", "记忆反馈"],
+  };
+  const label = labels[phase];
+  return label ? localize(language, label[0], label[1]) : phase;
+}
+
+function commitStateLabel(state: OpenVikingCommitRun["state"], language: LanguageMode): string {
+  if (state === "running") return localize(language, "Running", "进行中");
+  if (state === "completed") return localize(language, "Complete", "完成");
+  return localize(language, "Failed", "失败");
+}
+
+function operationStateLabel(
+  status: OpenVikingOperationEvent["status"],
+  language: LanguageMode,
+): string {
+  const labels: Record<OpenVikingOperationEvent["status"], [string, string]> = {
+    started: ["Started", "已开始"],
+    completed: ["Complete", "完成"],
+    failed: ["Failed", "失败"],
+    degraded: ["Degraded", "降级"],
+    skipped: ["Skipped", "跳过"],
+  };
+  return localize(language, labels[status][0], labels[status][1]);
+}
+
+function shortId(value: string): string {
+  return value.length > 14 ? `${value.slice(0, 6)}…${value.slice(-5)}` : value;
+}
+
+function formatDurationMs(durationMs: number): string {
+  if (durationMs < 1_000) return `${durationMs} ms`;
+  if (durationMs < 60_000) return `${(durationMs / 1_000).toFixed(1)} s`;
+  return `${Math.floor(durationMs / 60_000)}m ${Math.floor((durationMs % 60_000) / 1_000)}s`;
+}
+
 async function readDiagnostics(): Promise<{
   snapshot: OpenVikingDiagnosticsSnapshot;
   compatibilityMode: boolean;
@@ -446,7 +628,11 @@ async function readDiagnostics(): Promise<{
       },
       model: snapshot.model,
       workspaces: snapshot.workspaces,
-      tasks: [],
+      control: {
+        recentEvents: [],
+        recentRecallTraces: [],
+        recentCommits: [],
+      },
     },
   };
 }
@@ -459,53 +645,6 @@ async function restartRuntime(): Promise<void> {
   }
   await api.stopOpenVikingRuntime();
   await api.startOpenVikingRuntime();
-}
-
-function workspaceStateLabel(state: OpenVikingWorkspace["importState"], language: LanguageMode): string {
-  const labels: Record<OpenVikingWorkspace["importState"], [string, string]> = {
-    idle: ["Idle", "空闲"],
-    queued: ["Queued", "排队中"],
-    running: ["Importing", "导入中"],
-    paused: ["Paused", "已暂停"],
-    failed: ["Failed", "失败"],
-    completed: ["Complete", "已完成"],
-  };
-  return localize(language, labels[state][0], labels[state][1]);
-}
-
-function taskStateLabel(state: OpenVikingImportTaskDiagnostics["state"], language: LanguageMode): string {
-  const labels: Record<OpenVikingImportTaskDiagnostics["state"], [string, string]> = {
-    queued: ["Queued", "排队中"],
-    uploading: ["Uploading", "上传中"],
-    waiting: ["Extracting", "提取中"],
-    completed: ["Complete", "已完成"],
-    failed: ["Failed", "失败"],
-  };
-  return localize(language, labels[state][0], labels[state][1]);
-}
-
-function remoteTaskLabel(task: OpenVikingImportTaskDiagnostics, language: LanguageMode): string {
-  const remote = (task.remoteStage ?? task.remoteState)?.trim().toLowerCase();
-  if (!remote) return taskStateLabel(task.state, language);
-  if (["scanning", "scan"].includes(remote)) return localize(language, "Scanning", "扫描中");
-  if (["uploading", "upload"].includes(remote)) return localize(language, "Uploading", "上传中");
-  if (["extracting", "processing", "running"].includes(remote)) {
-    return localize(language, "Extracting", "提取中");
-  }
-  if (["queued", "pending"].includes(remote)) return localize(language, "Queued", "排队中");
-  if (["completed", "succeeded", "success", "done"].includes(remote)) {
-    return localize(language, "Complete", "已完成");
-  }
-  if (["failed", "error", "cancelled", "canceled"].includes(remote)) {
-    return localize(language, "Failed", "失败");
-  }
-  return remote.slice(0, 40);
-}
-
-function activityLabel(phase: "scanning" | "uploading" | "extracting", language: LanguageMode): string {
-  if (phase === "scanning") return localize(language, "Scanning sessions", "正在扫描会话");
-  if (phase === "uploading") return localize(language, "Uploading session", "正在上传会话");
-  return localize(language, "Extracting memory", "正在提取记忆");
 }
 
 function formatTime(value: string, language: LanguageMode): string {

@@ -7,6 +7,7 @@ import type {
   TokenUsageEvent,
 } from "../types";
 import { PostgresDatabase } from "./database";
+import { PostgresMetadataRepository } from "./metadata-repository";
 import { PostgresSessionRepository } from "./session-repository";
 import { PostgresSessionStatsRepository } from "./session-stats-repository";
 import { PostgresSessionTurnRepository } from "./session-turn-repository";
@@ -89,6 +90,7 @@ const tokens: TokenUsageEvent[] = [{
 describe("PostgresSessionRepository", () => {
   let database: PostgresDatabase;
   let repository: PostgresSessionRepository;
+  let metadataRepository: PostgresMetadataRepository;
   let statsRepository: PostgresSessionStatsRepository;
   let turnsRepository: PostgresSessionTurnRepository;
 
@@ -99,6 +101,7 @@ describe("PostgresSessionRepository", () => {
     });
     await database.initialize();
     repository = new PostgresSessionRepository(database);
+    metadataRepository = new PostgresMetadataRepository(database);
     statsRepository = new PostgresSessionStatsRepository(database);
     turnsRepository = new PostgresSessionTurnRepository(database);
   });
@@ -138,6 +141,14 @@ describe("PostgresSessionRepository", () => {
         activeTurnIds: ["legacy-turn-1"],
       },
     );
+    await metadataRepository.upsertSessionSyncBinding({
+      localSessionKey: legacyKey,
+      remoteSessionId: "remote-legacy-paginated",
+      lastLocalRevision: "local-revision",
+      lastRemoteRevision: "remote-revision",
+      lastSyncedAt: 300,
+      direction: "upload",
+    });
 
     await expect(repository.migrateSessionKeyPreservingUserState(legacyKey, targetKey))
       .resolves.toBe(true);
@@ -147,6 +158,12 @@ describe("PostgresSessionRepository", () => {
       historyMode: "paginated",
       messageProvenance: [{ messageIndex: 0, sourceRecordId: "response_item:legacy-answer" }],
       activeTurnIds: ["legacy-turn-1"],
+    });
+    await expect(metadataRepository.getSessionSyncBindingForLocalKey(legacyKey)).resolves.toBeNull();
+    await expect(metadataRepository.getSessionSyncBindingForLocalKey(targetKey)).resolves.toMatchObject({
+      remoteSessionId: "remote-legacy-paginated",
+      lastLocalRevision: "local-revision",
+      lastRemoteRevision: "remote-revision",
     });
   });
 
@@ -504,33 +521,6 @@ describe("PostgresSessionRepository", () => {
       spanCount: 0,
       spans: [expect.objectContaining({ kind: "event", name: "Plan" })],
     });
-  });
-
-  it("pages completed Turn conversation text without loading trajectories", async () => {
-    await repository.upsertIndexedSession(session(), messages, [], []);
-
-    await expect(turnsRepository.listSessionImportTurns(
-      "codex:session-a",
-      null,
-      1,
-    )).resolves.toEqual([{
-      turnIndex: 0,
-      startedAt: "2026-07-20T08:00:00.000Z",
-      endedAt: "2026-07-20T08:00:01.000Z",
-      user: "Find the login failure",
-      assistant: "The cache key is stale.",
-    }]);
-    await expect(turnsRepository.listSessionImportTurns(
-      "codex:session-a",
-      0,
-      10,
-    )).resolves.toEqual([{
-      turnIndex: 1,
-      startedAt: "2026-07-20T08:01:00.000Z",
-      endedAt: "2026-07-20T08:01:00.000Z",
-      user: "Fix the cache and retry",
-      assistant: "",
-    }]);
   });
 
   it("loads one Turn trajectory and rejects a mismatched Session", async () => {

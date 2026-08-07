@@ -35,6 +35,7 @@ import type { AppSettings, AppSettingsUpdate } from "../../../../core/platform";
 import type { AgentChannel } from "../../../../automation/contracts";
 import type { RemoteHealthReport } from "../../../../core/remote-health";
 import type { SessionSyncHookStatus } from "../../../../core/session-sync-queue";
+import type { V1ImportResult } from "../../../../core/v1-import";
 import { globalShortcutOptions } from "../../../../core/shortcuts";
 import { terminalSelectOptions } from "../../../../core/terminal-options";
 import type { SessionEnvironment } from "../../../../core/types";
@@ -143,6 +144,7 @@ export function SettingsDialog({
   onDeleteEnvironment,
   onAddSsh,
   onAddWsl,
+  onImportV1,
   onOpenApiConfig,
   onOpenRemoteSessions,
   onClose,
@@ -177,6 +179,7 @@ export function SettingsDialog({
   onDeleteEnvironment: (environment: SessionEnvironment) => void;
   onAddSsh: () => void;
   onAddWsl?: () => void;
+  onImportV1: () => Promise<V1ImportResult>;
   onOpenApiConfig: () => void;
   onOpenRemoteSessions: () => void;
   onClose: () => void;
@@ -211,6 +214,11 @@ export function SettingsDialog({
   const [mcpBusy, setMcpBusy] = useState(false);
   const [workflowMcpEnabled, setWorkflowMcpEnabled] = useState<boolean | null>(null);
   const [workflowMcpBusy, setWorkflowMcpBusy] = useState(false);
+  const [v1ImportState, setV1ImportState] = useState<{
+    running: boolean;
+    kind: "success" | "error" | null;
+    message: string | null;
+  }>({ running: false, kind: null, message: null });
 
   useEffect(() => {
     void window.sessionSearch
@@ -242,6 +250,27 @@ export function SettingsDialog({
       // Leave the previous state; the toggle simply won't flip.
     } finally {
       setWorkflowMcpBusy(false);
+    }
+  }
+
+  async function importV1Data(): Promise<void> {
+    setV1ImportState({ running: true, kind: null, message: l("Importing V1 data...", "正在导入 V1 数据...") });
+    try {
+      const result = await onImportV1();
+      const imported = l(
+        `Imported ${result.importedSessions} cached sessions; kept ${result.skippedSessions} existing V2 sessions.`,
+        `已导入 ${result.importedSessions} 个缓存会话，保留 ${result.skippedSessions} 个已有 V2 会话。`,
+      );
+      const extras = l(
+        ` Session settings, ${result.importedEnvironments} connections, and ${result.importedSyncBindings} cloud bindings were migrated.`,
+        ` 同时迁移了会话设置、${result.importedEnvironments} 个连接和 ${result.importedSyncBindings} 个云端同步关系。`,
+      );
+      const failures = result.failedSessions > 0
+        ? l(` ${result.failedSessions} sessions failed.`, ` ${result.failedSessions} 个会话导入失败。`)
+        : "";
+      setV1ImportState({ running: false, kind: result.failedSessions > 0 ? "error" : "success", message: imported + extras + failures });
+    } catch (error) {
+      setV1ImportState({ running: false, kind: "error", message: error instanceof Error ? error.message : String(error) });
     }
   }
 
@@ -1377,6 +1406,31 @@ export function SettingsDialog({
                     />
                   </label>
                 ) : null}
+                <div className="update-v1-import">
+                  <div className="v1-import-card">
+                    <div className="v1-import-copy">
+                      <strong>{l("V1 data migration", "V1 数据迁移")}</strong>
+                      <span>{l(
+                        "Import V1 session settings, connections, cached conversations, user labels, and cloud bindings. Existing V2 conversations are kept, and saved passwords are not copied.",
+                        "导入 V1 的会话设置、连接、缓存对话、用户标记和云端同步关系；已有 V2 会话会被保留，已保存的密码不会复制。",
+                      )}</span>
+                    </div>
+                    <button
+                      type="button"
+                      className="settings-action-button v1-import-button"
+                      disabled={v1ImportState.running}
+                      onClick={() => void importV1Data()}
+                    >
+                      {v1ImportState.running ? <RefreshCw size={14} className="spin" /> : <Download size={14} />}
+                      {v1ImportState.running ? l("Importing...", "正在导入...") : l("Import V1 data", "一键导入 V1 数据")}
+                    </button>
+                  </div>
+                  {v1ImportState.message ? (
+                    <div className={`v1-import-result ${v1ImportState.kind ?? ""}`} role="status" aria-live="polite">
+                      {v1ImportState.message}
+                    </div>
+                  ) : null}
+                </div>
               </section>
             ) : null}
           </div>

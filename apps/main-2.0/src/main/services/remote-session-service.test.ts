@@ -184,6 +184,10 @@ function createHarness(options: {
     if (session) session.sourceAvailable = available;
   });
   const upsertSessionSyncBinding = vi.fn((binding: SessionSyncBinding) => {
+    const remoteIndex = bindings.findIndex((candidate) =>
+      candidate.remoteSessionId === binding.remoteSessionId
+      && candidate.localSessionKey !== binding.localSessionKey);
+    if (remoteIndex >= 0) bindings.splice(remoteIndex, 1);
     const index = bindings.findIndex((candidate) => candidate.localSessionKey === binding.localSessionKey);
     if (index >= 0) bindings[index] = binding;
     else bindings.push(binding);
@@ -547,17 +551,24 @@ describe("RemoteSessionService cloud orchestration", () => {
     expect(harness.createClient).not.toHaveBeenCalled();
   });
 
-  it("rejects Pi uploads before creating a client or hydrating content", async () => {
+  it("uploads Pi sessions through the asynchronous V2 service", async () => {
     const harness = createHarness({
       settings: configuredSettings(),
       sessions: [localSession({ sessionKey: "pi:session-1", rawId: "session-1", source: "pi-cli" })],
     });
 
-    await expect(harness.service.upload("pi:session-1")).rejects.toThrow("Pi sessions cannot be saved remotely yet.");
-    expect(harness.createClient).not.toHaveBeenCalled();
-    expect(harness.ensureSessionDetails).not.toHaveBeenCalled();
-    expect(harness.buildUpload).not.toHaveBeenCalled();
-    expect(harness.client.uploadSession).not.toHaveBeenCalled();
+    await expect(harness.service.upload("pi:session-1")).resolves.toMatchObject({ status: "uploaded" });
+    expect(harness.createClient).toHaveBeenCalledOnce();
+    expect(harness.ensureSessionDetails).toHaveBeenCalledWith("pi:session-1");
+    expect(harness.buildUpload).toHaveBeenCalledWith(
+      harness.store,
+      "pi:session-1",
+      123,
+      undefined,
+      true,
+      undefined,
+    );
+    expect(harness.client.uploadSession).toHaveBeenCalledOnce();
   });
 
   it("rejects an upload when both the bound local and cloud revisions changed", async () => {
@@ -755,6 +766,44 @@ describe("RemoteSessionService cloud orchestration", () => {
       [{ session: harness.sessions[0], revision: null }],
       [expect.objectContaining({ id: "remote-1" })],
       [],
+    );
+  });
+
+  it("repairs a missing Cursor binding after its workspace key changes", async () => {
+    const current = localSession({
+      sessionKey: "cursor:empty-window:same-composer",
+      rawId: "same-composer",
+      source: "cursor-agent",
+      storageEnvironmentId: "local",
+    });
+    const remote = remoteSession({
+      sourceSessionKey: "cursor:repo-old:same-composer",
+      sourceAgent: "cursor",
+      sourceSource: "cursor-agent",
+      syncedAt: 42,
+    });
+    const harness = createHarness({
+      settings: configuredSettings(),
+      sessions: [current],
+      bindings: [],
+      remote,
+    });
+
+    await harness.service.listSyncItems();
+
+    const repairedBinding: SessionSyncBinding = {
+      localSessionKey: current.sessionKey,
+      remoteSessionId: remote.id,
+      lastLocalRevision: "",
+      lastRemoteRevision: "",
+      lastSyncedAt: remote.syncedAt,
+      direction: "upload",
+    };
+    expect(harness.store.upsertSessionSyncBinding).toHaveBeenCalledWith(repairedBinding);
+    expect(harness.buildSyncItems).toHaveBeenCalledWith(
+      [{ session: current, revision: null }],
+      [remote],
+      [repairedBinding],
     );
   });
 

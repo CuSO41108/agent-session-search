@@ -7,6 +7,7 @@ import {
   buildRemoteSessionRevisionFromStore,
   buildRemoteSessionUploadFromStore,
   buildSessionSyncItems,
+  findCursorSessionSyncBindingRepairs,
   remoteSessionId,
   SupabaseRemoteSessionClient,
   type RemoteSessionDeleteResult,
@@ -364,7 +365,12 @@ export class RemoteSessionService {
     const locals = rootSessions
       .filter((session) => !unavailableSessionKeys.has(session.sessionKey))
       .map((session) => ({ session, revision: null as null }));
-    return this.operations.buildSyncItems(locals, remotes, bindings);
+    const bindingRepairs = findCursorSessionSyncBindingRepairs(locals, remotes, bindings);
+    for (const binding of bindingRepairs) await store.upsertSessionSyncBinding(binding);
+    const effectiveBindings = bindingRepairs.length > 0
+      ? await store.listSessionSyncBindings()
+      : bindings;
+    return this.operations.buildSyncItems(locals, remotes, effectiveBindings);
   }
 
   getDetail(remoteId: string): Promise<RemoteSessionDetailSnapshot> {

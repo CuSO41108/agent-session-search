@@ -353,6 +353,9 @@ describe("OpenVikingRuntimeService", () => {
         api_base: "https://provider.example/v1",
         api_key: "persisted-key",
       },
+      memory: {
+        custom_templates_dir: path.join(root, "memory-templates"),
+      },
       server: { host: "0.0.0.0", port: 9999, root_api_key: "stale-root-key" },
       storage: { workspace: "/stale/path" },
     }));
@@ -363,6 +366,7 @@ describe("OpenVikingRuntimeService", () => {
     const config = JSON.parse(await readFile(path.join(root, "ov.conf"), "utf8"));
     expect(config.embedding.dense.model).toBe("persisted-embedding");
     expect(config.vlm.model).toBe("persisted-model");
+    expect(config.memory.custom_templates_dir).toBe(path.join(root, "memory-templates"));
     expect(config.server).toMatchObject({ host: "127.0.0.1", port: 21933 });
     expect(config.storage.workspace).toBe(path.join(root, "data"));
   });

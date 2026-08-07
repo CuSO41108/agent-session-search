@@ -21,6 +21,7 @@ import type { InstalledSkill } from "../../core/skill-manager";
 import type { OpenVikingMemorySnapshot } from "../../core/openviking-memory";
 import type { RemoteHealthReport } from "../../core/remote-health";
 import type { SessionSyncHookStatus } from "../../core/session-sync-queue";
+import type { V1ImportResult } from "../../core/v1-import";
 import { liveSessionDeleteKey, type SessionBulkDeletePreview, type SessionBulkDeleteRequest } from "../../core/session-bulk-delete";
 import type { TeamChatRoomSummary } from "../../shared/team-chat";
 import { OPTIONAL_SESSION_SOURCE_DESCRIPTORS } from "../../core/session-sources";
@@ -1410,6 +1411,23 @@ export function App(): ReactElement {
     }
   }
 
+  async function importV1Data(): Promise<V1ImportResult> {
+    const result = await window.sessionSearch.importV1Data();
+    const [nextSettings, nextEnvironments] = await Promise.all([
+      window.sessionSearch.getSettings(),
+      window.sessionSearch.listEnvironments(),
+      load(),
+      loadSidebarMetadata(),
+      loadStats(),
+    ]);
+    appSettingsRef.current = nextSettings;
+    setAppSettings(nextSettings);
+    setEnvironments(nextEnvironments);
+    remoteSessions.invalidate();
+    void window.sessionSearch.getSessionSyncHookStatus().then(setSessionHookStatus).catch(() => setSessionHookStatus(null));
+    return result;
+  }
+
   async function reloadEnvironmentData(): Promise<void> {
     setEnvironments(await window.sessionSearch.listEnvironments());
     await load();
@@ -2101,6 +2119,7 @@ export function App(): ReactElement {
           onDeleteEnvironment={(environment) => void deleteEnvironment(environment)}
           onAddSsh={() => setSshDialogOpen(true)}
           onAddWsl={() => setWslDialogOpen(true)}
+          onImportV1={importV1Data}
           onOpenApiConfig={() => {
             setSettingsOpen(false);
             void navigateToPage("providers");

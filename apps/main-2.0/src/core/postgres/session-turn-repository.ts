@@ -53,14 +53,6 @@ export interface TraceEventQueryOptions {
   limit?: number;
 }
 
-export interface SessionImportTurn {
-  turnIndex: number;
-  startedAt: string | null;
-  endedAt: string | null;
-  user: string;
-  assistant: string;
-}
-
 export class PostgresSessionTurnRepository {
   constructor(private readonly database: PostgresDatabase) {}
 
@@ -82,72 +74,6 @@ export class PostgresSessionTurnRepository {
       [sessionKey],
     );
     return result.rows.map(sessionTurnSummaryFromRow);
-  }
-
-  async listSessionImportTurns(
-    sessionKey: string,
-    afterTurnIndex: number | null,
-    limit: number,
-  ): Promise<SessionImportTurn[]> {
-    const result = await this.database.query<{
-      turn_index: number | string;
-      started_at: Date | string | null;
-      ended_at: Date | string | null;
-      roles: SessionTurnMessage["role"][];
-      contents: string[];
-    }>(
-      `
-        with import_turns as (
-          select id, turn_index, started_at, ended_at
-          from agent_recall.session_turns
-          where session_key = $1
-            and synthetic = false
-            and status = 'completed'
-            and ($2::integer is null or turn_index > $2)
-          order by turn_index
-          limit $3
-        )
-        select
-          turns.turn_index,
-          turns.started_at,
-          turns.ended_at,
-          coalesce(
-            array_agg(messages.role order by messages.message_index)
-              filter (where messages.turn_id is not null),
-            array[]::text[]
-          ) as roles,
-          coalesce(
-            array_agg(messages.content order by messages.message_index)
-              filter (where messages.turn_id is not null),
-            array[]::text[]
-          ) as contents
-        from import_turns turns
-        left join agent_recall.turn_messages messages
-          on messages.turn_id = turns.id
-          and messages.role in ('user', 'assistant')
-        group by turns.turn_index, turns.started_at, turns.ended_at
-        order by turns.turn_index
-      `,
-      [sessionKey, afterTurnIndex, Math.max(1, Math.floor(limit))],
-    );
-    return result.rows.map((row) => {
-      const messages = row.roles.map((role, index) => ({
-        role,
-        content: row.contents[index] ?? "",
-      }));
-      const textForRole = (role: "user" | "assistant") => messages
-        .filter((message) => message.role === role)
-        .map((message) => message.content.trim())
-        .filter(Boolean)
-        .join("\n\n");
-      return {
-        turnIndex: numberValue(row.turn_index),
-        startedAt: nullableIsoValue(row.started_at),
-        endedAt: nullableIsoValue(row.ended_at),
-        user: textForRole("user"),
-        assistant: textForRole("assistant"),
-      };
-    });
   }
 
   async getSessionTurn(sessionKey: string, turnId: string): Promise<SessionTurnDetail | null> {

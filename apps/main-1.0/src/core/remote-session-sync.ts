@@ -9,7 +9,7 @@ import type { PortableSession, RemoteSessionAgent, SessionMessage, SessionSearch
 
 export const REMOTE_SESSION_TABLE = "agent_session_remote_sessions";
 export const REMOTE_SESSION_BUCKET = "agent-session-remote";
-const REMOTE_SESSION_AGENTS = ["claude", "codex", "codebuddy", "codewiz", "cursor", "hermes"] as const satisfies readonly RemoteSessionAgent[];
+const REMOTE_SESSION_AGENTS = ["claude", "codex", "codebuddy", "codewiz", "cursor", "hermes", "pi"] as const satisfies readonly RemoteSessionAgent[];
 const REMOTE_SESSION_AGENT_CHECK_SQL = REMOTE_SESSION_AGENTS.map((agent) => `'${agent}'`).join(", ");
 const REMOTE_SESSION_SOURCE_OBJECT_MAX_BYTES = 5 * 1024 * 1024;
 const REMOTE_SESSION_SOURCE_COMPRESSION_MIN_BYTES = 64 * 1024;
@@ -700,6 +700,64 @@ export function buildSessionSyncItems(
   return items.sort((a, b) => sessionSyncSortTime(b) - sessionSyncSortTime(a) || sessionSyncTitle(a).localeCompare(sessionSyncTitle(b)));
 }
 
+export function findCursorSessionSyncBindingRepairs(
+  locals: LocalSessionSyncCandidate[],
+  remotes: RemoteSessionListItem[],
+  bindings: SessionSyncBinding[],
+): SessionSyncBinding[] {
+  const localKeys = new Set(locals.map((candidate) => candidate.session.sessionKey));
+  const remoteSourceKeys = new Set(remotes.map((remote) => remote.sourceSessionKey));
+  const bindingByLocal = new Map(bindings.map((binding) => [binding.localSessionKey, binding]));
+  const bindingByRemote = new Map(bindings.map((binding) => [binding.remoteSessionId, binding]));
+  const localsByIdentity = new Map<string, LocalSessionSyncCandidate[]>();
+  const remotesByIdentity = new Map<string, RemoteSessionListItem[]>();
+
+  for (const local of locals) {
+    const session = local.session;
+    if (session.source !== "cursor-agent"
+      || bindingByLocal.has(session.sessionKey)
+      || remoteSourceKeys.has(session.sessionKey)) continue;
+    const identity = `${session.storageEnvironmentId ?? session.environmentId ?? "local"}\u0000${session.rawId}`;
+    const candidates = localsByIdentity.get(identity) ?? [];
+    candidates.push(local);
+    localsByIdentity.set(identity, candidates);
+  }
+
+  for (const remote of remotes) {
+    if (remote.sourceAgent !== "cursor" || remote.sourceSource !== "cursor-agent") continue;
+    if (localKeys.has(remote.sourceSessionKey)) continue;
+    const existingBinding = bindingByRemote.get(remote.id);
+    if (existingBinding && localKeys.has(existingBinding.localSessionKey)) continue;
+    const separator = remote.sourceSessionKey.lastIndexOf(":");
+    const rawId = separator >= 0 ? remote.sourceSessionKey.slice(separator + 1) : "";
+    if (!rawId) continue;
+    const identity = `${remote.sourceEnvironmentId || "local"}\u0000${rawId}`;
+    const candidates = remotesByIdentity.get(identity) ?? [];
+    candidates.push(remote);
+    remotesByIdentity.set(identity, candidates);
+  }
+
+  const repairs: SessionSyncBinding[] = [];
+  for (const [identity, localCandidates] of localsByIdentity) {
+    const remoteCandidates = remotesByIdentity.get(identity) ?? [];
+    if (localCandidates.length !== 1 || remoteCandidates.length !== 1) continue;
+    const local = localCandidates[0];
+    const remote = remoteCandidates[0];
+    const existingBinding = bindingByRemote.get(remote.id);
+    repairs.push(existingBinding
+      ? { ...existingBinding, localSessionKey: local.session.sessionKey }
+      : {
+          localSessionKey: local.session.sessionKey,
+          remoteSessionId: remote.id,
+          lastLocalRevision: "",
+          lastRemoteRevision: "",
+          lastSyncedAt: remote.syncedAt,
+          direction: "upload",
+        });
+  }
+  return repairs;
+}
+
 function sessionSyncPair(
   local: LocalSessionSyncCandidate,
   remote: RemoteSessionListItem,
@@ -739,8 +797,8 @@ function sessionSyncStateFromOverview(
   const revisionVersion = remote.revisionVersion ?? 1;
   const overviewMatches = localSessionOverviewMatchesRemote(local, remote);
   if (!binding) {
-    if (revisionVersion >= 2 && overviewMatches && !localSourceChangedAfter(local, remote.syncedAt)) {
-      return "synced";
+    if (revisionVersion >= 2 && !localSourceChangedAfter(local, remote.syncedAt)) {
+      return overviewMatches ? "synced" : "remote-newer";
     }
     return revisionVersion < 2 ? "local-newer" : "conflict";
   }
@@ -757,7 +815,6 @@ function sessionSyncStateFromOverview(
 function localSessionOverviewMatchesRemote(local: SessionSearchResult, remote: RemoteSessionListItem): boolean {
   return remote.sourceSource === local.source
     && remote.title === local.displayTitle
-    && remote.updatedAt === integerTimestamp(local.lastActivityAt)
     && remote.messageCount === local.messageCount
     && remote.aiSummary === local.aiSummary
     && sameTags(remote.tags, local.tags);

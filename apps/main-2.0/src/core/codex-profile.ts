@@ -71,6 +71,9 @@ type FetchLike = (url: string, init?: { headers?: Record<string, string> }) => P
 }>;
 
 const OFFICIAL_CODEX_PROVIDER_ID = "openai";
+const OFFICIAL_CODEX_AUTH_ENV_KEY = "OPENAI_API_KEY";
+
+export const DEFAULT_CODEX_API_BASE_URL = "https://chatgpt.com/backend-api/codex";
 
 export function codexProfileForApiConfig(
   config: Pick<ApiConfig, "activeProvider"> & Partial<Pick<ApiConfig, "customProviderId">>,
@@ -154,11 +157,14 @@ export async function loadActiveCodexSummaryEndpointDefaults(codexHome?: string)
   const home = codexHome ?? path.join(os.homedir(), ".codex");
   const text = await readOptionalFile(path.join(home, "config.toml"));
   const providerId = readTomlString(text, "model_provider");
-  if (!providerId || providerId === OFFICIAL_CODEX_PROVIDER_ID) return null;
+  const model = readTomlString(text, "model") || "";
+  if (!providerId || providerId === OFFICIAL_CODEX_PROVIDER_ID) {
+    const apiKey = await readCodexEnvKeySecret(OFFICIAL_CODEX_AUTH_ENV_KEY, text, home);
+    return apiKey ? { baseUrl: "", model, apiKey, apiFormat: "openai_responses" } : null;
+  }
   const section = readTomlSection(text, `[model_providers.${providerId}]`);
   if (!section) return null;
   const baseUrl = readTomlString(section, "base_url") || "";
-  const model = readTomlString(text, "model") || "";
   const wireApi = readTomlString(section, "wire_api") || "";
   const envKey = readTomlString(section, "env_key") || "";
   const apiKey = readTomlString(section, "experimental_bearer_token") || await readCodexEnvKeySecret(envKey, text, home);
@@ -187,14 +193,17 @@ async function readCodexConfigProviderSecret(providerId: string, codexHome?: str
 }
 
 async function readCodexEnvKeySecret(envKey: string, configText: string, codexHome?: string): Promise<string> {
-  if (!envKey) return "";
   const policyValue = readTomlString(readTomlSection(configText, "[shell_environment_policy.set]"), envKey);
   if (policyValue) return policyValue;
   const authText = await readOptionalFile(path.join(codexHome ?? path.join(os.homedir(), ".codex"), "auth.json"));
   try {
     const parsed = JSON.parse(authText) as Record<string, unknown>;
-    const value = parsed[envKey];
-    return typeof value === "string" ? value : "";
+    if (envKey) {
+      const value = parsed[envKey];
+      return typeof value === "string" ? value : "";
+    }
+    const fallback = parsed[OFFICIAL_CODEX_AUTH_ENV_KEY];
+    return typeof fallback === "string" ? fallback : "";
   } catch {
     return "";
   }

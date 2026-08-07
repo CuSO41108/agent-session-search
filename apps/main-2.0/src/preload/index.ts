@@ -9,6 +9,7 @@ import type { SessionBulkDeletePreview, SessionBulkDeleteRequest, SessionBulkDel
 import type { SshConfigHost } from "../core/ssh-config";
 import type { SessionContextComponents } from "../core/session-context-components";
 import type { SessionMarkdownExportOptions } from "../core/format-session";
+import type { V1ImportResult } from "../core/v1-import";
 import type {
   EnvironmentUpsertInput,
   LiveSessionSnapshot,
@@ -119,6 +120,7 @@ const api = {
   ...createOpenVikingMemoryApi(ipcRenderer),
   getSettings: (): Promise<AppSettings> => ipcRenderer.invoke("settings:get"),
   setSettings: (settings: AppSettingsUpdate): Promise<AppSettings> => ipcRenderer.invoke("settings:set", settings),
+  importV1Data: (): Promise<V1ImportResult> => ipcRenderer.invoke("v1-import:run"),
   ...createProvidersApi(ipcRenderer),
   ...createSkillsApi(ipcRenderer),
   ...createRulesApi(ipcRenderer),

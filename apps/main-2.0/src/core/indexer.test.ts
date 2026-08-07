@@ -870,6 +870,14 @@ describe("indexer", () => {
     await store.setCustomTitle(cached.session.sessionKey, "Remembered Cursor title");
     await store.setFavorited(cached.session.sessionKey, true);
     await store.addTag(cached.session.sessionKey, "cursor-work");
+    await store.upsertSessionSyncBinding({
+      localSessionKey: cached.session.sessionKey,
+      remoteSessionId: "cursor-remote",
+      lastLocalRevision: "local-revision",
+      lastRemoteRevision: "remote-revision",
+      lastSyncedAt: 123,
+      direction: "upload",
+    });
 
     try {
       await syncDefaultSessionsInBatches(store, {
@@ -892,6 +900,12 @@ describe("indexer", () => {
       });
       await expect(store.searchSessions({ query: "Cached Cursor prompt", limit: 10 })).resolves.toHaveLength(0);
       await expect(store.searchSessions({ query: "Current Cursor prompt", limit: 10 })).resolves.toHaveLength(1);
+      await expect(store.getSessionSyncBindingForLocalKey("cursor:repo-old:same-composer")).resolves.toBeNull();
+      await expect(store.getSessionSyncBindingForLocalKey("cursor:repo-new:same-composer")).resolves.toMatchObject({
+        remoteSessionId: "cursor-remote",
+        lastLocalRevision: "local-revision",
+        lastRemoteRevision: "remote-revision",
+      });
     } finally {
       await store.close();
       fs.rmSync(homeDir, { recursive: true, force: true });

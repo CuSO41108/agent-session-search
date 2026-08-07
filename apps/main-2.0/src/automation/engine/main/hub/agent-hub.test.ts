@@ -20,6 +20,8 @@ import { ClaudeInteractiveSession } from "../agents/claude/claude-interactive-se
 import { claudeRuntimeStateCodec } from "../agents/claude/claude-runtime-state-codec";
 import { codexRuntimeStateCodec } from "../agents/codex/codex-runtime-state-codec";
 import { writeNodeCliLauncher } from "../platform/test-cli-fixtures";
+import type { PersistedAppStateV5 } from "./persisted/agent-hub-persistence";
+import type { AgentHubPersistedStore } from "./persisted/persisted-store";
 
 const TEST_CODEX_AGENT_ID = "runtime-agent:codex-openai";
 
@@ -3677,6 +3679,103 @@ fs.writeFileSync(${JSON.stringify(argsPath)}, process.argv.slice(2).join("\\n") 
         events: [expect.objectContaining({ type: "meta", content: "鈫?shell_command\npwd" })],
       }),
     ]);
+  });
+
+  test("serializes a shutdown flush behind a failed in-flight persistence", async () => {
+    let rejectFirstSave: ((error: Error) => void) | undefined;
+    const firstSave = new Promise<void>((_resolve, reject) => {
+      rejectFirstSave = reject;
+    });
+    const save = vi.fn(async (payload: PersistedAppStateV5) => {
+      if (save.mock.calls.length === 1) await firstSave;
+      expect(payload.version).toBe(5);
+    });
+    const store: AgentHubPersistedStore = {
+      label: "test store",
+      load: async () => ({
+        version: 5,
+        activeChatId: null,
+        workDir: "",
+        sessions: [],
+        messages: [],
+        events: [],
+        tasks: [],
+        taskMessages: [],
+        taskEvents: [],
+        teams: [],
+        teamRuns: [],
+        channels: [],
+      } satisfies PersistedAppStateV5),
+      save,
+      close: () => undefined,
+    };
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const hub = new AgentHub();
+    await hub.loadPersistedState(store);
+
+    hub.setWorkDir("/tmp/first");
+    const firstFlush = hub.flushPersistence();
+    await vi.waitFor(() => expect(save).toHaveBeenCalledTimes(1));
+    hub.setWorkDir("/tmp/latest");
+    const shutdownFlush = hub.flushPersistence();
+    rejectFirstSave?.(new Error("connection stopped during save"));
+
+    await expect(firstFlush).resolves.toBeUndefined();
+    await expect(shutdownFlush).resolves.toBeUndefined();
+    expect(save).toHaveBeenCalledTimes(2);
+    expect(save.mock.calls[1]?.[0].workDir).toBe("/tmp/latest");
+    warn.mockRestore();
+  });
+
+  test("skips persistence errors that only signal store shutdown", async () => {
+    const save = vi.fn(async () => {
+      throw Object.assign(
+        new Error("terminating connection due to administrator command"),
+        { code: "57P01" },
+      );
+    });
+    const store: AgentHubPersistedStore = {
+      label: "test store",
+      load: async () => undefined,
+      save,
+      close: () => undefined,
+      isShutdownError: () => true,
+    };
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const hub = new AgentHub();
+    await hub.loadPersistedState(store);
+
+    await expect(hub.flushPersistence()).resolves.toBeUndefined();
+    await expect(hub.shutdown()).resolves.toBeUndefined();
+    expect(save).toHaveBeenCalled();
+    expect(warn).not.toHaveBeenCalledWith(
+      expect.stringContaining("Failed to persist app state"),
+      expect.anything(),
+    );
+    warn.mockRestore();
+  });
+
+  test("still reports persistence errors unrelated to shutdown", async () => {
+    const save = vi.fn(async () => {
+      throw new Error("disk full");
+    });
+    const store: AgentHubPersistedStore = {
+      label: "test store",
+      load: async () => undefined,
+      save,
+      close: () => undefined,
+      isShutdownError: () => false,
+    };
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const hub = new AgentHub();
+    await hub.loadPersistedState(store);
+
+    await expect(hub.flushPersistence()).resolves.toBeUndefined();
+    expect(warn).toHaveBeenCalledWith(
+      "Failed to persist app state to test store:",
+      expect.objectContaining({ message: "disk full" }),
+    );
+    warn.mockRestore();
   });
 
   test("discards persisted state when the file uses a legacy schema version", async () => {

@@ -17,6 +17,10 @@ import type {
   OpenVikingMemorySnapshot,
   OpenVikingRuntimeInstallPhase,
 } from "../../../../core/openviking-memory";
+import {
+  MAX_OPENVIKING_RECALL_TOKEN_BUDGET,
+  MIN_OPENVIKING_RECALL_TOKEN_BUDGET,
+} from "../../../../core/openviking-settings";
 import { localize, type LanguageMode } from "../../language";
 
 type ComponentAction = "runtime" | "model" | "start" | "stop" | null;
@@ -102,8 +106,8 @@ export function OpenVikingMemorySettings({
       <header className="settings-pane-head">
         <h3>{l("Directory memory", "目录记忆")}</h3>
         <p>{l(
-          "Give selected directories isolated long-term memory powered by a locally managed OpenViking service.",
-          "使用本机托管的 OpenViking，为你选定的目录提供彼此隔离的长期记忆。",
+          "Track future agent turns in selected directories and build isolated long-term memory with a locally managed OpenViking service.",
+          "使用本机托管的 OpenViking，增量跟踪选定目录中未来产生的 Agent 对话，并建立彼此隔离的长期记忆。",
         )}</p>
       </header>
 
@@ -111,8 +115,8 @@ export function OpenVikingMemorySettings({
         <div className="settings-field-text">
           <span className="settings-field-title">{l("Enable directory memory", "启用目录记忆")}</span>
           <span className="settings-field-sub">{l(
-            "Off by default. Enabling it does not select any directory or download a component automatically.",
-            "默认关闭。开启后也不会自动选择目录或下载组件。",
+            "Off by default. Historical sessions are not bulk-imported; use AgentRecall search and save only the context you choose to reuse.",
+            "默认关闭。历史会话不会批量导入；可通过 AgentRecall 搜索定位，并只保存你确认需要复用的内容。",
           )}</span>
         </div>
         <input
@@ -229,6 +233,26 @@ export function OpenVikingMemorySettings({
             "只有受管理目录内的事件会被处理；Hook 失败不会阻断 agent。",
           )}</p>
         </div>
+        <label className="settings-field openviking-recall-budget-field">
+          <div className="settings-field-text">
+            <span className="settings-field-title">{l("Automatic recall budget", "自动召回预算")}</span>
+            <span className="settings-field-description">{l(
+              "Limits injected memory by estimated model Tokens instead of characters.",
+              "按照模型 Token 估算限制自动注入，不再使用字符数预算。",
+            )}</span>
+          </div>
+          <input
+            type="number"
+            min={MIN_OPENVIKING_RECALL_TOKEN_BUDGET}
+            max={MAX_OPENVIKING_RECALL_TOKEN_BUDGET}
+            step={128}
+            value={settings?.openVikingRecallTokenBudget ?? 1_200}
+            disabled={!enabled || !settings || saving}
+            onChange={(event) => onSettingsChange({
+              openVikingRecallTokenBudget: Number(event.currentTarget.value),
+            })}
+          />
+        </label>
         <IntegrationToggle
           label="Claude Code"
           checked={Boolean(settings?.openVikingClaudeEnabled)}

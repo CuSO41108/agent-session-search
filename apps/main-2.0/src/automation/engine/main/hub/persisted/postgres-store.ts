@@ -125,6 +125,10 @@ export class PostgresAppStore implements AgentHubPersistedStore {
     // The application owns the shared PostgreSQL connection pool.
   }
 
+  isShutdownError(error: unknown): boolean {
+    return this.database.isClosedError(error);
+  }
+
   private async writeSetting(
     database: PostgresQueryable,
     key: string,
