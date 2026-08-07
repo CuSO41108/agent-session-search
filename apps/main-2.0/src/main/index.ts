@@ -180,6 +180,7 @@ import { SkillService, type SkillUsageHookSetup } from "./services/skill-service
 import { SessionCatalogService } from "./services/session-catalog-service";
 import { SessionCommandService } from "./services/session-command-service";
 import { RemoteSessionAccess } from "./services/remote-session-access";
+import { V1SessionImportService } from "./services/v1-session-import-service";
 import { bootstrapApplicationPaths } from "./app-path-bootstrap";
 import { startPostgresRuntime, type PostgresRuntime } from "./postgres/managed-postgres";
 import { WORKFLOW_PORTABLE_MAX_BYTES } from "../automation/engine/main/hub/workflow/workflow-portable-file";
@@ -398,6 +399,63 @@ function getSettings(): AppSettings {
     globalShortcut: normalizeGlobalShortcut(settings.globalShortcut),
     defaultTerminal: normalizeTerminal(settings.defaultTerminal),
   };
+}
+
+async function applySettingsUpdate(settings: AppSettingsUpdate): Promise<AppSettings> {
+  const previous = getSettings();
+  const next = mergeAppSettings(previous, settings);
+  const openVikingSettingsChanged = [
+    "openVikingMemoryEnabled",
+    "openVikingClaudeEnabled",
+    "openVikingCodexEnabled",
+    "openVikingOpenCodeEnabled",
+    "openVikingRecallTokenBudget",
+  ].some((key) => key in settings);
+  const openVikingExtractionChanged = openVikingExtractionSettingsChanged(settings);
+  if (next.globalShortcut !== previous.globalShortcut && !registerAppGlobalShortcut(next.globalShortcut)) {
+    throw new Error(
+      `Shortcut ${globalShortcutLabel(next.globalShortcut)} could not be registered. It may be used by another app.`,
+    );
+  }
+  if ("remoteSyncEnabled" in settings && !next.remoteSyncEnabled) {
+    remoteSessionService.disableSync();
+  }
+  if ("evalEnabled" in settings && next.evalEnabled && !previous.evalEnabled) {
+    try {
+      if (skillService.getUsageHookStatus()) {
+        skillService.uninstallUsageHook();
+        skillService.installUsageHook();
+      }
+    } catch (error) {
+      console.error(`Failed to refresh the skill usage hook for Eval: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  await providerService.persistKeysFromUpdate(settings, next);
+  settingsStore.set(providerService.removeStoredKeys(next));
+  if (openVikingSettingsChanged) {
+    reconcileOpenVikingMemoryHooks(next);
+    if (!next.openVikingMemoryEnabled) await openVikingControlService?.stopRuntime().catch((error) => {
+      console.error(
+        `Failed to stop OpenViking after Memory was disabled: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    });
+    await refreshOpenVikingHookManifest();
+    if (!openVikingExtractionChanged) await startConfiguredOpenVikingRuntime(next);
+  }
+  if (openVikingControlService && openVikingExtractionChanged) {
+    const snapshot = await openVikingControlService.snapshot();
+    await restartOpenVikingForExtractionSettings({
+      update: settings,
+      enabled: Object.values(openVikingIntegrations(next)).some(Boolean),
+      runtimeState: snapshot.runtime.state,
+      stop: () => openVikingControlService!.stopRuntime(),
+      start: () => startConfiguredOpenVikingRuntime(next),
+    });
+  }
+  if ("autoCheckUpdates" in settings) await appUpdateService.setAutoCheckEnabled(next.autoCheckUpdates);
+  await pruneDisabledOptionalSources(next);
+  if ("showInDock" in settings) applyDockVisibility(next.showInDock);
+  return providerService.addStoredKeys(next);
 }
 
 function bundledAutomationWorkflowsPath(): string {
@@ -2481,65 +2539,18 @@ function registerIpc(): void {
   });
   ipcMain.handle("settings:get", () => providerService.hydrateSettings());
   registerProvidersIpc(ipcMain, providerService);
-  ipcMain.handle("settings:set", async (_event, settings: AppSettingsUpdate) => {
-    const previous = getSettings();
-    const next = mergeAppSettings(previous, settings);
-    const openVikingSettingsChanged = [
-      "openVikingMemoryEnabled",
-      "openVikingClaudeEnabled",
-      "openVikingCodexEnabled",
-      "openVikingOpenCodeEnabled",
-      "openVikingRecallTokenBudget",
-    ].some((key) => key in settings);
-    const openVikingExtractionChanged = openVikingExtractionSettingsChanged(settings);
-    if (next.globalShortcut !== previous.globalShortcut && !registerAppGlobalShortcut(next.globalShortcut)) {
-      throw new Error(
-        `Shortcut ${globalShortcutLabel(next.globalShortcut)} could not be registered. It may be used by another app.`,
-      );
-    }
-    if ("remoteSyncEnabled" in settings && !next.remoteSyncEnabled) {
-      remoteSessionService.disableSync();
-    }
-    // Enabling Eval re-installs an already-present usage hook so the active
-    // script is this app's copy, which captures the session linkage fields.
-    // Install alone reports "already" for any script with the same basename
-    // (e.g. the V1 copy), so remove our hook entry first, then re-add it.
-    if ("evalEnabled" in settings && next.evalEnabled && !previous.evalEnabled) {
-      try {
-        if (skillService.getUsageHookStatus()) {
-          skillService.uninstallUsageHook();
-          skillService.installUsageHook();
-        }
-      } catch (error) {
-        console.error(`Failed to refresh the skill usage hook for Eval: ${error instanceof Error ? error.message : String(error)}`);
-      }
-    }
-    await providerService.persistKeysFromUpdate(settings, next);
-    settingsStore.set(providerService.removeStoredKeys(next));
-    if (openVikingSettingsChanged) {
-      reconcileOpenVikingMemoryHooks(next);
-      if (!next.openVikingMemoryEnabled) await openVikingControlService?.stopRuntime().catch((error) => {
-        console.error(
-          `Failed to stop OpenViking after Memory was disabled: ${error instanceof Error ? error.message : String(error)}`,
-        );
-      });
-      await refreshOpenVikingHookManifest();
-      if (!openVikingExtractionChanged) await startConfiguredOpenVikingRuntime(next);
-    }
-    if (openVikingControlService && openVikingExtractionChanged) {
-      const snapshot = await openVikingControlService.snapshot();
-      await restartOpenVikingForExtractionSettings({
-        update: settings,
-        enabled: Object.values(openVikingIntegrations(next)).some(Boolean),
-        runtimeState: snapshot.runtime.state,
-        stop: () => openVikingControlService!.stopRuntime(),
-        start: () => startConfiguredOpenVikingRuntime(next),
-      });
-    }
-    if ("autoCheckUpdates" in settings) await appUpdateService.setAutoCheckEnabled(next.autoCheckUpdates);
-    await pruneDisabledOptionalSources(next);
-    if ("showInDock" in settings) applyDockVisibility(next.showInDock);
-    return providerService.addStoredKeys(next);
+  ipcMain.handle("settings:set", (_event, settings: AppSettingsUpdate) => applySettingsUpdate(settings));
+  ipcMain.handle("v1-import:run", async () => {
+    const result = await new V1SessionImportService({
+      store,
+      appDataPath: app.getPath("appData"),
+      v2UserDataPath: app.getPath("userData"),
+      applySettings: async (update) => {
+        await applySettingsUpdate(update);
+      },
+    }).importData();
+    emitEnvironmentsUpdated();
+    return result;
   });
   registerSkillsIpc(ipcMain, skillService);
   registerRulesIpc(ipcMain, createRulesSyncService());

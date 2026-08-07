@@ -35,6 +35,7 @@ import type { AppSettings, AppSettingsUpdate } from "../../../../core/platform";
 import type { AgentChannel } from "../../../../automation/contracts";
 import type { RemoteHealthReport } from "../../../../core/remote-health";
 import type { SessionSyncHookStatus } from "../../../../core/session-sync-queue";
+import type { V1ImportResult } from "../../../../core/v1-import";
 import { globalShortcutOptions } from "../../../../core/shortcuts";
 import { terminalSelectOptions } from "../../../../core/terminal-options";
 import type { SessionEnvironment } from "../../../../core/types";
@@ -59,6 +60,7 @@ export type SettingsSection =
   | "shortcut"
   | "connections"
   | "sources"
+  | "import"
   | "usage"
   | "ai"
   | "memory"
@@ -143,6 +145,7 @@ export function SettingsDialog({
   onDeleteEnvironment,
   onAddSsh,
   onAddWsl,
+  onImportV1,
   onOpenApiConfig,
   onOpenRemoteSessions,
   onClose,
@@ -177,6 +180,7 @@ export function SettingsDialog({
   onDeleteEnvironment: (environment: SessionEnvironment) => void;
   onAddSsh: () => void;
   onAddWsl?: () => void;
+  onImportV1: () => Promise<V1ImportResult>;
   onOpenApiConfig: () => void;
   onOpenRemoteSessions: () => void;
   onClose: () => void;
@@ -211,6 +215,11 @@ export function SettingsDialog({
   const [mcpBusy, setMcpBusy] = useState(false);
   const [workflowMcpEnabled, setWorkflowMcpEnabled] = useState<boolean | null>(null);
   const [workflowMcpBusy, setWorkflowMcpBusy] = useState(false);
+  const [v1ImportState, setV1ImportState] = useState<{
+    running: boolean;
+    kind: "success" | "error" | null;
+    message: string | null;
+  }>({ running: false, kind: null, message: null });
 
   useEffect(() => {
     void window.sessionSearch
@@ -242,6 +251,27 @@ export function SettingsDialog({
       // Leave the previous state; the toggle simply won't flip.
     } finally {
       setWorkflowMcpBusy(false);
+    }
+  }
+
+  async function importV1Data(): Promise<void> {
+    setV1ImportState({ running: true, kind: null, message: l("Importing V1 data...", "正在导入 V1 数据...") });
+    try {
+      const result = await onImportV1();
+      const imported = l(
+        `Imported ${result.importedSessions} cached sessions; kept ${result.skippedSessions} existing V2 sessions.`,
+        `已导入 ${result.importedSessions} 个缓存会话，保留 ${result.skippedSessions} 个已有 V2 会话。`,
+      );
+      const extras = l(
+        ` Session settings, ${result.importedEnvironments} connections, and ${result.importedSyncBindings} cloud bindings were migrated.`,
+        ` 同时迁移了会话设置、${result.importedEnvironments} 个连接和 ${result.importedSyncBindings} 个云端同步关系。`,
+      );
+      const failures = result.failedSessions > 0
+        ? l(` ${result.failedSessions} sessions failed.`, ` ${result.failedSessions} 个会话导入失败。`)
+        : "";
+      setV1ImportState({ running: false, kind: result.failedSessions > 0 ? "error" : "success", message: imported + extras + failures });
+    } catch (error) {
+      setV1ImportState({ running: false, kind: "error", message: error instanceof Error ? error.message : String(error) });
     }
   }
 
@@ -344,6 +374,10 @@ export function SettingsDialog({
             <button className={activeSection === "sources" ? "active" : ""} onClick={() => setActiveSection("sources")}>
               <Folder size={15} />
               <span>{l("Optional sources", "可选来源")}</span>
+            </button>
+            <button className={activeSection === "import" ? "active" : ""} onClick={() => setActiveSection("import")}>
+              <Download size={15} />
+              <span>{l("Import V1 data", "导入 V1 数据")}</span>
             </button>
             <button className={activeSection === "usage" ? "active" : ""} onClick={() => setActiveSection("usage")}>
               <Gauge size={15} />
@@ -716,6 +750,40 @@ export function SettingsDialog({
                     onChange={(event) => onSettingsChange({ includeQoder: event.currentTarget.checked })}
                   />
                 </label>
+              </section>
+            ) : null}
+            {activeSection === "import" ? (
+              <section className="settings-pane">
+                <header className="settings-pane-head">
+                  <h3>{l("Import from AgentRecall V1", "从 AgentRecall V1 导入")}</h3>
+                  <p>{l(
+                    "Bring V1 session settings, connections, cached conversations, user labels, and cloud sync bindings into V2.",
+                    "将 V1 的会话设置、连接、缓存对话、用户标记和云端同步关系迁移到 V2。",
+                  )}</p>
+                </header>
+                <div className="v1-import-card">
+                  <div className="v1-import-copy">
+                    <strong>{l("Merge safely into V2", "安全合并到 V2")}</strong>
+                    <span>{l(
+                      "Existing V2 conversations and their labels are kept. Session-related settings are updated from V1; saved passwords are not copied.",
+                      "已有 V2 会话及其标记会被保留；会话相关设置会按 V1 更新，已保存的密码不会复制。",
+                    )}</span>
+                  </div>
+                  <button
+                    type="button"
+                    className="settings-action-button v1-import-button"
+                    disabled={v1ImportState.running}
+                    onClick={() => void importV1Data()}
+                  >
+                    {v1ImportState.running ? <RefreshCw size={14} className="spin" /> : <Download size={14} />}
+                    {v1ImportState.running ? l("Importing...", "正在导入...") : l("Import V1 data", "一键导入 V1 数据")}
+                  </button>
+                </div>
+                {v1ImportState.message ? (
+                  <div className={`v1-import-result ${v1ImportState.kind ?? ""}`} role="status" aria-live="polite">
+                    {v1ImportState.message}
+                  </div>
+                ) : null}
               </section>
             ) : null}
             {activeSection === "usage" ? (
