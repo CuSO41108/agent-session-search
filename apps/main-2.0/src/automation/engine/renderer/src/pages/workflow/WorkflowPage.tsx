@@ -1,5 +1,5 @@
 import { memo, useEffect, useRef, useState, type MouseEvent, type ReactElement } from "react";
-import { Bot, CheckCircle2, CircleStop, FileInput, GitBranch, History, Maximize2, Pencil, Play, RefreshCw, Send, ShieldAlert, Wand2, X } from "lucide-react";
+import { Bot, CheckCircle2, CircleStop, FileInput, FolderOpen, GitBranch, History, Maximize2, Pencil, Play, RefreshCw, Send, ShieldAlert, Wand2, X } from "lucide-react";
 import { DEFAULT_MODEL_ID } from "../../../../shared/models";
 import { WORKFLOW_TOTAL_QUESTION_COUNT } from "../../../../shared/workflow-agent";
 import { validateWorkflowV2Definition } from "../../../../shared/workflow-v2/validation";
@@ -385,7 +385,8 @@ export function WorkflowPage({ controller: source }: { controller: WorkflowContr
               disabled={running}
               title={workDir || workflowText.noWorkDir}
             >
-              {workDir || workflowText.noWorkDir}
+              <FolderOpen size={13} />
+              <span>{workDir || workflowText.noWorkDir}</span>
             </button>
           </div>
         </div>
@@ -588,25 +589,35 @@ export function WorkflowPage({ controller: source }: { controller: WorkflowContr
       {revisionEditorNodeId && onReviseRun ? <WorkflowRevisionDialog nodeId={revisionEditorNodeId} definition={definition} onRevise={onReviseRun} onClose={() => setRevisionEditorNodeId(undefined)} /> : null}
       {draftEditorOpen && onUpdateDefinition ? <WorkflowDraftEditorDialog definition={definition} configuredAgents={configuredAgents} onSave={onUpdateDefinition} onClose={() => setDraftEditorOpen(false)} /> : null}
 
-      {openNodeGraphNode ? <WorkflowNodeSurface
-        node={openNodeGraphNode}
-        editable={canEditDefinition}
-        onUpdateNode={(update) => source.onUpdateNode(openNodeGraphNode.id, update)}
-        {...(openNodeConversation ? { conversation: openNodeConversation } : {})}
-        {...(openNodeTask ? { task: openNodeTask } : {})}
-        sessions={nodeAgentSessions}
-        {...(openNodeId ? { selectedNodeId: openNodeId } : {})}
-        {...(openNodeProgress ? { progress: openNodeProgress } : {})}
-        {...(onSubmitScriptInput && openNodeId ? { onSubmitScriptInput: (values: Record<string, unknown>) => onSubmitScriptInput(openNodeId, values) } : {})}
-        {...(onResolveIntervention && openNodeId ? { onResolveScriptApproval: (action: "approve_once" | "reject") => onResolveIntervention(openNodeId, action) } : {})}
-        onSelectNode={setOpenNodeId}
-        onClose={() => { dismissedNodeSurfaceRunIdRef.current = activeRunId; setOpenNodeId(undefined); }}
-        {...(onSendNodeMessage && openNodeConversation ? { onSend: (message: string) => onSendNodeMessage(openNodeConversation.conversationId, message) } : {})}
-        {...(onCompleteNodeConversation && openNodeConversation ? { onConfirm: () => onCompleteNodeConversation(openNodeConversation.conversationId) } : {})}
-        {...(onRejectNodeCompletion && openNodeConversation ? { onReject: (instruction: string) => onRejectNodeCompletion(openNodeConversation.conversationId, instruction) } : {})}
-        {...(onInterruptNodeConversation && openNodeConversation ? { onInterrupt: () => onInterruptNodeConversation(openNodeConversation.conversationId) } : {})}
-        {...(source.onResolveRuntimeApproval ? { onResolveRuntimeApproval: source.onResolveRuntimeApproval } : {})}
-      /> : null}
+      {openNodeGraphNode ? (() => {
+        const resolvedAgentId = openNodeGraphNode.execModel === "llm" ? openNodeGraphNode.configuredAgentId ?? "" : "";
+        const resolvedAgentConfig = configuredAgentById(resolvedAgentId, configuredAgents);
+        const resolvedAgentLabel = resolvedAgentConfig?.name || resolvedAgentId || undefined;
+        const resolvedModelLabel = openNodeGraphNode.execModel === "llm"
+          ? openNodeGraphNode.modelId ?? resolvedAgentConfig?.modelId ?? undefined
+          : undefined;
+        return <WorkflowNodeSurface
+          node={openNodeGraphNode}
+          editable={canEditDefinition}
+          onUpdateNode={(update) => source.onUpdateNode(openNodeGraphNode.id, update)}
+          agentLabel={resolvedAgentLabel}
+          modelLabel={resolvedModelLabel}
+          {...(openNodeConversation ? { conversation: openNodeConversation } : {})}
+          {...(openNodeTask ? { task: openNodeTask } : {})}
+          sessions={nodeAgentSessions}
+          {...(openNodeId ? { selectedNodeId: openNodeId } : {})}
+          {...(openNodeProgress ? { progress: openNodeProgress } : {})}
+          {...(onSubmitScriptInput && openNodeId ? { onSubmitScriptInput: (values: Record<string, unknown>) => onSubmitScriptInput(openNodeId, values) } : {})}
+          {...(onResolveIntervention && openNodeId ? { onResolveScriptApproval: (action: "approve_once" | "reject") => onResolveIntervention(openNodeId, action) } : {})}
+          onSelectNode={setOpenNodeId}
+          onClose={() => { dismissedNodeSurfaceRunIdRef.current = activeRunId; setOpenNodeId(undefined); }}
+          {...(onSendNodeMessage && openNodeConversation ? { onSend: (message: string) => onSendNodeMessage(openNodeConversation.conversationId, message) } : {})}
+          {...(onCompleteNodeConversation && openNodeConversation ? { onConfirm: () => onCompleteNodeConversation(openNodeConversation.conversationId) } : {})}
+          {...(onRejectNodeCompletion && openNodeConversation ? { onReject: (instruction: string) => onRejectNodeCompletion(openNodeConversation.conversationId, instruction) } : {})}
+          {...(onInterruptNodeConversation && openNodeConversation ? { onInterrupt: () => onInterruptNodeConversation(openNodeConversation.conversationId) } : {})}
+          {...(source.onResolveRuntimeApproval ? { onResolveRuntimeApproval: source.onResolveRuntimeApproval } : {})}
+        />;
+      })() : null}
 
       {!runOwnsInput && !topologyLocked ? <section className="composer workflow-composer">
         <div className="composer-box">
