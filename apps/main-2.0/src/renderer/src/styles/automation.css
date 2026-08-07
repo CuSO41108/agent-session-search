@@ -1670,10 +1670,16 @@
 }
 
 .workflow-node-agent-tabs {
-  display: flex;
-  gap: 4px;
-  padding: 8px 18px 0;
-  border-bottom: 1px solid var(--border);
+  display: inline-flex;
+  align-items: center;
+  justify-self: start;
+  width: fit-content;
+  height: auto;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 7px;
+  background: var(--panel-subtle);
 }
 
 .workflow-node-agent-main {
@@ -1687,21 +1693,29 @@
   min-height: 0;
 }
 
+.workflow-node-agent-main > header > div {
+  flex: 1 1 auto;
+}
+
 .workflow-node-agent-tabs button {
   display: inline-flex;
   align-items: center;
   gap: 7px;
-  padding: 8px 10px;
+  min-height: 0;
+  padding: 4px 7px;
   border: 0;
-  border-bottom: 2px solid transparent;
+  border-radius: 5px;
   background: transparent;
   color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1.2;
   cursor: pointer;
 }
 
 .workflow-node-agent-tabs button.is-active {
-  border-bottom-color: var(--accent);
+  background: var(--panel-bg);
   color: var(--text);
+  box-shadow: 0 1px 2px color-mix(in srgb, var(--bg) 32%, transparent);
 }
 
 .workflow-node-agent-tabs button.needs-attention span {
@@ -1710,6 +1724,48 @@
 
 .workflow-node-agent-tabs button span {
   font-size: 11px;
+}
+
+.workflow-node-prompt-editor {
+  align-self: flex-start;
+  width: min(440px, calc(100% - 36px));
+  height: auto;
+  gap: 7px;
+  margin: 10px 18px 0;
+  padding: 9px 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+}
+
+.workflow-node-prompt-editor pre {
+  max-height: 96px;
+  padding: 7px 9px;
+  border-radius: 7px;
+  font-size: 10px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.workflow-node-prompt-editor textarea {
+  min-height: 96px;
+  padding: 8px 9px;
+  border-radius: 7px;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.workflow-node-prompt-editor > .control-btn,
+.workflow-node-prompt-editor .workflow-node-editor-actions .control-btn,
+.workflow-node-prompt-editor .workflow-node-editor-actions .send-btn {
+  min-height: 26px;
+  height: auto;
+  padding: 4px 8px;
+  font-size: 11px;
+  line-height: 1.2;
+}
+
+.workflow-node-editor-actions {
+  gap: 5px;
 }
 
 .workflow-node-review-attempt {

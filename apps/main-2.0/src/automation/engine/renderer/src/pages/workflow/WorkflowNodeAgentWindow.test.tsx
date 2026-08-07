@@ -38,5 +38,20 @@ describe("WorkflowNodeAgentWindow Review Gate pane", () => {
     expect(html).toContain("Approval required");
     expect(html).toContain("Approve once");
     expect(html).toContain("Reject");
+    expect(html.indexOf("Research")).toBeLessThan(html.indexOf('aria-label="Node activity"'));
+    expect(html.indexOf('aria-label="Node activity"')).toBeLessThan(html.indexOf("Approve once"));
+  });
+
+  test("keeps the editable Agent prompt compact", () => {
+    const html = renderToStaticMarkup(<WorkflowNodeAgentWindow
+      nodeTitle="Research"
+      prompt="Research the supplied question."
+      editable
+      onSavePrompt={() => undefined}
+      onClose={() => undefined}
+    />);
+
+    expect(html).toContain('class="workflow-node-prompt-editor"');
+    expect(html).toContain("Edit prompt");
   });
 });
