@@ -301,22 +301,24 @@
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 2px 8px;
   padding: 8px 9px;
-  border-color: transparent;
+  border: 1px solid transparent;
   border-radius: 8px;
   background: transparent;
+  cursor: pointer;
 }
 
 .workflow-history-card.is-official {
+  border-color: color-mix(in srgb, var(--line) 60%, transparent);
   background: color-mix(in srgb, var(--panel) 72%, transparent);
 }
 
 .workflow-history-card:hover {
-  border-color: transparent;
+  border-color: var(--line);
   background: var(--hover);
 }
 
 .workflow-history-card.is-active {
-  border-color: transparent;
+  border-color: var(--accent-line);
   background: var(--accent-soft);
 }
 
@@ -330,7 +332,7 @@
 .workflow-history-card-title strong {
   min-width: 0;
   font-size: 12.5px;
-  font-weight: 500;
+  font-weight: 620;
 }
 
 .workflow-official-badge {
@@ -671,25 +673,41 @@
 }
 
 .workflow-workdir-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
   max-width: 340px;
   overflow: hidden;
-  padding: 0;
-  border: 0;
-  background: none;
-  color: inherit;
+  padding: 3px 9px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--panel) 80%, transparent);
+  color: var(--muted);
   font: inherit;
+  font-size: 11px;
   text-overflow: ellipsis;
   white-space: nowrap;
   cursor: pointer;
-  text-decoration: underline dotted transparent;
+}
+
+.workflow-workdir-button svg {
+  flex: 0 0 auto;
+}
+
+.workflow-workdir-button span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .workflow-workdir-button:hover:not(:disabled) {
+  border-color: var(--accent-line);
+  background: var(--panel);
   color: var(--text);
-  text-decoration-color: currentColor;
 }
 
 .workflow-workdir-button:disabled {
+  opacity: .6;
   cursor: default;
 }
 
