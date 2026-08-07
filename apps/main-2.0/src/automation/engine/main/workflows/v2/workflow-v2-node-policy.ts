@@ -50,18 +50,19 @@ export function workflowV2ReviewerPolicy(
   review: boolean | WorkflowV2ReviewGate | undefined,
   forceIndependentReview = false,
 ): Record<string, unknown> {
-  const gate = typeof review === "object" ? review : undefined;
-  const reviewEnabled = gate !== undefined || review === true;
+  const reviewEligible = node.execModel === "llm";
+  const gate = reviewEligible && typeof review === "object" ? review : undefined;
+  const reviewEnabled = reviewEligible && (gate !== undefined || review === true);
   return {
     reviewEnabled,
     ...(gate ? { gate: structuredClone(gate) } : {}),
-    judgeDimensions: gate?.judgeDimensions ?? node.judgeDimensions ?? [],
-    reviewLevel: gate?.reviewLevel ?? node.reviewLevel ?? "none",
-    reviewMaxRetries: gate?.maxQualityRetries ?? node.reviewMaxRetries ?? 2,
+    judgeDimensions: reviewEligible ? gate?.judgeDimensions ?? node.judgeDimensions ?? [] : [],
+    reviewLevel: reviewEligible ? gate?.reviewLevel ?? node.reviewLevel ?? "none" : "none",
+    reviewMaxRetries: reviewEligible ? gate?.maxQualityRetries ?? node.reviewMaxRetries ?? 2 : 0,
     requiresIndependentReview: reviewEnabled && node.role !== "reviewer"
       && (gate !== undefined || (node.reviewLevel !== undefined && node.reviewLevel !== "none"
         && (forceIndependentReview || (node.judgeDimensions?.length ?? 0) > 0))),
-    forceIndependentReview,
+    forceIndependentReview: reviewEligible && forceIndependentReview,
   };
 }
 

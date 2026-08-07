@@ -16,6 +16,7 @@ describe("official Workflow Review configuration", () => {
     expect(validateWorkflowV2Definition(bundled.definition)).toMatchObject({ valid: true, errors: [] });
     const reviewedNodes = bundled.definition.nodes.filter((node) => node.reviewLevel && node.reviewLevel !== "none");
     expect(reviewedNodes.length).toBeGreaterThan(0);
+    expect(reviewedNodes.every((node) => node.execModel === "llm")).toBe(true);
     expect(reviewedNodes.every((node) => node.judgeDimensions?.length && node.reviewMaxRetries === 2)).toBe(true);
     if (name === "code-change-review") {
       const collectChanges = bundled.definition.nodes.find((node) => node.id === "collect_changes" && node.execModel === "script");
@@ -24,6 +25,9 @@ describe("official Workflow Review configuration", () => {
       expect(collectChanges?.script?.effectMode).toBe("workspace_only");
       expect(collectChanges?.script?.capabilities).toEqual(expect.arrayContaining(["workspace_read", "process_spawn", "shell_execute"]));
       expect(collectChanges?.script?.executable.kind === "inline" ? collectChanges.script.executable.code : "").toContain("StringDecoder");
+      expect(collectChanges).not.toHaveProperty("reviewLevel");
+      expect(collectChanges).not.toHaveProperty("reviewMaxRetries");
+      expect(collectChanges).not.toHaveProperty("judgeDimensions");
     }
   });
 });

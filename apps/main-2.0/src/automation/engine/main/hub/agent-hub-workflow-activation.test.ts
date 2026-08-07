@@ -6,6 +6,32 @@ import { createStrictWorkflowTransactionPolicy } from "../../shared/workflow-v2/
 const TEST_AGENT_ID = "runtime-agent:codex-openai";
 
 describe("AgentHub workflow materialization", () => {
+  test("rejects locked topology changes sent through the draft patch endpoint", () => {
+    const hub = new AgentHub();
+    hub.ensureBundledWorkflows([{
+      workflowId: "bundled-patch-test",
+      title: "Bundled patch test",
+      objective: "Keep the official topology locked",
+      definition: {
+        workflowId: "bundled-patch-test",
+        graphVersion: 1,
+        objective: "Keep the official topology locked",
+        nodes: [{ id: "answer", kind: "answer", title: "Answer", execModel: "llm", executionMode: "one-shot", prompt: "Answer.", outputFields: [{ key: "answer", required: true }] }],
+        edges: [],
+      },
+    }]);
+    const before = hub.snapshot().workflowStore.workflows.find((workflow) => workflow.workflowId === "bundled-patch-test")!;
+    const changedDefinition = structuredClone(before.definition);
+    changedDefinition.nodes[0]!.title = "Changed through patch";
+
+    hub.patchWorkflowDraft({ workflowId: before.workflowId, definition: changedDefinition });
+
+    const after = hub.snapshot().workflowStore.workflows.find((workflow) => workflow.workflowId === before.workflowId)!;
+    expect(after.definition).toEqual(before.definition);
+    expect(after.revision).toBe(before.revision);
+    expect(after.error).toBe("Official workflow topology is locked.");
+  });
+
   test("seeds bundled workflows as locked official workflows", () => {
     const hub = new AgentHub();
     hub.ensureBundledWorkflows([{
@@ -322,6 +348,52 @@ describe("AgentHub workflow materialization", () => {
     expect(hub.snapshot().workflowDraft?.runContextDocument).toBe("");
     expect(hub.snapshot().workflowDraft?.confirmedRevision).toBeUndefined();
     expect(hub.snapshot().workflowDraft?.workflowV2Plan).toBeUndefined();
+  });
+
+  test("removes legacy Review criticality from script nodes during workflow updates", () => {
+    const hub = new AgentHub();
+    const workflowId = hub.createWorkflowDraft().workflowDraft!.workflowId;
+    const materialized = hub.materializeWorkflowDraft(workflowId, {
+      title: "Transform",
+      objective: "Transform deterministically",
+      definition: {
+        workflowId,
+        graphVersion: 1,
+        objective: "Transform deterministically",
+        nodes: [{
+          id: "transform",
+          kind: "transform",
+          title: "Transform",
+          execModel: "script",
+          executionMode: "script",
+          script: createWorkflowV2InlineScriptSpec({ language: "typescript", code: "return { result: 'done' };" }),
+          outputFields: [{ key: "result", required: true }],
+        }],
+        edges: [],
+      },
+    });
+    const revisionBeforeUpdate = hub.snapshot().workflowDraft!.revision;
+    const definition = structuredClone(hub.snapshot().workflowDraft!.definition);
+    definition.nodes[0] = {
+      ...definition.nodes[0]!,
+      reviewLevel: "high",
+      reviewMaxRetries: 2,
+      judgeDimensions: [{ key: "quality", description: "Legacy script review must be ignored." }],
+    };
+
+    const result = hub.updateWorkflow({ workflowId, expectedRevision: materialized.revision, definition });
+
+    expect(result).toMatchObject({ ok: true, revision: revisionBeforeUpdate });
+    expect(hub.snapshot().workflowDraft?.definition.nodes[0]).not.toHaveProperty("reviewLevel");
+    expect(hub.snapshot().workflowDraft?.definition.nodes[0]).not.toHaveProperty("reviewMaxRetries");
+    expect(hub.snapshot().workflowDraft?.definition.nodes[0]).not.toHaveProperty("judgeDimensions");
+    expect(hub.snapshot().workflowDraft?.definition.reviewGates).toEqual([]);
+
+    hub.patchWorkflowDraft({ workflowId, definition });
+    expect(hub.snapshot().workflowDraft?.definition.nodes[0]).not.toHaveProperty("reviewLevel");
+    expect(hub.snapshot().workflowDraft?.definition.nodes[0]).not.toHaveProperty("reviewMaxRetries");
+    expect(hub.snapshot().workflowDraft?.definition.nodes[0]).not.toHaveProperty("judgeDimensions");
+    expect(hub.snapshot().workflowDraft?.definition.reviewGates).toEqual([]);
   });
 
   test("persists an explicit Manager Agent route on every generated LLM node", () => {

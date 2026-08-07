@@ -497,6 +497,7 @@ function appendReviewGateValidationErrors(definition: WorkflowV2Definition, erro
     else targetNodeIds.add(targetNodeId);
     const targetNode = nodeById.get(targetNodeId);
     if (!targetNode && targetNodeId) errors.push(`Workflow V2 Review Gate ${gateId} references missing node ${targetNodeId}.`);
+    if (targetNode?.execModel === "script") errors.push(`Workflow V2 Review Gate ${gateId} cannot target script node ${targetNodeId}.`);
     if (targetNode?.role === "reviewer") errors.push(`Workflow V2 Review Gate ${gateId} cannot target reviewer node ${targetNodeId}.`);
     if (typeof gate.configuredAgentId !== "string" || !gate.configuredAgentId.trim()) errors.push(`Workflow V2 Review Gate ${gateId} requires configuredAgentId.`);
     else if (gate.configuredAgentId !== gate.configuredAgentId.trim()) errors.push(`Workflow V2 Review Gate ${gateId} configuredAgentId must not contain surrounding whitespace.`);
@@ -513,12 +514,6 @@ function appendReviewGateValidationErrors(definition: WorkflowV2Definition, erro
     }
     if (gate.requiredTools !== undefined && (!Array.isArray(gate.requiredTools) || gate.requiredTools.some((tool) => typeof tool !== "string" || !tool.trim() || tool !== tool.trim()) || new Set(gate.requiredTools.map((tool) => typeof tool === "string" ? tool.trim() : tool)).size !== gate.requiredTools.length)) errors.push(`Workflow V2 Review Gate ${gateId} requiredTools must contain unique non-empty tool names.`);
     if (targetNode?.execModel === "llm" && targetNode.configuredAgentId === gate.configuredAgentId) warnings.push(`Workflow V2 Review Gate ${gateId} uses the same Agent as target node ${targetNodeId}; review independence is reduced.`);
-    if (targetNode?.execModel === "script") {
-      const effectMode = targetNode.script.effectMode ?? "pure";
-      if (effectMode === "workspace_only" && definition.transactionPolicy?.defaultMode === "direct") errors.push(`Workflow V2 Review Gate ${gateId} requires a staged transaction for workspace-writing node ${targetNodeId}.`);
-      if (effectMode === "brokered_external" && !targetNode.script.compensationAdapter) errors.push(`Workflow V2 Review Gate ${gateId} cannot review external-writing node ${targetNodeId} without a compensationAdapter.`);
-      if (targetNode.script.idempotency === "non_idempotent" && !targetNode.script.compensationAdapter) errors.push(`Workflow V2 Review Gate ${gateId} cannot retry non-idempotent node ${targetNodeId} without a compensationAdapter.`);
-    }
   }
 }
 

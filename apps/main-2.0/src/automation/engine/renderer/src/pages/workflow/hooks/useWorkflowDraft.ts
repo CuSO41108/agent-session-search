@@ -162,24 +162,6 @@ export function useWorkflowDraft({
     setSnapshot(next);
   }, [resetWorkflowLocalDraft, setSnapshot, snapshotRef, workflows]);
 
-  const buildWorkflowDefinition = useCallback(async (objectiveOverride?: string): Promise<void> => {
-    const workflow = await ensureActiveWorkflow();
-    if (!workflow) return;
-    const objective = (objectiveOverride ?? workflowObjectiveInput).trim();
-    const definition = { ...structuredClone(workflow.definition), objective };
-    const next = await workflows.patchDraft({
-      workflowId: workflow.workflowId,
-      title: workflow.title || objective || "Untitled workflow",
-      objective,
-      definition,
-      error: null,
-      resetRunState: true,
-      runtimeConversation: null,
-      finalReport: null,
-    });
-    setSnapshot(next);
-  }, [ensureActiveWorkflow, setSnapshot, workflowObjectiveInput, workflows]);
-
   const sendWorkflowReply = useCallback(async (textOverride?: string): Promise<void> => {
     const workflow = await ensureActiveWorkflow();
     if (!workflow) return;
@@ -208,6 +190,15 @@ export function useWorkflowDraft({
       if (requestTokenRef.current === requestToken) setWorkflowGrillBusy(false);
     }
   }, [ensureActiveWorkflow, setSnapshot, workflowGrillBusy, workflowObjectiveInput, workflowReplyInput, workflows]);
+
+  const buildWorkflowDefinition = useCallback(async (additionalContext?: string): Promise<void> => {
+    const context = additionalContext?.trim();
+    const request = [
+      ...(context ? [`补充信息：${context}`] : []),
+      "现有信息已经足够。请立即基于本次 Workflow 的目标和完整对话上下文生成完整、可执行的工作流；必须调用 workflow_create，用当前 workflowId 提交完整定义。不要继续提问，不要只输出建议或 JSON 文本。",
+    ].join("\n\n");
+    await sendWorkflowReply(request);
+  }, [sendWorkflowReply]);
 
   const updateWorkflowNode = useCallback(async (nodeId: string, update: Partial<WorkflowV2Node>): Promise<void> => {
     const workflow = await ensureActiveWorkflow();

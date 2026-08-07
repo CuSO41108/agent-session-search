@@ -34,4 +34,31 @@ describe("Workflow Draft Review Gate editing", () => {
     expect(enabled).toContain("Runtime Review Gates");
     expect(enabled).toContain("Add Review Gate for Answer");
   });
+
+  test("does not offer Review Gates for script nodes", () => {
+    const configuredAgents = [{ id: "reviewer", name: "Reviewer", description: "", runtimeAgentId: "codex" as const, channelId: "channel", modelId: "model", tags: [], createdAt: 1, updatedAt: 1 }];
+    const value = definition();
+    value.nodes.push({
+      id: "transform",
+      kind: "worker",
+      title: "Transform",
+      execModel: "script",
+      executionMode: "script",
+      script: {
+        executable: { kind: "inline", language: "typescript", code: "return { result: inputs.value };" },
+        parameters: [{ key: "value", label: "Value", location: "body", valueType: "string", source: "user", required: true }],
+        capabilities: [],
+        managerRisk: { level: "safe", rationale: "Pure in-memory transformation." },
+        effectMode: "pure",
+        idempotency: "safe_retry",
+        stderrPolicy: "fail",
+      },
+      outputFields: [{ key: "result", required: true }],
+    });
+
+    expect(addWorkflowReviewGate(value, "transform", "reviewer").reviewGates).toBeUndefined();
+    const rendered = renderToStaticMarkup(<WorkflowDraftEditorDialog definition={value} configuredAgents={configuredAgents} runtimeReviewEnabled onSave={() => undefined} onClose={() => undefined} />);
+    expect(rendered).toContain("Add Review Gate for Answer");
+    expect(rendered).not.toContain("Add Review Gate for Transform");
+  });
 });

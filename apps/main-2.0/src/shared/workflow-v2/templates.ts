@@ -164,9 +164,6 @@ export function compileWorkflowV2Node(
     ...(hooks ? { hooks } : {}),
     ...(resourceLocks ? { resourceLocks } : {}),
     ...(executionLease ? { executionLease: { ...executionLease } } : {}),
-    ...(reviewLevel ? { reviewLevel } : {}),
-    ...(reviewMaxRetries !== undefined ? { reviewMaxRetries } : {}),
-    ...(overrides.judgeDimensions ?? template.judgeDimensions ? { judgeDimensions: overrides.judgeDimensions ?? template.judgeDimensions } : {}),
     ...((overrides.expectedExitCode ?? template.expectedExitCode) !== undefined
       ? { expectedExitCode: overrides.expectedExitCode ?? template.expectedExitCode }
       : {}),

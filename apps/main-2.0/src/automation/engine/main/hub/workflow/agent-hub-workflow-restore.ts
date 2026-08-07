@@ -191,11 +191,24 @@ export function restoreWorkflowDraft(
     ? asOptionalString(record.reviewerModelId) ?? ""
     : asOptionalString(record.modelId) ?? "";
   const officialWorkflow = record.sourceType === "official" || record.topologyLocked === true;
+  const scriptNodeIds = new Set(Array.isArray(legacyDefinition.nodes)
+    ? legacyDefinition.nodes.filter((node) => node?.execModel === "script").map((node) => node.id)
+    : []);
+  const hasScriptReviewGate = Array.isArray(legacyDefinition.reviewGates)
+    && legacyDefinition.reviewGates.some((gate) => gate && typeof gate === "object" && scriptNodeIds.has(gate.targetNodeId));
   const requiresReviewGateMigration = !officialWorkflow && (legacyDefinition.reviewEnabled !== undefined
-    || legacyDefinition.nodes?.some((node) => node.reviewLevel !== undefined || node.reviewMaxRetries !== undefined || node.judgeDimensions !== undefined) === true);
-  const definition = requiresReviewGateMigration
+    || legacyDefinition.nodes?.some((node) => node.reviewLevel !== undefined || node.reviewMaxRetries !== undefined || node.judgeDimensions !== undefined) === true
+    || hasScriptReviewGate);
+  const migratedDefinition = requiresReviewGateMigration
     ? migrateWorkflowV2ReviewGates(legacyDefinition, reviewerConfiguredAgentId)
     : legacyDefinition;
+  const definition = hasScriptReviewGate
+    ? {
+      ...migratedDefinition,
+      reviewGates: migratedDefinition.reviewGates?.filter((gate) => !scriptNodeIds.has(gate.targetNodeId)),
+    }
+    : migratedDefinition;
+  const definitionChangedOnRestore = requiresReviewGateMigration || hasScriptReviewGate;
   const planningDraft = restoreWorkflowDraftStatus(record.status) === "draft"
     && Array.isArray(definition.nodes)
     && definition.nodes.length === 0
@@ -207,7 +220,12 @@ export function restoreWorkflowDraft(
     && definition.graphVersion > 0
     && typeof definition.objective === "string";
   if (!planningDraft) {
-    const definitionToValidate = requiresReviewGateMigration ? legacyDefinition : definition;
+    const definitionToValidate = hasScriptReviewGate
+      ? {
+        ...legacyDefinition,
+        reviewGates: legacyDefinition.reviewGates?.filter((gate) => !scriptNodeIds.has(gate.targetNodeId)),
+      }
+      : requiresReviewGateMigration ? legacyDefinition : definition;
     if (!validateWorkflowV2Definition(definitionToValidate).valid) return undefined;
   }
   const finalReport = asOptionalString(record.finalReport);
@@ -215,13 +233,13 @@ export function restoreWorkflowDraft(
     ? undefined
     : deps.restoreRuntimeConversation(record.runtimeConversation);
   if (record.runtimeConversation !== undefined && !restoredRuntimeConversation) return undefined;
-  const restoredWorkflowV2Plan = record.workflowV2Plan === undefined || requiresReviewGateMigration
+  const restoredWorkflowV2Plan = record.workflowV2Plan === undefined || definitionChangedOnRestore
     ? undefined
     : restoreWorkflowV2Plan(record.workflowV2Plan);
-  if (record.workflowV2Plan !== undefined && !requiresReviewGateMigration && !restoredWorkflowV2Plan) return undefined;
+  if (record.workflowV2Plan !== undefined && !definitionChangedOnRestore && !restoredWorkflowV2Plan) return undefined;
   if (workflowId !== definition.workflowId) return undefined;
   const origin = restoreWorkflowOrigin(record.origin);
-  const confirmedRevision = !requiresReviewGateMigration && Number.isSafeInteger(record.confirmedRevision) && Number(record.confirmedRevision) > 0 ? Number(record.confirmedRevision) : undefined;
+  const confirmedRevision = !definitionChangedOnRestore && Number.isSafeInteger(record.confirmedRevision) && Number(record.confirmedRevision) > 0 ? Number(record.confirmedRevision) : undefined;
   const generationReview = restoreGenerationReview(record.generationReview);
   return deps.cloneWorkflowDraft({
     workflowId,
@@ -229,7 +247,7 @@ export function restoreWorkflowDraft(
     topologyLocked: record.sourceType === "official" || record.topologyLocked === true,
     title: asOptionalString(record.title) ?? definition.objective ?? "Untitled workflow",
     status: restoreWorkflowDraftStatus(record.status),
-    revision: Math.max(1, Math.floor(asNumber(record.revision, 1))) + (requiresReviewGateMigration ? 1 : 0),
+    revision: Math.max(1, Math.floor(asNumber(record.revision, 1))) + (definitionChangedOnRestore ? 1 : 0),
     ...(confirmedRevision !== undefined ? { confirmedRevision } : {}),
     ...(origin ? { origin } : {}),
     configuredAgentId: asOptionalString(record.configuredAgentId) ?? "",

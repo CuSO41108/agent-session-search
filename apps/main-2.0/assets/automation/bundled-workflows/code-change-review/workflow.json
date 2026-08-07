@@ -20,11 +20,6 @@
         "executionMode": "script",
         "executionModeRationale": "A deterministic script should validate the selected absolute path and collect the exact Git change set before LLM review.",
         "executionModeConfidence": 1,
-        "reviewLevel": "low",
-        "reviewMaxRetries": 2,
-        "judgeDimensions": [
-          { "key": "scope_manifest_accuracy", "description": "The collected repository root and changed-file manifest must match the selected Git scope." }
-        ],
         "script": {
           "executable": {
             "kind": "inline",

@@ -85,8 +85,8 @@ export function portableWorkflowReadiness(file: WorkflowPortableFileV1, catalogs
     workflow: {
       configuredAgentId: file.workflow.executionDefaults.configuredAgentId,
       modelId: file.workflow.executionDefaults.modelId,
-      reviewerConfiguredAgentId: file.workflow.executionDefaults.reviewerConfiguredAgentId,
-      reviewerModelId: file.workflow.executionDefaults.reviewerModelId,
+      reviewerConfiguredAgentId: "",
+      reviewerModelId: "",
       definition: file.workflow.definition,
     },
   });

@@ -1194,7 +1194,7 @@ export function SettingsDialog({
                     <span className="settings-field-title">{l("Runtime Review", "运行时 Review")}</span>
                     <span className="settings-field-sub">
                       {l(
-                        "Review configured critical nodes in user workflows and retry results that miss their quality threshold.",
+                        "Review configured critical Agent nodes in user workflows and retry results that miss their quality threshold.",
                         "用户 Workflow 运行时审查已配置的关键节点，未达到质量门槛时自动重试。",
                       )}
                     </span>

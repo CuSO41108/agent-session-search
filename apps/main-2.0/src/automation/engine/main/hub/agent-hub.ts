@@ -1246,6 +1246,36 @@ export class AgentHub {
   }
 
   patchWorkflowDraft(input: PatchWorkflowDraftRequest): AppSnapshot {
+    if (input.definition) {
+      const current = this.workflowStore.workflows.get(input.workflowId);
+      if (!current) return this.snapshot();
+      if (current.status === "running" || current.topologyLocked) {
+        return this.workflowDraftService.patch({
+          workflowId: current.workflowId,
+          error: current.status === "running"
+            ? "Cannot modify workflow graph while it is running."
+            : "Official workflow topology is locked.",
+        });
+      }
+      const migrated = migrateWorkflowV2ReviewGates(
+        structuredClone(input.definition),
+        input.reviewerConfiguredAgentId ?? current.reviewerConfiguredAgentId,
+      );
+      migrated.workflowId = current.workflowId;
+      if (input.objective !== undefined) migrated.objective = input.objective;
+      const definition = normalizeWorkflowV2TerminalNode(migrated).definition;
+      if (definition.nodes.length > MAX_WORKFLOW_NODE_COUNT) {
+        return this.workflowDraftService.patch({ workflowId: current.workflowId, error: `Workflow V2 definition exceeds ${MAX_WORKFLOW_NODE_COUNT} nodes.` });
+      }
+      if (definition.edges.length > MAX_WORKFLOW_EDGE_COUNT) {
+        return this.workflowDraftService.patch({ workflowId: current.workflowId, error: `Workflow V2 definition exceeds ${MAX_WORKFLOW_EDGE_COUNT} edges.` });
+      }
+      const validation = validateWorkflowV2Definition(definition, { configuredAgentIds: this.configuredAgents.keys() });
+      if (!validation.valid) {
+        return this.workflowDraftService.patch({ workflowId: current.workflowId, error: validation.errors[0] ?? "Workflow V2 definition is invalid." });
+      }
+      return this.workflowDraftService.patch({ ...input, definition });
+    }
     return this.workflowDraftService.patch(input);
   }
 
@@ -1641,8 +1671,12 @@ export class AgentHub {
   async importPortableWorkflow(file: WorkflowPortableFileV1, fileName: string, mapping: WorkflowImportMapping = {}): Promise<AppSnapshot> {
     if (this.workflowStore.workflowCount() >= MAX_WORKFLOW_COUNT) throw new Error(`Workflow limit of ${MAX_WORKFLOW_COUNT} reached.`);
     const sanitized = sanitizeWorkflowPortableDefinition(file.workflow.definition);
+    const migratedDefinition = migrateWorkflowV2ReviewGates(
+      sanitized.definition,
+      "",
+    );
     const mappedFile = applyWorkflowImportMappings({
-      file: { ...structuredClone(file), workflow: { ...structuredClone(file.workflow), definition: sanitized.definition } },
+      file: { ...structuredClone(file), workflow: { ...structuredClone(file.workflow), definition: migratedDefinition } },
       mapping,
       configuredAgents: this.configuredAgents.values(),
       channels: this.channels,
@@ -1676,8 +1710,8 @@ export class AgentHub {
       revision: 1,
       configuredAgentId: mappedFile.workflow.executionDefaults.configuredAgentId,
       modelId: mappedFile.workflow.executionDefaults.modelId,
-      reviewerConfiguredAgentId: mappedFile.workflow.executionDefaults.reviewerConfiguredAgentId,
-      reviewerModelId: mappedFile.workflow.executionDefaults.reviewerModelId,
+      reviewerConfiguredAgentId: "",
+      reviewerModelId: "",
       objective: mappedFile.workflow.objective,
       definition,
       messages: [],
@@ -1780,7 +1814,10 @@ export class AgentHub {
     if (input.expectedRevision !== undefined && input.expectedRevision !== current.revision) {
       return { ok: false, workflowId: current.workflowId, revision: current.revision, error: "Workflow changed since you read it. Call workflow_get and retry." };
     }
-    const sourceDefinition = input.definition ? structuredClone(input.definition) : structuredClone(current.definition);
+    const requestedDefinition = input.definition ? structuredClone(input.definition) : structuredClone(current.definition);
+    const sourceDefinition = current.topologyLocked
+      ? requestedDefinition
+      : migrateWorkflowV2ReviewGates(requestedDefinition, input.reviewerConfiguredAgentId ?? current.reviewerConfiguredAgentId);
     sourceDefinition.workflowId = current.workflowId;
     if (input.objective !== undefined) sourceDefinition.objective = input.objective;
     const definition = normalizeWorkflowV2TerminalNode(sourceDefinition).definition;

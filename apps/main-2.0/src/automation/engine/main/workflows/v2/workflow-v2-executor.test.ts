@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { createWorkflowV2InlineScriptSpec, type WorkflowV2Definition, type WorkflowV2LLMNode } from "../../../shared/workflow-v2/definition";
+import { createWorkflowV2InlineScriptSpec, type WorkflowV2Definition, type WorkflowV2LLMNode, type WorkflowV2ScriptNode } from "../../../shared/workflow-v2/definition";
 import type { WorkflowV2WorkerOutput } from "../../../shared/workflow-v2/packets";
 import { createWorkflowV2RunState } from "../../../shared/workflow-v2/state";
 import { buildWorkflowV2Plan } from "./workflow-v2-planner";
@@ -974,6 +974,37 @@ describe("workflow-v2 executor", () => {
     expect(result.workerOutputs).toEqual([]);
   });
 
+  test("does not offer llm-only intervention actions when script validation requires a human", async () => {
+    const pausedDefinition = definition();
+    const scriptNode = pausedDefinition.nodes[1] as WorkflowV2ScriptNode;
+    pausedDefinition.nodes = [{
+      ...scriptNode,
+      onError: "ask_human",
+    }];
+    pausedDefinition.edges = [];
+    const plan = await buildWorkflowV2Plan({ definition: pausedDefinition, approvedBy: "tester", now: 5_150 });
+
+    const result = await executeWorkflowV2Plan({
+      plan,
+      runLlmNode: async () => {
+        throw new Error("llm runner should not be called");
+      },
+      executeScript: async ({ node }) => ({
+        nodeId: node.id,
+        summary: "incomplete",
+        outputs: {},
+        proposals: [],
+      }),
+    });
+
+    expect(result.runState.status).toBe("paused");
+    expect(result.runState.nodes.verify?.intervention).toMatchObject({
+      nodeId: "verify",
+      source: "validation",
+      allowedActions: ["continue", "skip", "replan"],
+    });
+  });
+
   test("requires an independent structured reviewer for semantic judge dimensions", async () => {
     const reviewedDefinition = definition();
     reviewedDefinition.reviewEnabled = true;
@@ -1183,16 +1214,17 @@ describe("workflow-v2 executor", () => {
     expect(result.runState.status).toBe("completed");
   });
 
-  test("reviews script nodes with upstream evidence and runtime-authored receipts", async () => {
+  test("never reviews script nodes even when a legacy plan contains Review fields", async () => {
     const reviewedDefinition = definition();
     reviewedDefinition.reviewEnabled = true;
-    reviewedDefinition.nodes[1] = {
-      ...reviewedDefinition.nodes[1]!,
+    const plan = await buildWorkflowV2Plan({ definition: reviewedDefinition, approvedBy: "tester", now: 5_390 });
+    plan.definition.nodes[1] = {
+      ...plan.definition.nodes[1]!,
       reviewLevel: "high",
       reviewMaxRetries: 0,
       judgeDimensions: [{ key: "quality", description: "The verification must be supported by runtime evidence." }],
     };
-    const plan = await buildWorkflowV2Plan({ definition: reviewedDefinition, approvedBy: "tester", now: 5_390 });
+    let reviewCalls = 0;
 
     const result = await executeWorkflowV2Plan({
       plan,
@@ -1205,27 +1237,10 @@ describe("workflow-v2 executor", () => {
         acceptance: { outcome: "clean", issues: [], changedPaths: ["result.md"], operationIds: ["operation-1"] },
         scriptReceipt: { exitCode: 0, signal: null, timedOut: false, stderrSummary: "", stdoutDigest: "stdout", operationDigest: "operation", effectState: "workspace_changed" },
       }),
-      reviewNodeOutput: async (input) => {
-        expect(input.executorNodeId).toBe("verify");
-        expect(input.upstreamResults[0]).toMatchObject({ nodeId: "draft", evidence: ["source-1"] });
-        expect(input.result).toMatchObject({
-          acceptance: { outcome: "clean", operationIds: ["operation-1"] },
-          scriptReceipt: { exitCode: 0, effectState: "workspace_changed" },
-        });
-        return {
-          reviewerNodeId: "out-of-graph-reviewer",
-          verdict: {
-            decision: "accept",
-            reasons: ["Runtime evidence is complete."],
-            riskLevel: "low",
-            confidence: "high",
-            qualityLevel: "high",
-            dimensionResults: [{ key: "quality", qualityLevel: "high", reason: "Verified.", evidence: ["operation-1"] }],
-          },
-        };
-      },
+      reviewNodeOutput: async () => { reviewCalls += 1; throw new Error("Script nodes must not be reviewed"); },
     });
 
+    expect(reviewCalls).toBe(0);
     expect(result.workerOutputs.find((output) => output.nodeId === "verify")).toMatchObject({
       acceptance: { outcome: "clean" },
       scriptReceipt: { exitCode: 0 },

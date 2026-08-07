@@ -16,6 +16,8 @@ export function updateWorkflowNodeAgentSelection(definition: WorkflowV2Definitio
 
 export function addWorkflowReviewGate(definition: WorkflowV2Definition, nodeId: string, configuredAgentId: string): WorkflowV2Definition {
   const next = structuredClone(definition);
+  const node = next.nodes.find((candidate) => candidate.id === nodeId);
+  if (!node || node.execModel !== "llm" || node.role === "reviewer") return next;
   if (next.reviewGates?.some((gate) => gate.targetNodeId === nodeId)) return next;
   const gateIds = new Set((next.reviewGates ?? []).map((gate) => gate.id));
   let id = `review-${nodeId}`;
@@ -88,8 +90,8 @@ export function WorkflowDraftEditorDialog(props: {
         {parsedDefinition.nodes.filter((node) => node.execModel === "llm").map((node) => <label key={node.id}><span>{node.title}</span><select aria-label={`Agent for ${node.title}`} value={node.execModel === "llm" ? node.configuredAgentId ?? "" : ""} disabled={parsingPending} onChange={(event) => selectAgent(node.id, event.currentTarget.value)}><option value="" disabled>Select Agent</option>{props.configuredAgents.map((agent) => <option key={agent.id} value={agent.id}>{agent.name} · {agent.modelId}</option>)}</select></label>)}
       </div> : null}
       {props.runtimeReviewEnabled && parsedDefinition ? <section className="workflow-review-gate-editor" aria-label="Runtime Review Gates">
-        <header><div><strong>Runtime Review Gates</strong><span>Each execution node can have one independently configured, read-only review.</span></div></header>
-        {parsedDefinition.nodes.filter((node) => node.role !== "reviewer").map((node) => {
+        <header><div><strong>Runtime Review Gates</strong><span>Each Agent node can have one independently configured, read-only review.</span></div></header>
+        {parsedDefinition.nodes.filter((node) => node.execModel === "llm" && node.role !== "reviewer").map((node) => {
           const gate = parsedDefinition.reviewGates?.find((candidate) => candidate.targetNodeId === node.id);
           if (!gate) return <div className="workflow-review-gate-target" key={node.id}><span><strong>{node.title}</strong><small>No Review Gate</small></span><button className="icon-btn" title="Add Review Gate" aria-label={`Add Review Gate for ${node.title}`} disabled={parsingPending} onClick={() => replaceDefinition(addWorkflowReviewGate(parsedDefinition, node.id, props.configuredAgents[0]?.id ?? ""))}><Plus size={15} /></button></div>;
           return <div className="workflow-review-gate-config" key={gate.id}>

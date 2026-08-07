@@ -4,16 +4,18 @@ export const DEFAULT_WORKFLOW_V2_GATE_QUALITY_RETRIES = 2;
 export const MAX_WORKFLOW_V2_GATE_QUALITY_RETRIES = 5;
 
 export function workflowV2ReviewGateForNode(definition: WorkflowV2Definition, nodeId: string): WorkflowV2ReviewGate | undefined {
+  if (definition.nodes.find((node) => node.id === nodeId)?.execModel !== "llm") return undefined;
   return definition.reviewGates?.find((gate) => gate.targetNodeId === nodeId);
 }
 
 export function migrateWorkflowV2ReviewGates(definition: WorkflowV2Definition, legacyReviewerConfiguredAgentId: string): WorkflowV2Definition {
-  const explicitGates = structuredClone(definition.reviewGates ?? []);
+  const scriptNodeIds = new Set(definition.nodes.filter((node) => node.execModel === "script").map((node) => node.id));
+  const explicitGates = structuredClone(definition.reviewGates ?? []).filter((gate) => !scriptNodeIds.has(gate.targetNodeId));
   const gatedNodeIds = new Set(explicitGates.map((gate) => gate.targetNodeId));
   const gateIds = new Set(explicitGates.map((gate) => gate.id));
   const nodes = definition.nodes.map((node) => {
     const migratedNode = withoutLegacyReviewFields(node);
-    if (!node.reviewLevel || node.reviewLevel === "none" || gatedNodeIds.has(node.id)) return migratedNode;
+    if (node.execModel !== "llm" || !node.reviewLevel || node.reviewLevel === "none" || gatedNodeIds.has(node.id)) return migratedNode;
     const baseId = `review-${node.id}`;
     let gateId = baseId;
     for (let suffix = 2; gateIds.has(gateId); suffix += 1) gateId = `${baseId}-${suffix}`;

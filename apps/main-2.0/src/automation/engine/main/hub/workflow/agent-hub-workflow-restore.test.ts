@@ -220,6 +220,109 @@ describe("Workflow V2 AgentHub durable restore", () => {
     });
   });
 
+  test("restores a user workflow after removing a persisted Review Gate from a script node", () => {
+    const workflowId = "workflow-with-script-review";
+    const workflowDefinition = definition(workflowId);
+    workflowDefinition.reviewGates = [{
+      id: "review-verify",
+      targetNodeId: "verify",
+      configuredAgentId: TEST_AGENT_ID,
+      reviewLevel: "high",
+      judgeDimensions: [{ key: "quality", description: "Check the script result." }],
+      maxQualityRetries: 2,
+    }];
+
+    const restored = restoreWorkflowDraft({
+      workflowId,
+      sourceType: "user",
+      title: "Workflow with script review",
+      status: "draft",
+      revision: 3,
+      configuredAgentId: TEST_AGENT_ID,
+      modelId: "default",
+      reviewerConfiguredAgentId: TEST_AGENT_ID,
+      reviewerModelId: "default",
+      objective: workflowDefinition.objective,
+      definition: workflowDefinition,
+      messages: [],
+      reply: "",
+      runProgress: [],
+      runContextDocument: "",
+      contextDocument: "",
+      runIds: [],
+      createdAt: 1,
+      updatedAt: 2,
+    }, {
+      restoreRuntimeConversation: () => undefined,
+      cloneWorkflowDraft: (draft) => structuredClone(draft),
+    });
+
+    expect(restored).toMatchObject({ workflowId, revision: 4 });
+    expect(restored?.definition.reviewGates).toEqual([]);
+  });
+
+  test("restores an official workflow with only its persisted script Review Gate removed", () => {
+    const workflowId = "official-workflow-with-script-review";
+    const workflowDefinition = definition(workflowId);
+    workflowDefinition.reviewGates = [
+      {
+        id: "review-draft",
+        targetNodeId: "draft",
+        configuredAgentId: TEST_AGENT_ID,
+        reviewLevel: "medium",
+        judgeDimensions: [{ key: "quality", description: "Check the draft." }],
+        maxQualityRetries: 2,
+      },
+      {
+        id: "review-verify",
+        targetNodeId: "verify",
+        configuredAgentId: TEST_AGENT_ID,
+        reviewLevel: "high",
+        judgeDimensions: [{ key: "quality", description: "Check the script result." }],
+        maxQualityRetries: 2,
+      },
+    ];
+
+    const restored = restoreWorkflowDraft({
+      workflowId,
+      sourceType: "official",
+      topologyLocked: true,
+      title: "Official workflow with script review",
+      status: "approved",
+      revision: 7,
+      confirmedRevision: 7,
+      configuredAgentId: TEST_AGENT_ID,
+      modelId: "default",
+      reviewerConfiguredAgentId: TEST_AGENT_ID,
+      reviewerModelId: "default",
+      objective: workflowDefinition.objective,
+      definition: workflowDefinition,
+      workflowV2Plan: { stale: true },
+      messages: [],
+      reply: "",
+      runProgress: [],
+      runContextDocument: "",
+      contextDocument: "",
+      runIds: [],
+      createdAt: 1,
+      updatedAt: 2,
+    }, {
+      restoreRuntimeConversation: () => undefined,
+      cloneWorkflowDraft: (draft) => structuredClone(draft),
+    });
+
+    expect(restored).toMatchObject({
+      workflowId,
+      sourceType: "official",
+      topologyLocked: true,
+      revision: 8,
+    });
+    expect(restored).not.toHaveProperty("confirmedRevision");
+    expect(restored).not.toHaveProperty("workflowV2Plan");
+    expect(restored?.definition.reviewGates).toEqual([workflowDefinition.reviewGates[0]]);
+    expect(restored?.definition.nodes).toEqual(workflowDefinition.nodes);
+  });
+
   test("skips one invalid workflow without clearing valid workflow history", () => {
     const valid = {
       workflowId: "valid-workflow",

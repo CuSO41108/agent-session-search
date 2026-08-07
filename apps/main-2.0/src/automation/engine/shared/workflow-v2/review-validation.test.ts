@@ -1,7 +1,7 @@
 import { describe, expect, test } from "vitest";
 import type { WorkflowV2AuthoredDefinition, WorkflowV2Definition } from "./definition";
 import { compileWorkflowV2Definition, createWorkflowV2TemplateRegistry } from "./templates";
-import { migrateWorkflowV2ReviewGates } from "./review-gates";
+import { migrateWorkflowV2ReviewGates, workflowV2ReviewGateForNode } from "./review-gates";
 import { validateWorkflowV2Definition } from "./validation";
 
 function definition(): WorkflowV2Definition {
@@ -30,7 +30,7 @@ describe("Workflow V2 Review definition validation", () => {
     expect(validateWorkflowV2Definition(value).errors).toContain("Workflow V2 reviewed node result must declare at least one judge dimension.");
   });
 
-  test("accepts Review settings for script and reviewer-role nodes", () => {
+  test("accepts legacy Review settings for reviewer-role LLM nodes", () => {
     const value = definition();
     value.reviewEnabled = true;
     value.nodes[0] = {
@@ -81,6 +81,31 @@ describe("Workflow V2 Review definition validation", () => {
       errors: [],
       topologicalNodeIds: ["result"],
     });
+  });
+
+  test("rejects Review Gates attached to script nodes", () => {
+    const value = definition();
+    value.nodes = [{
+      id: "transform",
+      kind: "worker",
+      title: "Transform",
+      execModel: "script",
+      executionMode: "script",
+      script: {
+        executable: { kind: "inline", language: "typescript", code: "return { result: inputs.value };" },
+        parameters: [{ key: "value", label: "Value", location: "body", valueType: "string", source: "user", required: true }],
+        capabilities: [],
+        managerRisk: { level: "safe", rationale: "Pure in-memory transformation." },
+        effectMode: "pure",
+        idempotency: "safe_retry",
+        stderrPolicy: "fail",
+      },
+      outputFields: [{ key: "result", required: true }],
+    }];
+    value.reviewGates = [{ id: "review-transform", targetNodeId: "transform", configuredAgentId: "reviewer", reviewLevel: "medium", judgeDimensions: [{ key: "quality", description: "Check output." }], maxQualityRetries: 2 }];
+
+    expect(validateWorkflowV2Definition(value).errors).toContain("Workflow V2 Review Gate review-transform cannot target script node transform.");
+    expect(workflowV2ReviewGateForNode(value, "transform")).toBeUndefined();
   });
 
   test("rejects duplicate target gates and invalid retry limits", () => {
@@ -140,5 +165,44 @@ describe("Workflow V2 Review definition validation", () => {
       judgeDimensions: [{ key: "quality", description: "Check quality." }],
       maxQualityRetries: 5,
     }]);
+  });
+
+  test("drops explicit and legacy Review Gates for script nodes during migration", () => {
+    const value = definition();
+    value.nodes[0] = {
+      id: "transform",
+      kind: "worker",
+      title: "Transform",
+      execModel: "script",
+      executionMode: "script",
+      reviewLevel: "high",
+      judgeDimensions: [{ key: "quality", description: "Legacy script review." }],
+      script: {
+        executable: { kind: "inline", language: "typescript", code: "return { result: inputs.value };" },
+        parameters: [{ key: "value", label: "Value", location: "body", valueType: "string", source: "user", required: true }],
+        capabilities: [],
+        managerRisk: { level: "safe", rationale: "Pure in-memory transformation." },
+        effectMode: "pure",
+        idempotency: "safe_retry",
+        stderrPolicy: "fail",
+      },
+      outputFields: [{ key: "result", required: true }],
+    };
+    value.reviewGates = [{ id: "review-transform", targetNodeId: "transform", configuredAgentId: "reviewer", reviewLevel: "high", judgeDimensions: [{ key: "quality", description: "Explicit script review." }], maxQualityRetries: 2 }];
+
+    const migrated = migrateWorkflowV2ReviewGates(value, "legacy-reviewer");
+    expect(migrated.reviewGates).toEqual([]);
+    expect(migrated.nodes[0]).not.toHaveProperty("reviewLevel");
+    expect(migrated.nodes[0]).not.toHaveProperty("judgeDimensions");
+  });
+
+  test("preserves Review Gates with unknown targets so validation can reject them", () => {
+    const value = definition();
+    value.reviewGates = [{ id: "review-missing", targetNodeId: "missing", configuredAgentId: "reviewer", reviewLevel: "high", judgeDimensions: [{ key: "quality", description: "Check quality." }], maxQualityRetries: 2 }];
+
+    const migrated = migrateWorkflowV2ReviewGates(value, "legacy-reviewer");
+
+    expect(migrated.reviewGates).toEqual(value.reviewGates);
+    expect(validateWorkflowV2Definition(migrated).errors).toContain("Workflow V2 Review Gate review-missing references missing node missing.");
   });
 });

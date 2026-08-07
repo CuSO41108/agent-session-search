@@ -259,7 +259,7 @@ export async function executeWorkflowV2Plan(input: ExecuteWorkflowV2PlanInput): 
             recordSkippedOutput(settledNode.reason.reason);
             continue;
           }
-          const intervention = createIntervention(nodeId, "hook_pause", settledNode.reason.reason, now());
+          const intervention = createIntervention(node, "hook_pause", settledNode.reason.reason, now());
           runState = transitionWorkflowV2NodeState(runState, {
             nodeId,
             status: "paused",
@@ -292,7 +292,7 @@ export async function executeWorkflowV2Plan(input: ExecuteWorkflowV2PlanInput): 
           ) {
             const source = signal.resolution.action === "escalate" ? "supervision_escalation" : "supervision_pause";
             const intervention = createIntervention(
-              nodeId,
+              node,
               source,
               signal.resolution.reason,
               now(),
@@ -319,7 +319,7 @@ export async function executeWorkflowV2Plan(input: ExecuteWorkflowV2PlanInput): 
           const errorMessage = settledNode.reason instanceof Error ? settledNode.reason.message : String(settledNode.reason);
           if (node.onError === "retry" && node.script?.idempotency === "non_idempotent") {
             const intervention = createIntervention(
-              nodeId,
+              node,
               "validation",
               `${errorMessage} Automatic retry is disabled for non-idempotent script effects.`,
               now(),
@@ -337,7 +337,7 @@ export async function executeWorkflowV2Plan(input: ExecuteWorkflowV2PlanInput): 
             continue;
           }
           if (node.onError === "ask_human") {
-            const intervention = createIntervention(nodeId, "validation", errorMessage, now());
+            const intervention = createIntervention(node, "validation", errorMessage, now());
             runState = transitionWorkflowV2NodeState(runState, { nodeId, status: "paused", now: now(), error: errorMessage, intervention });
             input.onNodeStateTransition?.({ nodeId, status: "paused", intervention });
             continue;
@@ -377,7 +377,7 @@ export async function executeWorkflowV2Plan(input: ExecuteWorkflowV2PlanInput): 
             continue;
           }
           if (validation.outcome === "ask_human") {
-            const intervention = createIntervention(nodeId, "validation", validationReason, now());
+            const intervention = createIntervention(node, "validation", validationReason, now());
             runState = transitionWorkflowV2NodeState(runState, {
               nodeId,
               status: "paused",
@@ -408,7 +408,7 @@ export async function executeWorkflowV2Plan(input: ExecuteWorkflowV2PlanInput): 
           if (input.onRunCheckpoint) await checkpoint();
           if (!input.reviewNodeOutput) {
             const intervention = createIntervention(
-              nodeId,
+              node,
               "review_escalation",
               `Workflow V2 node ${nodeId} requires an independent semantic reviewer.`,
               now(),
@@ -482,7 +482,7 @@ export async function executeWorkflowV2Plan(input: ExecuteWorkflowV2PlanInput): 
             ) {
               const source = error.resolution.action === "escalate" ? "supervision_escalation" : "supervision_pause";
               const intervention = createIntervention(
-                nodeId,
+                node,
                 source,
                 error.resolution.reason,
                 now(),
@@ -505,7 +505,7 @@ export async function executeWorkflowV2Plan(input: ExecuteWorkflowV2PlanInput): 
             }
             const reviewError = error instanceof Error ? error.message : String(error);
             const reviewTrace = reviewTraceFromError(error);
-            const intervention = createIntervention(nodeId, "review_escalation", `Independent Reviewer is unavailable: ${reviewError}`, now(), undefined, undefined, {
+            const intervention = createIntervention(node, "review_escalation", `Independent Reviewer is unavailable: ${reviewError}`, now(), undefined, undefined, {
               source: "review_escalation",
               allowedActions: ["rerun_all", "accept_last_result"],
               lastCandidate: authoritativeWorkerOutput,
@@ -536,7 +536,7 @@ export async function executeWorkflowV2Plan(input: ExecuteWorkflowV2PlanInput): 
           }
           if (resolution.action === "pause" || resolution.action === "escalate") {
             const source = resolution.action === "escalate" ? "review_escalation" : "review_rejection";
-            const intervention = createIntervention(nodeId, source, resolution.reason, now(), resolution.verdict, undefined, {
+            const intervention = createIntervention(node, source, resolution.reason, now(), resolution.verdict, undefined, {
               source,
               allowedActions: ["rerun_all", "accept_last_result"],
               lastCandidate: authoritativeWorkerOutput,
@@ -574,7 +574,7 @@ export async function executeWorkflowV2Plan(input: ExecuteWorkflowV2PlanInput): 
             recordSkippedOutput(error.reason);
             continue;
           }
-          const intervention = createIntervention(nodeId, "hook_pause", error.reason, now());
+          const intervention = createIntervention(node, "hook_pause", error.reason, now());
           runState = transitionWorkflowV2NodeState(runState, {
             nodeId,
             status: "paused",
@@ -792,6 +792,7 @@ function isNodeOutputSuccessful(
 }
 
 function requiresSemanticReview(reviewGate: WorkflowV2ReviewGate | undefined, legacyReviewEnabled: boolean, node: WorkflowV2Node, forced = false): boolean {
+  if (node.execModel !== "llm") return false;
   if (reviewGate) return node.role !== "reviewer";
   return legacyReviewEnabled
     && node.role !== "reviewer"
@@ -812,7 +813,7 @@ function reviewRetryPolicyFor(node: WorkflowV2Node, reviewAttempt: number, revie
 }
 
 function createIntervention(
-  nodeId: string,
+  node: WorkflowV2Node,
   source: WorkflowV2HumanIntervention["source"],
   reason: string,
   requestedAt: number,
@@ -825,10 +826,12 @@ function createIntervention(
   override?: Pick<WorkflowV2HumanIntervention, "source" | "allowedActions" | "scriptApproval" | "lastCandidate" | "reviewTrace">,
 ): WorkflowV2HumanIntervention {
   return {
-    nodeId,
+    nodeId: node.id,
     source: override?.source ?? source,
     reason,
-    allowedActions: override?.allowedActions ?? ["continue", "skip", "escalate", "replan", "increase_review_strength"],
+    allowedActions: override?.allowedActions ?? (node.execModel === "script"
+      ? ["continue", "skip", "replan"]
+      : ["continue", "skip", "escalate", "replan", "increase_review_strength"]),
     requestedAt,
     ...(reviewVerdict ? { reviewVerdict: structuredClone(reviewVerdict) } : {}),
     ...(supervision?.report ? { progressReport: structuredClone(supervision.report) } : {}),
