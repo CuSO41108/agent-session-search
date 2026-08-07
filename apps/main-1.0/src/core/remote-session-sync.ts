@@ -797,8 +797,8 @@ function sessionSyncStateFromOverview(
   const revisionVersion = remote.revisionVersion ?? 1;
   const overviewMatches = localSessionOverviewMatchesRemote(local, remote);
   if (!binding) {
-    if (revisionVersion >= 2 && overviewMatches && !localSourceChangedAfter(local, remote.syncedAt)) {
-      return "synced";
+    if (revisionVersion >= 2 && !localSourceChangedAfter(local, remote.syncedAt)) {
+      return overviewMatches ? "synced" : "remote-newer";
     }
     return revisionVersion < 2 ? "local-newer" : "conflict";
   }

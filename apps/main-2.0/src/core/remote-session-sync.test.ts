@@ -776,6 +776,8 @@ describe("remote session sync model", () => {
     expect(stateFor(SESSION, { contentHash: "cloud-change" })).toBe("remote-newer");
     expect(stateFor({ ...SESSION, fileMtimeMs: 5_000 }, { contentHash: "cloud-change" })).toBe("conflict");
     expect(stateFor(SESSION, {}, [])).toBe("synced");
+    expect(stateFor({ ...SESSION, displayTitle: "Renamed by another app" }, {}, [])).toBe("remote-newer");
+    expect(stateFor({ ...SESSION, displayTitle: "Changed locally", fileMtimeMs: 5_000 }, {}, [])).toBe("conflict");
   });
 
   it("repairs only an unambiguous Cursor session identity", () => {
