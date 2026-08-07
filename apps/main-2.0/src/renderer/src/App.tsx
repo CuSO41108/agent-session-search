@@ -1847,6 +1847,15 @@ export function App(): ReactElement {
                   setSettingsInitialSection("memory");
                   setSettingsOpen(true);
                 }}
+                onViewSession={async (rawId) => {
+                  const session = await window.sessionSearch.findSessionByRawId(rawId);
+                  if (session) {
+                    setActivePage("sessions");
+                    window.requestAnimationFrame(() => openDetail(session));
+                  } else {
+                    setActivePage("sessions");
+                  }
+                }}
               />
             ) : null}
 
