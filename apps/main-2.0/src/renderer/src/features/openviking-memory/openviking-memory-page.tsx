@@ -75,6 +75,9 @@ export function OpenVikingMemoryPage({
   const [error, setError] = useState<string | null>(null);
   const [browseLoading, setBrowseLoading] = useState(false);
   const browseRequestVersion = useRef(0);
+  const memoryReadRequestVersion = useRef(0);
+  const workspaceSelectionVersion = useRef(0);
+  const lastReadWorkspaceSelectionVersion = useRef(0);
   const previousBrowseAction = useRef<PageAction>(null);
   const [collapsedCategories, setCollapsedCategories] = useState<
     Set<OpenVikingMemoryCategory>
@@ -116,6 +119,14 @@ export function OpenVikingMemoryPage({
   );
   const runtimeRunning = snapshot?.runtime.state === "running";
   const memoryGroups = useMemo(() => groupOpenVikingMemories(results), [results]);
+  const memoryTimeFormatter = useMemo(() => new Intl.DateTimeFormat(
+    language === "zh" ? "zh-CN" : "en",
+    { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" },
+  ), [language]);
+  const fullMemoryTimeFormatter = useMemo(() => new Intl.DateTimeFormat(
+    language === "zh" ? "zh-CN" : "en-US",
+    { dateStyle: "medium", timeStyle: "medium" },
+  ), [language]);
 
   useEffect(() => {
     setCollapsedCategories(new Set());
@@ -124,7 +135,11 @@ export function OpenVikingMemoryPage({
   useEffect(() => {
     const previousAction = previousBrowseAction.current;
     previousBrowseAction.current = action;
-    if (action === "read" || previousAction === "read") return;
+    if (action === "read") return;
+    if (
+      previousAction === "read"
+      && lastReadWorkspaceSelectionVersion.current === workspaceSelectionVersion.current
+    ) return;
     if (
       !enabled
       || !workspace
@@ -212,12 +227,15 @@ export function OpenVikingMemoryPage({
 
   const openMemory = (memory: OpenVikingMemoryItem) => run("read", async () => {
     if (!runtimeRunning && !memory.content) return;
+    const requestVersion = ++memoryReadRequestVersion.current;
+    lastReadWorkspaceSelectionVersion.current = workspaceSelectionVersion.current;
     const [content, memoryDetails] = await Promise.all([
       runtimeRunning
         ? window.sessionSearch.readOpenVikingMemory(memory.workspaceId, memory.id)
         : Promise.resolve(memory.content),
       window.sessionSearch.getOpenVikingMemoryDetails(memory.workspaceId, memory.id),
     ]);
+    if (requestVersion !== memoryReadRequestVersion.current) return;
     const next = { ...memory, content };
     setSelected(next);
     setDetails(memoryDetails);
@@ -446,9 +464,14 @@ export function OpenVikingMemoryPage({
                   key={item.id}
                   className={item.id === workspaceId ? "active" : ""}
                   onClick={() => {
+                    if (item.id === workspaceId) return;
+                    memoryReadRequestVersion.current += 1;
+                    workspaceSelectionVersion.current += 1;
                     setWorkspaceId(item.id);
+                    setQuery("");
                     setResults([]);
                     setSelected(null);
+                    setDetails(null);
                   }}
                 >
                   <FolderOpen size={15} />
@@ -560,21 +583,39 @@ export function OpenVikingMemoryPage({
                           </button>
                           {!isCollapsed ? (
                             <div className="openviking-result-group-body">
-                              {group.memories.map((memory) => (
-                                <button
-                                  type="button"
-                                  key={memory.id}
-                                  className={selected?.id === memory.id ? "active" : ""}
-                                  disabled={!runtimeRunning && !memory.content}
-                                  onClick={() => void openMemory(memory)}
-                                >
-                                  <strong>{memory.title}</strong>
-                                  <span>{memory.content || memory.source || memory.id}</span>
-                                  {memory.score !== undefined
-                                    ? <em>{memory.score.toFixed(2)}</em>
-                                    : null}
-                                </button>
-                              ))}
+                              {group.memories.map((memory) => {
+                                const updatedAt = memory.updatedAt ? new Date(memory.updatedAt) : null;
+                                const hasUpdatedAt = updatedAt && Number.isFinite(updatedAt.getTime());
+                                const fullUpdatedAt = hasUpdatedAt ? fullMemoryTimeFormatter.format(updatedAt) : "";
+                                return (
+                                  <button
+                                    type="button"
+                                    key={memory.id}
+                                    className={selected?.id === memory.id ? "active" : ""}
+                                    disabled={!runtimeRunning && !memory.content}
+                                    onClick={() => void openMemory(memory)}
+                                  >
+                                    <span className="openviking-result-primary">
+                                      <strong>{memory.title}</strong>
+                                      {hasUpdatedAt ? (
+                                        <time
+                                          dateTime={memory.updatedAt}
+                                          title={fullUpdatedAt}
+                                          aria-label={l(`Updated ${fullUpdatedAt}`, `更新于 ${fullUpdatedAt}`)}
+                                        >
+                                          {memoryTimeFormatter.format(updatedAt)}
+                                        </time>
+                                      ) : null}
+                                    </span>
+                                    <span className="openviking-result-secondary">
+                                      <span>{memory.content || memory.source || memory.id}</span>
+                                      {memory.score !== undefined
+                                        ? <em>{memory.score.toFixed(2)}</em>
+                                        : null}
+                                    </span>
+                                  </button>
+                                );
+                              })}
                             </div>
                           ) : null}
                         </section>
