@@ -502,6 +502,60 @@
   color: var(--text);
 }
 
+.v1-import-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 16px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 12px;
+  background: var(--panel-subtle);
+}
+
+.update-v1-import {
+  display: grid;
+  gap: 10px;
+  width: min(100%, 560px);
+}
+
+.v1-import-copy {
+  display: grid;
+  gap: 5px;
+}
+
+.v1-import-copy strong {
+  color: var(--text);
+  font-size: 13.5px;
+}
+
+.v1-import-copy span,
+.v1-import-result {
+  color: var(--text-muted);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
+.v1-import-button {
+  min-width: 132px;
+}
+
+.v1-import-result {
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: var(--panel-subtle);
+}
+
+.v1-import-result.success {
+  background: var(--success-bg);
+  color: var(--success-text);
+}
+
+.v1-import-result.error {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
 .connection-list {
   display: grid;
   gap: 8px;

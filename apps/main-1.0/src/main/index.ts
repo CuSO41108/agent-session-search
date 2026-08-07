@@ -33,11 +33,13 @@ import { extractSessionContextComponents } from "../core/session-context-compone
 import { indexMigratedSessionFile, type IndexStatus } from "../core/indexer";
 import { createIndexRunCoordinator } from "../core/index-run-coordinator";
 import { createIndexProgressPublisher } from "./index-progress";
+import { createStartupTaskScheduler } from "./startup-tasks";
 import {
   formatSessionJson,
   formatSessionMarkdown,
   formatSessionPlainText,
   type SessionJsonExportFormat,
+  type SessionMarkdownExportOptions,
 } from "../core/format-session";
 import { normalizeExternalLink } from "../core/external-link";
 import {
@@ -248,6 +250,8 @@ let quotaService: QuotaService;
 let localSessionIndexService: LocalSessionIndexService | null = null;
 let localSessionWorkerQueue: Promise<void> = Promise.resolve();
 let localSessionWorkersStopping = false;
+let quitStarted = false;
+const startupTasks = createStartupTaskScheduler(() => quitStarted);
 let pendingDisabledSourcePrune: { key: string; promise: Promise<void> } | null = null;
 const remoteDetailLoads = new Map<string, Promise<void>>();
 
@@ -2258,13 +2262,24 @@ function registerIpc(): void {
     if (!session) return;
     clipboard.writeText(formatSessionMarkdown(session, store.getAllMessages(sessionKey), store.getTraceEvents(sessionKey)));
   });
-  ipcMain.handle("command:export-markdown", async (_event, sessionKey: string) => {
+  ipcMain.handle("command:export-markdown", async (
+    _event,
+    sessionKey: string,
+    options?: SessionMarkdownExportOptions,
+  ) => {
     await ensureRemoteSessionDetailsLoaded(sessionKey);
     const session = store.getSession(sessionKey);
     if (!session) return false;
     const exportPath = await chooseMarkdownExportPath(exportFileName(session.displayTitle || session.originalTitle || session.rawId, "md"));
     if (!exportPath) return false;
-    await fs.writeFile(exportPath, formatSessionMarkdown(session, store.getAllMessages(sessionKey), store.getTraceEvents(sessionKey)), "utf-8");
+    const traceEvents = options?.includeToolTrace === false ? [] : store.getTraceEvents(sessionKey);
+    await fs.writeFile(
+      exportPath,
+      formatSessionMarkdown(session, store.getAllMessages(sessionKey), traceEvents, {
+        includeToolTrace: options?.includeToolTrace !== false,
+      }),
+      "utf-8",
+    );
     return true;
   });
   ipcMain.handle("command:export-json", async (_event, sessionKey: string) => {
@@ -2369,19 +2384,19 @@ const applicationReady = hasSingleInstanceLock
         console.error(`Global shortcut ${globalShortcutLabel(shortcut)} could not be registered.`);
       }
       const initialIndexSettled = new Promise<void>((resolve) => {
-        setTimeout(() => {
+        startupTasks.schedule(INITIAL_INDEX_DELAY_MS, () => {
           void runIndexSync().then(() => resolve(), () => resolve());
-        }, INITIAL_INDEX_DELAY_MS);
+        });
       });
       startAutoIndexRefresh();
-      void initialIndexSettled.then(() => skillService.startUsageRefresh());
-      setTimeout(() => {
-        void initialIndexSettled.then(() => remoteSessionService.startQueue());
-      }, INITIAL_SESSION_SYNC_QUEUE_START_DELAY_MS);
-      setTimeout(() => {
-        void initialIndexSettled.then(() => providerService.restoreCodexChatProxy());
-      }, INITIAL_PROVIDER_RESTORE_DELAY_MS);
-      void initialIndexSettled.then(() => appUpdateService.scheduleInitialCheck());
+      startupTasks.whenSettled(initialIndexSettled, () => skillService.startUsageRefresh());
+      startupTasks.schedule(INITIAL_SESSION_SYNC_QUEUE_START_DELAY_MS, () => {
+        startupTasks.whenSettled(initialIndexSettled, () => remoteSessionService.startQueue());
+      });
+      startupTasks.schedule(INITIAL_PROVIDER_RESTORE_DELAY_MS, () => {
+        startupTasks.whenSettled(initialIndexSettled, () => providerService.restoreCodexChatProxy());
+      });
+      startupTasks.whenSettled(initialIndexSettled, () => appUpdateService.scheduleInitialCheck());
     })
   : Promise.resolve();
 
@@ -2403,6 +2418,8 @@ app.on("activate", () => {
 });
 
 app.on("before-quit", () => {
+  quitStarted = true;
+  startupTasks.cancelAll();
   installedRuntimeMonitor?.stop();
   void appUpdateService.clearRunningProcess();
   stopAutoIndexRefresh();

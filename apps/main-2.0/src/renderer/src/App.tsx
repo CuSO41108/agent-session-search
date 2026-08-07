@@ -21,6 +21,7 @@ import type { InstalledSkill } from "../../core/skill-manager";
 import type { OpenVikingMemorySnapshot } from "../../core/openviking-memory";
 import type { RemoteHealthReport } from "../../core/remote-health";
 import type { SessionSyncHookStatus } from "../../core/session-sync-queue";
+import type { V1ImportResult } from "../../core/v1-import";
 import { liveSessionDeleteKey, type SessionBulkDeletePreview, type SessionBulkDeleteRequest } from "../../core/session-bulk-delete";
 import type { TeamChatRoomSummary } from "../../shared/team-chat";
 import { OPTIONAL_SESSION_SOURCE_DESCRIPTORS } from "../../core/session-sources";
@@ -1163,11 +1164,11 @@ export function App(): ReactElement {
     }, 1800);
   }
 
-  async function exportMarkdown(sessionKey: string): Promise<void> {
+  async function exportMarkdown(sessionKey: string, includeToolTrace: boolean): Promise<void> {
     setContextMenu(null);
     setActionStatus({ kind: "running", message: t("Exporting markdown...", "正在导出 Markdown...") });
     try {
-      const exported = await window.sessionSearch.exportMarkdown(sessionKey);
+      const exported = await window.sessionSearch.exportMarkdown(sessionKey, { includeToolTrace });
       if (!exported) {
         setActionStatus(null);
         return;
@@ -1408,6 +1409,23 @@ export function App(): ReactElement {
     } catch (error) {
       setSettingsFeedback({ kind: "error", message: error instanceof Error ? error.message : String(error) });
     }
+  }
+
+  async function importV1Data(): Promise<V1ImportResult> {
+    const result = await window.sessionSearch.importV1Data();
+    const [nextSettings, nextEnvironments] = await Promise.all([
+      window.sessionSearch.getSettings(),
+      window.sessionSearch.listEnvironments(),
+      load(),
+      loadSidebarMetadata(),
+      loadStats(),
+    ]);
+    appSettingsRef.current = nextSettings;
+    setAppSettings(nextSettings);
+    setEnvironments(nextEnvironments);
+    remoteSessions.invalidate();
+    void window.sessionSearch.getSessionSyncHookStatus().then(setSessionHookStatus).catch(() => setSessionHookStatus(null));
+    return result;
   }
 
   async function reloadEnvironmentData(): Promise<void> {
@@ -1914,7 +1932,7 @@ export function App(): ReactElement {
             () => window.sessionSearch.copyMarkdown(session.sessionKey),
             t("Markdown copied.", "Markdown 已复制。"),
           ),
-          exportMarkdown: (session) => void exportMarkdown(session.sessionKey),
+          exportMarkdown: (session, includeToolTrace) => void exportMarkdown(session.sessionKey, includeToolTrace),
           exportJson: (session) => void exportJson(session.sessionKey),
           copyPlain: (session) => void runAction(
             t("Copying plain text", "正在复制纯文本"),
@@ -1974,7 +1992,7 @@ export function App(): ReactElement {
           onCopyMarkdown={() =>
             void runAction(t("Copying markdown", "正在复制 Markdown"), () => window.sessionSearch.copyMarkdown(contextMenu.session.sessionKey), t("Markdown copied.", "Markdown 已复制。"))
           }
-          onExportMarkdown={() => void exportMarkdown(contextMenu.session.sessionKey)}
+          onExportMarkdown={(includeToolTrace) => void exportMarkdown(contextMenu.session.sessionKey, includeToolTrace)}
           onExportJson={() => void exportJson(contextMenu.session.sessionKey)}
           onDelete={() => requestDeleteSession(contextMenu.session)}
           onReveal={() =>
@@ -2105,6 +2123,7 @@ export function App(): ReactElement {
           onDeleteEnvironment={(environment) => void deleteEnvironment(environment)}
           onAddSsh={() => setSshDialogOpen(true)}
           onAddWsl={() => setWslDialogOpen(true)}
+          onImportV1={importV1Data}
           onOpenApiConfig={() => {
             setSettingsOpen(false);
             void navigateToPage("providers");

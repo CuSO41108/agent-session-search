@@ -100,11 +100,10 @@ test("finds only newly added non-template release notes", () => {
 });
 
 test("workflows require branch notes and publish accumulated changes every day or on demand", async () => {
-  const noteWorkflow = await readFile(".github/workflows/release-note-check.yml", "utf8");
   const qualityWorkflow = await readFile(".github/workflows/quality-check.yml", "utf8");
   const releaseWorkflow = await readFile(".github/workflows/release.yml", "utf8");
-  assert.match(noteWorkflow, /pull_request:/);
-  assert.match(noteWorkflow, /release-notes\.mjs check-range/);
+  assert.match(qualityWorkflow, /pull_request:/);
+  assert.match(qualityWorkflow, /- name: Validate release note\s+run: node scripts\/release-notes\.mjs check-range/);
   assert.match(qualityWorkflow, /os:\s*\[ubuntu-latest, macos-latest, windows-latest\]/);
   assert.match(qualityWorkflow, /npm run setup/);
   assert.match(qualityWorkflow, /ELECTRON_SKIP_BINARY_DOWNLOAD:\s*["']1["']/);
@@ -175,7 +174,6 @@ test("workflows require branch notes and publish accumulated changes every day o
 
 test("V2 releases publish the complete OpenViking runtime set", async () => {
   const releaseWorkflow = await readFile(".github/workflows/release.yml", "utf8");
-  const runtimeCheckWorkflow = await readFile(".github/workflows/openviking-runtime-check.yml", "utf8");
   const runtimeInputScript = await readFile("apps/main-2.0/scripts/verify-openviking-runtime-inputs.mjs", "utf8");
   const runtimeJob = releaseWorkflow.slice(
     releaseWorkflow.indexOf("  openviking-runtime:"),
@@ -188,19 +186,8 @@ test("V2 releases publish the complete OpenViking runtime set", async () => {
   assert.match(releaseWorkflow, /runner:\s*macos-15-intel[\s\S]*platform:\s*darwin[\s\S]*arch:\s*x64/);
   assert.match(releaseWorkflow, /runner:\s*windows-2025[\s\S]*platform:\s*win32[\s\S]*arch:\s*x64/);
   assert.match(releaseWorkflow, /apps\/main-2\.0\/scripts\/build-openviking-runtime\.mjs/);
-  assert.match(runtimeCheckWorkflow, /pull_request:[\s\S]*paths:/);
-  assert.match(runtimeCheckWorkflow, /runner:\s*macos-15[\s\S]*platform:\s*darwin[\s\S]*arch:\s*arm64/);
-  assert.match(runtimeCheckWorkflow, /runner:\s*macos-15-intel[\s\S]*platform:\s*darwin[\s\S]*arch:\s*x64/);
-  assert.match(runtimeCheckWorkflow, /runner:\s*windows-2025[\s\S]*platform:\s*win32[\s\S]*arch:\s*x64/);
-  assert.match(runtimeCheckWorkflow, /--version 0\.4\.11-r4/);
-  assert.match(runtimeCheckWorkflow, /apps\/main-2\.0\/scripts\/build-openviking-runtime\.mjs/);
-  assert.doesNotMatch(runtimeCheckWorkflow, /upload-artifact|gh release|contents:\s*write/);
-  const targetPattern = /- runner:\s*(\S+)\s+platform:\s*(\S+)\s+arch:\s*(\S+)\s+python_url:\s*(\S+)\s+python_sha256:\s*(\S+)/gu;
-  const targets = (workflow) => [...workflow.matchAll(targetPattern)].map((match) => match.slice(1));
-  assert.deepEqual(targets(runtimeCheckWorkflow), targets(runtimeJob));
   const releaseRuntimeVersion = /--version\s+(\S+)/u.exec(runtimeJob)?.[1];
-  const checkedRuntimeVersion = /--version\s+(\S+)/u.exec(runtimeCheckWorkflow)?.[1];
-  assert.equal(checkedRuntimeVersion, releaseRuntimeVersion);
+  assert.ok(releaseRuntimeVersion, "release workflow must pin the OpenViking runtime version");
   assert.match(runtimeInputScript, new RegExp(`OPENVIKING_VERSION = "${releaseRuntimeVersion.replace(/-r[1-9][0-9]*$/u, "")}"`, "u"));
   assert.match(runtimeJob, /name:\s*Prepare isolated Rust toolchain[\s\S]*rustup default stable/);
   assert.match(runtimeJob, /RUSTUP_HOME:\s*\$\{\{ runner\.temp \}\}\/openviking-rustup/);

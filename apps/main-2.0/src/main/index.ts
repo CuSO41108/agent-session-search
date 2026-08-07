@@ -29,6 +29,7 @@ import { indexMigratedSessionFile, syncDefaultSessionsInBatches, type IndexStatu
 import { createIndexRunCoordinator } from "../core/index-run-coordinator";
 import { createIndexProgressPublisher } from "./index-progress";
 import { createSessionIndexFailureLogger } from "./session-index-failure-log";
+import { createStartupTaskScheduler } from "./startup-tasks";
 import {
   type SessionJsonExportFormat,
 } from "../core/format-session";
@@ -180,6 +181,7 @@ import { SkillService, type SkillUsageHookSetup } from "./services/skill-service
 import { SessionCatalogService } from "./services/session-catalog-service";
 import { SessionCommandService } from "./services/session-command-service";
 import { RemoteSessionAccess } from "./services/remote-session-access";
+import { V1SessionImportService } from "./services/v1-session-import-service";
 import { bootstrapApplicationPaths } from "./app-path-bootstrap";
 import { startPostgresRuntime, type PostgresRuntime } from "./postgres/managed-postgres";
 import { WORKFLOW_PORTABLE_MAX_BYTES } from "../automation/engine/main/hub/workflow/workflow-portable-file";
@@ -320,7 +322,9 @@ let openVikingHookManifestService: OpenVikingHookManifestService | null = null;
 let openVikingHookStateFlusher: OpenVikingHookStateFlusher | null = null;
 let automationQuitReady = false;
 let automationQuitStarted = false;
+const startupTasks = createStartupTaskScheduler(() => automationQuitStarted);
 let postgresRuntime: PostgresRuntime | null = null;
+let postgresRuntimeStartup: Promise<PostgresRuntime> | null = null;
 let postgresDatabase: PostgresDatabase | null = null;
 let quickSearchWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
@@ -398,6 +402,63 @@ function getSettings(): AppSettings {
     globalShortcut: normalizeGlobalShortcut(settings.globalShortcut),
     defaultTerminal: normalizeTerminal(settings.defaultTerminal),
   };
+}
+
+async function applySettingsUpdate(settings: AppSettingsUpdate): Promise<AppSettings> {
+  const previous = getSettings();
+  const next = mergeAppSettings(previous, settings);
+  const openVikingSettingsChanged = [
+    "openVikingMemoryEnabled",
+    "openVikingClaudeEnabled",
+    "openVikingCodexEnabled",
+    "openVikingOpenCodeEnabled",
+    "openVikingRecallTokenBudget",
+  ].some((key) => key in settings);
+  const openVikingExtractionChanged = openVikingExtractionSettingsChanged(settings);
+  if (next.globalShortcut !== previous.globalShortcut && !registerAppGlobalShortcut(next.globalShortcut)) {
+    throw new Error(
+      `Shortcut ${globalShortcutLabel(next.globalShortcut)} could not be registered. It may be used by another app.`,
+    );
+  }
+  if ("remoteSyncEnabled" in settings && !next.remoteSyncEnabled) {
+    remoteSessionService.disableSync();
+  }
+  if ("evalEnabled" in settings && next.evalEnabled && !previous.evalEnabled) {
+    try {
+      if (skillService.getUsageHookStatus()) {
+        skillService.uninstallUsageHook();
+        skillService.installUsageHook();
+      }
+    } catch (error) {
+      console.error(`Failed to refresh the skill usage hook for Eval: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  await providerService.persistKeysFromUpdate(settings, next);
+  settingsStore.set(providerService.removeStoredKeys(next));
+  if (openVikingSettingsChanged) {
+    reconcileOpenVikingMemoryHooks(next);
+    if (!next.openVikingMemoryEnabled) await openVikingControlService?.stopRuntime().catch((error) => {
+      console.error(
+        `Failed to stop OpenViking after Memory was disabled: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    });
+    await refreshOpenVikingHookManifest();
+    if (!openVikingExtractionChanged) await startConfiguredOpenVikingRuntime(next);
+  }
+  if (openVikingControlService && openVikingExtractionChanged) {
+    const snapshot = await openVikingControlService.snapshot();
+    await restartOpenVikingForExtractionSettings({
+      update: settings,
+      enabled: Object.values(openVikingIntegrations(next)).some(Boolean),
+      runtimeState: snapshot.runtime.state,
+      stop: () => openVikingControlService!.stopRuntime(),
+      start: () => startConfiguredOpenVikingRuntime(next),
+    });
+  }
+  if ("autoCheckUpdates" in settings) await appUpdateService.setAutoCheckEnabled(next.autoCheckUpdates);
+  await pruneDisabledOptionalSources(next);
+  if ("showInDock" in settings) applyDockVisibility(next.showInDock);
+  return providerService.addStoredKeys(next);
 }
 
 function bundledAutomationWorkflowsPath(): string {
@@ -2481,65 +2542,18 @@ function registerIpc(): void {
   });
   ipcMain.handle("settings:get", () => providerService.hydrateSettings());
   registerProvidersIpc(ipcMain, providerService);
-  ipcMain.handle("settings:set", async (_event, settings: AppSettingsUpdate) => {
-    const previous = getSettings();
-    const next = mergeAppSettings(previous, settings);
-    const openVikingSettingsChanged = [
-      "openVikingMemoryEnabled",
-      "openVikingClaudeEnabled",
-      "openVikingCodexEnabled",
-      "openVikingOpenCodeEnabled",
-      "openVikingRecallTokenBudget",
-    ].some((key) => key in settings);
-    const openVikingExtractionChanged = openVikingExtractionSettingsChanged(settings);
-    if (next.globalShortcut !== previous.globalShortcut && !registerAppGlobalShortcut(next.globalShortcut)) {
-      throw new Error(
-        `Shortcut ${globalShortcutLabel(next.globalShortcut)} could not be registered. It may be used by another app.`,
-      );
-    }
-    if ("remoteSyncEnabled" in settings && !next.remoteSyncEnabled) {
-      remoteSessionService.disableSync();
-    }
-    // Enabling Eval re-installs an already-present usage hook so the active
-    // script is this app's copy, which captures the session linkage fields.
-    // Install alone reports "already" for any script with the same basename
-    // (e.g. the V1 copy), so remove our hook entry first, then re-add it.
-    if ("evalEnabled" in settings && next.evalEnabled && !previous.evalEnabled) {
-      try {
-        if (skillService.getUsageHookStatus()) {
-          skillService.uninstallUsageHook();
-          skillService.installUsageHook();
-        }
-      } catch (error) {
-        console.error(`Failed to refresh the skill usage hook for Eval: ${error instanceof Error ? error.message : String(error)}`);
-      }
-    }
-    await providerService.persistKeysFromUpdate(settings, next);
-    settingsStore.set(providerService.removeStoredKeys(next));
-    if (openVikingSettingsChanged) {
-      reconcileOpenVikingMemoryHooks(next);
-      if (!next.openVikingMemoryEnabled) await openVikingControlService?.stopRuntime().catch((error) => {
-        console.error(
-          `Failed to stop OpenViking after Memory was disabled: ${error instanceof Error ? error.message : String(error)}`,
-        );
-      });
-      await refreshOpenVikingHookManifest();
-      if (!openVikingExtractionChanged) await startConfiguredOpenVikingRuntime(next);
-    }
-    if (openVikingControlService && openVikingExtractionChanged) {
-      const snapshot = await openVikingControlService.snapshot();
-      await restartOpenVikingForExtractionSettings({
-        update: settings,
-        enabled: Object.values(openVikingIntegrations(next)).some(Boolean),
-        runtimeState: snapshot.runtime.state,
-        stop: () => openVikingControlService!.stopRuntime(),
-        start: () => startConfiguredOpenVikingRuntime(next),
-      });
-    }
-    if ("autoCheckUpdates" in settings) await appUpdateService.setAutoCheckEnabled(next.autoCheckUpdates);
-    await pruneDisabledOptionalSources(next);
-    if ("showInDock" in settings) applyDockVisibility(next.showInDock);
-    return providerService.addStoredKeys(next);
+  ipcMain.handle("settings:set", (_event, settings: AppSettingsUpdate) => applySettingsUpdate(settings));
+  ipcMain.handle("v1-import:run", async () => {
+    const result = await new V1SessionImportService({
+      store,
+      appDataPath: app.getPath("appData"),
+      v2UserDataPath: app.getPath("userData"),
+      applySettings: async (update) => {
+        await applySettingsUpdate(update);
+      },
+    }).importData();
+    emitEnvironmentsUpdated();
+    return result;
   });
   registerSkillsIpc(ipcMain, skillService);
   registerRulesIpc(ipcMain, createRulesSyncService());
@@ -2616,7 +2630,9 @@ if (!app.requestSingleInstanceLock()) {
 app.whenReady().then(async () => {
   await appUpdateService.registerRunningProcess();
   void installedRuntimeMonitor?.start();
-  postgresRuntime = await startPostgresRuntime({ userDataPath: app.getPath("userData") });
+  postgresRuntimeStartup = startPostgresRuntime({ userDataPath: app.getPath("userData") });
+  postgresRuntime = await postgresRuntimeStartup;
+  if (automationQuitStarted) return;
   postgresDatabase = PostgresDatabase.connect(postgresRuntime.connectionUrl, {
     migrations: POSTGRES_MIGRATIONS,
   });
@@ -2641,6 +2657,7 @@ app.whenReady().then(async () => {
   }
   await providerService.migrateLegacyKeys();
   await pruneDisabledOptionalSources(getSettings());
+  if (automationQuitStarted) return;
   automationService = createAutomationService();
   registerIpc();
   quotaService.start();
@@ -2661,20 +2678,20 @@ app.whenReady().then(async () => {
     console.error(`Global shortcut ${globalShortcutLabel(shortcut)} could not be registered.`);
   }
   const initialIndexSettled = new Promise<void>((resolve) => {
-    setTimeout(() => {
+    startupTasks.schedule(INITIAL_INDEX_DELAY_MS, () => {
       void runIndexSync().then(() => resolve(), () => resolve());
-    }, INITIAL_INDEX_DELAY_MS);
+    });
   });
   startAutoIndexRefresh();
-  void initialIndexSettled.then(() => skillService.startUsageRefresh());
-  setTimeout(() => {
-    void initialIndexSettled.then(() => remoteSessionService.startQueue());
-  }, INITIAL_SESSION_SYNC_QUEUE_START_DELAY_MS);
-  setTimeout(() => {
-    void initialIndexSettled.then(() => providerService.restoreCodexChatProxy());
-  }, INITIAL_PROVIDER_RESTORE_DELAY_MS);
-  setTimeout(() => {
-    void initialIndexSettled.then(async () => {
+  startupTasks.whenSettled(initialIndexSettled, () => skillService.startUsageRefresh());
+  startupTasks.schedule(INITIAL_SESSION_SYNC_QUEUE_START_DELAY_MS, () => {
+    startupTasks.whenSettled(initialIndexSettled, () => remoteSessionService.startQueue());
+  });
+  startupTasks.schedule(INITIAL_PROVIDER_RESTORE_DELAY_MS, () => {
+    startupTasks.whenSettled(initialIndexSettled, () => providerService.restoreCodexChatProxy());
+  });
+  startupTasks.schedule(INITIAL_OPENVIKING_RUNTIME_DELAY_MS, () => {
+    startupTasks.whenSettled(initialIndexSettled, async () => {
       try {
         await refreshOpenVikingHookManifest();
         reconcileOpenVikingMemoryHooks(getSettings());
@@ -2683,8 +2700,8 @@ app.whenReady().then(async () => {
         console.error(`Failed to configure OpenViking memory hooks: ${error instanceof Error ? error.message : String(error)}`);
       }
     });
-  }, INITIAL_OPENVIKING_RUNTIME_DELAY_MS);
-  void initialIndexSettled.then(() => appUpdateService.scheduleInitialCheck());
+  });
+  startupTasks.whenSettled(initialIndexSettled, () => appUpdateService.scheduleInitialCheck());
 }).catch(async (error) => {
   console.error(`Failed to start AgentRecall: ${error instanceof Error ? error.message : String(error)}`);
   await postgresDatabase?.close().catch(() => undefined);
@@ -2707,6 +2724,7 @@ app.on("before-quit", (event) => {
   event.preventDefault();
   if (automationQuitStarted) return;
   automationQuitStarted = true;
+  startupTasks.cancelAll();
   installedRuntimeMonitor?.stop();
   openVikingHookStateFlusher?.stop();
   stopAutoIndexRefresh();
@@ -2728,6 +2746,11 @@ app.on("before-quit", (event) => {
     openVikingHookManifestService?.clear() ?? Promise.resolve(),
     openVikingRuntimeService?.stop() ?? Promise.resolve(),
   ]).then(async () => {
+    // Quit can land while startPostgresRuntime is still in flight; adopt the
+    // pending startup so the embedded database is stopped instead of orphaned.
+    if (!postgresRuntime && postgresRuntimeStartup) {
+      postgresRuntime = await postgresRuntimeStartup.catch(() => null);
+    }
     await postgresDatabase?.close().catch((error) => {
       console.error(`Failed to close AgentRecall data store: ${error instanceof Error ? error.message : String(error)}`);
     });

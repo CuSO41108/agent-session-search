@@ -134,4 +134,29 @@ describe("PostgresDatabase", () => {
     await closing;
     warn.mockRestore();
   });
+
+  it("classifies close-race errors only after closing begins", async () => {
+    const pool = new ControlledPostgresPool();
+    const database = new PostgresDatabase(pool);
+    const shutdownError = Object.assign(
+      new Error("terminating connection due to administrator command"),
+      { code: "57P01" },
+    );
+    const closedError = new Error("PostgreSQL database is closed");
+    const terminatedError = new Error("Connection terminated unexpectedly");
+
+    expect(database.isClosedError(shutdownError)).toBe(false);
+    expect(database.isClosedError(closedError)).toBe(false);
+    expect(database.isClosedError("57P01")).toBe(false);
+
+    const closing = database.close();
+
+    expect(database.isClosedError(shutdownError)).toBe(true);
+    expect(database.isClosedError(closedError)).toBe(true);
+    expect(database.isClosedError(terminatedError)).toBe(true);
+    expect(database.isClosedError(new Error("syntax error"))).toBe(false);
+
+    pool.finishEnd();
+    await closing;
+  });
 });

@@ -103,6 +103,12 @@ export class PostgresDatabase implements PostgresQueryable {
     return this.closePromise;
   }
 
+  isClosedError(error: unknown): boolean {
+    if (!this.closed || !(error instanceof Error)) return false;
+    if (error.message === "PostgreSQL database is closed") return true;
+    return isPostgresShutdownError(error);
+  }
+
   private handlePoolError(error: Error): void {
     if (this.closed && isPostgresShutdownError(error)) return;
     const detail = redactPostgresConnectionText(error.stack ?? error.message);
