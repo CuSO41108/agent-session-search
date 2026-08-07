@@ -1,7 +1,7 @@
 import { isWorkflowV2WorkerOutput, type WorkflowV2WorkerOutput } from "./packets";
 import type { WorkflowV2Plan } from "./planning";
 import type { WorkflowV2ScriptParameterDef } from "./definition";
-import type { WorkflowV2ReviewVerdict } from "./review";
+import type { WorkflowV2ReviewAttemptRecord, WorkflowV2ReviewVerdict } from "./review";
 import type { WorkflowV2InterventionAction } from "./review";
 import { isWorkflowV2InterventionAction, isWorkflowV2ReviewTraceEntry, isWorkflowV2ReviewVerdict } from "./review";
 import type { WorkflowV2RunState } from "./state";
@@ -222,7 +222,7 @@ function isPersistedExecutionState(
     if (!isNodeExecutionStatus(node.status) || !isNonNegativeSafeInteger(node.attempt)) return false;
     if (node.reviewAttempt !== undefined && !isNonNegativeSafeInteger(node.reviewAttempt)) return false;
     if (node.reviewInfrastructureAttempt !== undefined && !isNonNegativeSafeInteger(node.reviewInfrastructureAttempt)) return false;
-    if (node.reviewHistory !== undefined && (!Array.isArray(node.reviewHistory) || !node.reviewHistory.every(isReviewAttemptRecord))) return false;
+    if (node.reviewHistory !== undefined && (!Array.isArray(node.reviewHistory) || !node.reviewHistory.every(isWorkflowV2ReviewAttemptRecord))) return false;
     return [node.dependsOn, node.dependents, node.blockedBy, node.resourceLocks]
       .every((items) => Array.isArray(items) && items.every((item) => typeof item === "string"));
   });
@@ -274,7 +274,7 @@ function isNodeExecutionStatus(value: unknown): boolean {
     || value === "failed";
 }
 
-function isReviewAttemptRecord(value: unknown): boolean {
+export function isWorkflowV2ReviewAttemptRecord(value: unknown): value is WorkflowV2ReviewAttemptRecord {
   return isRecord(value)
     && isPositiveSafeInteger(value.reviewAttempt)
     && isWorkflowV2WorkerOutput(value.candidate)

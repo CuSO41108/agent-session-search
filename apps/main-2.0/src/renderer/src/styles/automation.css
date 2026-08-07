@@ -1668,3 +1668,53 @@
   background: var(--panel-bg);
   color: var(--text);
 }
+
+.workflow-node-agent-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 8px 18px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.workflow-node-agent-main {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.workflow-node-agent-main > .workflow-node-agent-messages {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.workflow-node-agent-tabs button {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 8px 10px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.workflow-node-agent-tabs button.is-active {
+  border-bottom-color: var(--accent);
+  color: var(--text);
+}
+
+.workflow-node-agent-tabs button.needs-attention span {
+  color: var(--danger);
+}
+
+.workflow-node-agent-tabs button span {
+  font-size: 11px;
+}
+
+.workflow-node-review-attempt {
+  padding: 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  background: var(--panel-subtle);
+}

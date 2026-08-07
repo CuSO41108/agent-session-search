@@ -10,7 +10,9 @@ export function workflowV2ReviewGateForNode(definition: WorkflowV2Definition, no
 
 export function migrateWorkflowV2ReviewGates(definition: WorkflowV2Definition, legacyReviewerConfiguredAgentId: string): WorkflowV2Definition {
   const scriptNodeIds = new Set(definition.nodes.filter((node) => node.execModel === "script").map((node) => node.id));
-  const explicitGates = structuredClone(definition.reviewGates ?? []).filter((gate) => !scriptNodeIds.has(gate.targetNodeId));
+  const explicitGates = (definition.reviewGates ?? [])
+    .filter((gate) => !scriptNodeIds.has(gate.targetNodeId))
+    .map(withoutLegacyReviewGateFields);
   const gatedNodeIds = new Set(explicitGates.map((gate) => gate.targetNodeId));
   const gateIds = new Set(explicitGates.map((gate) => gate.id));
   const nodes = definition.nodes.map((node) => {
@@ -40,5 +42,11 @@ function withoutLegacyReviewFields(node: WorkflowV2Node): WorkflowV2Node {
   delete next.reviewLevel;
   delete next.reviewMaxRetries;
   delete next.judgeDimensions;
+  return next;
+}
+
+function withoutLegacyReviewGateFields(gate: WorkflowV2ReviewGate): WorkflowV2ReviewGate {
+  const next = structuredClone(gate) as WorkflowV2ReviewGate & { requiredTools?: unknown };
+  delete next.requiredTools;
   return next;
 }

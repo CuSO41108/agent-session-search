@@ -235,11 +235,15 @@ export function WorkflowPage({ controller: source }: { controller: WorkflowContr
   const openNodeProgress = openNodeId ? runProgressByNodeId.get(openNodeId) : undefined;
   const openNodeTaskId = openNodeId ? runProgressByNodeId.get(openNodeId)?.taskId : undefined;
   const openNodeTask = nodeTasks.find((task) => task.id === openNodeTaskId);
+  const openNodeReviewTaskId = openNodeId ? runProgressByNodeId.get(openNodeId)?.reviewTaskId : undefined;
+  const openNodeReviewTask = nodeTasks.find((task) => task.id === openNodeReviewTaskId);
   const nodeAgentSessions = graph.nodes.filter((node) => node.execModel === "llm").map((node) => {
     const conversation = nodeConversations.find((candidate) => candidate.nodeId === node.id);
     const taskId = runProgressByNodeId.get(node.id)?.taskId;
     const task = taskId ? nodeTasks.find((candidate) => candidate.id === taskId) : undefined;
-    return { nodeId: node.id, nodeTitle: node.title, ...(conversation ? { conversation } : {}), ...(task ? { task } : {}) };
+    const reviewTaskId = runProgressByNodeId.get(node.id)?.reviewTaskId;
+    const reviewTask = reviewTaskId ? nodeTasks.find((candidate) => candidate.id === reviewTaskId) : undefined;
+    return { nodeId: node.id, nodeTitle: node.title, ...(conversation ? { conversation } : {}), ...(task ? { task } : {}), ...(reviewTask ? { reviewTask } : {}) };
   });
   const nodePositionProps = {};
 
@@ -433,6 +437,7 @@ export function WorkflowPage({ controller: source }: { controller: WorkflowContr
         {...(onCleanupRunMaterials ? { onCleanupRunMaterials } : {})}
         {...(activeRunId ? { writableRunId: activeRunId } : {})}
         {...(onResolveIntervention ? { onResolveIntervention } : {})}
+        {...(source.onResolveRuntimeApproval ? { onResolveRuntimeApproval: source.onResolveRuntimeApproval } : {})}
         onSelectRun={setSelectedHistoryRunId}
         onClose={() => setRunCenterOpen(false)}
       />
@@ -625,6 +630,8 @@ export function WorkflowPage({ controller: source }: { controller: WorkflowContr
         onUpdateNode={(update) => source.onUpdateNode(openNodeGraphNode.id, update)}
         {...(openNodeConversation ? { conversation: openNodeConversation } : {})}
         {...(openNodeTask ? { task: openNodeTask } : {})}
+        {...(openNodeReviewTask ? { reviewTask: openNodeReviewTask } : {})}
+        reviewEnabled={definition.reviewGates?.some((gate) => gate.targetNodeId === openNodeGraphNode.id) === true}
         sessions={nodeAgentSessions}
         {...(openNodeId ? { selectedNodeId: openNodeId } : {})}
         {...(openNodeProgress ? { progress: openNodeProgress } : {})}

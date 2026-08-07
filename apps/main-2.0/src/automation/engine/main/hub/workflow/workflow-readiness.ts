@@ -25,18 +25,6 @@ export function inspectWorkflowReadiness(input: {
   for (const gate of input.workflow.definition.reviewGates ?? []) {
     const agent = agents.get(gate.configuredAgentId);
     inspectRoute({ scope: "reviewer", nodeId: gate.targetNodeId, field: "reviewGates.configuredAgentId", configuredAgentId: gate.configuredAgentId, modelId: agent?.modelId ?? "default" });
-    if (agent) {
-      if ((gate.requiredTools?.length ?? 0) > 0 && agent.runtimeAgentId !== "codex" && agent.runtimeAgentId !== "claude") {
-        issues.push({ code: "REQUIRED_TOOL_MISSING", scope: "reviewer", nodeId: gate.targetNodeId, field: "reviewGates.requiredTools", configuredAgentId: gate.configuredAgentId, message: `Review Gate ${gate.id} requires per-tool MCP isolation, which is unavailable for Runtime ${agent.runtimeAgentId}. Choose a Codex or Claude Review Agent, or remove external review tools.` });
-        continue;
-      }
-      const tools = availableTools(agent, input.mcpServers, true);
-      for (const requiredTool of gate.requiredTools ?? []) {
-        if (!tools.has(requiredTool)) {
-          issues.push({ code: "REQUIRED_TOOL_MISSING", scope: "reviewer", nodeId: gate.targetNodeId, field: "reviewGates.requiredTools", configuredAgentId: gate.configuredAgentId, message: `Review Gate ${gate.id} requires unavailable read-only tool ${requiredTool}.` });
-        }
-      }
-    }
   }
 
   for (const node of input.workflow.definition.nodes) {
@@ -92,13 +80,13 @@ export function portableWorkflowReadiness(file: WorkflowPortableFileV1, catalogs
   });
 }
 
-function availableTools(agent: ConfiguredAgent, servers: McpServerDefinition[], readOnlyOnly = false): Set<string> {
+function availableTools(agent: ConfiguredAgent, servers: McpServerDefinition[]): Set<string> {
   const serverById = new Map(servers.filter((server) => server.enabled).map((server) => [server.id, server]));
   const tools = new Set<string>();
   for (const binding of agent.mcpBindings ?? []) {
     const server = serverById.get(binding.serverId);
     if (!server) continue;
-    const declared = new Set(server.tools.filter((tool) => !readOnlyOnly || tool.readOnly === true).map((tool) => tool.name));
+    const declared = new Set(server.tools.map((tool) => tool.name));
     const enabled = binding.toolAllowlist.length > 0 ? binding.toolAllowlist : declared;
     for (const name of enabled) if (declared.has(name)) tools.add(name);
   }

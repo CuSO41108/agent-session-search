@@ -53,6 +53,7 @@ describe("Workflow V2 quality reviewer", () => {
     expect(response.verdict).toMatchObject({ decision: "reject", qualityLevel: "medium" });
     expect(workflowV2ReviewerPrompt(input)).toContain("Deliver a verified report");
     expect(workflowV2ReviewerPrompt(input)).toContain("Write every human-readable review field in Simplified Chinese");
+    expect(workflowV2ReviewerPrompt(input)).toContain("must go through the Approval Broker");
   });
 
   test("requires every configured dimension exactly once", () => {

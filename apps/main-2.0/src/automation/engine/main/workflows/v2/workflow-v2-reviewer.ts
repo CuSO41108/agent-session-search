@@ -27,7 +27,6 @@ export function createWorkflowV2ReviewerInput(input: {
     ...(input.gate ? {
       gateId: input.gate.id,
       reviewerConfiguredAgentId: input.gate.configuredAgentId,
-      ...(input.gate.requiredTools?.length ? { requiredTools: [...input.gate.requiredTools] } : {}),
     } : {}),
     executorNodeId: input.node.id,
     objective: input.objective,
@@ -75,6 +74,7 @@ export function workflowV2ReviewerPrompt(input: WorkflowV2ReviewerInput): string
   return [
     `Act as an independent Workflow V2 reviewer for executor node ${input.executorNodeId}.`,
     "Do not continue the executor's work and do not certify based on its self-assessment.",
+    "Operate only as a reviewer: do not modify the Workflow definition or executor result. Use the Review Agent's normal tool bindings; any permission-requiring operation must go through the Approval Broker.",
     "Evaluate the result against the Workflow objective, node constraints, and every configured judge dimension using only concrete evidence in the packet.",
     "Return one result for every judge dimension. Use low, medium, or high. Include at least one concrete, non-empty evidence item for every dimension. The engine derives the overall quality level and pass/fail decision.",
     "Write every human-readable review field in Simplified Chinese, including reasons, requiredFixes, evidence, and each dimension result's reason and evidence. Keep protocol enums, reviewerNodeId, node IDs, and configured dimension keys unchanged.",

@@ -28,6 +28,7 @@ export class CodexAgentExecutor implements AgentExecutor {
     const model = runtimeModelId(modelFromRuntimeConfig(this.context.runtimeConfig));
     const channel = this.options.channelById(this.context.channelId);
     const threadIdFromConversation = codexThreadIdFromConversation(this.context.runtimeConversation);
+    const approvalPolicy = this.context.planningWorkflowId ? "on-request" : "never";
     const mcp = codexMcpLaunchConfig(this.context.configuredAgentId
       ? this.options.mcpServersForAgent?.(this.context.configuredAgentId, this.context.allowedMcpTools) ?? []
       : []);
@@ -77,7 +78,7 @@ export class CodexAgentExecutor implements AgentExecutor {
           model,
           modelProvider: null,
           cwd: this.context.workDir,
-          approvalPolicy: "never",
+          approvalPolicy,
           config: null,
           baseInstructions: null,
           developerInstructions: this.context.developerInstructions,
@@ -87,7 +88,7 @@ export class CodexAgentExecutor implements AgentExecutor {
           modelProvider: null,
           profile: null,
           cwd: this.context.workDir,
-          approvalPolicy: "never",
+          approvalPolicy,
           config: null,
           baseInstructions: null,
           developerInstructions: this.context.developerInstructions,

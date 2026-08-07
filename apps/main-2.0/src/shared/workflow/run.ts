@@ -31,6 +31,8 @@ export interface WorkflowRunProgressItem {
   status: WorkflowRunNodeStatus;
   detail?: string;
   taskId?: string;
+  /** Active Runtime Review Gate task, kept separate from the executor task. */
+  reviewTaskId?: string;
   intervention?: WorkflowV2HumanIntervention;
   acceptance?: WorkflowV2NodeAcceptanceReport;
   scriptReceipt?: WorkflowV2ScriptExecutionReceipt;
@@ -40,6 +42,10 @@ export interface WorkflowRunProgressItem {
   outputs?: Record<string, unknown>;
   reviewHistory?: import("../workflow-v2/review").WorkflowV2ReviewAttemptRecord[];
   messages?: WorkflowNodeMessage[];
+  /** Live Reviewer messages mirrored into the Run before the verdict is finalized. */
+  reviewMessages?: WorkflowNodeMessage[];
+  /** Durable in-progress Reviewer trace, including infrastructure retries. */
+  reviewTrace?: import("../workflow-v2/review").WorkflowV2ReviewTraceEntry[];
   telemetry?: WorkflowRunNodeTelemetry;
 }
 

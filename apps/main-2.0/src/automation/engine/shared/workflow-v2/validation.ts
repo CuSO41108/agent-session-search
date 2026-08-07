@@ -412,11 +412,6 @@ function appendReviewGateValidationErrors(definition: WorkflowV2Definition, erro
         dimensionKeys.add(dimensionKey);
       }
     }
-    if (gate.requiredTools !== undefined && (!Array.isArray(gate.requiredTools)
-      || gate.requiredTools.some((tool) => typeof tool !== "string" || !tool.trim() || tool !== tool.trim())
-      || new Set(gate.requiredTools.map((tool) => typeof tool === "string" ? tool.trim() : tool)).size !== gate.requiredTools.length)) {
-      errors.push(`Workflow V2 Review Gate ${gateId} requiredTools must contain unique non-empty tool names.`);
-    }
     if (targetNode?.execModel === "llm" && targetNode.configuredAgentId === gate.configuredAgentId) {
       warnings.push(`Workflow V2 Review Gate ${gateId} uses the same Agent as target node ${targetNodeId}; review independence is reduced.`);
     }

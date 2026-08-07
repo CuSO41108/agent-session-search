@@ -94,7 +94,7 @@ export function useWorkflowFeatureController({
       ...(activeWorkflow?.workflowV2Plan ? { workflowV2Plan: activeWorkflow.workflowV2Plan } : {}),
       runs: workflowRuns,
       runHistoryConversations,
-      nodeTasks: snapshot.tasks.filter((task) => draft.workflowRunProgress.some((item) => item.taskId === task.id)),
+      nodeTasks: snapshot.tasks.filter((task) => draft.workflowRunProgress.some((item) => item.taskId === task.id || item.reviewTaskId === task.id)),
       nodeConversations,
       onObjectiveChange: draft.setWorkflowObjective,
       onPauseNode: async (nodeId: string) => {

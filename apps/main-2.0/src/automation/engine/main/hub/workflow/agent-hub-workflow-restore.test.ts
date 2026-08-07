@@ -186,6 +186,39 @@ describe("Workflow V2 AgentHub durable restore", () => {
     ]);
   });
 
+  test("restores Review Gate history and expires live reviewer approvals", async () => {
+    const input = await fixture();
+    input.run.progress[0] = {
+      ...input.run.progress[0]!,
+      reviewTaskId: "review-task-that-cannot-survive-restart",
+      reviewMessages: [{
+        id: "review-approval",
+        role: "system",
+        content: "Approval pending",
+        at: 1_200,
+        eventType: "approval_request",
+        event: { id: "event-1", type: "approval_request", content: "Allow MCP write?", timestamp: 1_200, requestId: "approval-1", requestState: "live" },
+      }],
+      reviewTrace: [{ id: "trace-1", kind: "approval_request", at: 1_200, content: "Allow MCP write?", infrastructureAttempt: 1 }],
+      reviewHistory: [{
+        reviewAttempt: 1,
+        candidate: { nodeId: "draft", summary: "Draft persisted", outputs: { draft: "const durable = true;" }, proposals: [] },
+        verdict: { decision: "accept", reasons: ["Complete."], riskLevel: "low", confidence: "high", qualityLevel: "high", dimensionResults: [{ key: "quality", qualityLevel: "high", reason: "Complete.", evidence: ["draft"] }] },
+        requiredLevel: "high",
+        passed: true,
+        reviewedAt: 1_250,
+      }],
+    };
+
+    const restored = restoreWorkflowRun(input.run);
+
+    expect(restored?.progress[0]?.reviewTaskId).toBeUndefined();
+    expect(restored?.progress[0]?.reviewHistory).toHaveLength(1);
+    expect(restored?.progress[0]?.reviewTrace).toHaveLength(1);
+    expect(restored?.progress[0]?.reviewMessages?.[0]?.event).toMatchObject({ requestState: "expired" });
+    expect(restored?.progress[0]?.reviewMessages?.[0]?.eventType).toBe("approval_request");
+  });
+
   test("preserves an explicitly unconfigured Review Agent", () => {
     const workflowId = "workflow-without-reviewer";
     const restored = restoreWorkflowDraft({

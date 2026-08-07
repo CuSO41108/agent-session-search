@@ -2,7 +2,7 @@ import type { RunTaskRequest, TaskRun } from "../../../shared/types";
 import { createHash, randomUUID } from "node:crypto";
 import type { RuntimeConversation } from "../../../shared/runtime/conversation";
 import { mergeRuntimeUsage } from "../../../../../shared/runtime/usage";
-import type { WorkflowEvent, WorkflowRunNodeTelemetry, WorkflowRunProgressItem } from "../../../shared/workflow/run";
+import type { WorkflowEvent, WorkflowNodeMessage as WorkflowRunNodeMessage, WorkflowRunNodeTelemetry, WorkflowRunProgressItem } from "../../../shared/workflow/run";
 import type { WorkflowV2LLMNode, WorkflowV2ScriptNode } from "../../../shared/workflow-v2/definition";
 import type { WorkflowNodeMessage } from "../../../shared/workflow-v2/conversation";
 import type { WorkflowV2ScriptExecutionReceipt, WorkflowV2ScriptWorkerOutput, WorkflowV2WorkerOutput } from "../../../shared/workflow-v2/packets";
@@ -182,6 +182,20 @@ class WorkflowV2OneShotInputRequestSignal extends Error {
   }
 }
 
+function workflowV2ReviewerLiveMessages(task: TaskRun): WorkflowNodeMessage[] {
+  return sanitizeWorkflowTransactionValue(workflowNodeHistoryMessages(task)) as WorkflowNodeMessage[];
+}
+
+function expireWorkflowV2ReviewerRequests(messages: readonly WorkflowRunNodeMessage[]): WorkflowRunNodeMessage[] {
+  return messages.map((message) => {
+    const event = message.event as Record<string, unknown> | undefined;
+    if (!event
+      || (event.type !== "approval_request" && event.type !== "user_input_request")
+      || event.requestState !== "live") return message;
+    return { ...message, event: { ...event, requestState: "expired" } };
+  });
+}
+
 class WorkflowV2ReviewerExecutionError extends Error {
   constructor(message: string, readonly reviewTrace: WorkflowV2ReviewTraceEntry[]) {
     super(message);
@@ -295,11 +309,15 @@ export class WorkflowV2RunExecutor {
     const hookInjectedContextByNodeId = new Map<string, string[]>();
     let latestSnapshot = this.deps.snapshot();
     const recoveredOutputByNodeId = new Map(input.initialCheckpoint?.workerOutputs.map((output) => [output.nodeId, output]) ?? []);
+    const recoveredProgressByNodeId = new Map(input.initialProgress?.map((item) => [item.nodeId, item]) ?? []);
     let latestProgress = plan.definition.nodes.map((node): WorkflowRunProgressItem => {
       const recovered = input.initialCheckpoint?.runState.nodes[node.id];
       const recoveredOutput = recoveredOutputByNodeId.get(node.id);
+      const recoveredProgress = recoveredProgressByNodeId.get(node.id);
       const recoveredDetails = {
         ...(recovered?.reviewHistory?.length ? { reviewHistory: structuredClone(recovered.reviewHistory) } : {}),
+        ...(recoveredProgress?.reviewMessages?.length ? { reviewMessages: structuredClone(recoveredProgress.reviewMessages) } : {}),
+        ...(recoveredProgress?.reviewTrace?.length ? { reviewTrace: structuredClone(recoveredProgress.reviewTrace) } : {}),
         ...(recoveredOutput ? { outputs: structuredClone(recoveredOutput.outputs) } : {}),
         ...(recoveredOutput?.acceptance ? { acceptance: structuredClone(recoveredOutput.acceptance) } : {}),
         ...(recoveredOutput?.scriptReceipt ? { scriptReceipt: structuredClone(recoveredOutput.scriptReceipt) } : {}),
@@ -587,6 +605,7 @@ export class WorkflowV2RunExecutor {
       update: Partial<WorkflowRunProgressItem>,
       event?: Omit<WorkflowEvent, "at">,
       clearTaskId = false,
+      clearReviewTaskId = false,
     ): void => {
       latestProgress = latestProgress.map((item) => {
         if (item.nodeId !== nodeId) return item;
@@ -594,6 +613,7 @@ export class WorkflowV2RunExecutor {
         if (next.status !== "awaiting_input") delete next.inputRequest;
         if (next.status !== "paused" && next.status !== "awaiting_input") delete next.intervention;
         if (clearTaskId) delete next.taskId;
+        if (clearReviewTaskId) delete next.reviewTaskId;
         return next;
       });
       this.deps.updateWorkflowRunState({
@@ -674,6 +694,7 @@ export class WorkflowV2RunExecutor {
       nodeId: string,
       timeoutMs = WORKFLOW_TASK_TIMEOUT_MS,
       detectUserInputRequest = false,
+      captureReviewState?: (task: TaskRun) => Pick<WorkflowRunProgressItem, "reviewTaskId" | "reviewMessages" | "reviewTrace">,
     ): Promise<TaskRun> => {
       const startedAt = Date.now();
       while (true) {
@@ -698,18 +719,33 @@ export class WorkflowV2RunExecutor {
           updateNode(nodeId, {
             status: "awaiting_input",
             detail: prompt,
-            taskId,
             inputRequest: { kind: "agent_message", prompt },
-            messages: workflowNodeHistoryMessages(task),
+            ...(captureReviewState
+              ? captureReviewState(task)
+              : { taskId, messages: workflowNodeHistoryMessages(task) }),
           });
           await delay(Math.min(WORKFLOW_TASK_POLL_MS, remainingTaskMs, remainingWallClockMs()));
           continue;
         }
-        if (task.status === "completed") return task;
+        if (task.status === "completed") {
+          if (captureReviewState) {
+            updateNode(nodeId, captureReviewState(task));
+          }
+          return task;
+        }
         if (task.status === "failed" || task.status === "stopped") {
+          if (captureReviewState) {
+            updateNode(nodeId, captureReviewState(task));
+          }
           throw new Error(task.lastError || `Workflow V2 task ${task.title} ${task.status}.`);
         }
-        updateNode(nodeId, { status: "running", detail: taskArtifact(task), taskId });
+        updateNode(nodeId, {
+          status: "running",
+          detail: taskArtifact(task),
+          ...(captureReviewState
+            ? captureReviewState(task)
+            : { taskId }),
+        });
         await delay(Math.min(WORKFLOW_TASK_POLL_MS, remainingTaskMs, remainingWallClockMs()));
       }
     };
@@ -1507,7 +1543,9 @@ export class WorkflowV2RunExecutor {
     }): Promise<WorkflowV2ReviewerResponse> => {
       let lastError: unknown;
       let lastCompletedArtifact: string | undefined;
-      const reviewTrace: WorkflowV2ReviewTraceEntry[] = [];
+      const reviewTrace: WorkflowV2ReviewTraceEntry[] = structuredClone(
+        latestProgress.find((item) => item.nodeId === reviewInput.executorNodeId)?.reviewTrace ?? [],
+      );
       const completeResponse = async (response: WorkflowV2ReviewerResponse): Promise<WorkflowV2ReviewerResponse> => {
         try {
           await reviewContext?.onCompletedResponse(response);
@@ -1542,12 +1580,19 @@ export class WorkflowV2RunExecutor {
             workDir: workflowWorkDir,
             workflowReviewRevision: plan.graphVersion,
             workflowNodeExecutionId: executionId,
-            allowedMcpTools: reviewInput.requiredTools ?? [],
           }, false, true);
+          const captureReviewState = (currentTask: TaskRun) => ({
+            reviewTaskId: currentTask.id,
+            reviewMessages: workflowV2ReviewerLiveMessages(currentTask),
+            reviewTrace: [
+              ...structuredClone(reviewTrace),
+              ...workflowV2ReviewerTaskTrace(currentTask, infrastructureAttempt, { includeResponse: false }),
+            ],
+          });
           updateNode(reviewInput.executorNodeId, {
             status: "running",
             detail: infrastructureAttempt === 1 ? "Independent quality review running" : "Retrying independent quality review",
-            taskId: task.id,
+            ...captureReviewState(task),
           }, {
             type: "node_judged",
             nodeId: reviewInput.executorNodeId,
@@ -1555,7 +1600,13 @@ export class WorkflowV2RunExecutor {
             taskId: task.id,
             detail: `Review infrastructure attempt ${infrastructureAttempt} started`,
           });
-          const completedTask = await waitForTask(task.id, reviewInput.executorNodeId);
+          const completedTask = await waitForTask(
+            task.id,
+            reviewInput.executorNodeId,
+            WORKFLOW_TASK_TIMEOUT_MS,
+            false,
+            captureReviewState,
+          );
           const currentTelemetry = latestProgress.find((item) => item.nodeId === reviewInput.executorNodeId)?.telemetry;
           const usage = completedTask.usage;
           updateNode(reviewInput.executorNodeId, {
@@ -1592,9 +1643,17 @@ export class WorkflowV2RunExecutor {
           } else {
             reviewTrace.push({ id: `review-start:${executionId}`, kind: "error", at: Date.now(), content: message, infrastructureAttempt });
           }
+          updateNode(reviewInput.executorNodeId, { reviewTrace: structuredClone(reviewTrace) });
         } finally {
           this.deps.clearWorkflowReviewGate?.(executionId);
-          if (task) latestSnapshot = await this.deps.deleteTask(task.id);
+          if (task) {
+            latestSnapshot = await this.deps.deleteTask(task.id);
+            const reviewMessages = latestProgress.find((item) => item.nodeId === reviewInput.executorNodeId)?.reviewMessages ?? [];
+            updateNode(reviewInput.executorNodeId, {
+              reviewMessages: expireWorkflowV2ReviewerRequests(reviewMessages),
+              reviewTrace: structuredClone(reviewTrace),
+            }, undefined, false, true);
+          }
         }
       }
       if (lastCompletedArtifact !== undefined) {
@@ -1858,13 +1917,15 @@ export class WorkflowV2RunExecutor {
               status: "running",
               detail: transition.record.passed ? "Independent quality review passed" : "Independent quality review requested changes",
               reviewHistory: [...currentHistory, structuredClone(transition.record)],
+              reviewMessages: [],
+              reviewTrace: [],
             }, {
               type: "node_judged",
               nodeId: transition.nodeId,
               attempt: transition.record.reviewAttempt,
               pass: transition.record.passed,
               detail: `${transition.record.verdict.qualityLevel} / ${transition.record.requiredLevel}`,
-            });
+            }, false, true);
           } else {
             updateNode(transition.nodeId, { status: "failed", detail: transition.error }, {
               type: "node_failed",

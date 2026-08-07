@@ -63,7 +63,6 @@ export interface WorkflowV2ReviewerInput {
   gateId?: string;
   executorNodeId: string;
   reviewerConfiguredAgentId?: string;
-  requiredTools?: string[];
   objective: string;
   constraints: WorkflowV2ConstraintDef[];
   reviewLevel: WorkflowV2QualityLevel;

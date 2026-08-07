@@ -107,7 +107,6 @@ export interface WorkflowV2ReviewGate {
   reviewLevel: Exclude<WorkflowV2ReviewLevel, "none">;
   judgeDimensions: WorkflowV2JudgeDimensionDef[];
   maxQualityRetries: number;
-  requiredTools?: string[];
 }
 
 export interface WorkflowV2ContextBudget {

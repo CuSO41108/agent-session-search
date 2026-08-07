@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import type { WorkflowV2AuthoredDefinition, WorkflowV2Definition } from "./definition";
+import type { WorkflowV2AuthoredDefinition, WorkflowV2Definition, WorkflowV2ReviewGate } from "./definition";
 import { compileWorkflowV2Definition, createWorkflowV2TemplateRegistry } from "./templates";
 import { migrateWorkflowV2ReviewGates, workflowV2ReviewGateForNode } from "./review-gates";
 import { validateWorkflowV2Definition } from "./validation";
@@ -136,14 +136,25 @@ describe("Workflow V2 Review definition validation", () => {
         { key: "quality", description: "Duplicate after trimming." },
       ],
       maxQualityRetries: 2,
-      requiredTools: [" search ", "search"],
     }];
 
     const errors = validateWorkflowV2Definition(value).errors;
-    expect(errors).toEqual(expect.arrayContaining([
-      expect.stringContaining("must not contain surrounding whitespace"),
-      expect.stringContaining("requiredTools must contain unique non-empty tool names"),
-    ]));
+    expect(errors).toEqual(expect.arrayContaining([expect.stringContaining("must not contain surrounding whitespace")]));
+  });
+
+  test("drops legacy Review Gate tool allowlists during migration", () => {
+    const value = definition();
+    value.reviewGates = [{
+      id: "review-result",
+      targetNodeId: "result",
+      configuredAgentId: "reviewer",
+      reviewLevel: "high",
+      judgeDimensions: [{ key: "quality", description: "Check quality." }],
+      maxQualityRetries: 2,
+      requiredTools: ["search"],
+    } as WorkflowV2ReviewGate & { requiredTools: string[] }];
+
+    expect(migrateWorkflowV2ReviewGates(value, "legacy-reviewer").reviewGates?.[0]).not.toHaveProperty("requiredTools");
   });
 
   test("migrates legacy node review fields into one explicit Gate", () => {

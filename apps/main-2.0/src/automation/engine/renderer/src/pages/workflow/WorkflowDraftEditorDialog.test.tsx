@@ -33,6 +33,7 @@ describe("Workflow Draft Review Gate editing", () => {
     expect(disabled).not.toContain("Runtime Review Gates");
     expect(enabled).toContain("Runtime Review Gates");
     expect(enabled).toContain("Add Review Gate for Answer");
+    expect(enabled).not.toContain("Required read-only tools");
   });
 
   test("does not offer Review Gates for script nodes", () => {

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { ArrowLeft, CalendarClock, CheckCircle2, ChevronRight, CircleAlert, CircleStop, Clock3, GitBranch, History, LockKeyhole, MessageSquareText, X } from "lucide-react";
-import type { RegisteredArtifact, WorkflowRunState, WorkflowStatus } from "../../../../shared/types";
+import type { ApprovalDecision, ChatEvent, RegisteredArtifact, WorkflowRunState, WorkflowStatus } from "../../../../shared/types";
 import type { WorkflowRunFilters, } from "./workflow-run-center-model";
 import { filterWorkflowRuns, getWorkflowErrorCode, getWorkflowRunDuration, getWorkflowRunTimeline, getWorkflowRunTimelineBounds, getWorkflowRunTimelineSegmentStyle } from "./workflow-run-center-model";
 import type { WorkflowRunTimelineSegment, WorkflowRunTriggerSource } from "../../../../shared/workflow/run";
@@ -10,6 +10,7 @@ import type { WorkflowNodeMessage } from "../../../../shared/workflow/run";
 import type { WorkflowRecoveryAction } from "../../../../shared/workflow-v2/transaction";
 import type { WorkflowV2InterventionAction } from "../../../../shared/workflow-v2/review";
 import { WorkflowReviewTrace } from "./WorkflowReviewTrace";
+import { ChatEventMessage } from "../chat/chat-event-display";
 
 interface WorkflowRunCenterProps {
   runs: WorkflowRunState[];
@@ -29,6 +30,7 @@ interface WorkflowRunCenterProps {
   onCleanupRunMaterials?: (runId: string) => void | Promise<void>;
   writableRunId?: string;
   onResolveIntervention?: (nodeId: string, action: WorkflowV2InterventionAction, reason?: string) => void | Promise<void>;
+  onResolveRuntimeApproval?: (ownerId: string, requestId: string, decision: ApprovalDecision) => void | Promise<void>;
 }
 
 const STATUS_LABELS: Record<WorkflowStatus, { en: string; zh: string }> = {
@@ -176,7 +178,7 @@ export function WorkflowRunCenter(props: WorkflowRunCenterProps) {
   return <WorkflowRunCenterOpen {...props} />;
 }
 
-function WorkflowRunCenterOpen({ runs, conversations = [], artifacts = [], loading = false, error, selectedRunId, language = "en", onSelectRun, onClose, onResolveRecovery, onRefreshRecovery, onResolveConflict, onResolveUnknownOperation, onCleanupRunMaterials, writableRunId, onResolveIntervention }: WorkflowRunCenterProps) {
+function WorkflowRunCenterOpen({ runs, conversations = [], artifacts = [], loading = false, error, selectedRunId, language = "en", onSelectRun, onClose, onResolveRecovery, onRefreshRecovery, onResolveConflict, onResolveUnknownOperation, onCleanupRunMaterials, writableRunId, onResolveIntervention, onResolveRuntimeApproval }: WorkflowRunCenterProps) {
   const [activeRunId, setActiveRunId] = useState<string | undefined>(selectedRunId);
   const [statusFilter, setStatusFilter] = useState<WorkflowStatus | "all">("all");
   const [sourceFilter, setSourceFilter] = useState<WorkflowRunTriggerSource | "all">("all");
@@ -435,6 +437,18 @@ function WorkflowRunCenterOpen({ runs, conversations = [], artifacts = [], loadi
                       const eventError = [...events].reverse().find((event) => event.error)?.error;
                       const conversation = selectedConversationsByNodeId.get(node.nodeId);
                       const messages = conversation?.messages.length ? conversation.messages : progress?.messages ?? [];
+                      const hasLiveApproval = messages.some((message) => {
+                        const event = message.event as Partial<ChatEvent> | undefined;
+                        return event?.type === "approval_request" && event.requestState === "live";
+                      });
+                      const approvalOwnerId = conversation
+                        ? `workflow-node:${conversation.workflowId}:${conversation.runId}:${conversation.nodeId}`
+                        : progress?.taskId;
+                      const reviewMessages = progress?.reviewMessages ?? [];
+                      const reviewHasLiveApproval = reviewMessages.some((message) => {
+                        const event = message.event as Partial<ChatEvent> | undefined;
+                        return event?.type === "approval_request" && event.requestState === "live";
+                      });
                       const telemetry = progress?.telemetry ?? conversation?.telemetry;
                       const timelineSegments = selectedTimeline.get(node.nodeId) ?? [];
                       return (
@@ -479,6 +493,21 @@ function WorkflowRunCenterOpen({ runs, conversations = [], artifacts = [], loadi
                           {eventError ? <p className="is-error">{getWorkflowErrorCode(eventError)} · {eventError}</p> : null}
                           {progress?.inputSummary ? <details className="workflow-run-center-node-outputs"><summary>{labels.inputSummary}</summary><pre>{JSON.stringify(progress.inputSummary, null, 2)}</pre></details> : null}
                           {progress?.outputs ? <details className="workflow-run-center-node-outputs"><summary>{labels.outputs}</summary><pre>{JSON.stringify(progress.outputs, null, 2)}</pre></details> : null}
+                          {reviewMessages.length ? <details className="workflow-run-center-messages" open={reviewHasLiveApproval}>
+                            <summary><MessageSquareText size={13} /><span>{language === "zh" ? "实时 Review Gate" : "Live Review Gate"}</span><em>{reviewMessages.length}</em></summary>
+                            <div className="workflow-run-center-message-list">
+                              {reviewMessages.map((message) => <article key={message.id} className={`is-${message.role}${message.eventType ? ` is-${message.eventType}` : ""}`}>
+                                <header><strong>{messageLabel(message, language)}</strong><time>{formatDate(message.at, language)}</time></header>
+                                {message.event && progress?.reviewTaskId
+                                  ? <ChatEventMessage
+                                      event={message.event as ChatEvent}
+                                      ownerId={progress.reviewTaskId}
+                                      onResolveApproval={selectedRun.runId === writableRunId ? onResolveRuntimeApproval : undefined}
+                                    />
+                                  : <p>{message.content}</p>}
+                              </article>)}
+                            </div>
+                          </details> : null}
                           {progress?.reviewHistory?.length ? <details className="workflow-run-center-node-outputs" open={progress.intervention?.source === "review_rejection" || progress.intervention?.source === "review_escalation"}>
                             <summary>{language === "zh" ? "质量审查历史" : "Quality review history"} · {progress.reviewHistory.length}</summary>
                             <div className="workflow-run-center-events">{progress.reviewHistory.map((review) => <details key={review.reviewAttempt}>
@@ -541,12 +570,18 @@ function WorkflowRunCenterOpen({ runs, conversations = [], artifacts = [], loadi
                               {events.map((event, index) => <span key={`${event.type}-${event.at}-${index}`}>{eventLabel(event.type, language)} · {formatDate(event.at, language)}{event.attempt ? ` · #${event.attempt}` : ""}{event.detail ? ` · ${event.detail}` : ""}{event.question ? ` · ${event.question}` : ""}{event.answer ? ` · ${event.answer}` : ""}{event.intervention ? ` · ${event.intervention.source}${event.intervention.reviewVerdict ? ` · ${event.intervention.reviewVerdict.decision}` : ""}` : ""}</span>)}
                             </div>
                           ) : <small className="workflow-run-center-no-events">{selectedProgressByNodeId.has(node.nodeId) ? labels.noEvents : labels.notStarted}</small>}
-                          {messages.length > 0 ? <details className="workflow-run-center-messages">
+                          {messages.length > 0 ? <details className="workflow-run-center-messages" open={hasLiveApproval}>
                             <summary><MessageSquareText size={13} /><span>{labels.messages}</span><em>{messages.length}</em></summary>
                             <div className="workflow-run-center-message-list">
                               {messages.map((message) => <article key={message.id} className={`is-${message.role}${message.eventType ? ` is-${message.eventType}` : ""}`}>
                                 <header><strong>{messageLabel(message, language)}</strong><time>{formatDate(message.at, language)}</time></header>
-                                <p>{message.content}</p>
+                                {message.event && approvalOwnerId
+                                  ? <ChatEventMessage
+                                      event={message.event as ChatEvent}
+                                      ownerId={approvalOwnerId}
+                                      onResolveApproval={selectedRun.runId === writableRunId ? onResolveRuntimeApproval : undefined}
+                                    />
+                                  : <p>{message.content}</p>}
                               </article>)}
                             </div>
                           </details> : null}

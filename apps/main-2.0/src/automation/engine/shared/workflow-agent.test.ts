@@ -7,6 +7,7 @@ describe("Workflow Manager Review Gate contract", () => {
 
     expect(prompt).toContain("Assess every LLM/Agent node's criticality");
     expect(prompt).toContain("Review Gates may target only LLM/Agent nodes, never script nodes");
+    expect(prompt).toContain("routes permission-requiring operations through the Approval Broker");
   });
 
   test("does not add Review Gates to script nodes while revising a workflow", () => {

@@ -124,10 +124,8 @@ export class WorkflowRuntime {
   private readonly runExecutor: WorkflowV2RunExecutor;
   private readonly scriptApprovalCoordinator = new WorkflowV2ScriptApprovalCoordinator();
   private readonly recoveryActionCoordinator = new WorkflowV2RecoveryActionCoordinator();
-  private readonly completionStore: WorkflowV2StorePort | undefined;
 
   constructor(private readonly deps: WorkflowRuntimeDependencies) {
-    this.completionStore = deps.createWorkflowV2Store?.();
     this.runExecutor = new WorkflowV2RunExecutor(deps, this.runRegistry);
   }
 
@@ -155,7 +153,7 @@ export class WorkflowRuntime {
     attempt: number;
     startedAt?: number;
   }): Promise<WorkflowV2NodeCompletionLedger | undefined> {
-    const store = this.completionStore;
+    const store = this.deps.createWorkflowV2Store?.();
     if (!store?.beginNodeCompletionExecution) return undefined;
     return store.beginNodeCompletionExecution({ ...input, startedAt: input.startedAt ?? Date.now() });
   }
@@ -174,7 +172,7 @@ export class WorkflowRuntime {
     if (node.status !== "running" && node.status !== "paused" && node.status !== "awaiting_input") {
       throw new Error(`Workflow node ${input.nodeId} is not accepting completion submissions.`);
     }
-    const store = this.completionStore;
+    const store = this.deps.createWorkflowV2Store?.();
     if (!store?.submitNodeCompletion) throw new Error("Workflow node completion storage is unavailable.");
     return store.submitNodeCompletion({ ...input, submittedAt: Date.now() });
   }
@@ -185,7 +183,7 @@ export class WorkflowRuntime {
     nodeId: string;
     executionId: string;
   }): Promise<WorkflowV2NodeCompletionSubmission | undefined> {
-    return this.completionStore?.readLatestNodeCompletionSubmission?.(input);
+    return this.deps.createWorkflowV2Store?.()?.readLatestNodeCompletionSubmission?.(input);
   }
 
   async resolveNodeCompletionSubmission(input: {
@@ -197,7 +195,7 @@ export class WorkflowRuntime {
     status: "consumed" | "accepted" | "rejected";
     reason?: string;
   }): Promise<WorkflowV2NodeCompletionSubmission | undefined> {
-    const store = this.completionStore;
+    const store = this.deps.createWorkflowV2Store?.();
     if (!store?.resolveNodeCompletionSubmission) return undefined;
     return store.resolveNodeCompletionSubmission({ ...input, resolvedAt: Date.now() });
   }
@@ -892,6 +890,7 @@ export class WorkflowRuntime {
       baseWorkflowContextDocument: run.contextDocument,
       storagePlanDocument: workflowStoragePlanDocument(storagePlan),
       initialCheckpoint: { runState: persisted.runState, workerOutputs: persisted.workerOutputs },
+      initialProgress: run.progress,
       initialNodeControl: persisted.nodeControl,
       initialDurableEventCount: persisted.eventCount,
       initialTransaction: persisted.transaction,
@@ -983,6 +982,7 @@ export class WorkflowRuntime {
       baseWorkflowContextDocument: run.contextDocument,
       storagePlanDocument: workflowStoragePlanDocument(storagePlan),
       initialCheckpoint: checkpoint,
+      initialProgress: run.progress,
       initialNodeControl: persisted.nodeControl,
       initialDurableEventCount: persisted.eventCount,
       ...(persisted.transaction ? { initialTransaction: persisted.transaction } : {}),
@@ -1388,6 +1388,7 @@ export class WorkflowRuntime {
       baseWorkflowContextDocument: input.run.contextDocument,
       storagePlanDocument: workflowStoragePlanDocument(storagePlan),
       initialCheckpoint: materialized.checkpoint,
+      initialProgress: input.run.progress,
       initialNodeControl,
       initialDurableEventCount,
       ...(persisted.transaction ? { initialTransaction: persisted.transaction } : {}),
@@ -1457,7 +1458,7 @@ export class WorkflowRuntime {
       return next;
     }), appendEvents: [{ type: "gate_answered", nodeId: input.nodeId, at: submittedAt, answer: JSON.stringify(resolved.auditValues) }], contextDocument: run.contextDocument });
     const storagePlan = workflowStoragePlanFor(input.workflowId, input.runId);
-    void this.runExecutor.execute({ workflow, plan: workflow.workflowV2Plan, runId: input.runId, baseWorkflowContextDocument: run.contextDocument, storagePlanDocument: workflowStoragePlanDocument(storagePlan), initialCheckpoint: { runState, workerOutputs: persisted.workerOutputs }, initialNodeControl: nodeControl, initialDurableEventCount: persisted.eventCount, ...(persisted.transaction ? { initialTransaction: persisted.transaction } : {}) }).finally(() => this.runRegistry.release(input.runId));
+    void this.runExecutor.execute({ workflow, plan: workflow.workflowV2Plan, runId: input.runId, baseWorkflowContextDocument: run.contextDocument, storagePlanDocument: workflowStoragePlanDocument(storagePlan), initialCheckpoint: { runState, workerOutputs: persisted.workerOutputs }, initialProgress: run.progress, initialNodeControl: nodeControl, initialDurableEventCount: persisted.eventCount, ...(persisted.transaction ? { initialTransaction: persisted.transaction } : {}) }).finally(() => this.runRegistry.release(input.runId));
     return { ok: true, workflowId: input.workflowId, runId: input.runId };
   }
 

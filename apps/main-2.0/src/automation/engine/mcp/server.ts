@@ -186,7 +186,6 @@ const workflowV2DefinitionSchema = {
         reviewLevel: { type: "string", enum: ["low", "medium", "high"] },
         judgeDimensions: { type: "array", minItems: 1, items: objectSchema({ key: { type: "string", minLength: 1 }, description: { type: "string", minLength: 1 } }, ["key", "description"]) },
         maxQualityRetries: { type: "integer", minimum: 0, maximum: 5 },
-        requiredTools: { type: "array", items: { type: "string", minLength: 1 } },
       }, ["id", "targetNodeId", "configuredAgentId", "reviewLevel", "judgeDimensions", "maxQualityRetries"]),
     },
     transactionPolicy: workflowTransactionPolicySchema,
