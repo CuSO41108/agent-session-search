@@ -82,11 +82,11 @@ export function SessionContextMenu({
   const openAppTitle = localOnlyDisabled
     ? remoteOpenAppTitle(language)
     : l("Open native app", "打开原生应用");
-  const migrateTitle = localOnlyDisabled
-    ? remoteMigrationTitle(language)
-    : canMigrate
+  const migrateTitle = canMigrate
       ? l("Migrate session to…", "迁移会话到…")
-      : unsupportedMigrationTitle(language);
+      : localOnlyDisabled
+        ? remoteMigrationTitle(language)
+        : unsupportedMigrationTitle(language);
   return (
     <div
       ref={menu.ref}

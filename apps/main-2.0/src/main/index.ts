@@ -65,7 +65,7 @@ import {
   type ToolExecutionResult,
 } from "../core/ai-assistant";
 import { applyMigrationLengthPolicy, createMigrationCompressor } from "../core/session-migration-compression";
-import { migrateSession, portableSessionFrom } from "../core/session-migration";
+import { migrateSession, portableSessionFrom, sshMigrationTarget } from "../core/session-migration";
 import {
   loadLocalSessionMigrationSource,
   runLocalSessionMigration,
@@ -1861,7 +1861,7 @@ async function createSourceRemoteRestoreDependencies(
 
   return {
     inspectCli: (target) =>
-      environment.kind === "wsl" ? inspectWslMigrationCli(environment, target) : undefined,
+      environment.kind === "ssh" ? inspectSshMigrationCli(environment, target) : inspectWslMigrationCli(environment, target),
     prepare: (session, listener) => applyMigrationLengthPolicy(
       session,
       compressor,
@@ -1878,13 +1878,17 @@ async function createSourceRemoteRestoreDependencies(
       mainWindow?.webContents.send("environments-updated", await store.listEnvironments());
     },
     launch: async (target, targetSessionId, projectPath) => {
-      if (environment.kind !== "wsl") return;
       const session = migrationLaunchSession(environment, target, targetSessionId, projectPath);
-      await openResumeInTerminal(
-        session,
-        getSettings(),
-        await remoteSessionAccess.requireWslResumeOptions(session),
-      );
+      if (environment.kind === "wsl") {
+        await openResumeInTerminal(
+          session,
+          getSettings(),
+          await remoteSessionAccess.requireWslResumeOptions(session),
+        );
+        return;
+      }
+      const sshArgs = buildRemoteSyncSshArgs(environment, "").slice(0, -1);
+      await openResumeInTerminal(session, getSettings(), { sshArgs });
     },
     resumeCommand: (target, targetSessionId, projectPath) =>
       remoteMigrationResumeDisplayCommand(environment, target, targetSessionId, projectPath),
@@ -1904,6 +1908,19 @@ async function inspectWslMigrationCli(environment: SessionEnvironment, target: M
     target,
     { ...settings, claudeBinary: "claude", codexBinary: "codex" },
     async (command, args) => runRemoteCommand(environment, [command, ...args].join(" ")),
+    { platform: "linux" },
+  );
+}
+
+async function inspectSshMigrationCli(environment: SessionEnvironment, target: MigrationAgent): Promise<void> {
+  const settings = getSettings();
+  await inspectMigrationCli(
+    target,
+    { ...settings, claudeBinary: "claude", codexBinary: "codex" },
+    (command, args) => runSshSessionCommand(
+      environment,
+      [command, ...args].map(quotePosixToken).join(" "),
+    ),
     { platform: "linux" },
   );
 }
@@ -1934,7 +1951,7 @@ function migrationLaunchSession(
     parentSessionId: null,
     tokenUsage: { inputTokens: 0, outputTokens: 0, cachedInputTokens: 0, reasoningOutputTokens: 0, totalTokens: 0 },
     environmentId: environment.id,
-    environmentKind: "wsl",
+    environmentKind: environment.kind,
     environmentLabel: environment.label,
     customTitle: null,
     favorited: false,
@@ -2604,18 +2621,33 @@ function registerIpc(): void {
   }));
   ipcMain.handle("session:migrate", async (event, request: SessionMigrationRequest) => {
     const source = await store.getSession(request.sessionKey);
-    if (source?.environmentKind === "wsl") {
+    if (source?.environmentKind === "wsl" || source?.environmentKind === "ssh") {
       await remoteSessionAccess.ensureDetails(request.sessionKey);
     }
     const migrationSource = await loadLocalSessionMigrationSource(store, request);
     const settings = Object.freeze(await providerService.hydrateSettings());
-    if (migrationSource.source.environmentKind === "wsl") {
+    if (migrationSource.source.environmentKind === "wsl" || migrationSource.source.environmentKind === "ssh") {
       assertMigrationTargetEnabled(request.target, settings);
-      if (!["claude", "codex", "codebuddy", "codewiz", "cursor"].includes(request.target)) {
+      if (migrationSource.source.environmentKind === "ssh"
+        && request.target !== sshMigrationTarget(migrationSource.source.source)) {
+        throw new Error("SSH sessions can only migrate between Claude Code and Codex on the same host.");
+      }
+      if (migrationSource.source.environmentKind === "wsl"
+        && !["claude", "codex", "codebuddy", "codewiz", "cursor"].includes(request.target)) {
         throw new Error(`Migration target ${request.target} is not supported in WSL.`);
       }
-      const environment = await remoteSessionAccess.requireWslEnvironment(migrationSource.source);
-      const portable = portableSessionFrom(migrationSource.source, migrationSource.messages);
+      const environment = migrationSource.source.environmentKind === "wsl"
+        ? await remoteSessionAccess.requireWslEnvironment(migrationSource.source)
+        : await remoteSessionAccess.requireRemoteSshEnvironment(migrationSource.source);
+      if (!environment) throw new Error("SSH environment is not available for this remote session.");
+      const portable = portableSessionFrom(
+        migrationSource.source,
+        migrationSource.messages,
+        {
+          turnSourceMessageIndexes: migrationSource.turnSourceMessageIndexes,
+          allowSsh: migrationSource.source.environmentKind === "ssh",
+        },
+      );
       const progress = (item: SessionMigrationProgress): void => event.sender.send("session:migration-progress", item);
       const deps = await createSourceRemoteRestoreDependencies(environment, progress);
       return restoreRemotePortableSession({

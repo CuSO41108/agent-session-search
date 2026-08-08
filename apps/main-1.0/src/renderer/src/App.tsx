@@ -125,6 +125,7 @@ import { SshEnvironmentDialog } from "./features/settings/ssh-environment-dialog
 import { WslEnvironmentDialog } from "./features/settings/wsl-environment-dialog";
 import {
   SOURCE_LABEL,
+  canMigrateSession,
   environmentBadgeLabel,
   environmentBadgeTitle,
   hasTokenUsage,
@@ -138,7 +139,6 @@ import {
   resumeActionLabel,
   resumeRouteMessage,
   sourceFilters,
-  supportsMigrationSource,
   supportsResumeSource,
   unsupportedMigrationTitle,
   migrationAgentLabel,
@@ -2481,13 +2481,13 @@ export function App(): ReactElement {
           onSummarize={() => void summarizeDetail(detail)}
           summarizing={summarizing}
           canResume={supportsResumeSource(detail.source)}
-          canMigrate={detail.environmentKind !== "ssh" && supportsMigrationSource(detail.source)}
+          canMigrate={canMigrateSession(detail, appSettings ?? DEFAULT_MIGRATION_TARGET_SETTINGS)}
           migrationTitle={
-            detail.environmentKind === "ssh"
-              ? remoteMigrationTitle(language)
-              : supportsMigrationSource(detail.source)
+            canMigrateSession(detail, appSettings ?? DEFAULT_MIGRATION_TARGET_SETTINGS)
                 ? t("Migrate session to…", "迁移会话到…")
-                : unsupportedMigrationTitle(language)
+                : detail.environmentKind === "ssh"
+                  ? remoteMigrationTitle(language)
+                  : unsupportedMigrationTitle(language)
           }
           onResume={() =>
             void runAction(resumeActionLabel(detail.source, language), () => window.sessionSearch.resumeSession(detail.sessionKey), (result) => resumeRouteMessage(result, language))
@@ -2570,7 +2570,7 @@ export function App(): ReactElement {
           revealLabel={FILE_MANAGER_LABEL}
           showMacActions={IS_MAC}
           canResume={supportsResumeSource(contextMenu.session.source)}
-          canMigrate={contextMenu.session.environmentKind !== "ssh" && supportsMigrationSource(contextMenu.session.source)}
+          canMigrate={canMigrateSession(contextMenu.session, appSettings ?? DEFAULT_MIGRATION_TARGET_SETTINGS)}
           onRename={() => beginRename(contextMenu.session)}
           onAddTag={() => beginAddTag(contextMenu.session)}
           onSelectMultiple={() => beginBulkSelection(contextMenu.session.sessionKey)}
@@ -2934,15 +2934,14 @@ function ContextMenu({
   const l = (en: string, zh: string) => localize(language, en, zh);
   const menu = useClampedContextMenuStyle(state);
   const localOnlyDisabled = isRemoteSession(state.session);
-  const migrationDisabled = state.session.environmentKind === "ssh";
   const canDelete = canDeleteSessionLocally(state.session);
   const revealTitle = localOnlyDisabled ? remoteRevealTitle(language) : l(`Show in ${revealLabel}`, `在${revealLabel}中显示`);
   const openAppTitle = localOnlyDisabled ? remoteOpenAppTitle(language) : l("Open native app", "打开原生应用");
-  const migrateTitle = migrationDisabled
-    ? remoteMigrationTitle(language)
-    : canMigrate
+  const migrateTitle = canMigrate
       ? l("Migrate session to…", "迁移会话到…")
-      : unsupportedMigrationTitle(language);
+      : localOnlyDisabled
+        ? remoteMigrationTitle(language)
+        : unsupportedMigrationTitle(language);
   return (
     <div ref={menu.ref} className="context-menu" style={menu.style} onClick={(event) => event.stopPropagation()}>
       <button onClick={onRename}>
@@ -2977,7 +2976,7 @@ function ContextMenu({
           <AppWindow size={14} /> Open App
         </button>
       ) : null}
-      <button onClick={onMigrate} disabled={!canMigrate || migrationDisabled} title={migrateTitle}>
+      <button onClick={onMigrate} disabled={!canMigrate} title={migrateTitle}>
         <ArrowRightLeft size={14} /> {l("Migrate to…", "迁移到…")}
       </button>
       {canResume ? (

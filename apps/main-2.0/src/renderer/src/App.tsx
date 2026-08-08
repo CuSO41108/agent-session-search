@@ -93,13 +93,13 @@ import { useWorkbenchOverview } from "./features/workbench/use-workbench-overvie
 import { useAutomation } from "./features/automation/automation-provider";
 import { selectWorkbenchWorkflows, selectWorkbenchWorkflowSummaries } from "./features/automation/workbench-workflows";
 import {
+  canMigrateSession,
   isBranchTag,
   displayTagName,
   isRemoteSession,
   resumeActionLabel,
   resumeRouteMessage,
   sourceFilters,
-  supportsMigrationSource,
   supportsResumeSource,
   migrationAgentLabel,
   migrationTargetsForSession,
@@ -1963,7 +1963,7 @@ export function App(): ReactElement {
           revealLabel={FILE_MANAGER_LABEL}
           showMacActions={IS_MAC}
           canResume={supportsResumeSource(contextMenu.session.source)}
-          canMigrate={contextMenu.session.environmentKind !== "ssh" && supportsMigrationSource(contextMenu.session.source)}
+          canMigrate={canMigrateSession(contextMenu.session, appSettings ?? DEFAULT_MIGRATION_TARGET_SETTINGS)}
           onRename={() => beginRename(contextMenu.session)}
           onAddTag={() => beginAddTag(contextMenu.session)}
           onSelectMultiple={() => beginBulkSelection(contextMenu.session.sessionKey)}

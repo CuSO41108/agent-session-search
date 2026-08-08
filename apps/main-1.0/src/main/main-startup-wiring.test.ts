@@ -45,4 +45,16 @@ describe("main process startup wiring", () => {
     expect(toggleBlock).toBeDefined();
     expect(toggleBlock).toContain("showWindow({ focusSearch: true })");
   });
+
+  it("migrates SSH sessions through remote writeback and SSH Resume", () => {
+    const source = readFileSync(new URL("./index.ts", import.meta.url), "utf8");
+
+    expect(source).toContain('session.environmentKind === "wsl" || session.environmentKind === "ssh"');
+    expect(source).toContain('target !== sshMigrationTarget(session.source)');
+    expect(source).toContain('{ allowSsh: session.environmentKind === "ssh" }');
+    expect(source).toContain("createSourceRemoteRestoreDependencies(environment, progress)");
+    expect(source).toContain('environment.kind === "ssh" ? inspectSshMigrationCli(environment, target)');
+    expect(source).toContain('const sshArgs = buildRemoteSyncSshArgs(environment, "").slice(0, -1)');
+    expect(source).toContain("await openResumeInTerminal(session, getSettings(), { sshArgs })");
+  });
 });

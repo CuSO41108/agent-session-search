@@ -10,8 +10,8 @@ import type { ActionStatus } from "../../app-types";
 import type { LanguageMode } from "../../language";
 import type { LiveSessionState } from "../../live-filter";
 import {
+  canMigrateSession,
   remoteMigrationTitle,
-  supportsMigrationSource,
   supportsResumeSource,
   unsupportedMigrationTitle,
 } from "../../session-ui";
@@ -123,12 +123,12 @@ export function SessionDetails({
       : EMPTY_SESSION_FAMILY;
     const familyLoadFailed = familyState.sessionKey === detail.sessionKey
       && familyState.status === "error";
-    const canMigrate = detail.environmentKind !== "ssh" && supportsMigrationSource(detail.source);
-    const migrationTitle = detail.environmentKind === "ssh"
-      ? remoteMigrationTitle(language)
-      : canMigrate
+    const canMigrate = canMigrateSession(detail);
+    const migrationTitle = canMigrate
         ? l("Migrate session to…", "迁移会话到…")
-        : unsupportedMigrationTitle(language);
+        : detail.environmentKind === "ssh"
+          ? remoteMigrationTitle(language)
+          : unsupportedMigrationTitle(language);
     return (
       <DetailPanel
         session={detail}

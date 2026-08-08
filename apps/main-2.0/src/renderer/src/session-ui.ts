@@ -10,7 +10,7 @@ import type {
   SessionStatsPeriod,
   SessionStatsSummary,
 } from "../../core/types";
-import { supportedMigrationTargets } from "../../core/session-migration";
+import { sshMigrationTarget, supportedMigrationTargets } from "../../core/session-migration";
 import { enabledMigrationTargets, migrationTargetDescriptor, type MigrationTargetSettings } from "../../core/migration-targets";
 import {
   OPTIONAL_SESSION_SOURCE_DESCRIPTORS,
@@ -162,10 +162,21 @@ export function migrationTargetsForSession(
   session: Pick<SessionSearchResult, "source" | "environmentId" | "environmentKind">,
   settings: MigrationTargetSettings,
 ): MigrationTarget[] {
+  if (session.environmentKind === "ssh") {
+    const target = sshMigrationTarget(session.source);
+    return target ? [target] : [];
+  }
   if (session.environmentKind === "wsl") {
     return migrationTargetsForSource(session.source, settings).filter((target) => target === "claude" || target === "codex");
   }
   return isLocalSessionEnvironment(session) ? migrationTargetsForSource(session.source, settings) : [];
+}
+
+export function canMigrateSession(
+  session: Pick<SessionSearchResult, "source" | "environmentId" | "environmentKind">,
+  settings: MigrationTargetSettings = { includeTclaude: false, includeTcodex: false },
+): boolean {
+  return migrationTargetsForSession(session, settings).length > 0;
 }
 
 export function migrationAgentLabel(target: MigrationTarget): string {

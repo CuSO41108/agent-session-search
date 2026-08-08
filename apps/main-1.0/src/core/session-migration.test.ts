@@ -5,6 +5,7 @@ import {
   migrateSession,
   migrationAgentForSource,
   portableSessionFrom,
+  sshMigrationTarget,
   supportedMigrationTargets,
   type SessionMigrationDependencies,
 } from "./session-migration";
@@ -173,6 +174,18 @@ function createDependencies() {
 
 describe("session migration model", () => {
   it.each([
+    ["claude-cli", "codex"],
+    ["codex-cli", "claude"],
+    ["claude-app", null],
+    ["codex-app", null],
+    ["tclaude-cli", null],
+    ["tcodex-cli", null],
+    ["hermes", null],
+  ] as const)("maps SSH source %s to the supported remote target %s", (source, expected) => {
+    expect(sshMigrationTarget(source)).toBe(expected);
+  });
+
+  it.each([
     ["claude-cli", "claude"],
     ["claude-app", "claude"],
     ["tclaude-cli", "claude"],
@@ -270,6 +283,17 @@ describe("session migration model", () => {
     expect(() => portableSessionFrom(session("claude-cli", environment), messages)).toThrow(
       "SSH session migration is not supported yet.",
     );
+  });
+
+  it("allows a guarded SSH source to become a portable session", () => {
+    expect(portableSessionFrom(session("claude-cli", {
+      environmentKind: "ssh",
+      environmentId: "remote",
+      projectPath: "/srv/repo",
+    }), messages, { allowSsh: true })).toMatchObject({
+      sourceAgent: "claude",
+      projectPath: "/srv/repo",
+    });
   });
 
   it("accepts a WSL session and preserves its Linux project path", () => {

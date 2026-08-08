@@ -30,7 +30,6 @@ export function SessionMigrationDialog({
 }): ReactElement {
   const l = (en: string, zh: string) => localize(language, en, zh);
   const ssh = session.environmentKind === "ssh";
-  const availableTargets = ssh ? [] : targets;
 
   return (
     <div className="dialog-backdrop" onMouseDown={onClose}>
@@ -42,7 +41,9 @@ export function SessionMigrationDialog({
           </button>
         </div>
         <p className="dialog-copy">
-          {session.environmentKind === "wsl"
+          {ssh
+            ? l("Create a new target-Agent session on the same SSH host from", "在同一台 SSH 主机上从当前会话创建新的目标 Agent 会话：")
+            : session.environmentKind === "wsl"
             ? l("Create a new WSL target-agent session from", "从当前会话创建新的 WSL 目标 Agent 会话：")
             : l("Create a new local target-agent session from", "从当前会话创建新的本地目标 Agent 会话：")} <strong>{session.displayTitle}</strong>
         </p>
@@ -54,12 +55,11 @@ export function SessionMigrationDialog({
             )}
           </p>
         ) : null}
-        {ssh ? <p className="dialog-copy danger-copy">{l("SSH session migration is not supported yet.", "暂不支持 SSH 会话迁移。")}</p> : null}
         {busy ? <MigrationProgressPanel progress={progress ?? null} language={language} /> : null}
         <div className="migration-targets">
-          {availableTargets.length === 0 ? (
+          {targets.length === 0 ? (
             <p className="dialog-copy">{l("No migration targets are available for this session.", "当前会话没有可用的迁移目标。")}</p>
-          ) : availableTargets.map((target) => {
+          ) : targets.map((target) => {
             const disabled = busy;
             return (
               <button key={target} type="button" onClick={() => onSelect(target)} disabled={disabled}>

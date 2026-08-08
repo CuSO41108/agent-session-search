@@ -159,9 +159,11 @@ Session 页面用于索引、搜索、查看和整理不同编码 Agent 的历�
 
 模型请求 JSON 可能包含完整提示词、工具参数和回复，请保存在可信目录中。
 
+SSH 环境中的 Claude Code 和 Codex 会话可以在同一台远程主机上互相迁移。迁移完成后，AgentRecall 会打开一个新终端，重新连接原 SSH 主机并自动 Resume 新会话。
+
 ### SSH、WSL 和跨设备同步
 
-在 **设置 → 连接** 中添加 SSH 主机；Windows 用户还可以添加 WSL 发行版。连接成功后，对应环境和项目会显示在 Session 左侧。
+在 **设置 → 连接** 中添加 SSH 主机；Windows 用户还可以添加 WSL 发行版。连接成功后，对应环境和项目会显示在 Session 左侧。SSH 中的 Claude Code 和 Codex 会话支持在原主机上互相迁移。
 
 点击 Session 右上角的云朵按钮打开远程会话：
 

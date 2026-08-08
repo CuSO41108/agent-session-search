@@ -65,6 +65,12 @@ export function migrationAgentForSource(source: SessionSource): MigrationAgent |
   return sessionSourceDescriptor(source).migrationAgent;
 }
 
+export function sshMigrationTarget(source: SessionSource): "claude" | "codex" | null {
+  if (source === "claude-cli") return "codex";
+  if (source === "codex-cli") return "claude";
+  return null;
+}
+
 export function supportedMigrationTargets(source: SessionSource): MigrationAgent[];
 export function supportedMigrationTargets<T extends MigrationTarget>(
   source: SessionSource,
@@ -82,13 +88,15 @@ export function portableSessionFrom(
   messages: SessionMessage[],
   options: {
     turnSourceMessageIndexes?: readonly number[];
+    allowSsh?: boolean;
   } = {},
 ): PortableSession {
   const sourceAgent = migrationAgentForSource(session.source);
   if (!sourceAgent) {
     throw new Error(`Session source ${session.source} cannot be migrated.`);
   }
-  if (!isLocalSessionEnvironment(session) && session.environmentKind !== "wsl") {
+  const allowedSsh = options.allowSsh === true && session.environmentKind === "ssh";
+  if (!isLocalSessionEnvironment(session) && session.environmentKind !== "wsl" && !allowedSsh) {
     throw new Error("SSH session migration is not supported yet.");
   }
   if (!session.projectPath.trim()) {
