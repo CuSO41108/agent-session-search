@@ -1,105 +1,91 @@
 {
-  "id": "bundled-resume",
-  "title": "简历生成",
-  "objective": "基于工作目录中的已有简历和项目经历，生成一份专业、有量化指标的简历。",
+  "id": "bundled-resume-html",
+  "title": "简历生成 (HTML)",
+  "objective": "把工作目录里已有的简历（如 resume.tex）渲染成一份专业、精致的单文件 HTML 简历，完整保留其中的真实项目与量化指标；可用代码/git 补充近期亮点。模版与写法要点均为工作流固定资产，不含任何个人内容。",
+  "assets": {
+    "__RESUME_TEMPLATE__": "resume-template.html",
+    "__RESUME_GUIDE__": "resume-guidelines.md"
+  },
   "definition": {
-    "workflowId": "bundled-resume",
-    "graphVersion": 1,
+    "workflowId": "bundled-resume-html",
+    "graphVersion": 2,
     "reviewEnabled": false,
-    "objective": "基于工作目录中的已有简历和项目经历，生成一份专业、有量化指标的简历。",
+    "objective": "把工作目录里已有的简历（如 resume.tex）渲染成一份专业、精致的单文件 HTML 简历，完整保留其中的真实项目与量化指标；可用代码/git 补充近期亮点。模版与写法要点均为工作流固定资产，不含任何个人内容。",
     "nodes": [
       {
-        "id": "gather",
+        "id": "content",
         "kind": "agent",
-        "title": "收集原始素材",
+        "title": "整理简历素材",
         "execModel": "llm",
         "role": "executor",
         "executionMode": "one-shot",
-        "executionModeRationale": "不需要用户交互即可从上下文完成。",
+        "executionModeRationale": "The node can complete from workflow context without user interaction.",
         "executionModeConfidence": 1,
         "modelProfile": "balanced",
-        "prompt": "扫描工作目录，找到已有的简历文件（优先 .md / .tex / .txt）和项目文件。提取以下信息：\n1. 个人信息（姓名、联系方式、教育背景）\n2. 工作/实习经历（公司、岗位、起止时间、职责）\n3. 项目经历（项目名、你的角色、技术栈、量化成果：QPS/延迟/百分比/金额等）\n4. 技能清单（语言、框架、工具）\n\n关键要求：所有量化指标和技术名词原样保留，不要泛化或省略。",
+        "reviewLevel": "high",
+        "reviewMaxRetries": 2,
+        "judgeDimensions": [
+          { "key": "source_fidelity", "description": "All extracted resume facts, numbers, dates, and technical terms must match the source materials." },
+          { "key": "content_completeness", "description": "The structured handoff must retain every relevant resume section and material detail." }
+        ],
+        "prompt": "工作目录里通常已有一份简历文件（优先找 resume.tex，其次 resume.md/.txt 等）。请读取它，作为主要素材来源。完整提取：个人信息与联系方式、教育背景、实习/工作经历、个人项目、竞赛与科研等。务必原样保留所有具体的量化指标与技术细节（QPS、延迟、百分比、金额、单量，以及 Redis/DB 幂等、TCC、Kafka/Binlog、Eino 等技术词），不要泛化、不要丢数字。把整理好的完整内容作为交接内容传给下游，不要生成文件。",
         "outputFields": [
           {
-            "key": "personalInfo",
-            "valueType": "string",
-            "required": true,
-            "description": "姓名、联系方式、教育背景"
-          },
-          {
-            "key": "experiences",
-            "valueType": "json",
-            "required": true,
-            "description": "工作和实习经历列表"
-          },
-          {
-            "key": "projects",
-            "valueType": "json",
-            "required": true,
-            "description": "项目经历列表（含技术栈和量化成果）"
-          },
-          {
-            "key": "skills",
-            "valueType": "string",
-            "required": false,
-            "description": "技能清单"
+            "key": "result",
+            "required": true
           }
         ]
       },
       {
-        "id": "refine",
+        "id": "extra",
         "kind": "agent",
-        "title": "精炼简历内容",
+        "title": "近期亮点补充",
         "execModel": "llm",
         "role": "executor",
         "executionMode": "one-shot",
-        "executionModeRationale": "不需要用户交互即可从上下文完成。",
+        "executionModeRationale": "The node can complete from workflow context without user interaction.",
         "executionModeConfidence": 1,
         "modelProfile": "balanced",
-        "prompt": "基于上游收集的原始素材，按以下标准精炼为简历文案：\n\n1. 每条工作/项目经历 2-4 个 bullet，动词开头（设计/实现/优化/主导）\n2. 每个 bullet 包含具体量化指标（提升 xx%、降低 xx ms、支撑 xx QPS）\n3. 技术名词精确（Redis/MySQL/Kafka/gRPC 等），不要笼统说「数据库」\n4. 项目描述突出你的角色和贡献，不是团队做了什么\n5. 用 STAR 法则组织每条经历\n\n输出结构化内容给下游，不生成文件。",
+        "prompt": "浏览工作目录下的代码项目与 git 提交记录，找出简历里可能还没体现的近期技术亮点（中间件、架构、性能、你负责的模块）。这是补充，不要与已有简历内容重复；有价值就列几条，没有就说明。作为交接内容传给下游，不要生成文件。",
         "outputFields": [
           {
-            "key": "sections",
-            "valueType": "json",
-            "required": true,
-            "description": "精炼后的简历各章节内容（经历/项目/技能）"
+            "key": "result",
+            "required": true
           }
         ]
       },
       {
         "id": "render",
         "kind": "agent",
-        "title": "生成最终简历",
+        "title": "生成 HTML 简历",
         "execModel": "llm",
         "role": "reviewer",
         "executionMode": "one-shot",
-        "executionModeRationale": "不需要用户交互即可从上下文完成。",
+        "executionModeRationale": "The node can complete from workflow context without user interaction.",
         "executionModeConfidence": 1,
         "modelProfile": "balanced",
-        "prompt": "基于上游精炼的内容，生成一份完整的 Markdown 格式简历。要求：\n\n1. 结构清晰：个人信息 → 教育背景 → 工作经历 → 项目经历 → 技能\n2. 排版简洁，适合直接转 PDF\n3. 所有占位符已替换，不存在 {占位} 或 TODO\n4. 每条 bullet 包含量化指标\n5. 文件命名为 resume.md，保存到工作目录\n\n同时输出简历的 ATS 兼容性自检结果（关键词覆盖、格式问题）。",
+        "reviewLevel": "high",
+        "reviewMaxRetries": 2,
+        "judgeDimensions": [
+          { "key": "factual_fidelity", "description": "The rendered resume must contain only facts supported by upstream resume evidence." },
+          { "key": "template_completeness", "description": "The HTML must preserve the fixed template contract, contain all applicable content, and leave no unresolved placeholders." }
+        ],
+        "prompt": "你必须严格使用工作流自带的【固定 HTML 模版】（工作流资产，见下方，本身不含任何个人信息）作为样式与结构骨架，把上游素材填进去；写每条项目 bullet 时遵守下方【简历写法要点】。\n规则：\n1. 保持 <style> 与整体结构/风格不变。\n2. 把所有 {{占位}} 和示例文字替换成来自上游“简历素材”（主）与“近期亮点”（补充）的真实内容。\n3. “项目经历”区同时容纳工作项目与个人项目；有仓库链接才放，没有就只写项目名，不要编造 GitHub 链接。\n4. 每个区块（教育 .item / 实习 .item / .proj / li / 项目）按需复制多份，容纳全部内容；bullet 密集、结果导向。\n5. 关键指标与技术名词用 <strong> 加粗。\n6. 最终产出不得残留任何 {{...}} 占位或示例注释；确实缺失才用【待补充】。\n唯一产出：把填好的完整 HTML 保存到工作流存储计划的 output 目录，文件名 resume.html，并在回复里给出相对路径。\n\n===== 简历写法要点（开始）=====\n__RESUME_GUIDE__\n===== 简历写法要点（结束）=====\n\n===== 固定 HTML 模版（开始）=====\n__RESUME_TEMPLATE__\n===== 固定 HTML 模版（结束）=====",
         "outputFields": [
           {
-            "key": "resumePath",
-            "valueType": "string",
-            "required": true,
-            "description": "生成的简历文件路径"
-          },
-          {
-            "key": "atsCheck",
-            "valueType": "json",
-            "required": false,
-            "description": "ATS 兼容性自检结果"
+            "key": "result",
+            "required": true
           }
         ]
       }
     ],
     "edges": [
       {
-        "fromNodeId": "gather",
-        "toNodeId": "refine"
+        "fromNodeId": "content",
+        "toNodeId": "render"
       },
       {
-        "fromNodeId": "refine",
+        "fromNodeId": "extra",
         "toNodeId": "render"
       }
     ]
