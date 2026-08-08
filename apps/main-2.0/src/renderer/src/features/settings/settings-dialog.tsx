@@ -11,6 +11,7 @@ import {
   Download,
   Folder,
   Gauge,
+  GitBranch,
   Info,
   Keyboard,
   Languages,
@@ -66,6 +67,7 @@ export type SettingsSection =
   | "remote"
   | "skills"
   | "eval"
+  | "workflow"
   | "appearance"
   | "about";
 
@@ -397,6 +399,10 @@ export function SettingsDialog({
             <button className={activeSection === "eval" ? "active" : ""} onClick={() => setActiveSection("eval")}>
               <Beaker size={15} />
               <span>{l("Eval", "Eval")}</span>
+            </button>
+            <button className={activeSection === "workflow" ? "active" : ""} onClick={() => setActiveSection("workflow")}>
+              <GitBranch size={15} />
+              <span>Workflow</span>
             </button>
             <button className={activeSection === "appearance" ? "active" : ""} onClick={() => setActiveSection("appearance")}>
               <Sun size={15} />
@@ -1184,6 +1190,50 @@ export function SettingsDialog({
                     checked={Boolean(settings?.memoriesSyncEnabled)}
                     disabled={!settings}
                     onChange={(event) => onSettingsChange({ memoriesSyncEnabled: event.currentTarget.checked })}
+                  />
+                </label>
+              </section>
+            ) : null}
+            {activeSection === "workflow" ? (
+              <section className="settings-pane">
+                <header className="settings-pane-head">
+                  <h3>Workflow</h3>
+                  <p>{l("Control workflow review before and during execution independently.", "分别控制工作流运行前和运行中的审查能力。")}</p>
+                </header>
+                <label className="settings-field settings-toggle">
+                  <div className="settings-field-text">
+                    <span className="settings-field-title">{l("Global Review", "全局 Review")}</span>
+                    <span className="settings-field-sub">
+                      {l(
+                        "Show the adversarial review action for user workflows before they run.",
+                        "为用户 Workflow 显示运行前的对抗审查入口。",
+                      )}
+                    </span>
+                  </div>
+                  <input
+                    type="checkbox"
+                    className="switch"
+                    checked={Boolean(settings?.workflowGlobalReviewEnabled)}
+                    disabled={!settings}
+                    onChange={(event) => onSettingsChange({ workflowGlobalReviewEnabled: event.currentTarget.checked })}
+                  />
+                </label>
+                <label className="settings-field settings-toggle">
+                  <div className="settings-field-text">
+                    <span className="settings-field-title">{l("Runtime Review", "运行时 Review")}</span>
+                    <span className="settings-field-sub">
+                      {l(
+                        "Review configured critical Agent nodes in user workflows and retry results that miss their quality threshold.",
+                        "用户 Workflow 运行时审查已配置的关键节点，未达到质量门槛时自动重试。",
+                      )}
+                    </span>
+                  </div>
+                  <input
+                    type="checkbox"
+                    className="switch"
+                    checked={Boolean(settings?.workflowRuntimeReviewEnabled)}
+                    disabled={!settings}
+                    onChange={(event) => onSettingsChange({ workflowRuntimeReviewEnabled: event.currentTarget.checked })}
                   />
                 </label>
               </section>

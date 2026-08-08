@@ -10,6 +10,8 @@ export function WorkflowNodeSurface(props: {
   progress?: WorkflowRunProgressItem;
   conversation?: WorkflowNodeConversation;
   task?: TaskRun;
+  reviewTask?: TaskRun;
+  reviewEnabled?: boolean;
   sessions?: WorkflowNodeAgentSession[];
   selectedNodeId?: string;
   onSelectNode?: (nodeId: string) => void;
@@ -36,5 +38,5 @@ export function WorkflowNodeSurface(props: {
   }
 
   const inputPrompt = props.progress?.inputRequest?.kind === "agent_message" ? props.progress.inputRequest.prompt : undefined;
-  return <WorkflowNodeAgentWindow nodeTitle={props.node.title} prompt={props.node.prompt} {...(inputPrompt ? { inputPrompt } : {})} {...(props.conversation ? { conversation: props.conversation } : {})} {...(props.task ? { task: props.task } : {})} {...(props.sessions ? { sessions: props.sessions } : {})} {...(props.selectedNodeId ? { selectedNodeId: props.selectedNodeId } : {})} {...(props.onSelectNode ? { onSelectNode: props.onSelectNode } : {})} onClose={props.onClose} {...(props.onSend ? { onSend: props.onSend } : {})} {...(props.onConfirm ? { onConfirm: props.onConfirm } : {})} {...(props.onReject ? { onReject: props.onReject } : {})} {...(props.onInterrupt ? { onInterrupt: props.onInterrupt } : {})} {...(props.onResolveRuntimeApproval ? { onResolveRuntimeApproval: props.onResolveRuntimeApproval } : {})} {...(props.editable !== undefined ? { editable: props.editable } : {})} {...(props.onUpdateNode ? { onSavePrompt: (prompt: string) => props.onUpdateNode?.({ prompt }) } : {})} />;
+  return <WorkflowNodeAgentWindow nodeTitle={props.node.title} prompt={props.node.prompt} {...(inputPrompt ? { inputPrompt } : {})} {...(props.progress ? { progress: props.progress } : {})} {...(props.conversation ? { conversation: props.conversation } : {})} {...(props.task ? { task: props.task } : {})} {...(props.reviewTask ? { reviewTask: props.reviewTask } : {})} {...(props.reviewEnabled !== undefined ? { reviewEnabled: props.reviewEnabled } : {})} {...(props.sessions ? { sessions: props.sessions } : {})} {...(props.selectedNodeId ? { selectedNodeId: props.selectedNodeId } : {})} {...(props.onSelectNode ? { onSelectNode: props.onSelectNode } : {})} onClose={props.onClose} {...(props.onSend ? { onSend: props.onSend } : {})} {...(props.onConfirm ? { onConfirm: props.onConfirm } : {})} {...(props.onReject ? { onReject: props.onReject } : {})} {...(props.onInterrupt ? { onInterrupt: props.onInterrupt } : {})} {...(props.onResolveRuntimeApproval ? { onResolveRuntimeApproval: props.onResolveRuntimeApproval } : {})} {...(props.editable !== undefined ? { editable: props.editable } : {})} {...(props.onUpdateNode ? { onSavePrompt: (prompt: string) => props.onUpdateNode?.({ prompt }) } : {})} />;
 }
