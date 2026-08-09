@@ -231,7 +231,16 @@ export class WorkflowEngine {
           const { node, state } = result.item;
           if (node.kind !== "review" || state.status !== "completed" || state.outputs?.verdict !== "revise") continue;
           if (node.onReject === "revise" && state.attempt <= node.maxRevisions) {
+            const feedback = String(state.outputs.feedback);
+            const previousFeedback = Object.fromEntries(node.targetNodeIds.map((targetNodeId) => [
+              targetNodeId,
+              run.nodeRuns[targetNodeId]?.revisionFeedback ?? [],
+            ]));
             const next = invalidateWorkflowDownstream(run.definition, run, node.targetNodeIds);
+            for (const targetNodeId of node.targetNodeIds) {
+              const target = next.nodeRuns[targetNodeId];
+              if (target) target.revisionFeedback = [...previousFeedback[targetNodeId]!, feedback];
+            }
             run.nodeRuns = next.nodeRuns;
             run.status = "running";
             revised = true;

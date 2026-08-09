@@ -177,8 +177,12 @@ describe("WorkflowEngine", () => {
       acceptanceCriteria: [],
     };
     let reviewAttempts = 0;
-    const runtime = engine(store, executor(async ({ node }) => {
-      if (node.kind !== "review") return { value: `${node.id}-${reviewAttempts}` };
+    const draftFeedback: Array<string[] | undefined> = [];
+    const runtime = engine(store, executor(async ({ node, run }) => {
+      if (node.kind !== "review") {
+        draftFeedback.push(run.nodeRuns[node.id]?.revisionFeedback);
+        return { value: `${node.id}-${reviewAttempts}` };
+      }
       reviewAttempts += 1;
       return { verdict: reviewAttempts === 1 ? "revise" : "pass", criteriaResults: [], feedback: "Improve it." };
     }));
@@ -188,6 +192,7 @@ describe("WorkflowEngine", () => {
     expect(run.nodeRuns.draft?.attempt).toBe(2);
     expect(run.nodeRuns.review?.attempt).toBe(2);
     expect(reviewAttempts).toBe(2);
+    expect(draftFeedback).toEqual([undefined, ["Improve it."]]);
   });
 
   test("manual retry keeps valid upstream output and reruns the failed node plus downstream", async () => {

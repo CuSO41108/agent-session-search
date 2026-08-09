@@ -113,6 +113,7 @@ function fixture(injectAgents = true) {
       teamChats,
       workflowCore: {
         initialize: vi.fn(async () => undefined),
+        ensureDefinitions: vi.fn(async () => undefined),
       } as never,
       ...(injectAgents ? { agents } : {}),
       loadBundledWorkflows: vi.fn(async () => [{

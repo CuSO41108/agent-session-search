@@ -7,6 +7,7 @@ import type {
   WorkflowNodeInput,
   WorkflowOutputField,
   WorkflowRun,
+  WorkflowScriptPermission,
   WorkflowValueType,
 } from "../../../../automation/engine/shared/workflow/model";
 import { validateWorkflowDefinition } from "../../../../automation/engine/shared/workflow/validation";
@@ -19,6 +20,7 @@ import { addWorkflowNode, createWorkflowDefinition, workflowConnections, type Wo
 type EditorMode = "definition" | "run";
 
 const valueTypes: WorkflowValueType[] = ["text", "number", "boolean", "file", "object", "list"];
+const scriptPermissions: WorkflowScriptPermission[] = ["workspace_read", "workspace_write", "workspace_delete", "network", "process"];
 const nodeKinds: Array<{ kind: WorkflowNodeKind; label: string; icon: typeof Bot }> = [
   { kind: "agent", label: "Agent", icon: Bot },
   { kind: "script", label: "Script", icon: Code2 },
@@ -145,6 +147,7 @@ function NodeInspector({ definition, node, agentIds, onChange, onDelete }: {
       <label className="workflow-core-field"><span>Runtime</span><select value={node.runtime} onChange={(event) => onChange({ ...node, runtime: event.currentTarget.value as typeof node.runtime })}><option value="bash">Bash</option><option value="python">Python</option><option value="typescript">TypeScript</option></select></label>
       <FieldText label="Source" multiline value={node.source} onChange={(source) => onChange({ ...node, source })} />
       <label className="workflow-core-field"><span>Timeout (seconds)</span><input type="number" min="1" value={node.timeoutSeconds} onChange={(event) => onChange({ ...node, timeoutSeconds: Number(event.currentTarget.value) })} /></label>
+      <div className="workflow-core-field"><span>Permissions</span><div className="workflow-core-permissions">{scriptPermissions.map((permission) => <label className="workflow-core-check" key={permission}><input type="checkbox" checked={node.permissions.includes(permission)} onChange={(event) => onChange({ ...node, permissions: event.currentTarget.checked ? [...node.permissions, permission] : node.permissions.filter((item) => item !== permission) })} /> {permission.replaceAll("_", " ")}</label>)}</div></div>
     </> : null}
     {node.kind === "review" ? <>
       <FieldText label="Review criteria (one per line)" multiline value={node.criteria.map((item) => item.description).join("\n")} onChange={(value) => onChange({ ...node, criteria: value.split("\n").filter(Boolean).map((description, index) => ({ key: `criterion${index + 1}`, description })) })} />

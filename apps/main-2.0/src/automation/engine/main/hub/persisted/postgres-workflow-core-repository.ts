@@ -20,6 +20,7 @@ function mapNodeRun(value: unknown): WorkflowNodeRun {
     attempt: Number(row.attempt),
   };
   if (row.resolved_inputs !== null && row.resolved_inputs !== undefined) result.resolvedInputs = postgresJson(row.resolved_inputs) as Record<string, unknown>;
+  if (row.revision_feedback !== null && row.revision_feedback !== undefined) result.revisionFeedback = postgresJson(row.revision_feedback) as string[];
   if (row.outputs !== null && row.outputs !== undefined) result.outputs = postgresJson(row.outputs) as Record<string, unknown>;
   if (row.error !== null && row.error !== undefined) result.error = postgresJson(row.error) as WorkflowNodeRun["error"];
   const startedAt = optionalTime(row.started_at);
@@ -133,14 +134,15 @@ export class PostgresWorkflowCoreRepository implements WorkflowEngineStore {
   private async insertNodeRun(database: PostgresQueryable, runId: string, nodeRun: WorkflowNodeRun): Promise<void> {
     await database.query(
       `insert into agent_recall.workflow_node_runs (
-         run_id, node_id, status, attempt, resolved_inputs, outputs, error, started_at, finished_at
-       ) values ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7::jsonb, $8, $9)`,
+         run_id, node_id, status, attempt, resolved_inputs, revision_feedback, outputs, error, started_at, finished_at
+       ) values ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7::jsonb, $8::jsonb, $9, $10)`,
       [
         runId,
         nodeRun.nodeId,
         nodeRun.status,
         nodeRun.attempt,
         jsonParameter(nodeRun.resolvedInputs),
+        jsonParameter(nodeRun.revisionFeedback),
         jsonParameter(nodeRun.outputs),
         jsonParameter(nodeRun.error),
         nodeRun.startedAt === undefined ? null : new Date(nodeRun.startedAt),

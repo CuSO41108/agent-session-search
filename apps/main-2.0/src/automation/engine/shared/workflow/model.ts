@@ -114,6 +114,7 @@ export interface WorkflowNodeRun {
   status: WorkflowNodeRunStatus;
   attempt: number;
   resolvedInputs?: Record<string, unknown>;
+  revisionFeedback?: string[];
   outputs?: Record<string, unknown>;
   error?: WorkflowRunError;
   startedAt?: number;

@@ -93,4 +93,25 @@ describe("WorkflowCoreService", () => {
 
     await expect(service.startRun(saved.id, {})).resolves.toEqual(completed);
   });
+
+  test("adds missing bundled definitions without overwriting user edits", async () => {
+    const existing = { ...definition(), name: "My edited Workflow" };
+    const saved: WorkflowDefinition[] = [];
+    const service = new WorkflowCoreService({
+      repository: {
+        listDefinitions: async () => [existing],
+        listRuns: async () => [],
+        getDefinition: async () => existing,
+        saveDefinition: async (value) => { saved.push(value); },
+        deleteDefinition: async () => undefined,
+        markInterruptedRunsFailed: async () => undefined,
+      },
+      engine: {} as WorkflowEngine,
+      configuredAgentIds: () => new Set(["agent"]),
+    });
+
+    await service.ensureDefinitions([definition(), { ...definition(), id: "new-workflow" }]);
+
+    expect(saved.map((item) => item.id)).toEqual(["new-workflow"]);
+  });
 });

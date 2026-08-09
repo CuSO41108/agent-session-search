@@ -40,6 +40,7 @@ function inputSections(
 export function assembleWorkflowNodePrompt(input: {
   node: WorkflowAgentNode | WorkflowReviewNode;
   resolvedInputs: Record<string, unknown>;
+  revisionFeedback?: string[];
 }): string {
   const { node } = input;
   return [
@@ -55,6 +56,12 @@ export function assembleWorkflowNodePrompt(input: {
     "# Constraints",
     numbered(node.constraints),
     "",
+    ...(input.revisionFeedback?.length ? [
+      "# Revision feedback",
+      "Address this feedback from the previous Review before completing the task:",
+      numbered(input.revisionFeedback),
+      "",
+    ] : []),
     "# Expected outputs",
     node.outputs.flatMap((field) => outputFieldLines(field, 0)).join("\n"),
     "",
@@ -62,4 +69,3 @@ export function assembleWorkflowNodePrompt(input: {
     numbered(node.acceptanceCriteria),
   ].join("\n").trim();
 }
-

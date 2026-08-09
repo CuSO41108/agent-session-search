@@ -1546,6 +1546,7 @@ export const POSTGRES_MIGRATIONS: readonly PostgresMigration[] = [{
         status text NOT NULL,
         attempt integer NOT NULL CHECK (attempt >= 0),
         resolved_inputs jsonb,
+        revision_feedback jsonb,
         outputs jsonb,
         error jsonb,
         started_at timestamptz,

@@ -62,7 +62,11 @@ function createAgentExecutor<N extends WorkflowAgentNode | WorkflowReviewNode>(
         runId: run.id,
         nodeId: node.id,
         agentId: node.agentId,
-        prompt: assembleWorkflowNodePrompt({ node, resolvedInputs }),
+        prompt: assembleWorkflowNodePrompt({
+          node,
+          resolvedInputs,
+          revisionFeedback: run.nodeRuns[node.id]?.revisionFeedback,
+        }),
         outputs: structuredClone(node.outputs),
         signal,
       });

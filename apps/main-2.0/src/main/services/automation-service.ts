@@ -23,6 +23,9 @@ import { EvaluationStore } from "../../automation/engine/main/evaluation-store";
 import { ConfiguredAgentExecutionService } from "../../automation/engine/main/platform/configured-agent-execution-service";
 import { WorkflowEngine } from "../../automation/engine/main/workflows/workflow-engine";
 import { createWorkflowNodeExecutors } from "../../automation/engine/main/workflows/workflow-executors";
+import { WorkflowScriptProcessRunner } from "../../automation/engine/main/workflows/workflow-script-process";
+import type { WorkflowScriptPermission } from "../../automation/engine/shared/workflow/model";
+import { structuredBundledWorkflowDefinitions } from "../../automation/engine/shared/workflow/bundled-definitions";
 import { PostgresWorkflowCoreRepository } from "../../automation/engine/main/hub/persisted/postgres-workflow-core-repository";
 import {
   loadBundledWorkflows,
@@ -69,6 +72,10 @@ export interface AutomationServiceOptions {
   chooseWorkflowImportFile?: () => Promise<WorkflowPortableFileSelection | undefined>;
   chooseWorkflowExportPath?: (defaultFileName: string) => Promise<string | undefined>;
   writeWorkflowExportFile?: (filePath: string, content: string) => Promise<void>;
+  confirmWorkflowScriptPermissions?: (input: {
+    nodeTitle: string;
+    permissions: WorkflowScriptPermission[];
+  }) => Promise<boolean>;
 }
 
 interface AutomationServiceDependencies {
@@ -277,6 +284,7 @@ export class NativeAutomationService {
       execute: (request, onEvent, signal) => this.hubInstance.askConfiguredAgent(request, onEvent, signal),
     });
     const workflowRepository = new PostgresWorkflowCoreRepository(options.database);
+    const approvedScripts = new Set<string>();
     this.workflowCore = dependencies.workflowCore ?? new WorkflowCoreService({
       repository: workflowRepository,
       engine: new WorkflowEngine({
@@ -291,6 +299,17 @@ export class NativeAutomationService {
                 prompt: `${prompt}\n\n## Response format\nReturn only one JSON object. Use exactly these top-level fields:\n${outputContract}`,
               }, undefined, signal);
               return parseWorkflowAgentOutputs(response.output);
+            },
+          },
+          scriptRunner: new WorkflowScriptProcessRunner(() => this.hubInstance.getWorkDir()),
+          scriptAuthorizer: {
+            authorize: async ({ runId, node, permissions }) => {
+              const key = `${runId}:${node.id}`;
+              if (approvedScripts.has(key)) return true;
+              if (!options.confirmWorkflowScriptPermissions) return false;
+              const approved = await options.confirmWorkflowScriptPermissions({ nodeTitle: node.title, permissions });
+              if (approved) approvedScripts.add(key);
+              return approved;
             },
           },
         }),
@@ -419,6 +438,8 @@ export class NativeAutomationService {
     await this.hubInstance.loadModelChannels(this.paths.channelsPath);
     await this.hubInstance.loadPersistedState(this.appStore);
     await this.workflowCore.initialize();
+    const defaultAgentId = this.hubInstance.snapshot().configuredAgents[0]?.id;
+    if (defaultAgentId) await this.workflowCore.ensureDefinitions(structuredBundledWorkflowDefinitions(defaultAgentId));
     this.hubInstance.setMcpServers(await this.registryInstance.list());
     this.hubInstance.ensureBundledWorkflows(await this.bundledWorkflows());
   }

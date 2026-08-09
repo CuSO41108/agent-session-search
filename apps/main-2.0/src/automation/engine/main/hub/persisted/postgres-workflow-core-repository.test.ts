@@ -41,6 +41,7 @@ function run(status: WorkflowRun["status"] = "completed"): WorkflowRun {
         status: status === "running" ? "running" : "completed",
         attempt: 1,
         resolvedInputs: {},
+        revisionFeedback: ["Add evidence."],
         outputs: status === "running" ? undefined : { answer: "Because." },
         startedAt: 30,
         finishedAt: status === "running" ? undefined : 40,

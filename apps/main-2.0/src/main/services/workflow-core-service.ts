@@ -42,6 +42,14 @@ export class WorkflowCoreService {
     await this.dependencies.repository.markInterruptedRunsFailed();
   }
 
+  async ensureDefinitions(definitions: WorkflowDefinition[]): Promise<void> {
+    const existingIds = new Set((await this.dependencies.repository.listDefinitions()).map((definition) => definition.id));
+    for (const definition of definitions) {
+      if (existingIds.has(definition.id)) continue;
+      await this.saveDefinition(definition);
+    }
+  }
+
   async snapshot(workflowId?: string): Promise<WorkflowCoreSnapshot> {
     const [definitions, runs] = await Promise.all([
       this.dependencies.repository.listDefinitions(),
