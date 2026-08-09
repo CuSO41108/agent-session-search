@@ -6502,8 +6502,76 @@ select:focus-visible {
   font-size: 12.5px;
 }
 
-.bulk-delete-date input { min-height: 34px; }
 .bulk-delete-date small { color: var(--text-muted); }
+.cleanup-date-picker { position: relative; }
+.cleanup-date-trigger {
+  display: grid;
+  width: 100%;
+  min-height: 38px;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 9px;
+  padding: 0 11px;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  color: var(--text);
+  background: var(--panel-bg);
+  text-align: left;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease, background 0.15s ease;
+}
+.cleanup-date-trigger:hover,
+.cleanup-date-trigger.is-open { border-color: var(--accent-line); background: var(--row-hover-bg); }
+.cleanup-date-trigger.is-open { box-shadow: 0 0 0 3px var(--accent-ring); }
+.cleanup-date-trigger > svg { color: var(--text-muted); }
+.cleanup-date-trigger > svg:last-child { justify-self: end; transition: transform 0.15s ease; }
+.cleanup-date-trigger.is-open > svg:last-child { transform: rotate(180deg); }
+.cleanup-date-popover {
+  position: absolute;
+  z-index: 2;
+  top: calc(100% + 7px);
+  left: 0;
+  width: min(286px, 100%);
+  padding: 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 12px;
+  background: var(--panel-bg);
+  box-shadow: var(--shadow-dialog);
+}
+.cleanup-date-nav { display: grid; grid-template-columns: 30px 1fr 30px; align-items: center; gap: 4px; margin-bottom: 8px; }
+.cleanup-date-nav button,
+.cleanup-day-grid button,
+.cleanup-year-grid button,
+.cleanup-date-footer button {
+  border: 0;
+  border-radius: 7px;
+  color: var(--text);
+  background: transparent;
+}
+.cleanup-date-nav button { display: grid; min-height: 30px; place-items: center; padding: 0; }
+.cleanup-date-nav button:hover:not(:disabled),
+.cleanup-day-grid button:hover:not(:disabled),
+.cleanup-year-grid button:hover:not(:disabled) { background: var(--row-hover-bg); }
+.cleanup-date-nav button:focus-visible,
+.cleanup-day-grid button:focus-visible,
+.cleanup-year-grid button:focus-visible,
+.cleanup-date-footer button:focus-visible { outline: 2px solid var(--accent-line); outline-offset: 1px; }
+.cleanup-date-nav .cleanup-date-heading { display: flex; justify-content: center; gap: 5px; font-weight: 650; }
+.cleanup-weekdays,
+.cleanup-day-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 2px; }
+.cleanup-weekdays { margin-bottom: 4px; color: var(--text-faint); font-size: 10px; text-align: center; }
+.cleanup-weekdays span { padding: 5px 0; }
+.cleanup-day-grid button { min-width: 0; height: 32px; padding: 0; font-size: 12px; }
+.cleanup-day-grid button.is-today { box-shadow: inset 0 0 0 1px var(--accent-line); color: var(--accent); }
+.cleanup-day-grid button.is-selected { color: var(--accent-contrast); background: var(--accent); box-shadow: none; font-weight: 650; }
+.cleanup-day-grid button:disabled,
+.cleanup-year-grid button:disabled,
+.cleanup-date-nav button:disabled { opacity: 0.28; cursor: default; }
+.cleanup-year-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; padding: 4px 1px 7px; }
+.cleanup-year-grid button { min-height: 38px; padding: 0 6px; font-size: 12px; }
+.cleanup-year-grid button.is-current { color: var(--accent); background: var(--accent-soft); font-weight: 650; }
+.cleanup-date-footer { display: flex; justify-content: flex-end; margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border-subtle); }
+.cleanup-date-footer button { min-height: 26px; padding: 0 8px; color: var(--accent); font-size: 11.5px; font-weight: 600; }
+.cleanup-date-footer button:hover { background: var(--accent-soft); }
 .bulk-delete-summary { display: flex; flex-wrap: wrap; gap: 6px; }
 .bulk-delete-summary span { padding: 4px 7px; border: 1px solid var(--border-subtle); border-radius: 6px; color: var(--text-muted); font-size: 11px; }
 .delete-confirmation-field { display: grid; gap: 6px; margin: 12px 0 4px; color: var(--text-muted); font-size: 11.5px; }

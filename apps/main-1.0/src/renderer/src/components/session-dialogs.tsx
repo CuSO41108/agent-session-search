@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { ReactElement } from "react";
-import { X } from "lucide-react";
+import { CalendarDays, ChevronDown, ChevronLeft, ChevronRight, X } from "lucide-react";
 import type { SessionSearchResult } from "../../../core/types";
 import { displayTagName, isBranchTag } from "../session-ui";
 import { localize, type LanguageMode } from "../language";
@@ -189,11 +189,11 @@ export function BulkDeleteDialog({
           <button type="button" className="icon-button" onClick={onCancel} aria-label={busy ? l("Continue in background", "转到后台") : l("Close", "关闭")}><X size={16} /></button>
         </div>
         {mode === "cleanup" && !preview ? (
-          <label className="bulk-delete-date">
+          <div className="bulk-delete-date">
             <span>{l("Delete sessions inactive before", "删除此日期前不活跃的会话")}</span>
-            <input type="date" value={dateValue} max={localDateInput(new Date())} onChange={(event) => onDateChange(event.target.value)} />
+            <CleanupDatePicker value={dateValue} language={language} onChange={onDateChange} />
             <small>{l("Favorite and live sessions are protected.", "收藏和正在运行的会话会受到保护。")}</small>
-          </label>
+          </div>
         ) : null}
         {mode === "orphans" && !preview ? (
           <p className="dialog-copy">{l("Looking for leftover subagent chats whose parent chat no longer exists...", "正在查找主对话已不存在的残留子对话...")}</p>
@@ -261,6 +261,101 @@ function issueReasonLabel(reason: string, l: (en: string, zh: string) => string)
 
 function localDateInput(date: Date): string {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+}
+
+function CleanupDatePicker({
+  value,
+  language,
+  onChange,
+}: {
+  value: string;
+  language: LanguageMode;
+  onChange: (value: string) => void;
+}): ReactElement {
+  const today = new Date();
+  const selected = parseLocalDate(value) ?? today;
+  const [open, setOpen] = useState(false);
+  const [view, setView] = useState(() => new Date(selected.getFullYear(), selected.getMonth(), 1));
+  const [yearMode, setYearMode] = useState(false);
+  const l = (en: string, zh: string) => localize(language, en, zh);
+  const weekdays = language === "zh" ? ["一", "二", "三", "四", "五", "六", "日"] : ["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"];
+  const firstWeekday = (view.getDay() + 6) % 7;
+  const daysInMonth = new Date(view.getFullYear(), view.getMonth() + 1, 0).getDate();
+  const yearPageStart = Math.floor(view.getFullYear() / 12) * 12;
+
+  const chooseDay = (day: number): void => {
+    onChange(localDateInput(new Date(view.getFullYear(), view.getMonth(), day)));
+    setOpen(false);
+  };
+
+  return (
+    <div className="cleanup-date-picker">
+      <button
+        type="button"
+        className={`cleanup-date-trigger${open ? " is-open" : ""}`}
+        aria-haspopup="dialog"
+        aria-expanded={open}
+        onClick={() => setOpen((current) => !current)}
+      >
+        <CalendarDays size={15} aria-hidden="true" />
+        <span>{value || l("Select a date", "选择日期")}</span>
+        <ChevronDown size={14} aria-hidden="true" />
+      </button>
+      {open ? (
+        <div className="cleanup-date-popover" role="dialog" aria-label={l("Choose cleanup date", "选择清理日期")}>
+          <div className="cleanup-date-nav">
+            <button type="button" aria-label={yearMode ? l("Previous years", "上一组年份") : l("Previous month", "上个月")} onClick={() => {
+              setView(new Date(view.getFullYear() - (yearMode ? 12 : 0), view.getMonth() - (yearMode ? 0 : 1), 1));
+            }}><ChevronLeft size={15} /></button>
+            <button type="button" className="cleanup-date-heading" onClick={() => setYearMode((current) => !current)}>
+              {yearMode
+                ? `${yearPageStart} – ${yearPageStart + 11}`
+                : language === "zh" ? `${view.getFullYear()} 年 ${view.getMonth() + 1} 月` : view.toLocaleDateString("en-US", { month: "long", year: "numeric" })}
+              <ChevronDown size={13} aria-hidden="true" />
+            </button>
+            <button type="button" aria-label={yearMode ? l("Next years", "下一组年份") : l("Next month", "下个月")} onClick={() => {
+              setView(new Date(view.getFullYear() + (yearMode ? 12 : 0), view.getMonth() + (yearMode ? 0 : 1), 1));
+            }} disabled={yearMode ? yearPageStart + 12 > today.getFullYear() : view.getFullYear() > today.getFullYear() || (view.getFullYear() === today.getFullYear() && view.getMonth() >= today.getMonth())}><ChevronRight size={15} /></button>
+          </div>
+          {yearMode ? (
+            <div className="cleanup-year-grid">
+              {Array.from({ length: 12 }, (_, index) => yearPageStart + index).map((year) => (
+                <button
+                  key={year}
+                  type="button"
+                  className={year === view.getFullYear() ? "is-current" : ""}
+                  disabled={year > today.getFullYear()}
+                  onClick={() => { setView(new Date(year, Math.min(view.getMonth(), year === today.getFullYear() ? today.getMonth() : 11), 1)); setYearMode(false); }}
+                >{year}</button>
+              ))}
+            </div>
+          ) : (
+            <>
+              <div className="cleanup-weekdays">{weekdays.map((day) => <span key={day}>{day}</span>)}</div>
+              <div className="cleanup-day-grid">
+                {Array.from({ length: firstWeekday }, (_, index) => <span key={`blank-${index}`} />)}
+                {Array.from({ length: daysInMonth }, (_, index) => index + 1).map((day) => {
+                  const date = new Date(view.getFullYear(), view.getMonth(), day);
+                  const isSelected = value === localDateInput(date);
+                  const isToday = localDateInput(date) === localDateInput(today);
+                  return <button key={day} type="button" className={`${isSelected ? "is-selected" : ""}${isToday ? " is-today" : ""}`} disabled={date > today} onClick={() => chooseDay(day)}>{day}</button>;
+                })}
+              </div>
+            </>
+          )}
+          <div className="cleanup-date-footer">
+            <button type="button" onClick={() => { onChange(localDateInput(today)); setOpen(false); }}>{l("Today", "今天")}</button>
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function parseLocalDate(value: string): Date | null {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  if (!match) return null;
+  return new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]));
 }
 
 export function CommandDialog({
