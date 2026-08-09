@@ -128,6 +128,7 @@ async function handleHook(input, options) {
   } catch (error) {
     // Agent hooks must never prevent a prompt, compaction, or shutdown.
     writeHookDiagnostic(opts, error);
+    return hookFailureResult(opts, error);
   }
   return {};
 }
@@ -1141,6 +1142,22 @@ function writeHookDiagnostic(options, error) {
   }
 }
 
+function hookFailureResult(options, error) {
+  const event = cleanText(options?.event, 40) || "Unknown";
+  const detail = cleanText(error instanceof Error ? error.message : String(error), 1_000) || "Unknown error";
+  const message = `AgentRecall OpenViking ${event} hook encountered an error: ${detail}`;
+  if (event === "UserPromptSubmit") {
+    return {
+      systemMessage: message,
+      hookSpecificOutput: {
+        hookEventName: "UserPromptSubmit",
+        additionalContext: message,
+      },
+    };
+  }
+  return { systemMessage: message };
+}
+
 async function runCli() {
   const chunks = [];
   let size = 0;
@@ -1164,7 +1181,13 @@ async function runCli() {
 }
 
 function finishCliFailure(error) {
-  writeHookDiagnostic(parseArguments(process.argv.slice(2)), error);
+  const options = parseArguments(process.argv.slice(2));
+  writeHookDiagnostic(options, error);
+  try {
+    process.stdout.write(`${JSON.stringify(hookFailureResult(options, error))}\n`);
+  } catch {
+    // A broken stdout cannot be used to report the failure to the host.
+  }
   process.exitCode = 0;
 }
 

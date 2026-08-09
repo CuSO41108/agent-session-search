@@ -176,7 +176,7 @@ test("no-op UserPromptSubmit and Stop CLI hooks succeed without emitting invalid
   }
 });
 
-test("unexpected runtime failures are recorded without leaking prompt content", async (context) => {
+test("unexpected runtime failures are returned to Codex and recorded without leaking prompt content", async (context) => {
   const testHome = fs.mkdtempSync(path.join(os.tmpdir(), "agent-recall-openviking-hook-diagnostic-"));
   context.after(() => fs.rmSync(testHome, { recursive: true, force: true }));
   const rootPath = path.join(testHome, "project");
@@ -199,7 +199,8 @@ test("unexpected runtime failures are recorded without leaking prompt content", 
     realpathSync: (value) => path.resolve(value),
   });
 
-  assert.deepEqual(result, {});
+  assert.match(result.systemMessage, /AgentRecall OpenViking Stop hook encountered an error:/u);
+  assert.doesNotMatch(result.systemMessage, /private user prompt|private assistant output/u);
   const diagnostic = fs.readFileSync(diagnosticLogPath, "utf8");
   assert.match(diagnostic, /"agent":"codex"/u);
   assert.match(diagnostic, /"event":"Stop"/u);
@@ -227,7 +228,38 @@ test("unexpected runtime failures are recorded without leaking prompt content", 
     encoding: "utf8",
   });
   assert.equal(cliResult.status, 0, cliResult.stderr);
+  const cliOutput = JSON.parse(cliResult.stdout);
+  assert.match(cliOutput.systemMessage, /AgentRecall OpenViking Stop hook encountered an error:/u);
+  assert.doesNotMatch(cliResult.stdout, /another private prompt|another private response/u);
   assert.doesNotMatch(fs.readFileSync(diagnosticLogPath, "utf8"), /another private prompt|another private response/u);
+});
+
+test("UserPromptSubmit runtime failures are returned as Codex context", async (context) => {
+  const testHome = fs.mkdtempSync(path.join(os.tmpdir(), "agent-recall-openviking-hook-recall-error-"));
+  context.after(() => fs.rmSync(testHome, { recursive: true, force: true }));
+  const rootPath = path.join(testHome, "project");
+  fs.mkdirSync(rootPath, { recursive: true });
+  const manifest = managedManifest(rootPath);
+  Object.defineProperty(manifest.workspaces[0], "policyPath", {
+    get() { throw new Error("policy path unavailable"); },
+  });
+
+  const result = await handleHook({
+    cwd: rootPath,
+    session_id: "session-1",
+    prompt: "private prompt",
+  }, {
+    agent: "codex",
+    event: "UserPromptSubmit",
+    manifest,
+    stateDir: path.join(testHome, "state"),
+    realpathSync: (value) => path.resolve(value),
+  });
+
+  assert.equal(result.hookSpecificOutput.hookEventName, "UserPromptSubmit");
+  assert.match(result.hookSpecificOutput.additionalContext, /AgentRecall OpenViking UserPromptSubmit hook encountered an error:/u);
+  assert.equal(result.systemMessage, result.hookSpecificOutput.additionalContext);
+  assert.doesNotMatch(JSON.stringify(result), /private prompt/u);
 });
 
 test("managed Stop appends once and waits for the session lifecycle to commit", async (context) => {
