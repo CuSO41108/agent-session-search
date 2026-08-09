@@ -1141,34 +1141,43 @@ function writeHookDiagnostic(options, error) {
   }
 }
 
-function runCli() {
+async function runCli() {
   const chunks = [];
   let size = 0;
-  process.stdin.on("data", (chunk) => {
+  for await (const chunk of process.stdin) {
     size += chunk.length;
     if (size <= MAX_STDIN_BYTES) chunks.push(chunk);
-  });
-  process.stdin.on("end", async () => {
-    let input = {};
-    if (size <= MAX_STDIN_BYTES) {
-      try {
-        input = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
-      } catch {
-        input = {};
-      }
-    }
-    const options = parseArguments(process.argv.slice(2));
+  }
+  let input = {};
+  if (size <= MAX_STDIN_BYTES) {
     try {
-      const result = await handleHook(input, options);
-      if (result && Object.keys(result).length > 0) {
-        process.stdout.write(`${JSON.stringify(result)}\n`);
-      }
-    } catch (error) {
-      writeHookDiagnostic(options, error);
-      process.exitCode = 1;
+      input = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
+    } catch {
+      input = {};
     }
+  }
+  const options = parseArguments(process.argv.slice(2));
+  const result = await handleHook(input, options);
+  if (result && Object.keys(result).length > 0) {
+    process.stdout.write(`${JSON.stringify(result)}\n`);
+  }
+}
+
+function finishCliFailure(error) {
+  writeHookDiagnostic(parseArguments(process.argv.slice(2)), error);
+  process.exitCode = 0;
+}
+
+function installCliFailureHandlers() {
+  process.on("uncaughtException", finishCliFailure);
+  process.on("unhandledRejection", finishCliFailure);
+  process.stdin.on("error", finishCliFailure);
+  process.stdout.on("error", (error) => {
+    if (error?.code !== "EPIPE") {
+      writeHookDiagnostic(parseArguments(process.argv.slice(2)), error);
+    }
+    process.exitCode = 0;
   });
-  process.stdin.resume();
 }
 
 module.exports = {
@@ -1183,4 +1192,7 @@ module.exports = {
   recallForWorkspace,
 };
 
-if (require.main === module) runCli();
+if (require.main === module) {
+  installCliFailureHandlers();
+  runCli().catch(finishCliFailure);
+}

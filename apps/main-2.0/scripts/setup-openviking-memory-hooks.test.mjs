@@ -4,7 +4,6 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { createRequire } from "node:module";
-import { spawnSync } from "node:child_process";
 
 const require = createRequire(import.meta.url);
 const {
@@ -13,7 +12,7 @@ const {
   openVikingMemoryHookStatus,
 } = require("../bin/setup-openviking-memory-hooks.cjs");
 
-test("generated hook commands fail open and retain diagnostics when the runtime cannot start", (context) => {
+test("generated hook commands avoid shell-specific control operators", (context) => {
   const testHome = fs.mkdtempSync(path.join(os.tmpdir(), "agent-recall-openviking-command-failure-"));
   context.after(() => fs.rmSync(testHome, { recursive: true, force: true }));
   const common = {
@@ -21,15 +20,11 @@ test("generated hook commands fail open and retain diagnostics when the runtime 
     hookScriptPath: path.join(testHome, "missing-openviking-hook.cjs"),
     manifestPath: path.join(testHome, "missing-openviking-manifest.json"),
   };
-  assert.match(buildHookCommand({ ...common, platform: "win32" }, "codex", "Stop"), /--diagnostic-log .*hook-errors\.log.*2>>.*hook-errors\.log.* \|\| exit 0$/u);
-  assert.match(buildHookCommand({ ...common, platform: "darwin" }, "codex", "Stop"), /--diagnostic-log .*hook-errors\.log.*2>>.*hook-errors\.log.* \|\| true$/u);
-
-  const command = buildHookCommand({ ...common, platform: process.platform }, "codex", "UserPromptSubmit");
-  const result = spawnSync(command, { shell: true, encoding: "utf8" });
-  assert.equal(result.status, 0, result.stderr);
-  assert.equal(result.stderr, "");
-  const diagnosticLog = path.join(path.dirname(common.manifestPath), "hook-errors.log");
-  assert.match(fs.readFileSync(diagnosticLog, "utf8"), /missing-agent-recall-node|not found|not recognized/iu);
+  for (const platform of ["win32", "darwin", "linux"]) {
+    const command = buildHookCommand({ ...common, platform }, "codex", "Stop");
+    assert.match(command, /--diagnostic-log .*hook-errors\.log/u);
+    assert.doesNotMatch(command, /2>>|\|\||\btrue\b|\bexit\b/u);
+  }
 });
 
 test("reconciles Claude, Codex and OpenCode without replacing unrelated config", (context) => {

@@ -204,6 +204,30 @@ test("unexpected runtime failures are recorded without leaking prompt content", 
   assert.match(diagnostic, /"agent":"codex"/u);
   assert.match(diagnostic, /"event":"Stop"/u);
   assert.doesNotMatch(diagnostic, /private user prompt|private assistant output/u);
+
+  const manifestPath = path.join(testHome, "hook-manifest.json");
+  fs.writeFileSync(manifestPath, JSON.stringify({
+    ...managedManifest(rootPath),
+    stateDir: blockedStateDir,
+  }));
+  const hookPath = path.join(import.meta.dirname, "..", "bin", "openviking-memory-hook.cjs");
+  const cliResult = spawnSync(process.execPath, [
+    hookPath,
+    "--agent", "codex",
+    "--event", "Stop",
+    "--manifest", manifestPath,
+    "--diagnostic-log", diagnosticLogPath,
+  ], {
+    input: JSON.stringify({
+      cwd: rootPath,
+      session_id: "session-2",
+      prompt: "another private prompt",
+      last_assistant_message: "another private response",
+    }),
+    encoding: "utf8",
+  });
+  assert.equal(cliResult.status, 0, cliResult.stderr);
+  assert.doesNotMatch(fs.readFileSync(diagnosticLogPath, "utf8"), /another private prompt|another private response/u);
 });
 
 test("managed Stop appends once and waits for the session lifecycle to commit", async (context) => {
