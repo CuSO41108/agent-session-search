@@ -176,6 +176,36 @@ test("no-op UserPromptSubmit and Stop CLI hooks succeed without emitting invalid
   }
 });
 
+test("unexpected runtime failures are recorded without leaking prompt content", async (context) => {
+  const testHome = fs.mkdtempSync(path.join(os.tmpdir(), "agent-recall-openviking-hook-diagnostic-"));
+  context.after(() => fs.rmSync(testHome, { recursive: true, force: true }));
+  const rootPath = path.join(testHome, "project");
+  const blockedStateDir = path.join(testHome, "state-is-a-file");
+  const diagnosticLogPath = path.join(testHome, "hook-errors.log");
+  fs.mkdirSync(rootPath, { recursive: true });
+  fs.writeFileSync(blockedStateDir, "not a directory");
+
+  const result = await handleHook({
+    cwd: rootPath,
+    session_id: "session-1",
+    prompt: "private user prompt must not enter diagnostics",
+    last_assistant_message: "private assistant output must not enter diagnostics",
+  }, {
+    agent: "codex",
+    event: "Stop",
+    manifest: managedManifest(rootPath),
+    stateDir: blockedStateDir,
+    diagnosticLogPath,
+    realpathSync: (value) => path.resolve(value),
+  });
+
+  assert.deepEqual(result, {});
+  const diagnostic = fs.readFileSync(diagnosticLogPath, "utf8");
+  assert.match(diagnostic, /"agent":"codex"/u);
+  assert.match(diagnostic, /"event":"Stop"/u);
+  assert.doesNotMatch(diagnostic, /private user prompt|private assistant output/u);
+});
+
 test("managed Stop appends once and waits for the session lifecycle to commit", async (context) => {
   const testHome = fs.mkdtempSync(path.join(os.tmpdir(), "agent-recall-openviking-hook-"));
   context.after(() => fs.rmSync(testHome, { recursive: true, force: true }));

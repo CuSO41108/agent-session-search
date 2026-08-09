@@ -50,8 +50,8 @@ function findWorkspaceForCwd(manifest, cwd, platform = process.platform) {
 }
 
 async function handleHook(input, options) {
+  const opts = options || {};
   try {
-    const opts = options || {};
     const manifest = opts.manifest || readManifest(opts.manifestPath);
     if (!manifest || ![1, 2].includes(manifest.version) || typeof manifest.baseUrl !== "string" || !manifest.baseUrl) return {};
     const agent = opts.agent;
@@ -125,8 +125,9 @@ async function handleHook(input, options) {
         trigger: opts.event === "PreCompact" ? "compact" : "session-end",
       });
     }
-  } catch {
+  } catch (error) {
     // Agent hooks must never prevent a prompt, compaction, or shutdown.
+    writeHookDiagnostic(opts, error);
   }
   return {};
 }
@@ -1115,7 +1116,29 @@ function parseArguments(argv) {
     agent: valueAfter("--agent"),
     event: valueAfter("--event"),
     manifestPath: valueAfter("--manifest") || process.env.AGENT_RECALL_OPENVIKING_MANIFEST,
+    diagnosticLogPath: valueAfter("--diagnostic-log"),
   };
+}
+
+function writeHookDiagnostic(options, error) {
+  const logPath = options?.diagnosticLogPath;
+  if (!logPath) return;
+  try {
+    fs.mkdirSync(path.dirname(logPath), { recursive: true });
+    if (fs.existsSync(logPath) && fs.statSync(logPath).size > 512 * 1024) {
+      fs.rmSync(`${logPath}.previous`, { force: true });
+      fs.renameSync(logPath, `${logPath}.previous`);
+    }
+    const record = {
+      timestamp: new Date().toISOString(),
+      agent: cleanText(options.agent, 40),
+      event: cleanText(options.event, 40),
+      error: cleanText(error instanceof Error ? error.message : String(error), 4_000),
+    };
+    fs.appendFileSync(logPath, `${JSON.stringify(record)}\n`, "utf8");
+  } catch {
+    // Diagnostics must never turn a fail-open hook into a host failure.
+  }
 }
 
 function runCli() {
@@ -1134,9 +1157,15 @@ function runCli() {
         input = {};
       }
     }
-    const result = await handleHook(input, parseArguments(process.argv.slice(2)));
-    if (result && Object.keys(result).length > 0) {
-      process.stdout.write(`${JSON.stringify(result)}\n`);
+    const options = parseArguments(process.argv.slice(2));
+    try {
+      const result = await handleHook(input, options);
+      if (result && Object.keys(result).length > 0) {
+        process.stdout.write(`${JSON.stringify(result)}\n`);
+      }
+    } catch (error) {
+      writeHookDiagnostic(options, error);
+      process.exitCode = 1;
     }
   });
   process.stdin.resume();

@@ -13,19 +13,23 @@ const {
   openVikingMemoryHookStatus,
 } = require("../bin/setup-openviking-memory-hooks.cjs");
 
-test("generated hook commands fail open when the runtime cannot start", () => {
+test("generated hook commands fail open and retain diagnostics when the runtime cannot start", (context) => {
+  const testHome = fs.mkdtempSync(path.join(os.tmpdir(), "agent-recall-openviking-command-failure-"));
+  context.after(() => fs.rmSync(testHome, { recursive: true, force: true }));
   const common = {
-    nodePath: path.join(os.tmpdir(), "missing-agent-recall-node"),
-    hookScriptPath: path.join(os.tmpdir(), "missing-openviking-hook.cjs"),
-    manifestPath: path.join(os.tmpdir(), "missing-openviking-manifest.json"),
+    nodePath: path.join(testHome, "missing-agent-recall-node"),
+    hookScriptPath: path.join(testHome, "missing-openviking-hook.cjs"),
+    manifestPath: path.join(testHome, "missing-openviking-manifest.json"),
   };
-  assert.match(buildHookCommand({ ...common, platform: "win32" }, "codex", "Stop"), /2>nul \|\| exit 0$/u);
-  assert.match(buildHookCommand({ ...common, platform: "darwin" }, "codex", "Stop"), /2>\/dev\/null \|\| true$/u);
+  assert.match(buildHookCommand({ ...common, platform: "win32" }, "codex", "Stop"), /--diagnostic-log .*hook-errors\.log.*2>>.*hook-errors\.log.* \|\| exit 0$/u);
+  assert.match(buildHookCommand({ ...common, platform: "darwin" }, "codex", "Stop"), /--diagnostic-log .*hook-errors\.log.*2>>.*hook-errors\.log.* \|\| true$/u);
 
   const command = buildHookCommand({ ...common, platform: process.platform }, "codex", "UserPromptSubmit");
   const result = spawnSync(command, { shell: true, encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stderr, "");
+  const diagnosticLog = path.join(path.dirname(common.manifestPath), "hook-errors.log");
+  assert.match(fs.readFileSync(diagnosticLog, "utf8"), /missing-agent-recall-node|not found|not recognized/iu);
 });
 
 test("reconciles Claude, Codex and OpenCode without replacing unrelated config", (context) => {
