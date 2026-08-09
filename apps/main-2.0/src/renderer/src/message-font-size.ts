@@ -9,6 +9,9 @@ export const MESSAGE_FONT_SIZE_SCALES: readonly MessageFontSizeScale[] = [
   "xlarge",
 ] as const;
 
+/** Base session/UI body size used as the 1.0 zoom reference. */
+export const MESSAGE_FONT_SIZE_BASE_PX = 12;
+
 const MESSAGE_FONT_SIZE_PX: Record<MessageFontSizeScale, number> = {
   medium: 12,
   "medium-large": 13,
@@ -35,4 +38,15 @@ export function messageFontSizePx(scale: MessageFontSizeScale): number {
 
 export function messageFontSizeCss(scale: MessageFontSizeScale): string {
   return `${messageFontSizePx(scale)}px`;
+}
+
+/** Whole-UI zoom factor. Chromium `zoom` scales hard-coded px layout, not just message text. */
+export function messageFontSizeZoom(scale: MessageFontSizeScale): number {
+  return messageFontSizePx(scale) / MESSAGE_FONT_SIZE_BASE_PX;
+}
+
+export function applyMessageFontSize(scale: MessageFontSizeScale, root: HTMLElement = document.documentElement): void {
+  // Keep message body at the base px; page zoom carries the selected scale for the whole UI.
+  root.style.setProperty("--message-font-size", `${MESSAGE_FONT_SIZE_BASE_PX}px`);
+  root.style.zoom = String(messageFontSizeZoom(scale));
 }
