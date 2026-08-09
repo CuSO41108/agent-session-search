@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { createRequire } from "node:module";
+import { spawnSync } from "node:child_process";
 
 const require = createRequire(import.meta.url);
 const {
@@ -24,7 +25,36 @@ test("generated hook commands avoid shell-specific control operators", (context)
     const command = buildHookCommand({ ...common, platform }, "codex", "Stop");
     assert.match(command, /--diagnostic-log .*hook-errors\.log/u);
     assert.doesNotMatch(command, /2>>|\|\||\btrue\b|\bexit\b/u);
+    if (platform === "win32") assert.match(command, /^& "/u);
+    else assert.doesNotMatch(command, /^& /u);
   }
+});
+
+test("Windows hook commands execute successfully through PowerShell", (context) => {
+  if (process.platform !== "win32") return;
+  const testHome = fs.mkdtempSync(path.join(os.tmpdir(), "agent-recall-openviking-powershell-"));
+  context.after(() => fs.rmSync(testHome, { recursive: true, force: true }));
+  const manifestPath = path.join(testHome, "hook-manifest.json");
+  fs.writeFileSync(manifestPath, JSON.stringify({
+    version: 2,
+    baseUrl: "http://127.0.0.1:21933",
+    integrations: { claude: true, codex: true, opencode: false },
+    workspaces: [],
+  }));
+  const command = buildHookCommand({
+    nodePath: process.execPath,
+    hookScriptPath: path.join(import.meta.dirname, "..", "bin", "openviking-memory-hook.cjs"),
+    manifestPath,
+    platform: "win32",
+  }, "codex", "UserPromptSubmit");
+
+  const result = spawnSync("powershell.exe", ["-NoProfile", "-Command", command], {
+    input: "{}",
+    encoding: "utf8",
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "");
+  assert.equal(result.stderr, "");
 });
 
 test("reconciles Claude, Codex and OpenCode without replacing unrelated config", (context) => {

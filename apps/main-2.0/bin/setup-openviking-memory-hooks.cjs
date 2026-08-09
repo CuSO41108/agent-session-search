@@ -24,7 +24,8 @@ function settingsPathsFor(homeDir) {
 function buildHookCommand(options, agent, event) {
   const nodePath = options.nodePath || "node";
   const diagnosticLogPath = options.diagnosticLogPath || path.join(path.dirname(options.manifestPath), "hook-errors.log");
-  return `${quote(nodePath)} ${quote(options.hookScriptPath)} --agent ${agent} --event ${event} --manifest ${quote(options.manifestPath)} --diagnostic-log ${quote(diagnosticLogPath)}`;
+  const invocation = `${quote(nodePath)} ${quote(options.hookScriptPath)} --agent ${agent} --event ${event} --manifest ${quote(options.manifestPath)} --diagnostic-log ${quote(diagnosticLogPath)}`;
+  return options.platform === "win32" ? `& ${invocation}` : invocation;
 }
 
 function isOurHookCommand(command) {
