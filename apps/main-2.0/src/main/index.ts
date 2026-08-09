@@ -235,6 +235,7 @@ interface OpenVikingMemoryHookSetup {
     openCodePluginPath: string;
     manifestPath: string;
     nodePath: string;
+    platform: NodeJS.Platform;
     integrations: { claude: boolean; codex: boolean; opencode: boolean };
   }): { status: "configured" | "error"; detail?: string };
 }
@@ -1235,6 +1236,7 @@ function reconcileOpenVikingMemoryHooks(settings: AppSettings): void {
     openCodePluginPath: OPENVIKING_OPENCODE_PLUGIN_PATH,
     manifestPath: openVikingHookManifestService.manifestPath(),
     nodePath: process.env.AGENT_RECALL_NODE_PATH || process.env.npm_node_execpath || "node",
+    platform: process.platform,
     integrations: openVikingIntegrations(settings),
   });
   if (result.status === "error") throw new Error(result.detail || "Could not configure OpenViking memory hooks.");

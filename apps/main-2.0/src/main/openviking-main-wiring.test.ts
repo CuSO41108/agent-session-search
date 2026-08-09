@@ -15,6 +15,7 @@ describe("OpenViking main-process wiring", () => {
     expect(mainSource).toContain("openVikingHookStateFlusher?.stop()");
     expect(mainSource).toContain("openVikingHookManifestService?.clear()");
     expect(mainSource).toContain("reconcileOpenVikingMemoryHooks");
+    expect(mainSource).toContain("platform: process.platform");
     expect(mainSource).toContain("refreshOpenVikingHookManifest");
     expect(mainSource).toContain(
       'process.env.AGENT_RECALL_NODE_PATH || process.env.npm_node_execpath || "node"',
