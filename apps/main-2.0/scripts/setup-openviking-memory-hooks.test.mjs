@@ -4,12 +4,29 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { createRequire } from "node:module";
+import { spawnSync } from "node:child_process";
 
 const require = createRequire(import.meta.url);
 const {
+  buildHookCommand,
   reconcileOpenVikingMemoryHooks,
   openVikingMemoryHookStatus,
 } = require("../bin/setup-openviking-memory-hooks.cjs");
+
+test("generated hook commands fail open when the runtime cannot start", () => {
+  const common = {
+    nodePath: path.join(os.tmpdir(), "missing-agent-recall-node"),
+    hookScriptPath: path.join(os.tmpdir(), "missing-openviking-hook.cjs"),
+    manifestPath: path.join(os.tmpdir(), "missing-openviking-manifest.json"),
+  };
+  assert.match(buildHookCommand({ ...common, platform: "win32" }, "codex", "Stop"), /2>nul \|\| exit 0$/u);
+  assert.match(buildHookCommand({ ...common, platform: "darwin" }, "codex", "Stop"), /2>\/dev\/null \|\| true$/u);
+
+  const command = buildHookCommand({ ...common, platform: process.platform }, "codex", "UserPromptSubmit");
+  const result = spawnSync(command, { shell: true, encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stderr, "");
+});
 
 test("reconciles Claude, Codex and OpenCode without replacing unrelated config", (context) => {
   const testHome = fs.mkdtempSync(path.join(os.tmpdir(), "agent-recall-openviking-setup-"));
