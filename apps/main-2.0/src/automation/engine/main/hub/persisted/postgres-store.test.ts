@@ -23,7 +23,7 @@ describe("PostgreSQL AgentHub persistence", () => {
     await database.close();
   });
 
-  it("persists chat runtime state and Workflow trajectories transactionally", async () => {
+  it("persists chat runtime state without writing legacy Workflow state", async () => {
     const payload = {
       version: 5,
       activeChatId: "chat-1",
@@ -163,20 +163,7 @@ describe("PostgreSQL AgentHub persistence", () => {
     const sidebar = await store.loadWorkflowSidebar();
     const restored = await store.load() as Record<string, unknown>;
 
-    expect(sidebar).toEqual({
-      activeWorkflowId: "workflow-1",
-      workflows: [{
-        workflowId: "workflow-1",
-        sourceType: "user",
-        title: "Review",
-        status: "completed",
-        revision: 1,
-        objective: "Review the change",
-        nodeCount: 0,
-        createdAt: 1_000,
-        updatedAt: 2_000,
-      }],
-    });
+    expect(sidebar).toEqual({ workflows: [] });
 
     expect(restored).toMatchObject({
       version: 5,
@@ -189,40 +176,8 @@ describe("PostgreSQL AgentHub persistence", () => {
         }),
       }],
       workflowStore: {
-        activeWorkflowId: "workflow-1",
-        workflows: [{
-          workflowId: "workflow-1",
-          runIds: ["run-1"],
-          messages: [{
-            id: "workflow-message-1",
-            events: [{
-              id: "workflow-tool-1",
-              type: "tool_result",
-              metadata: { status: "failed" },
-            }],
-          }],
-        }],
-        runs: [{
-          runId: "run-1",
-          triggerSource: "scheduled",
-          configurationSnapshot: expect.objectContaining({
-            configuredAgentId: "codex",
-            runtimeId: "codex",
-          }),
-          progress: [{
-            inputSummary: { objective: "Review the change" },
-            outputs: { result: "approved" },
-            telemetry: expect.objectContaining({
-              totalTokens: 15,
-              estimatedCost: 0.002,
-            }),
-          }],
-          events: [{
-            sequence: 0,
-            summary: "Looks good",
-            artifactRefs: [{ title: "Review", content: "No blockers" }],
-          }],
-        }],
+        workflows: [],
+        runs: [],
       },
     });
 
@@ -230,19 +185,16 @@ describe("PostgreSQL AgentHub persistence", () => {
       chats: number;
       workflows: number;
       runs: number;
-      events: number;
     }>(`
       select
         (select count(*)::integer from agent_recall.automation_chats) as chats,
         (select count(*)::integer from agent_recall.workflows) as workflows,
-        (select count(*)::integer from agent_recall.workflow_runs) as runs,
-        (select count(*)::integer from agent_recall.workflow_events) as events
+        (select count(*)::integer from agent_recall.workflow_runs) as runs
     `);
     expect(counts.rows[0]).toEqual({
       chats: 1,
-      workflows: 1,
-      runs: 1,
-      events: 1,
+      workflows: 0,
+      runs: 0,
     });
   });
 });
