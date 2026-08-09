@@ -1507,4 +1507,66 @@ export const POSTGRES_MIGRATIONS: readonly PostgresMigration[] = [{
       WHERE source IN ('claude-cli', 'claude-app', 'tclaude-cli', 'zcode-cli');
     `,
   ],
+}, {
+  version: 33,
+  name: "replace Workflow V2 storage with structured Workflow storage",
+  statements: [
+    `
+      DROP TABLE IF EXISTS agent_recall.workflow_event_artifacts;
+      DROP TABLE IF EXISTS agent_recall.workflow_events;
+      DROP TABLE IF EXISTS agent_recall.workflow_run_nodes;
+      DROP TABLE IF EXISTS agent_recall.workflow_run_order;
+      DROP TABLE IF EXISTS agent_recall.workflow_run_progress;
+      DROP TABLE IF EXISTS agent_recall.workflow_draft_messages;
+      DROP TABLE IF EXISTS agent_recall.workflow_runs;
+      DROP TABLE IF EXISTS agent_recall.workflows;
+
+      CREATE TABLE agent_recall.workflows (
+        id text PRIMARY KEY,
+        name text NOT NULL,
+        description text NOT NULL,
+        definition jsonb NOT NULL,
+        created_at timestamptz NOT NULL,
+        updated_at timestamptz NOT NULL
+      );
+
+      CREATE TABLE agent_recall.workflow_runs (
+        id text PRIMARY KEY,
+        workflow_id text NOT NULL REFERENCES agent_recall.workflows(id) ON DELETE CASCADE,
+        definition jsonb NOT NULL,
+        inputs jsonb NOT NULL,
+        status text NOT NULL,
+        started_at timestamptz NOT NULL,
+        finished_at timestamptz
+      );
+
+      CREATE TABLE agent_recall.workflow_node_runs (
+        run_id text NOT NULL REFERENCES agent_recall.workflow_runs(id) ON DELETE CASCADE,
+        node_id text NOT NULL,
+        status text NOT NULL,
+        attempt integer NOT NULL CHECK (attempt >= 0),
+        resolved_inputs jsonb,
+        outputs jsonb,
+        error jsonb,
+        started_at timestamptz,
+        finished_at timestamptz,
+        PRIMARY KEY (run_id, node_id)
+      );
+
+      CREATE TABLE agent_recall.workflow_artifacts (
+        id text PRIMARY KEY,
+        run_id text NOT NULL REFERENCES agent_recall.workflow_runs(id) ON DELETE CASCADE,
+        node_id text NOT NULL,
+        field_key text NOT NULL,
+        path text NOT NULL,
+        metadata jsonb NOT NULL DEFAULT '{}'::jsonb,
+        created_at timestamptz NOT NULL
+      );
+
+      CREATE INDEX workflow_runs_workflow_started_idx
+        ON agent_recall.workflow_runs (workflow_id, started_at DESC);
+      CREATE INDEX workflow_artifacts_run_idx
+        ON agent_recall.workflow_artifacts (run_id, node_id);
+    `,
+  ],
 }];
