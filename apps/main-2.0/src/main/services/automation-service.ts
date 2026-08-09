@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import type { AppSnapshot, ConfiguredAgent, WorkflowSidebarItem } from "../../automation/contracts";
 import {
   AgentHub,
@@ -20,6 +21,9 @@ import { McpAgentManagementService } from "../../automation/engine/main/mcp/agen
 import { BuiltinWorkflowMcpServer, type BuiltinSessionSearchServer, type ManagedMcp, type McpBuiltinRuntime } from "../../automation/engine/main/mcp-builtin-server";
 import { EvaluationStore } from "../../automation/engine/main/evaluation-store";
 import { ConfiguredAgentExecutionService } from "../../automation/engine/main/platform/configured-agent-execution-service";
+import { WorkflowEngine } from "../../automation/engine/main/workflows/workflow-engine";
+import { createWorkflowNodeExecutors } from "../../automation/engine/main/workflows/workflow-executors";
+import { PostgresWorkflowCoreRepository } from "../../automation/engine/main/hub/persisted/postgres-workflow-core-repository";
 import {
   loadBundledWorkflows,
   loadBundledWorkflowSummaries,
@@ -46,6 +50,7 @@ import {
   WorkflowPortableService,
   type WorkflowPortableFileSelection,
 } from "./workflow-portable-service";
+import { parseWorkflowAgentOutputs, WorkflowCoreService } from "./workflow-core-service";
 
 export interface AutomationServiceOptions {
   database: PostgresDatabase;
@@ -72,6 +77,7 @@ interface AutomationServiceDependencies {
   agents?: McpAgentManagementService;
   evaluations?: EvaluationService;
   teamChats?: TeamChatService;
+  workflowCore?: WorkflowCoreService;
   loadBundledWorkflows?: (rootPath: string) => Promise<BundledWorkflowDefinition[]>;
   loadBundledWorkflowSummaries?: (rootPath: string) => Promise<BundledWorkflowSummary[]>;
   startBridge?: typeof startMcpBridge;
@@ -219,6 +225,7 @@ export class NativeAutomationService {
   readonly paths: AutomationPaths;
   readonly runtime: RuntimeAutomationModule;
   readonly workflows: WorkflowAutomationModule;
+  readonly workflowCore: WorkflowCoreService;
   readonly mcp: McpAutomationModule;
   readonly evaluations: EvaluationService;
   readonly teamChat: TeamChatService;
@@ -268,6 +275,27 @@ export class NativeAutomationService {
       channels: () => this.hubInstance.snapshot().channels,
       defaultWorkDir: () => this.hubInstance.getWorkDir(),
       execute: (request, onEvent, signal) => this.hubInstance.askConfiguredAgent(request, onEvent, signal),
+    });
+    const workflowRepository = new PostgresWorkflowCoreRepository(options.database);
+    this.workflowCore = dependencies.workflowCore ?? new WorkflowCoreService({
+      repository: workflowRepository,
+      engine: new WorkflowEngine({
+        store: workflowRepository,
+        createId: () => `workflow_run_${randomUUID()}`,
+        executors: createWorkflowNodeExecutors({
+          agentInvoker: {
+            invoke: async ({ agentId, prompt, outputs, signal }) => {
+              const outputContract = outputs.map((field) => `- ${field.key}: ${field.description}`).join("\n");
+              const response = await this.configuredAgentExecutor.runOneShot({
+                configuredAgentId: agentId,
+                prompt: `${prompt}\n\n## Response format\nReturn only one JSON object. Use exactly these top-level fields:\n${outputContract}`,
+              }, undefined, signal);
+              return parseWorkflowAgentOutputs(response.output);
+            },
+          },
+        }),
+      }),
+      configuredAgentIds: () => new Set(this.hubInstance.snapshot().configuredAgents.map((agent) => agent.id)),
     });
     this.evaluations = dependencies.evaluations ?? new EvaluationService({
       store: new EvaluationStore(options.database),
@@ -390,6 +418,7 @@ export class NativeAutomationService {
   private async prepareInternal(): Promise<void> {
     await this.hubInstance.loadModelChannels(this.paths.channelsPath);
     await this.hubInstance.loadPersistedState(this.appStore);
+    await this.workflowCore.initialize();
     this.hubInstance.setMcpServers(await this.registryInstance.list());
     this.hubInstance.ensureBundledWorkflows(await this.bundledWorkflows());
   }

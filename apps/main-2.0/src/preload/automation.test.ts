@@ -38,6 +38,30 @@ describe("createAutomationApi", () => {
     expect(ipc.invoke).toHaveBeenCalledWith(AUTOMATION_CHANNELS.workflowSidebar);
   });
 
+  it("maps the structured Workflow API without legacy draft operations", async () => {
+    const ipc = { invoke: vi.fn(async () => ({ definitions: [], runs: [] })), on: vi.fn(), removeListener: vi.fn() };
+    const api = createAutomationApi(ipc as never);
+    const definition = { id: "workflow" } as never;
+
+    await api.getWorkflowCore();
+    await api.saveWorkflowDefinition(definition);
+    await api.startWorkflowRun("workflow", { source: "resume" });
+    await api.retryWorkflowNode("run", "node");
+    await api.resolveWorkflowApproval("run", "approval", { decision: "yes" });
+    await api.cancelWorkflowRun("run");
+    await api.deleteWorkflowDefinition("workflow");
+
+    expect(ipc.invoke.mock.calls).toEqual([
+      [AUTOMATION_CHANNELS.workflowCoreGet, undefined],
+      [AUTOMATION_CHANNELS.workflowDefinitionSave, definition],
+      [AUTOMATION_CHANNELS.workflowRunStart, { workflowId: "workflow", inputs: { source: "resume" } }],
+      [AUTOMATION_CHANNELS.workflowNodeRetry, { runId: "run", nodeId: "node" }],
+      [AUTOMATION_CHANNELS.workflowApprovalResolve, { runId: "run", nodeId: "approval", outputs: { decision: "yes" } }],
+      [AUTOMATION_CHANNELS.workflowRunCancel, { runId: "run" }],
+      [AUTOMATION_CHANNELS.workflowDefinitionDelete, { workflowId: "workflow" }],
+    ]);
+  });
+
   it("keeps portable Workflow file contents behind explicit IPC calls", async () => {
     const ipc = { invoke: vi.fn(async () => ({ ok: true })), on: vi.fn(), removeListener: vi.fn() };
     const api = createAutomationApi(ipc as never);

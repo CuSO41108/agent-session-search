@@ -111,6 +111,9 @@ function fixture(injectAgents = true) {
       registry,
       evaluations,
       teamChats,
+      workflowCore: {
+        initialize: vi.fn(async () => undefined),
+      } as never,
       ...(injectAgents ? { agents } : {}),
       loadBundledWorkflows: vi.fn(async () => [{
         workflowId: "wf",
@@ -163,7 +166,7 @@ describe("NativeAutomationService", () => {
     });
     expect(hub.loadModelChannels).not.toHaveBeenCalled();
     expect(hub.loadPersistedState).not.toHaveBeenCalled();
-    expect(database.query).toHaveBeenCalledTimes(2);
+    expect(database.query).toHaveBeenCalledTimes(1);
   });
 
   it("prepares the persisted snapshot without starting execution infrastructure", async () => {

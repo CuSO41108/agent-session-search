@@ -47,6 +47,7 @@ export type {
   WorkflowAgentNode,
   WorkflowApprovalNode,
   WorkflowApprovalOption,
+  WorkflowCoreSnapshot,
   WorkflowDefinition,
   WorkflowInputDefinition,
   WorkflowNode,

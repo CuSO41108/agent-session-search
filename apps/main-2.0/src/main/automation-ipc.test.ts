@@ -78,6 +78,15 @@ function setup(pickDirectory?: (defaultPath?: string) => Promise<string | undefi
     updateConfiguredAgents: vi.fn((value, options) => hub.updateConfiguredAgents(value, options)),
     deleteConfiguredAgent: vi.fn(async (agentId: string) => ({ configuredAgents: hub.listConfiguredAgents().filter((agent) => agent.id !== agentId) })),
     workflows: hub,
+    workflowCore: {
+      snapshot: vi.fn(async () => ({ definitions: [], runs: [] })),
+      saveDefinition: vi.fn(async (value) => value),
+      deleteDefinition: vi.fn(async () => undefined),
+      startRun: vi.fn(async (workflowId, inputs) => ({ id: "run-1", workflowId, inputs })),
+      cancelRun: vi.fn(async (runId) => ({ id: runId, status: "cancelled" })),
+      retryNode: vi.fn(async (runId, nodeId) => ({ id: runId, nodeId })),
+      resolveApproval: vi.fn(async (runId, nodeId, outputs) => ({ id: runId, nodeId, outputs })),
+    },
     mcp,
     evaluations,
     portableWorkflows: {
@@ -95,6 +104,24 @@ function setup(pickDirectory?: (defaultPath?: string) => Promise<string | undefi
 }
 
 describe("registerAutomationIpc", () => {
+  it("routes the structured Workflow API through Workflow Core", async () => {
+    const { invoke, service } = setup();
+    const definition = {
+      id: "workflow-1", name: "Workflow", description: "Description", inputs: [], nodes: [], createdAt: 1, updatedAt: 1,
+    };
+
+    await expect(invoke(AUTOMATION_CHANNELS.workflowCoreGet, "workflow-1")).resolves.toEqual({ definitions: [], runs: [] });
+    await expect(invoke(AUTOMATION_CHANNELS.workflowDefinitionSave, definition)).resolves.toEqual(definition);
+    await expect(invoke(AUTOMATION_CHANNELS.workflowDefinitionDelete, { workflowId: "workflow-1" })).resolves.toBeUndefined();
+    await expect(invoke(AUTOMATION_CHANNELS.workflowRunStart, { workflowId: "workflow-1", inputs: { source: "resume" } })).resolves.toMatchObject({ id: "run-1" });
+    await expect(invoke(AUTOMATION_CHANNELS.workflowRunCancel, { runId: "run-1" })).resolves.toMatchObject({ status: "cancelled" });
+    await expect(invoke(AUTOMATION_CHANNELS.workflowNodeRetry, { runId: "run-1", nodeId: "answer" })).resolves.toMatchObject({ nodeId: "answer" });
+    await expect(invoke(AUTOMATION_CHANNELS.workflowApprovalResolve, { runId: "run-1", nodeId: "approve", outputs: { decision: "yes" } })).resolves.toMatchObject({ outputs: { decision: "yes" } });
+
+    expect(service.workflowCore.snapshot).toHaveBeenCalledWith("workflow-1");
+    await expect(invoke(AUTOMATION_CHANNELS.workflowRunStart, { workflowId: "workflow-1", inputs: { huge: () => undefined } })).rejects.toThrow();
+  });
+
   it("registers only AgentRecall-prefixed automation channels", () => {
     const { handlers } = setup();
     expect([...handlers.keys()].length).toBeGreaterThan(30);

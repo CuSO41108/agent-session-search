@@ -131,3 +131,7 @@ export interface WorkflowRun {
   finishedAt?: number;
 }
 
+export interface WorkflowCoreSnapshot {
+  definitions: WorkflowDefinition[];
+  runs: WorkflowRun[];
+}
