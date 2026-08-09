@@ -44,6 +44,28 @@ export type { AgentMcpBinding, McpServerDefinition, McpToolDefinition, McpTransp
 export type { EvaluationCaseResult, EvaluationDataset, EvaluationDatasetItem, EvaluationEvaluator, EvaluationExperiment, EvaluationRun, EvaluationRunPage, EvaluationRunSummary, EvaluationScore, EvaluatorKind, ListEvaluationRunsRequest } from "./evaluation/types";
 export type { WorkflowDraftState, WorkflowGrillMessage, WorkflowSidebarItem, WorkflowStoreState } from "./workflow/draft";
 export type {
+  WorkflowAgentNode,
+  WorkflowApprovalNode,
+  WorkflowApprovalOption,
+  WorkflowDefinition,
+  WorkflowInputDefinition,
+  WorkflowNode,
+  WorkflowNodeInput,
+  WorkflowNodeRun,
+  WorkflowNodeRunStatus,
+  WorkflowOutputField,
+  WorkflowReviewCriterion,
+  WorkflowReviewNode,
+  WorkflowRun,
+  WorkflowRunError,
+  WorkflowRunStatus,
+  WorkflowScriptNode,
+  WorkflowScriptPermission,
+  WorkflowScriptRuntime,
+  WorkflowValueType,
+} from "./workflow/model";
+export type { WorkflowValidationIssue } from "./workflow/validation";
+export type {
   ConfirmWorkflowImportRequest,
   WorkflowExportResult,
   WorkflowImportMapping,
