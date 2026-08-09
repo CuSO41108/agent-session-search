@@ -894,6 +894,21 @@ async function chooseLocalProjectDirectory(): Promise<string | null> {
   return result.filePaths[0] ?? null;
 }
 
+async function chooseProviderConfigDirectory(
+  target: "codex" | "claude" | "summary",
+  defaultPath?: string,
+): Promise<string | null> {
+  const label = target === "claude" ? "Claude Code" : target === "summary" ? "summary Provider" : "Codex";
+  const options: Electron.OpenDialogOptions = {
+    title: `Choose ${label} config directory`,
+    properties: ["openDirectory", "createDirectory"],
+    ...(defaultPath?.trim() ? { defaultPath: defaultPath.trim() } : {}),
+  };
+  const result = mainWindow ? await dialog.showOpenDialog(mainWindow, options) : await dialog.showOpenDialog(options);
+  if (result.canceled) return null;
+  return result.filePaths[0] ?? null;
+}
+
 async function chooseOpenVikingMemoryDirectory(): Promise<string | null> {
   const options: Electron.OpenDialogOptions = {
     title: "Choose a directory for managed memory",
@@ -1094,9 +1109,17 @@ function initializeOpenVikingMemory(): void {
   const resolveExtractionState = async () => {
     const settings = await providerService.hydrateSettings();
     const codex = await providerService.getCodexConfig();
+    // The bootstrap path is only the default location; extraction must read the same
+    // Codex directory the user configured, or it falls back to an unauthenticated route.
+    const configuredCodexHome = settings.apiConfig.customConfigDir.trim() || codexHome;
+    // The Codex summary source has a directory of its own, and when it is set the summary run
+    // reads that one. Extraction has to follow it or the two disagree about which route is live.
+    const summaryCodexHome = settings.summaryCodexConfigDir.trim() || codexHome;
     const codexEndpoint = settings.summarySource === "codex"
-      ? await loadActiveCodexSummaryEndpointDefaults(codexHome)
-      : null;
+      ? await loadActiveCodexSummaryEndpointDefaults(summaryCodexHome)
+      : settings.summarySource === "custom" && settings.summaryApiConfigMode === "inherit_codex"
+        ? await loadActiveCodexSummaryEndpointDefaults(configuredCodexHome)
+        : null;
     return {
       settings,
       vlm: resolveOpenVikingExtractionConfig({ settings, codex, codexEndpoint }),
@@ -1724,17 +1747,13 @@ async function resolveSummaryEndpointFromSettings(): Promise<SummaryEndpoint | n
     void store.deleteSession(sessionKey).catch(() => undefined);
   };
   if (settings.summarySource === "custom") {
-    const endpoint = resolveSummaryEndpointFromSettingsShared(settings, {});
+    const summaryApiConfig = await providerService.resolveSummaryApiConfig(settings);
+    const endpoint = resolveSummaryEndpointFromSettingsShared({
+      ...settings,
+      summaryApiConfigMode: "custom",
+      summaryApiConfig,
+    }, {});
     if (endpoint) return endpoint;
-    const codexDefaults = await loadActiveCodexSummaryEndpointDefaults();
-    if (codexDefaults) {
-      return {
-        baseUrl: codexDefaults.baseUrl,
-        model: codexDefaults.model,
-        apiKey: codexDefaults.apiKey,
-        apiFormat: codexDefaults.apiFormat,
-      };
-    }
     return buildCodexExecEndpointShared(settings, { onTemporarySession });
   }
   return resolveSummaryEndpointFromSettingsShared(settings, { onTemporarySession });
@@ -1800,11 +1819,7 @@ async function createLocalRemoteRestoreDependencies(
   onProgress: (progress: SessionMigrationProgress) => void,
 ): Promise<RemoteSessionRestoreDependencies> {
   const settings = await providerService.hydrateSettings();
-  const endpoint = resolveSummaryEndpointFromSettingsShared(settings, {
-    onTemporarySession: (temporarySessionKey) => {
-      void store.deleteSession(temporarySessionKey).catch(() => undefined);
-    },
-  });
+  const endpoint = await resolveSummaryEndpointFromSettings();
   const compressor = endpoint
     ? createMigrationCompressor(
         endpoint,
@@ -1845,11 +1860,7 @@ async function createSourceRemoteRestoreDependencies(
   onProgress: (progress: SessionMigrationProgress) => void,
 ): Promise<RemoteSessionRestoreDependencies> {
   const settings = await providerService.hydrateSettings();
-  const endpoint = resolveSummaryEndpointFromSettingsShared(settings, {
-    onTemporarySession: (temporarySessionKey) => {
-      void store.deleteSession(temporarySessionKey).catch(() => undefined);
-    },
-  });
+  const endpoint = await resolveSummaryEndpointFromSettings();
   const compressor = endpoint
     ? createMigrationCompressor(
         endpoint,
@@ -1989,11 +2000,10 @@ function remoteMigrationResumeDisplayCommand(
 
 function localSessionMigrationRuntime(event: IpcMainInvokeEvent) {
   return {
-    resolveSummaryEndpoint: (snapshot: AppSettings) => resolveSummaryEndpointFromSettingsShared(snapshot, {
-      onTemporarySession: (temporarySessionKey) => {
-        void store.deleteSession(temporarySessionKey).catch(() => undefined);
-      },
-    }),
+    // Falling back to the local Codex exec route keeps migration compression working when
+    // no summary Provider is configured, instead of silently skipping compression.
+    resolveSummaryEndpoint: async () => (await resolveSummaryEndpointFromSettings())
+      ?? buildCodexExecEndpoint(await providerService.hydrateSettings()),
     createCompressor: (
       endpoint: SummaryEndpoint,
       concurrency: number,
@@ -2576,7 +2586,7 @@ function registerIpc(): void {
     mainWindow?.webContents.send("open-session", sessionKey);
   });
   ipcMain.handle("settings:get", () => providerService.hydrateSettings());
-  registerProvidersIpc(ipcMain, providerService);
+  registerProvidersIpc(ipcMain, providerService, chooseProviderConfigDirectory);
   ipcMain.handle("settings:set", (_event, settings: AppSettingsUpdate) => applySettingsUpdate(settings));
   ipcMain.handle("v1-import:run", async () => {
     const result = await new V1SessionImportService({

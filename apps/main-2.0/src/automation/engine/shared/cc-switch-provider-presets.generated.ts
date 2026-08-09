@@ -1,4 +1,5 @@
-// Generated from CC Switch v3.16.5. Run scripts/sync-cc-switch-providers.ts to refresh.
+// Transcribed by hand from CC Switch v3.16.5. There is no generator script; refresh it by
+// re-reading the upstream preset list and updating the entries below.
 import type { AgentProviderPreset } from "./provider-presets";
 
 export const CC_SWITCH_PROVIDER_PRESETS: AgentProviderPreset[] = [
@@ -77,7 +78,7 @@ export const CC_SWITCH_PROVIDER_PRESETS: AgentProviderPreset[] = [
       },
       {
         "id": "openai/gpt-5.5",
-        "label": "openai/gpt-5.5"
+        "label": "GPT-5.5"
       }
     ],
     "usesApiKey": true,
@@ -102,7 +103,7 @@ export const CC_SWITCH_PROVIDER_PRESETS: AgentProviderPreset[] = [
       },
       {
         "id": "gpt-5.5",
-        "label": "gpt-5.5"
+        "label": "GPT-5.5"
       }
     ],
     "usesApiKey": true,
@@ -127,7 +128,7 @@ export const CC_SWITCH_PROVIDER_PRESETS: AgentProviderPreset[] = [
       },
       {
         "id": "ark-code-latest",
-        "label": "ark-code-latest"
+        "label": "Ark Code (latest)"
       }
     ],
     "usesApiKey": true,
@@ -152,7 +153,7 @@ export const CC_SWITCH_PROVIDER_PRESETS: AgentProviderPreset[] = [
       },
       {
         "id": "ark-code-latest",
-        "label": "ark-code-latest"
+        "label": "Ark Code (latest)"
       }
     ],
     "usesApiKey": true,
@@ -177,7 +178,7 @@ export const CC_SWITCH_PROVIDER_PRESETS: AgentProviderPreset[] = [
       },
       {
         "id": "doubao-seed-2-1-pro-260628",
-        "label": "doubao-seed-2-1-pro-260628"
+        "label": "Doubao Seed 2.1 Pro (260628)"
       }
     ],
     "usesApiKey": true,
@@ -202,7 +203,7 @@ export const CC_SWITCH_PROVIDER_PRESETS: AgentProviderPreset[] = [
       },
       {
         "id": "gpt-5.5",
-        "label": "gpt-5.5"
+        "label": "GPT-5.5"
       }
     ],
     "usesApiKey": true,
@@ -227,7 +228,7 @@ export const CC_SWITCH_PROVIDER_PRESETS: AgentProviderPreset[] = [
       },
       {
         "id": "gpt-5.5",
-        "label": "gpt-5.5"
+        "label": "GPT-5.5"
       }
     ],
     "usesApiKey": true,
@@ -251,11 +252,11 @@ export const CC_SWITCH_PROVIDER_PRESETS: AgentProviderPreset[] = [
       },
       {
         "id": "deepseek-v4-flash",
-        "label": "deepseek-v4-flash"
+        "label": "DeepSeek-V4-Flash"
       },
       {
         "id": "deepseek-v4-pro",
-        "label": "deepseek-v4-pro"
+        "label": "DeepSeek-V4-Pro"
       }
     ],
     "usesApiKey": true,
@@ -280,7 +281,7 @@ export const CC_SWITCH_PROVIDER_PRESETS: AgentProviderPreset[] = [
       },
       {
         "id": "glm-5.2",
-        "label": "glm-5.2"
+        "label": "GLM-5.2"
       }
     ],
     "usesApiKey": true,
@@ -305,7 +306,7 @@ export const CC_SWITCH_PROVIDER_PRESETS: AgentProviderPreset[] = [
       },
       {
         "id": "qianfan-code-latest",
-        "label": "qianfan-code-latest"
+        "label": "Qianfan Code (latest)"
       }
     ],
     "usesApiKey": true,
@@ -330,7 +331,7 @@ export const CC_SWITCH_PROVIDER_PRESETS: AgentProviderPreset[] = [
       },
       {
         "id": "qwen3-coder-plus",
-        "label": "qwen3-coder-plus"
+        "label": "Qwen3-Coder-Plus"
       }
     ],
     "usesApiKey": true,
@@ -355,7 +356,7 @@ export const CC_SWITCH_PROVIDER_PRESETS: AgentProviderPreset[] = [
       },
       {
         "id": "kimi-k2.7-code",
-        "label": "kimi-k2.7-code"
+        "label": "Kimi-K2.7-Code"
       }
     ],
     "usesApiKey": true,
@@ -380,7 +381,7 @@ export const CC_SWITCH_PROVIDER_PRESETS: AgentProviderPreset[] = [
       },
       {
         "id": "kimi-for-coding",
-        "label": "kimi-for-coding"
+        "label": "Kimi for Coding"
       }
     ],
     "usesApiKey": true,
@@ -405,15 +406,15 @@ export const CC_SWITCH_PROVIDER_PRESETS: AgentProviderPreset[] = [
       },
       {
         "id": "step-3.7-flash",
-        "label": "step-3.7-flash"
+        "label": "Step-3.7-Flash"
       },
       {
         "id": "step-3.5-flash-2603",
-        "label": "step-3.5-flash-2603"
+        "label": "Step-3.5-Flash (2603)"
       },
       {
         "id": "step-3.5-flash",
-        "label": "step-3.5-flash"
+        "label": "Step-3.5-Flash"
       }
     ],
     "usesApiKey": true,
@@ -438,7 +439,7 @@ export const CC_SWITCH_PROVIDER_PRESETS: AgentProviderPreset[] = [
       },
       {
         "id": "ZhipuAI/GLM-5.1",
-        "label": "ZhipuAI/GLM-5.1"
+        "label": "GLM-5.1"
       }
     ],
     "usesApiKey": true,
@@ -538,11 +539,11 @@ export const CC_SWITCH_PROVIDER_PRESETS: AgentProviderPreset[] = [
       },
       {
         "id": "mimo-v2.5-pro",
-        "label": "mimo-v2.5-pro"
+        "label": "MiMo-V2.5-Pro"
       },
       {
         "id": "mimo-v2.5",
-        "label": "mimo-v2.5"
+        "label": "MiMo-V2.5"
       }
     ],
     "usesApiKey": true,
@@ -567,7 +568,7 @@ export const CC_SWITCH_PROVIDER_PRESETS: AgentProviderPreset[] = [
       },
       {
         "id": "Pro/MiniMaxAI/MiniMax-M2.7",
-        "label": "Pro/MiniMaxAI/MiniMax-M2.7"
+        "label": "MiniMax-M2.7 (Pro)"
       }
     ],
     "usesApiKey": true,
@@ -592,7 +593,7 @@ export const CC_SWITCH_PROVIDER_PRESETS: AgentProviderPreset[] = [
       },
       {
         "id": "zai-org/glm-5.1",
-        "label": "zai-org/glm-5.1"
+        "label": "GLM-5.1"
       }
     ],
     "usesApiKey": true,
@@ -617,7 +618,7 @@ export const CC_SWITCH_PROVIDER_PRESETS: AgentProviderPreset[] = [
       },
       {
         "id": "moonshotai/kimi-k2.5",
-        "label": "moonshotai/kimi-k2.5"
+        "label": "Kimi-K2.5"
       }
     ],
     "usesApiKey": true,
@@ -642,27 +643,27 @@ export const CC_SWITCH_PROVIDER_PRESETS: AgentProviderPreset[] = [
       },
       {
         "id": "glm-5.2",
-        "label": "glm-5.2"
+        "label": "GLM-5.2"
       },
       {
         "id": "glm-5.1",
-        "label": "glm-5.1"
+        "label": "GLM-5.1"
       },
       {
         "id": "kimi-k2.7-code",
-        "label": "kimi-k2.7-code"
+        "label": "Kimi-K2.7-Code"
       },
       {
         "id": "deepseek-v4-pro",
-        "label": "deepseek-v4-pro"
+        "label": "DeepSeek-V4-Pro"
       },
       {
         "id": "deepseek-v4-flash",
-        "label": "deepseek-v4-flash"
+        "label": "DeepSeek-V4-Flash"
       },
       {
         "id": "mimo-v2.5-pro",
-        "label": "mimo-v2.5-pro"
+        "label": "MiMo-V2.5-Pro"
       }
     ],
     "usesApiKey": true,
@@ -687,7 +688,7 @@ export const CC_SWITCH_PROVIDER_PRESETS: AgentProviderPreset[] = [
       },
       {
         "id": "gpt-5.5",
-        "label": "gpt-5.5"
+        "label": "GPT-5.5"
       }
     ],
     "usesApiKey": true,
@@ -711,7 +712,7 @@ export const CC_SWITCH_PROVIDER_PRESETS: AgentProviderPreset[] = [
       },
       {
         "id": "gpt-5.5",
-        "label": "gpt-5.5"
+        "label": "GPT-5.5"
       }
     ],
     "usesApiKey": true,
@@ -736,7 +737,7 @@ export const CC_SWITCH_PROVIDER_PRESETS: AgentProviderPreset[] = [
       },
       {
         "id": "gpt-5.5",
-        "label": "gpt-5.5"
+        "label": "GPT-5.5"
       }
     ],
     "usesApiKey": true,
@@ -778,7 +779,7 @@ export const CC_SWITCH_PROVIDER_PRESETS: AgentProviderPreset[] = [
       },
       {
         "id": "anthropic/claude-sonnet-5",
-        "label": "anthropic/claude-sonnet-5"
+        "label": "Claude Sonnet 5"
       }
     ],
     "usesApiKey": true,
@@ -828,7 +829,7 @@ export const CC_SWITCH_PROVIDER_PRESETS: AgentProviderPreset[] = [
       },
       {
         "id": "ark-code-latest",
-        "label": "ark-code-latest"
+        "label": "Ark Code (latest)"
       }
     ],
     "usesApiKey": true,
@@ -858,7 +859,7 @@ export const CC_SWITCH_PROVIDER_PRESETS: AgentProviderPreset[] = [
       },
       {
         "id": "ark-code-latest",
-        "label": "ark-code-latest"
+        "label": "Ark Code (latest)"
       }
     ],
     "usesApiKey": true,
@@ -888,7 +889,7 @@ export const CC_SWITCH_PROVIDER_PRESETS: AgentProviderPreset[] = [
       },
       {
         "id": "doubao-seed-2-1-pro-260628",
-        "label": "doubao-seed-2-1-pro-260628"
+        "label": "Doubao Seed 2.1 Pro (260628)"
       }
     ],
     "usesApiKey": true,
@@ -939,7 +940,7 @@ export const CC_SWITCH_PROVIDER_PRESETS: AgentProviderPreset[] = [
       },
       {
         "id": "deepseek-v4-pro",
-        "label": "deepseek-v4-pro"
+        "label": "DeepSeek-V4-Pro"
       }
     ],
     "usesApiKey": true,
@@ -968,7 +969,7 @@ export const CC_SWITCH_PROVIDER_PRESETS: AgentProviderPreset[] = [
       },
       {
         "id": "glm-5.1",
-        "label": "glm-5.1"
+        "label": "GLM-5.1"
       }
     ],
     "usesApiKey": true,
@@ -998,7 +999,7 @@ export const CC_SWITCH_PROVIDER_PRESETS: AgentProviderPreset[] = [
       },
       {
         "id": "qianfan-code-latest",
-        "label": "qianfan-code-latest"
+        "label": "Qianfan Code (latest)"
       }
     ],
     "usesApiKey": true,
@@ -1066,7 +1067,7 @@ export const CC_SWITCH_PROVIDER_PRESETS: AgentProviderPreset[] = [
       },
       {
         "id": "kimi-k2.7-code",
-        "label": "kimi-k2.7-code"
+        "label": "Kimi-K2.7-Code"
       }
     ],
     "usesApiKey": true,
@@ -1117,7 +1118,7 @@ export const CC_SWITCH_PROVIDER_PRESETS: AgentProviderPreset[] = [
       },
       {
         "id": "step-3.5-flash-2603",
-        "label": "step-3.5-flash-2603"
+        "label": "Step-3.5-Flash (2603)"
       }
     ],
     "usesApiKey": true,
@@ -1147,7 +1148,7 @@ export const CC_SWITCH_PROVIDER_PRESETS: AgentProviderPreset[] = [
       },
       {
         "id": "ZhipuAI/GLM-5.1",
-        "label": "ZhipuAI/GLM-5.1"
+        "label": "GLM-5.1"
       }
     ],
     "usesApiKey": true,
@@ -1270,7 +1271,7 @@ export const CC_SWITCH_PROVIDER_PRESETS: AgentProviderPreset[] = [
       },
       {
         "id": "Pro/MiniMaxAI/MiniMax-M2.7",
-        "label": "Pro/MiniMaxAI/MiniMax-M2.7"
+        "label": "MiniMax-M2.7 (Pro)"
       }
     ],
     "usesApiKey": true,
@@ -1320,7 +1321,7 @@ export const CC_SWITCH_PROVIDER_PRESETS: AgentProviderPreset[] = [
       },
       {
         "id": "anthropic/claude-sonnet-5",
-        "label": "anthropic/claude-sonnet-5"
+        "label": "Claude Sonnet 5"
       }
     ],
     "usesApiKey": true,
@@ -1350,7 +1351,7 @@ export const CC_SWITCH_PROVIDER_PRESETS: AgentProviderPreset[] = [
       },
       {
         "id": "zai-org/glm-5.1",
-        "label": "zai-org/glm-5.1"
+        "label": "GLM-5.1"
       }
     ],
     "usesApiKey": true,
@@ -1380,7 +1381,7 @@ export const CC_SWITCH_PROVIDER_PRESETS: AgentProviderPreset[] = [
       },
       {
         "id": "mimo-v2.5-pro",
-        "label": "mimo-v2.5-pro"
+        "label": "MiMo-V2.5-Pro"
       }
     ],
     "usesApiKey": true,
@@ -1410,7 +1411,7 @@ export const CC_SWITCH_PROVIDER_PRESETS: AgentProviderPreset[] = [
       },
       {
         "id": "global.anthropic.claude-opus-4-8",
-        "label": "global.anthropic.claude-opus-4-8"
+        "label": "Claude Opus 4.8 (global)"
       }
     ],
     "usesApiKey": true,

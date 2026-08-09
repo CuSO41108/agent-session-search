@@ -32,12 +32,18 @@ import {
   normalizeOpenVikingRecallTokenBudget,
   type OpenVikingExtractionReasoningEffort,
 } from "./openviking-settings";
+import { normalizeSummaryReasoningEffort, type SummaryReasoningEffort } from "./summary-settings";
 
 export { type TerminalChoice, defaultTerminalFor, normalizeTerminal, terminalOptionsFor } from "./terminal-options";
 export {
   OPENVIKING_EXTRACTION_REASONING_EFFORTS,
   type OpenVikingExtractionReasoningEffort,
 } from "./openviking-settings";
+export {
+  SUMMARY_REASONING_EFFORTS,
+  normalizeSummaryReasoningEffort,
+  type SummaryReasoningEffort,
+} from "./summary-settings";
 export {
   defaultApiConfig,
   defaultClaudeApiConfig,
@@ -114,7 +120,21 @@ export interface AppSettings {
   compressionConcurrency: number;
   migrationCompleteTokenLimit: number;
   summarySource: "codex" | "claude" | "custom";
+  /** Only meaningful for `summarySource === "custom"`: reuse the Codex tab's route or keep a separate one. */
+  summaryApiConfigMode: "inherit_codex" | "custom";
   summaryCodexModel: string;
+  summaryClaudeModel: string;
+  /**
+   * The Codex/Claude summary sources spawn a CLI, so the only lever they have is which config
+   * directory it reads. Empty means "follow the machine's own `~/.codex` / `~/.claude`".
+   */
+  summaryCodexConfigDir: string;
+  summaryClaudeConfigDir: string;
+  /**
+   * Reasoning effort for the summary run itself. Distinct from
+   * `openVikingExtractionReasoningEffort`, which belongs to memory extraction.
+   */
+  summaryReasoningEffort: SummaryReasoningEffort;
   sessionSearchMcpEnabled: boolean;
   workflowMcpEnabled: boolean;
   workflowGlobalReviewEnabled: boolean;
@@ -189,7 +209,12 @@ export const defaultSettings: AppSettings = {
   compressionConcurrency: 8,
   migrationCompleteTokenLimit: 100_000,
   summarySource: "codex",
+  summaryApiConfigMode: "inherit_codex",
   summaryCodexModel: "",
+  summaryClaudeModel: "",
+  summaryCodexConfigDir: "",
+  summaryClaudeConfigDir: "",
+  summaryReasoningEffort: "medium",
   sessionSearchMcpEnabled: true,
   workflowMcpEnabled: false,
   workflowGlobalReviewEnabled: false,
@@ -238,7 +263,16 @@ export function mergeAppSettings(previous: AppSettings, updates: AppSettingsUpda
     ),
     showInDock: merged.showInDock !== false,
     summarySource: merged.summarySource === "claude" || merged.summarySource === "custom" ? merged.summarySource : "codex",
+    summaryApiConfigMode: merged.summaryApiConfigMode === "custom" ? "custom" : "inherit_codex",
     summaryCodexModel: String(merged.summaryCodexModel ?? "").trim(),
+    summaryClaudeModel: String(merged.summaryClaudeModel ?? "").trim(),
+    summaryCodexConfigDir: String(merged.summaryCodexConfigDir ?? "").trim(),
+    summaryClaudeConfigDir: String(merged.summaryClaudeConfigDir ?? "").trim(),
+    // Summaries used to ride on OpenViking's extraction effort. Seed from it once so an existing
+    // install keeps the level the user already picked, then the two settings go their own way.
+    summaryReasoningEffort: normalizeSummaryReasoningEffort(
+      merged.summaryReasoningEffort ?? merged.openVikingExtractionReasoningEffort,
+    ),
     skillAiRuntimeId: String(merged.skillAiRuntimeId ?? "").trim(),
     skillSyncEnabled: Boolean(merged.skillSyncEnabled),
     skillSyncSupabaseUrl: normalizeSupabaseSettingUrl(merged.skillSyncSupabaseUrl),
