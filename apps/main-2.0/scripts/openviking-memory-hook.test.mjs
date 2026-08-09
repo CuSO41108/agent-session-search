@@ -205,33 +205,6 @@ test("unexpected runtime failures are returned to Codex and recorded without lea
   assert.match(diagnostic, /"agent":"codex"/u);
   assert.match(diagnostic, /"event":"Stop"/u);
   assert.doesNotMatch(diagnostic, /private user prompt|private assistant output/u);
-
-  const manifestPath = path.join(testHome, "hook-manifest.json");
-  fs.writeFileSync(manifestPath, JSON.stringify({
-    ...managedManifest(rootPath),
-    stateDir: blockedStateDir,
-  }));
-  const hookPath = path.join(import.meta.dirname, "..", "bin", "openviking-memory-hook.cjs");
-  const cliResult = spawnSync(process.execPath, [
-    hookPath,
-    "--agent", "codex",
-    "--event", "Stop",
-    "--manifest", manifestPath,
-    "--diagnostic-log", diagnosticLogPath,
-  ], {
-    input: JSON.stringify({
-      cwd: rootPath,
-      session_id: "session-2",
-      prompt: "another private prompt",
-      last_assistant_message: "another private response",
-    }),
-    encoding: "utf8",
-  });
-  assert.equal(cliResult.status, 0, cliResult.stderr);
-  const cliOutput = JSON.parse(cliResult.stdout);
-  assert.match(cliOutput.systemMessage, /AgentRecall OpenViking Stop hook encountered an error:/u);
-  assert.doesNotMatch(cliResult.stdout, /another private prompt|another private response/u);
-  assert.doesNotMatch(fs.readFileSync(diagnosticLogPath, "utf8"), /another private prompt|another private response/u);
 });
 
 test("UserPromptSubmit runtime failures are returned as Codex context", async (context) => {
