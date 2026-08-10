@@ -10,6 +10,7 @@ import {
   parseReleaseNote,
   releaseBumpFor,
   renderReleaseNotes,
+  validateReleaseNoteRange,
 } from "./release-notes.mjs";
 
 test("parses feature and bug-fix sections as user-facing release copy", () => {
@@ -99,6 +100,27 @@ test("finds only newly added non-template release notes", () => {
   assert.deepEqual(files, [".release-notes/auto-update.md"]);
 });
 
+test("allows a branch with only GitHub metadata changes to omit product release notes", () => {
+  const result = validateReleaseNoteRange("origin/main", "HEAD", (args) => {
+    if (args[0] === "ls-files") return "";
+    if (args.includes("--diff-filter=A")) return "";
+    return ".github/workflows/contributors.yml\n";
+  });
+
+  assert.deepEqual(result, { internalOnly: true, file: null, note: null });
+});
+
+test("still requires a product release note when a branch mixes GitHub metadata with product changes", () => {
+  assert.throws(
+    () => validateReleaseNoteRange("origin/main", "HEAD", (args) => {
+      if (args[0] === "ls-files") return "";
+      if (args.includes("--diff-filter=A")) return "";
+      return ".github/workflows/quality-check.yml\napps/main-1.0/src/main/index.ts\n";
+    }),
+    /Expected exactly one added \.release-notes\/\*\.md file/,
+  );
+});
+
 test("workflows require branch notes and publish accumulated changes every day or on demand", async () => {
   const qualityWorkflow = await readFile(".github/workflows/quality-check.yml", "utf8");
   const releaseWorkflow = await readFile(".github/workflows/release.yml", "utf8");
@@ -170,6 +192,12 @@ test("workflows require branch notes and publish accumulated changes every day o
   assert.ok(tagIdentityName >= 0, "release workflow must configure the tag creator name");
   assert.ok(tagIdentityEmail > tagIdentityName, "release workflow must configure the tag creator email after its name");
   assert.ok(annotatedTag > tagIdentityEmail, "release workflow must configure an identity before creating an annotated tag");
+});
+
+test("manual contributor updates only write the default branch", async () => {
+  const workflow = await readFile(".github/workflows/contributors.yml", "utf8");
+  assert.match(workflow, /workflow_dispatch:/);
+  assert.match(workflow, /contrib-readme-job:\s+if:\s+github\.ref == 'refs\/heads\/main'/);
 });
 
 test("V2 releases publish the complete OpenViking runtime set", async () => {

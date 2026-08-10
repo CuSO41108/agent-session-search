@@ -19,7 +19,8 @@
 
 ## Development branches and release notes
 
-- Every independent development branch must add exactly one user-facing release note before opening an MR.
+- Every independent development branch with user-visible changes must add exactly one user-facing release note before opening an MR.
+- A branch may omit the release note only when every changed file belongs to release infrastructure: `.github/**`, `AGENTS.md`, `.release-notes/README.md`, `scripts/release-notes.mjs`, or `scripts/release-notes.test.mjs`. Mixing any other path into the branch restores the exactly-one requirement.
 - Add the note at `.release-notes/<branch-slug>.md`; keep it updated as the branch changes.
 - The note must have one `#` title and at least one bullet under `## 新增功能` or `## Bug 修复`.
 - Release notes are product copy for end users, not engineering change logs. Include only user-visible new capabilities and user-visible bugs that were fixed.
