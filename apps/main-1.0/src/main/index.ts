@@ -33,6 +33,7 @@ import { indexMigratedSessionFile, type IndexStatus } from "../core/indexer";
 import { createIndexRunCoordinator } from "../core/index-run-coordinator";
 import { createIndexProgressPublisher } from "./index-progress";
 import { createStartupTaskScheduler } from "./startup-tasks";
+import { createInterfaceZoomController } from "./interface-zoom";
 import {
   formatSessionJson,
   formatSessionMarkdown,
@@ -232,6 +233,7 @@ bootstrapApplicationPaths({
 
 let mainWindow: BrowserWindow | null = null;
 let quickSearchWindow: BrowserWindow | null = null;
+const interfaceZoomController = createInterfaceZoomController(() => [mainWindow, quickSearchWindow]);
 let tray: Tray | null = null;
 let store: SessionStore;
 let indexStatus: IndexStatus = { running: false, indexed: 0, skipped: 0, total: 0, lastIndexedAt: null, error: null };
@@ -888,6 +890,7 @@ function createQuickSearchWindow(): BrowserWindow {
   });
   window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
   window.webContents.on("will-navigate", (event) => event.preventDefault());
+  window.webContents.on("did-finish-load", () => interfaceZoomController.applyTo(window));
   window.on("blur", () => window.hide());
   window.on("closed", () => {
     if (quickSearchWindow === window) quickSearchWindow = null;
@@ -2145,6 +2148,7 @@ function registerIpc(): void {
   registerAppUpdateIpc(ipcMain, appUpdateService);
   registerQuotaIpc(ipcMain, quotaService);
   ipcMain.handle("settings:get", () => providerService.hydrateSettings());
+  ipcMain.handle("interface-zoom:set", (_event, factor: unknown) => interfaceZoomController.set(factor));
   registerProvidersIpc(ipcMain, providerService, chooseProviderConfigDirectory);
   ipcMain.handle("settings:set", async (_event, settings: AppSettingsUpdate) => {
     const previous = getSettings();

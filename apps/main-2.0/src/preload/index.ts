@@ -121,6 +121,7 @@ const api = {
   ...createOpenVikingMemoryApi(ipcRenderer),
   getSettings: (): Promise<AppSettings> => ipcRenderer.invoke("settings:get"),
   setSettings: (settings: AppSettingsUpdate): Promise<AppSettings> => ipcRenderer.invoke("settings:set", settings),
+  setInterfaceZoomFactor: (factor: number): Promise<number> => ipcRenderer.invoke("interface-zoom:set", factor),
   importV1Data: (): Promise<V1ImportResult> => ipcRenderer.invoke("v1-import:run"),
   ...createProvidersApi(ipcRenderer),
   ...createSkillsApi(ipcRenderer),
