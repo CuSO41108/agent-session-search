@@ -168,7 +168,7 @@ export function SessionsPage({
           onClick={actions.refresh}
           disabled={model.indexStatus?.running}
           title={model.indexStatus?.lastIndexedAt
-            ? `${l("Update index", "更新索引")} · ${formatRelativeTime(model.indexStatus.lastIndexedAt)}`
+            ? `${l("Update index", "更新索引")} · ${formatRelativeTime(model.indexStatus.lastIndexedAt, model.language)}`
             : l("Update index", "更新索引")}
           aria-label={model.indexStatus?.running
             ? l("Updating index", "正在更新索引")
@@ -500,7 +500,7 @@ function SessionSidebar({
                             >
                               <Folder size={13} />
                               <span>{project.label}</span>
-                              <em>{formatRelativeTime(projectSortTimestamp(project))}</em>
+                              <em>{formatRelativeTime(projectSortTimestamp(project), model.language)}</em>
                             </button>
                           </div>
                           {expanded

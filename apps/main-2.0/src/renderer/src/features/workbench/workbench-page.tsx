@@ -470,7 +470,7 @@ export function WorkbenchPage({
                       <span className={`workbench-session-state ${liveState}`}><i aria-hidden="true" />{localizedLiveStateLabel(liveState, language)}</span>
                     </span>
                   </div>
-                  <time><Clock3 size={12} />{formatRelativeTime(session.lastActivityAt)}</time>
+                  <time><Clock3 size={12} />{formatRelativeTime(session.lastActivityAt, language)}</time>
                   {canResume ? <button className="workbench-resume" onClick={(event) => { event.stopPropagation(); onResumeSession(session); }}>Resume</button> : null}
                 </article>
               );
@@ -510,7 +510,7 @@ export function WorkbenchPage({
                 <button key={item.workflow.workflowId} className="workbench-workflow-row" type="button" onClick={() => onOpenWorkflow(item.workflow.workflowId)}>
                   <span className={`workbench-workflow-status is-${item.status}`}><i />{workflowStatusLabel(item.status, language)}</span>
                   <strong title={item.workflow.title}>{item.workflow.title || l("Untitled workflow", "未命名工作流")}</strong>
-                  <small>{item.nodeCount} {l("nodes", "个节点")} · {formatRelativeTime(item.updatedAt)}</small>
+                  <small>{item.nodeCount} {l("nodes", "个节点")} · {formatRelativeTime(item.updatedAt, language)}</small>
                   <ArrowRight size={13} />
                 </button>
               ))}
@@ -584,7 +584,7 @@ export function WorkbenchPage({
                 id: room.id,
                 title: room.name,
                 detail: `${room.agentCount} ${l("members", "名员工")} · ${
-                  Number.isFinite(activityAt) ? formatRelativeTime(activityAt) : l("No messages yet", "暂无消息")
+                  Number.isFinite(activityAt) ? formatRelativeTime(activityAt, language) : l("No messages yet", "暂无消息")
                 }`,
                 onOpen: () => onShowChat(room.id),
               };

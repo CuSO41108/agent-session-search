@@ -10,19 +10,19 @@ export interface SessionMarkdownExportOptions {
 
 const EXPORTED_MODEL_PLACEHOLDER = "YOUR_MODEL";
 
-export function formatRelativeTime(ts: number): string {
+export function formatRelativeTime(ts: number, language: "en" | "zh"): string {
   const diff = Date.now() - ts;
   const minutes = Math.floor(diff / 60_000);
-  if (minutes < 1) return "just now";
-  if (minutes < 60) return `${minutes}m ago`;
+  if (minutes < 1) return language === "zh" ? "刚刚" : "just now";
+  if (minutes < 60) return language === "zh" ? `${minutes}分钟前` : `${minutes}m ago`;
   const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}h ago`;
+  if (hours < 24) return language === "zh" ? `${hours}小时前` : `${hours}h ago`;
   const days = Math.floor(hours / 24);
-  if (days < 30) return `${days}d ago`;
-  return new Date(ts).toLocaleDateString();
+  if (days < 30) return language === "zh" ? `${days}天前` : `${days}d ago`;
+  return new Date(ts).toLocaleDateString(language === "zh" ? "zh-CN" : "en-US");
 }
 
-export function formatMessageTime(ts: string, language: "en" | "zh" | undefined): string {
+export function formatMessageTime(ts: string, language: "en" | "zh"): string {
   if (!ts) return "";
   const date = new Date(ts);
   if (Number.isNaN(date.getTime())) return "";
@@ -47,7 +47,7 @@ function traceMarker(event: SessionTraceEvent): string {
 function traceTitle(event: SessionTraceEvent): string {
   const eventType = event.eventType ? ` · ${event.eventType}` : "";
   const callId = event.callId ? ` · \`${event.callId}\`` : "";
-  const time = formatMessageTime(event.timestamp, undefined);
+  const time = formatMessageTime(event.timestamp, "en");
   const timeSuffix = time ? ` · *${time}*` : "";
   return `${traceMarker(event)} ${event.title}${eventType}${callId}${timeSuffix}`;
 }
@@ -80,14 +80,14 @@ export function formatSessionMarkdown(
   const header = [
     `# ${title}`,
     "",
-    `${source} · \`${session.projectPath}\` · ${new Date(session.timestamp).toLocaleString()} · ${messages.length} messages`,
+    `${source} · \`${session.projectPath}\` · ${new Date(session.timestamp).toLocaleString("en-US")} · ${messages.length} messages`,
     "",
     "---",
     "",
   ];
   const body = messages.flatMap((message) => {
     const role = message.role === "user" ? "User" : "Assistant";
-    const time = formatMessageTime(message.timestamp, undefined);
+    const time = formatMessageTime(message.timestamp, "en");
     return [`## ${time ? `${role} (${time})` : role}`, "", message.content, "", "---", ""];
   });
   const trace = options.includeToolTrace ? formatTraceMarkdown(traceEvents) : [];

@@ -274,7 +274,7 @@ export function Sidebar(props: SidebarProps): ReactElement {
                         >
                           <Folder size={13} />
                           <span>{projectDisplayLabel(project, language)}</span>
-                          <em>{formatRelativeTime(projectSortTimestamp(project))}</em>
+                          <em>{formatRelativeTime(projectSortTimestamp(project), language)}</em>
                         </button>
                       </div>
                       {!projCollapsed && project.tags.map((tagName) => (
@@ -678,7 +678,7 @@ function QuotaPanel({
   onRefresh: () => void;
   language: LanguageMode;
 }): ReactElement {
-  const updatedAt = snapshot.generatedAt ? formatRelativeTime(Date.parse(snapshot.generatedAt)) : "";
+  const updatedAt = snapshot.generatedAt ? formatRelativeTime(Date.parse(snapshot.generatedAt), language) : "";
   const l = (en: string, zh: string) => localize(language, en, zh);
   return (
     <div className="quota-panel">
@@ -717,8 +717,8 @@ function QuotaPanel({
           {snapshot.freshness === "stale" ? (
             <div className="quota-stale-notice">
               {l(
-                `Showing data from ${formatRelativeTime(Date.parse(snapshot.lastSuccessfulAt ?? ""))}. Refresh failed.`,
-                `正在显示 ${formatRelativeTime(Date.parse(snapshot.lastSuccessfulAt ?? ""))} 的数据，刷新失败。`,
+                `Showing data from ${formatRelativeTime(Date.parse(snapshot.lastSuccessfulAt ?? ""), "en")}. Refresh failed.`,
+                `正在显示 ${formatRelativeTime(Date.parse(snapshot.lastSuccessfulAt ?? ""), "zh")} 的数据，刷新失败。`,
               )}
             </div>
           ) : null}
