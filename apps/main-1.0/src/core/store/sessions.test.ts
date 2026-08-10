@@ -146,6 +146,35 @@ describe("SessionsStore", () => {
     }
   });
 
+  it("shows a renamed Cursor title instead of a stale local override", () => {
+    const db = new DatabaseSync(":memory:");
+    try {
+      migrateSessionStore(db);
+      const store = new SessionsStore(db, new EnvironmentStore(db));
+      const cursor = indexedSession({
+        sessionKey: "cursor:repo:session-1",
+        source: "cursor-agent",
+        originalTitle: "Old Cursor title",
+      });
+      store.upsertIndexedSession(cursor, []);
+      store.setCustomTitle(cursor.sessionKey, "Old AgentRecall title");
+
+      store.upsertIndexedSession({
+        ...cursor,
+        originalTitle: "Renamed in Cursor",
+        fileMtimeMs: cursor.fileMtimeMs + 1,
+      }, []);
+
+      expect(store.getSession(cursor.sessionKey)).toMatchObject({
+        originalTitle: "Renamed in Cursor",
+        customTitle: null,
+        displayTitle: "Renamed in Cursor",
+      });
+    } finally {
+      db.close();
+    }
+  });
+
   it("chunks very large FTS content while preserving metadata and migrated keys", () => {
     const db = new DatabaseSync(":memory:");
     try {

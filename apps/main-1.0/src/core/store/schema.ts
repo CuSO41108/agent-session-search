@@ -311,6 +311,7 @@ export function migrateSessionStore(db: SessionStoreDatabase): void {
   runSessionRelationBranchMetadataMigration(db);
   runCodeBuddyTokenEventsMigration(db);
   runCursorComposerMetadataMigration(db);
+  runCursorNativeTitlePrecedenceMigration(db);
   runCursorRuntimeEnvironmentMigration(db);
   runCursorEmptyComposerShellsMigration(db);
   runRemoveClaudeCodexInternalSourcesMigration(db);
@@ -480,6 +481,41 @@ function runCursorComposerMetadataMigration(db: SessionStoreDatabase): void {
     const applied = db.prepare("SELECT 1 FROM data_migrations WHERE id = ?").get(migrationId);
     if (!applied) {
       db.prepare("UPDATE sessions SET file_mtime_ms = 0 WHERE source = 'cursor-agent' AND environment_id = 'local'").run();
+      db.prepare("INSERT INTO data_migrations (id, applied_at) VALUES (?, ?)").run(migrationId, Date.now());
+    }
+    db.exec("COMMIT");
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
+}
+
+function runCursorNativeTitlePrecedenceMigration(db: SessionStoreDatabase): void {
+  const migrationId = "cursor-native-title-precedence-v1";
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    const applied = db.prepare("SELECT 1 FROM data_migrations WHERE id = ?").get(migrationId);
+    if (!applied) {
+      const rows = db.prepare(`
+        SELECT session_key
+        FROM sessions
+        WHERE source = 'cursor-agent'
+          AND storage_environment_id = 'local'
+          AND source_available = 1
+          AND custom_title IS NOT NULL
+          AND custom_title <> original_title
+      `).all() as Array<{ session_key: string }>;
+      db.prepare(`
+        UPDATE sessions
+        SET custom_title = NULL,
+            file_mtime_ms = 0
+        WHERE source = 'cursor-agent'
+          AND storage_environment_id = 'local'
+          AND source_available = 1
+          AND custom_title IS NOT NULL
+          AND custom_title <> original_title
+      `).run();
+      for (const row of rows) refreshFtsForSession(db, row.session_key);
       db.prepare("INSERT INTO data_migrations (id, applied_at) VALUES (?, ?)").run(migrationId, Date.now());
     }
     db.exec("COMMIT");
