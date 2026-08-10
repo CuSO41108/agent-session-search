@@ -139,9 +139,11 @@ describe("WorkflowFeaturePage live output", () => {
 
     const liveOutput = container.querySelector<HTMLElement>(".workflow-core-live-output");
     const resolvedInputs = container.querySelector<HTMLElement>(".workflow-core-run-data");
+    const deleteButton = container.querySelector<HTMLButtonElement>("[aria-label='Delete Workflow']");
     expect(liveOutput).not.toBeNull();
     expect(liveOutput!.textContent).toContain("正在等待 Agent 输出");
     expect(resolvedInputs).not.toBeNull();
+    expect(deleteButton?.disabled).toBe(true);
     expect(liveOutput!.compareDocumentPosition(resolvedInputs!) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
   });
 

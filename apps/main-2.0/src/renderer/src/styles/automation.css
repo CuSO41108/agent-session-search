@@ -1104,7 +1104,6 @@
 .workflow-core-list button span,
 .workflow-core-list button small { color: var(--muted); font-size: 10px; }
 .workflow-core-list button small { grid-column: 1 / -1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.workflow-core-context-menu { position: fixed; z-index: 80; }
 .workflow-core-main { display: flex; min-width: 0; min-height: 0; flex-direction: column; border: 1px solid var(--border-subtle); border-radius: var(--radius); background: var(--panel-bg); box-shadow: 0 6px 24px color-mix(in srgb, var(--text) 4%, transparent); overflow: hidden; }
 .workflow-core-toolbar { display: flex; min-height: 51px; flex: 0 0 auto; align-items: center; justify-content: space-between; gap: 12px; padding: 7px 10px 7px 14px; border-bottom: 1px solid var(--border-subtle); }
 .workflow-core-toolbar-leading,
