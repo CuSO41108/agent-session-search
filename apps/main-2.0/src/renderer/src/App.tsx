@@ -441,6 +441,7 @@ export function App(): ReactElement {
     turns: detailTurns,
     turnsLoading,
     matchedTurnId,
+    matchedMessageIndex,
     openLocal: openDetail,
     closeLocal: closeDetail,
     openRemote: openRemoteDetail,
@@ -1898,6 +1899,7 @@ export function App(): ReactElement {
         turns={detailTurns}
         turnsLoading={turnsLoading}
         matchedTurnId={matchedTurnId}
+        matchedMessageIndex={matchedMessageIndex}
         actionStatus={actionStatus}
         query={query}
         liveState={detail
