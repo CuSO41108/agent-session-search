@@ -1158,6 +1158,8 @@ function hookFailureResult(options, error) {
   return { systemMessage: message };
 }
 
+let cliState = "running";
+
 async function runCli() {
   const chunks = [];
   let size = 0;
@@ -1175,19 +1177,28 @@ async function runCli() {
   }
   const options = parseArguments(process.argv.slice(2));
   const result = await handleHook(input, options);
+  cliState = "finished";
   if (result && Object.keys(result).length > 0) {
     process.stdout.write(`${JSON.stringify(result)}\n`);
   }
 }
 
 function finishCliFailure(error) {
+  if (cliState === "reporting-failure") return;
+  if (cliState === "finished") {
+    process.stdin.destroy();
+    process.exit(0);
+  }
+  cliState = "reporting-failure";
   const options = parseArguments(process.argv.slice(2));
   writeHookDiagnostic(options, error);
   try {
-    process.stdout.write(`${JSON.stringify(hookFailureResult(options, error))}\n`);
+    process.stdout.write(`${JSON.stringify(hookFailureResult(options, error))}\n`, () => process.exit(0));
   } catch {
     // A broken stdout cannot be used to report the failure to the host.
+    process.exit(0);
   }
+  process.stdin.destroy();
   process.exitCode = 0;
 }
 

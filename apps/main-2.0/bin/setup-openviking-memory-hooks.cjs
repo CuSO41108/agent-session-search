@@ -25,7 +25,7 @@ function buildHookCommand(options, agent, event) {
   const nodePath = options.nodePath || "node";
   const diagnosticLogPath = options.diagnosticLogPath || path.join(path.dirname(options.manifestPath), "hook-errors.log");
   const invocation = `${quote(nodePath)} ${quote(options.hookScriptPath)} --agent ${agent} --event ${event} --manifest ${quote(options.manifestPath)} --diagnostic-log ${quote(diagnosticLogPath)}`;
-  return options.platform === "win32" ? `& ${invocation}` : invocation;
+  return options.platform === "win32" && agent === "codex" ? `& ${invocation}` : invocation;
 }
 
 function isOurHookCommand(command) {

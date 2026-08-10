@@ -2761,7 +2761,6 @@ app.whenReady().then(async () => {
     startupTasks.whenSettled(initialIndexSettled, async () => {
       try {
         await refreshOpenVikingHookManifest();
-        reconcileOpenVikingMemoryHooks(getSettings());
         await startConfiguredOpenVikingRuntime(getSettings());
       } catch (error) {
         console.error(`Failed to configure OpenViking memory hooks: ${error instanceof Error ? error.message : String(error)}`);

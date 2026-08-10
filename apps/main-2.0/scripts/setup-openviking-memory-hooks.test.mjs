@@ -22,11 +22,13 @@ test("generated hook commands avoid shell-specific control operators", (context)
     manifestPath: path.join(testHome, "missing-openviking-manifest.json"),
   };
   for (const platform of ["win32", "darwin", "linux"]) {
-    const command = buildHookCommand({ ...common, platform }, "codex", "Stop");
-    assert.match(command, /--diagnostic-log .*hook-errors\.log/u);
-    assert.doesNotMatch(command, /2>>|\|\||\btrue\b|\bexit\b/u);
-    if (platform === "win32") assert.match(command, /^& "/u);
-    else assert.doesNotMatch(command, /^& /u);
+    for (const agent of ["claude", "codex"]) {
+      const command = buildHookCommand({ ...common, platform }, agent, "Stop");
+      assert.match(command, /--diagnostic-log .*hook-errors\.log/u);
+      assert.doesNotMatch(command, /2>>|\|\||\btrue\b|\bexit\b/u);
+      if (platform === "win32" && agent === "codex") assert.match(command, /^& "/u);
+      else assert.doesNotMatch(command, /^& /u);
+    }
   }
 });
 
