@@ -1176,6 +1176,9 @@ async function runCli() {
     }
   }
   const options = parseArguments(process.argv.slice(2));
+  if (process.env.AGENT_RECALL_TEST_HOME && process.env.AGENT_RECALL_TEST_OPENVIKING_HOOK_FAILURE === "1") {
+    throw new Error("Synthetic OpenViking hook failure");
+  }
   const result = await handleHook(input, options);
   cliState = "finished";
   if (result && Object.keys(result).length > 0) {

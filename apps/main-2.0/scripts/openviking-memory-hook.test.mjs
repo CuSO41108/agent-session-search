@@ -207,10 +207,7 @@ test("unexpected runtime failures are returned to Codex and recorded without lea
   assert.doesNotMatch(diagnostic, /private user prompt|private assistant output/u);
 
   const manifestPath = path.join(testHome, "hook-manifest.json");
-  fs.writeFileSync(manifestPath, JSON.stringify({
-    ...managedManifest(rootPath),
-    stateDir: blockedStateDir,
-  }));
+  fs.writeFileSync(manifestPath, JSON.stringify(managedManifest(rootPath)));
   const hookPath = path.join(import.meta.dirname, "..", "bin", "openviking-memory-hook.cjs");
   const cliResult = spawnSync(process.execPath, [
     hookPath,
@@ -226,6 +223,11 @@ test("unexpected runtime failures are returned to Codex and recorded without lea
       last_assistant_message: "another private response",
     }),
     encoding: "utf8",
+    env: {
+      ...process.env,
+      AGENT_RECALL_TEST_HOME: testHome,
+      AGENT_RECALL_TEST_OPENVIKING_HOOK_FAILURE: "1",
+    },
   });
   assert.equal(cliResult.status, 0, cliResult.stderr);
   const outputLines = cliResult.stdout.trim().split(/\r?\n/u);
