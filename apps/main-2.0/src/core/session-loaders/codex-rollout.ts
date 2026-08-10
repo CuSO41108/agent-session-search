@@ -157,6 +157,35 @@ export function sanitizeCodexTraceValue(value: unknown): unknown {
   return sanitizedCodexTraceValue(value, false);
 }
 
+function sanitizeCompactionJson(value: unknown, key = ""): unknown {
+  if (key.toLocaleLowerCase().includes("encrypted")) {
+    return value === null || value === undefined || value === ""
+      ? value
+      : "[encrypted content omitted]";
+  }
+  if (typeof value === "string") {
+    const normalizedKey = key.toLocaleLowerCase();
+    const opaqueField = normalizedKey === "image_url"
+      || normalizedKey === "audio_url"
+      || normalizedKey === "result"
+      || normalizedKey === "data";
+    const looksLikeEncodedBinary = value.length > 1_024 && /^[a-z0-9+/=\r\n]+$/iu.test(value);
+    if (opaqueField && (value.startsWith("data:") || looksLikeEncodedBinary)) {
+      return `[binary omitted: ${value.length} characters]`;
+    }
+    return truncateTraceDetail(value);
+  }
+  if (Array.isArray(value)) return value.map((item) => sanitizeCompactionJson(item));
+  const object = record(value);
+  if (!object) return value;
+  return Object.fromEntries(
+    Object.entries(object).map(([nestedKey, nestedValue]) => [
+      nestedKey,
+      sanitizeCompactionJson(nestedValue, nestedKey),
+    ]),
+  );
+}
+
 function detailSection(label: string, value: unknown): string {
   if (value === null || value === undefined || value === "") return "";
   const text = typeof value === "string" ? value : JSON.stringify(sanitizeCodexTraceValue(value), null, 2);
@@ -528,6 +557,51 @@ function richResponseTrace(
   return null;
 }
 
+function compactionCheckpointTrace(
+  row: Record<string, unknown>,
+  payload: Record<string, unknown>,
+  sourceTurnId: string | null,
+): TraceEventDraft {
+  const replacementHistory = Array.isArray(payload.replacement_history)
+    ? payload.replacement_history
+    : null;
+  const itemTypes: Record<string, number> = {};
+  let encryptedSummary = false;
+  for (const value of replacementHistory ?? []) {
+    const item = record(value);
+    const type = stringValue(item?.type) || "unknown";
+    itemTypes[type] = (itemTypes[type] ?? 0) + 1;
+    if (
+      (type === "compaction" || type === "compaction_summary" || type === "context_compaction")
+      && typeof item?.encrypted_content === "string"
+      && item.encrypted_content.length > 0
+    ) {
+      encryptedSummary = true;
+    }
+  }
+  const sanitizedPayload = sanitizeCompactionJson(payload);
+
+  return {
+    kind: "event",
+    source: "codex",
+    title: "Context compacted",
+    detail: truncateTraceDetail(`payload:\n${JSON.stringify(sanitizedPayload, null, 2)}`),
+    timestamp: stringValue(row.timestamp),
+    callId: null,
+    eventType: "codex.context.compaction",
+    status: "completed",
+    sourceTurnId,
+    attributes: {
+      codex: { rawType: "compacted" },
+      compaction: {
+        itemCount: replacementHistory?.length ?? 0,
+        itemTypes,
+        opaqueCompaction: encryptedSummary,
+      },
+    },
+  };
+}
+
 function richEventTrace(
   row: Record<string, unknown>,
   payload: Record<string, unknown>,
@@ -827,14 +901,31 @@ export function dedupeCodexTraceEvents(events: TraceEventDraft[]): SessionTraceE
     };
     for (const key of keys) semanticIndexes.set(key, existingIndex);
   }
+  const pendingCompactionCheckpoints = new Map<string, number>();
+  const withoutDuplicateCompactionMarkers = normalized.filter((event) => {
+    if (event.eventType !== "codex.context.compaction") return true;
+    const rawType = stringValue(codexAttributes(event)?.rawType);
+    const turnKey = event.sourceTurnId || "";
+    if (rawType === "compacted") {
+      pendingCompactionCheckpoints.set(turnKey, (pendingCompactionCheckpoints.get(turnKey) ?? 0) + 1);
+      return true;
+    }
+    const isEmptyLifecycleMarker = !event.detail.trim()
+      && (rawType === "contextcompaction" || rawType === "context_compacted");
+    const pendingCount = pendingCompactionCheckpoints.get(turnKey) ?? 0;
+    if (!isEmptyLifecycleMarker || pendingCount === 0) return true;
+    if (pendingCount === 1) pendingCompactionCheckpoints.delete(turnKey);
+    else pendingCompactionCheckpoints.set(turnKey, pendingCount - 1);
+    return false;
+  });
   const reasoningSignature = (event: TraceEventDraft) =>
     `${event.sourceTurnId || ""}:${event.detail.normalize("NFKC").trim().replace(/\s+/gu, " ")}`;
   const completedReasoning = new Set(
-    normalized
+    withoutDuplicateCompactionMarkers
       .filter((event) => event.eventType === "codex.reasoning_summary" && isCompletedItem(event))
       .map(reasoningSignature),
   );
-  return normalized
+  return withoutDuplicateCompactionMarkers
     .filter((event) =>
       event.eventType !== "codex.reasoning_summary"
       || isCompletedItem(event)
@@ -962,6 +1053,13 @@ export class CodexRolloutAccumulator {
     const uniqueActiveTurnId = this.activeTurnIds.size === 1
       ? this.activeTurnIds.values().next().value as string
       : null;
+    if (row.type === "compacted") {
+      const sourceTurnId = this.resolveAttributionTurnId(null, uniqueActiveTurnId);
+      return emptyResult({
+        sourceTurnId,
+        traceEvents: [compactionCheckpointTrace(row, payload, sourceTurnId)],
+      });
+    }
     if (row.type === "turn_context") {
       const sourceTurnId = stringValue(payload.turn_id) || uniqueActiveTurnId;
       const settings = contextAttributes(payload);

@@ -40,6 +40,96 @@ describe("Codex session loading", () => {
     expect(new Date(loaded?.messages[0].timestamp ?? "").toISOString()).toBe("2026-08-08T16:47:00.000Z");
   });
 
+  it("shows a readable sanitized copy of the original compacted payload", () => {
+    const loaded = loadCodexSessionRows("/tmp/codex-compacted.jsonl", [
+      {
+        type: "session_meta",
+        timestamp: "2026-08-04T08:00:00.000Z",
+        payload: { id: "codex-compacted", cwd: "/repo", history_mode: "paginated" },
+      },
+      {
+        type: "event_msg",
+        timestamp: "2026-08-04T08:00:01.000Z",
+        payload: { type: "task_started", turn_id: "turn-compact" },
+      },
+      {
+        type: "compacted",
+        timestamp: "2026-08-04T08:00:02.000Z",
+        payload: {
+          message: "Readable handoff summary",
+          replacement_history: [
+            {
+              type: "message",
+              role: "user",
+              content: [
+                { type: "input_text", text: "Readable retained user request" },
+                { type: "input_image", image_url: "data:image/png;base64,must-not-index-image", detail: "high" },
+              ],
+              internal_chat_message_metadata_passthrough: { turn_id: "retained-turn" },
+            },
+            {
+              type: "function_call",
+              name: "read_file",
+              arguments: "{\"path\":\"README.md\"}",
+              call_id: "call-retained",
+            },
+            {
+              type: "compaction",
+              id: "encrypted-compaction",
+              encrypted_content: "must-not-index-encrypted-summary",
+            },
+          ],
+          window_number: 2,
+          first_window_id: "window-first",
+          previous_window_id: "window-previous",
+          window_id: "window-current",
+        },
+      },
+      {
+        type: "world_state",
+        timestamp: "2026-08-04T08:00:02.100Z",
+        payload: { full: true, state: { private: "must-not-index-world-state" } },
+      },
+      {
+        type: "event_msg",
+        timestamp: "2026-08-04T08:00:03.000Z",
+        payload: {
+          type: "item_completed",
+          turn_id: "turn-compact",
+          completed_at_ms: Date.parse("2026-08-04T08:00:03.000Z"),
+          item: { type: "ContextCompaction", id: "compact-item" },
+        },
+      },
+    ]);
+
+    const compactions = loaded?.traceEvents?.filter(
+      (event) => event.eventType === "codex.context.compaction",
+    ) ?? [];
+    expect(compactions).toHaveLength(1);
+    expect(compactions[0].detail).toContain("payload:");
+    expect(compactions[0].detail).toContain("Readable handoff summary");
+    expect(compactions[0].detail).toContain('"replacement_history"');
+    expect(compactions[0].detail).toContain('"role": "user"');
+    expect(compactions[0].detail).toContain("Readable retained user request");
+    expect(compactions[0].detail).toContain('"type": "function_call"');
+    expect(compactions[0].detail).toContain('"name": "read_file"');
+    expect(compactions[0].detail).toContain('"window_number": 2');
+    expect(compactions[0].detail).toContain('"first_window_id": "window-first"');
+    expect(compactions[0].detail).toContain('"previous_window_id": "window-previous"');
+    expect(compactions[0].detail).toContain('"window_id": "window-current"');
+    expect(compactions[0].detail).toContain('"image_url": "[binary omitted:');
+    expect(compactions[0].detail).toContain('"encrypted_content": "[encrypted content omitted]"');
+    expect(compactions[0].attributes?.compaction).toEqual({
+      itemCount: 3,
+      itemTypes: { message: 1, function_call: 1, compaction: 1 },
+      opaqueCompaction: true,
+    });
+    const serializedTrace = JSON.stringify(loaded?.traceEvents);
+    expect(serializedTrace).not.toContain("must-not-index-encrypted-summary");
+    expect(serializedTrace).not.toContain("must-not-index-image");
+    expect(serializedTrace).not.toContain("must-not-index-world-state");
+  });
+
   it("decodes structured collaboration function outputs", () => {
     const loaded = loadCodexSessionRows("/tmp/codex-list-agents.jsonl", [
       {
