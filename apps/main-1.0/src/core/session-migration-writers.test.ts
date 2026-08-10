@@ -200,6 +200,43 @@ describe("writeMigratedSession", () => {
     },
   );
 
+  it("round-trips sessions without project paths across target formats", async () => {
+    for (const { target, source, family } of TARGETS) {
+      const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), `migration-writer-pathless-${target}-`));
+      const session = { ...portable(), projectPath: "" };
+      try {
+        const result = await writeMigratedSession({
+          target,
+          session,
+          homeDir,
+          now: NOW,
+          idFactory: idFactory(family === "codex" || target === "cursor" ? [SESSION_ID] : [SESSION_ID, ...MESSAGE_IDS]),
+        });
+
+        if (family === "claude" || family === "codebuddy" || family === "cursor") {
+          expect(result.filePath.split(path.sep)).toContain("empty-window");
+        }
+        expectRoundTrip(target, source, result.sessionId, result.filePath, readRows(result.filePath), session);
+      } finally {
+        fs.rmSync(homeDir, { recursive: true, force: true });
+      }
+    }
+
+    const codeWizHome = fs.mkdtempSync(path.join(os.tmpdir(), "migration-writer-pathless-codewiz-"));
+    try {
+      await expect(writeMigratedSession({
+        target: "codewiz",
+        session: { ...portable(), projectPath: "" },
+        homeDir: codeWizHome,
+        now: NOW,
+      })).resolves.toMatchObject({
+        filePath: path.join(codeWizHome, ".local", "share", "codewiz", "opencode.db"),
+      });
+    } finally {
+      fs.rmSync(codeWizHome, { recursive: true, force: true });
+    }
+  });
+
   it("writes a native Codex rollout and round-trips it through the existing loader", async () => {
     const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "migration-writer-codex-"));
     const includesVsCodeEvents = true;
@@ -257,7 +294,6 @@ describe("writeMigratedSession", () => {
         type: "event_msg",
         payload: {
           type: "task_started",
-          turn_id: SESSION_ID,
         },
       });
     }
@@ -268,11 +304,21 @@ describe("writeMigratedSession", () => {
       "input_text",
     ]);
     if (includesVsCodeEvents) {
-      expect(rows.filter((row) => row.type === "event_msg").slice(1).map((row) => [row.payload.type, row.payload.message])).toEqual([
+      expect(rows.filter((row) => ["user_message", "agent_message"].includes(row.payload?.type)).map((row) => [row.payload.type, row.payload.message])).toEqual([
         ["user_message", portable().messages[0].content],
         ["agent_message", portable().messages[1].content],
         ["user_message", portable().messages[2].content],
       ]);
+      const lifecycleRows = rows.filter((row) => ["task_started", "task_complete"].includes(row.payload?.type));
+      expect(lifecycleRows.map((row) => row.payload.type)).toEqual([
+        "task_started",
+        "task_complete",
+        "task_started",
+        "task_complete",
+      ]);
+      expect(lifecycleRows[0].payload.turn_id).toBe(lifecycleRows[1].payload.turn_id);
+      expect(lifecycleRows[2].payload.turn_id).toBe(lifecycleRows[3].payload.turn_id);
+      expect(lifecycleRows[0].payload.turn_id).not.toBe(lifecycleRows[2].payload.turn_id);
     }
     expectRoundTrip("codex", "codex-cli", result.sessionId, result.filePath, rows);
 
@@ -397,6 +443,7 @@ describe("writeMigratedSession", () => {
         sourceSessionKey: "cursor:source-child",
         sourceSessionId: "source-child",
         title: "Child agent",
+        projectPath: "",
         isSubagent: true,
         parentSessionId: SESSION_ID,
       };
@@ -429,6 +476,7 @@ describe("writeMigratedSession", () => {
       const childRow = childStateDb.prepare("SELECT * FROM threads WHERE id = ?").get(CHILD_SESSION_ID) as Record<string, unknown>;
       childStateDb.close();
       expect(childRow).toMatchObject({
+        cwd: "",
         thread_source: "subagent",
         agent_path: "/root/migrated_source-child",
       });

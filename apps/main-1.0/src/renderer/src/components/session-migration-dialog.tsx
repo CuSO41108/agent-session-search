@@ -1,4 +1,4 @@
-import type { ReactElement } from "react";
+import { useState, type ReactElement } from "react";
 import { Copy, X } from "lucide-react";
 import type {
   MigrationTarget,
@@ -24,11 +24,12 @@ export function SessionMigrationDialog({
   busy: boolean;
   progress?: SessionMigrationProgress | null;
   targets: readonly MigrationTarget[];
-  onSelect: (target: MigrationTarget) => void;
+  onSelect: (target: MigrationTarget, withoutProjectPath: boolean) => void;
   onClose: () => void;
 }): ReactElement {
   const l = (en: string, zh: string) => localize(language, en, zh);
   const ssh = session.environmentKind === "ssh";
+  const [withoutProjectPath, setWithoutProjectPath] = useState(() => !session.projectPath.trim());
 
   return (
     <div className="dialog-backdrop" onMouseDown={onClose}>
@@ -46,13 +47,29 @@ export function SessionMigrationDialog({
             ? l("Create a new WSL target-agent session from", "从当前会话创建新的 WSL 目标 Agent 会话：")
             : l("Create a new local target-agent session from", "从当前会话创建新的本地目标 Agent 会话：")} <strong>{session.displayTitle}</strong>
         </p>
-        {isLocalSessionEnvironment(session) && !session.projectPath.trim() ? (
-          <p className="dialog-copy">
-            {l(
-              "This session has no project path. After choosing a target Agent, select the project directory for the new session.",
-              "当前会话没有项目路径。选择目标 Agent 后，请为新会话选择项目目录。",
-            )}
-          </p>
+        {isLocalSessionEnvironment(session) ? (
+          <label className="migration-project-option">
+            <input
+              type="checkbox"
+              checked={withoutProjectPath}
+              disabled={busy}
+              onChange={(event) => setWithoutProjectPath(event.target.checked)}
+            />
+            <span>
+              <strong>{l("Create without a project path", "创建为无项目路径会话")}</strong>
+              <small>
+                {session.projectPath.trim()
+                  ? l(
+                      "The new session will not be associated with the current project directory.",
+                      "新会话不会关联当前项目目录。",
+                    )
+                  : l(
+                      "Keep this selected to preserve the missing project path, or clear it to choose a directory.",
+                      "保持选中可继续使用无项目路径；取消选中后可选择项目目录。",
+                    )}
+              </small>
+            </span>
+          </label>
         ) : null}
         {busy ? <MigrationProgressPanel progress={progress ?? null} language={language} /> : null}
         <div className="migration-targets">
@@ -61,7 +78,7 @@ export function SessionMigrationDialog({
           ) : targets.map((target) => {
             const disabled = busy;
             return (
-              <button key={target} type="button" onClick={() => onSelect(target)} disabled={disabled}>
+              <button key={target} type="button" onClick={() => onSelect(target, withoutProjectPath)} disabled={disabled}>
                 {migrationAgentLabel(target)}
               </button>
             );

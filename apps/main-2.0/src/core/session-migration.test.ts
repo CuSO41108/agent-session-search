@@ -64,4 +64,10 @@ describe("SSH session migration policy", () => {
       projectPath: "/srv/repo",
     });
   });
+
+  it("normalizes a missing project path for migration", () => {
+    expect(portableSessionFrom({ ...session("claude-cli"), projectPath: "   " }, messages, { allowSsh: true })).toMatchObject({
+      projectPath: "",
+    });
+  });
 });

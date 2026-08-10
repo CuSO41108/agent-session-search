@@ -1225,11 +1225,16 @@ export function App(): ReactElement {
     setMigrationDialog(null);
   }
 
-  async function runMigration(target: SessionMigrationProgress["target"]): Promise<void> {
+  async function runMigration(
+    target: SessionMigrationProgress["target"],
+    withoutProjectPath: boolean,
+  ): Promise<void> {
     if (!migrationDialog || migrationDialog.kind !== "select") return;
     const session = migrationDialog.session;
     let targetProjectPath: string | undefined;
-    if (isLocalSessionEnvironment(session) && !session.projectPath.trim()) {
+    if (withoutProjectPath) {
+      targetProjectPath = "";
+    } else if (isLocalSessionEnvironment(session) && !session.projectPath.trim()) {
       try {
         targetProjectPath = (await window.sessionSearch.chooseLocalProjectDirectory()) ?? undefined;
       } catch (error) {
@@ -1246,7 +1251,7 @@ export function App(): ReactElement {
       const result: SessionMigrationResult = await window.sessionSearch.migrateSession({
         sessionKey: session.sessionKey,
         target,
-        ...(targetProjectPath ? { targetProjectPath } : {}),
+        ...(targetProjectPath !== undefined ? { targetProjectPath } : {}),
         ...(migrationDialog.throughTurnId
           ? { throughTurnId: migrationDialog.throughTurnId }
           : {}),
@@ -2043,7 +2048,7 @@ export function App(): ReactElement {
           busy={migrationBusy}
           progress={migrationProgress}
           throughTurnIndex={migrationDialog.throughTurnIndex}
-          onSelect={(target) => void runMigration(target)}
+          onSelect={(target, withoutProjectPath) => void runMigration(target, withoutProjectPath)}
           onClose={closeMigrationDialog}
         />
       ) : null}
