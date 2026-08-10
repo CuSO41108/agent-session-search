@@ -26,6 +26,7 @@ const { DatabaseSync } = require("node:sqlite") as {
 export interface WriteMigratedSessionOptions {
   target: MigrationTarget;
   session: PortableSession;
+  sessionId?: string;
   homeDir?: string;
   now?: Date;
   idFactory?: () => string;
@@ -47,7 +48,10 @@ export async function writeMigratedSession(options: WriteMigratedSessionOptions)
   const homeDir = options.homeDir ?? os.homedir();
   const now = options.now ?? new Date();
   const createId = options.idFactory ?? (() => crypto.randomUUID());
-  const sessionId = nextUniqueUuid(createId, new Set());
+  const sessionId = options.sessionId ?? nextUniqueUuid(createId, new Set());
+  if (!UUID_PATTERN.test(sessionId)) {
+    throw new Error(`Invalid migrated session id: ${sessionId}`);
+  }
   if (options.target === "codewiz") {
     return writeMigratedCodeWizSession({ ...options, homeDir, now, idFactory: createId }, sessionId);
   }
@@ -155,7 +159,7 @@ function serializeCodex(
       ...(includeVsCodeEvents
         ? {
             source: parentSessionId
-              ? codexSubagentSource(parentSessionId, subagentPath!, subagentNickname!)
+              ? codexSubagentSource(parentSessionId, subagentPath!, subagentNickname!, session.subagentDepth ?? 1)
               : "vscode",
             thread_source: parentSessionId ? "subagent" : "user",
             history_mode: "legacy",
@@ -217,6 +221,10 @@ function serializeCodex(
     }
 
     if (includeVsCodeEvents) {
+      rows.push(...codexSubagentActivityRows(session, sessionId, turnIndex, turnId));
+    }
+
+    if (includeVsCodeEvents) {
       const startedAtMs = timestampMs(startedAt);
       const completedAtMs = timestampMs(completedAt);
       rows.push({
@@ -235,6 +243,78 @@ function serializeCodex(
   }
 
   return rows;
+}
+
+function codexSubagentActivityRows(
+  session: PortableSession,
+  sessionId: string,
+  turnIndex: number,
+  turnId: string,
+): unknown[] {
+  const boundaries = codexTurnBoundaries(session);
+  const turnStartTimes = boundaries.map((boundary) => timestampMs(session.messages[boundary]?.timestamp ?? session.startedAt));
+  return (session.subagents ?? [])
+    .filter((subagent) => UUID_PATTERN.test(subagent.sourceSessionId ?? "") && Boolean(subagent.subagentPath?.trim()))
+    .filter((subagent) => {
+      const startedAt = timestampMs(subagent.startedAt);
+      let assignedTurn = 0;
+      for (let index = 1; index < turnStartTimes.length; index += 1) {
+        if (startedAt < turnStartTimes[index]) break;
+        assignedTurn = index;
+      }
+      return assignedTurn === turnIndex;
+    })
+    .sort((left, right) => timestampMs(left.startedAt) - timestampMs(right.startedAt))
+    .flatMap((subagent) => {
+      const childSessionId = subagent.sourceSessionId!;
+      const digest = crypto.createHash("sha256").update(`${sessionId}:subagent:${childSessionId}`).digest("hex");
+      const callId = `call_migrated_${digest.slice(0, 24)}`;
+      const taskName = codexSubagentTaskName(subagent);
+      const agentPath = codexSubagentPath(subagent);
+      return [{
+        type: "response_item",
+        timestamp: subagent.startedAt,
+        payload: {
+          type: "function_call",
+          id: `fc_${digest}`,
+          name: "spawn_agent",
+          namespace: "collaboration",
+          arguments: JSON.stringify({
+            task_name: taskName,
+            fork_turns: "all",
+            message: subagent.title || taskName,
+          }),
+          call_id: callId,
+          internal_chat_message_metadata_passthrough: { turn_id: turnId },
+        },
+      }, {
+        type: "event_msg",
+        timestamp: subagent.startedAt,
+        payload: {
+          type: "sub_agent_activity",
+          event_id: callId,
+          occurred_at_ms: timestampMs(subagent.startedAt),
+          agent_thread_id: childSessionId,
+          agent_path: agentPath,
+          kind: "started",
+        },
+      }, {
+        type: "response_item",
+        timestamp: subagent.startedAt,
+        payload: {
+          type: "function_call_output",
+          id: `fco_${digest}`,
+          call_id: callId,
+          output: JSON.stringify({ task_name: agentPath }),
+          internal_chat_message_metadata_passthrough: { turn_id: turnId },
+        },
+      }];
+    });
+}
+
+function codexSubagentTaskName(session: PortableSession): string {
+  const sourceId = session.sourceSessionKey.split(":").at(-1) || session.title || "subagent";
+  return sourceId.replace(/[^A-Za-z0-9_-]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 64) || "subagent";
 }
 
 function codexTurnBoundaries(session: PortableSession): number[] {
@@ -694,6 +774,7 @@ function updateCodexAppServerState(
             session.parentSessionId,
             codexSubagentPath(session),
             session.title || "Migrated subagent",
+            session.subagentDepth ?? 1,
           ))
         : "vscode",
       model_provider: requiredRuntimeValue(runtimeMetadata.codexModelProvider, "Codex model provider"),
@@ -744,17 +825,23 @@ function updateCodexAppServerState(
 }
 
 function codexSubagentPath(session: PortableSession): string {
+  if (session.subagentPath?.trim()) return session.subagentPath.trim();
   const sourceId = session.sourceSessionId || session.sourceSessionKey.split(":").at(-1) || "subagent";
   const slug = sourceId.replace(/[^A-Za-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 80) || "subagent";
   return `/root/migrated_${slug}`;
 }
 
-function codexSubagentSource(parentSessionId: string, agentPath: string, agentNickname: string): Record<string, unknown> {
+function codexSubagentSource(
+  parentSessionId: string,
+  agentPath: string,
+  agentNickname: string,
+  depth: number,
+): Record<string, unknown> {
   return {
     subagent: {
       thread_spawn: {
         parent_thread_id: parentSessionId,
-        depth: 1,
+        depth,
         agent_path: agentPath,
         agent_nickname: agentNickname,
         agent_role: null,
@@ -847,9 +934,18 @@ function validateCodexStructure(
   includeVsCodeEvents: boolean,
 ): void {
   const turnBoundaries = codexTurnBoundaries(session);
+  const expectedSubagentRows = includeVsCodeEvents
+    ? turnBoundaries.flatMap((_, turnIndex) => codexSubagentActivityRows(
+        session,
+        sessionId,
+        turnIndex,
+        codexTurnId(sessionId, turnIndex),
+      ))
+    : [];
   const expectedRows = 1
     + session.messages.length * (includeVsCodeEvents ? 2 : 1)
-    + (includeVsCodeEvents ? turnBoundaries.length * 2 : 0);
+    + (includeVsCodeEvents ? turnBoundaries.length * 2 : 0)
+    + expectedSubagentRows.length;
   if (rows.length !== expectedRows) failValidation("codex", "has an unexpected row count");
   const meta = record(rows[0]);
   const payload = record(meta?.payload);
@@ -926,6 +1022,15 @@ function validateCodexStructure(
     }
 
     if (includeVsCodeEvents) {
+      const expectedActivities = codexSubagentActivityRows(session, sessionId, turnIndex, turnId);
+      const actualActivities = rows.slice(rowIndex, rowIndex + expectedActivities.length);
+      if (JSON.stringify(actualActivities) !== JSON.stringify(expectedActivities)) {
+        failValidation("codex", "has invalid subagent activity metadata");
+      }
+      rowIndex += expectedActivities.length;
+    }
+
+    if (includeVsCodeEvents) {
       const taskComplete = record(rows[rowIndex++]);
       const taskPayload = record(taskComplete?.payload);
       if (
@@ -937,6 +1042,7 @@ function validateCodexStructure(
       }
     }
   }
+  if (rowIndex !== rows.length) failValidation("codex", "has unexpected trailing rows");
 }
 
 function validateClaudeStructure(rows: unknown[], sessionId: string, session: PortableSession, model: string): void {

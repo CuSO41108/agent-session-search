@@ -130,6 +130,48 @@ function loadWrittenSession(
 }
 
 describe("writeMigratedSession", () => {
+  it("emits native Codex subagent activity linked to a reserved child thread", async () => {
+    const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "migration-writer-subagent-activity-"));
+    try {
+      const session = {
+        ...portable(),
+        subagents: [{
+          ...portable(),
+          sourceSessionKey: "cursor:child",
+          sourceSessionId: CHILD_SESSION_ID,
+          title: "Research child",
+          startedAt: "2026-06-20T01:02:07.000Z",
+          messages: [],
+          isSubagent: true,
+          parentSessionId: SESSION_ID,
+          subagentDepth: 1,
+          subagentPath: "/root/migrated_child",
+          subagents: [],
+        }],
+      };
+      const result = await writeMigratedSession({
+        target: "codex",
+        session,
+        sessionId: SESSION_ID,
+        homeDir,
+        now: NOW,
+      });
+      const rows = readRows(result.filePath);
+      const spawn = rows.find((row) => row.type === "response_item" && row.payload?.name === "spawn_agent");
+      const activity = rows.find((row) => row.type === "event_msg" && row.payload?.type === "sub_agent_activity");
+
+      expect(result.sessionId).toBe(SESSION_ID);
+      expect(JSON.parse(spawn?.payload.arguments)).toMatchObject({ task_name: "child", message: "Research child" });
+      expect(activity?.payload).toMatchObject({
+        agent_thread_id: CHILD_SESSION_ID,
+        agent_path: "/root/migrated_child",
+        kind: "started",
+      });
+    } finally {
+      fs.rmSync(homeDir, { recursive: true, force: true });
+    }
+  });
+
   it.each(TARGETS)(
     "creates the temporary and final $target files with mode 0600",
     async ({ target, root, family }) => {

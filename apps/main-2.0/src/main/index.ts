@@ -66,7 +66,7 @@ import {
   type ToolExecutionResult,
 } from "../core/ai-assistant";
 import { applyMigrationLengthPolicy, createMigrationCompressor } from "../core/session-migration-compression";
-import { migrateSession, portableSessionFrom, sshMigrationTarget } from "../core/session-migration";
+import { collectMigrationDescendants, migrateSession, portableSessionFrom, sshMigrationTarget } from "../core/session-migration";
 import {
   loadLocalSessionMigrationSource,
   runLocalSessionMigration,
@@ -2073,8 +2073,8 @@ function localSessionMigrationRuntime(event: IpcMainInvokeEvent) {
       compressor: ReturnType<typeof createMigrationCompressor> | null,
       completeTokenLimit: number,
     ) => applyMigrationLengthPolicy(portable, compressor, onProgress, completeTokenLimit),
-    write: (migrationTarget: MigrationTarget, portable: PortableSession) =>
-      writeMigratedSession({ target: migrationTarget, session: portable }),
+    write: (migrationTarget: MigrationTarget, portable: PortableSession, targetSessionId?: string) =>
+      writeMigratedSession({ target: migrationTarget, session: portable, sessionId: targetSessionId }),
     record: (record: Parameters<SessionStore["recordSessionMigration"]>[0]) => store.recordSessionMigration(record),
     refreshIndex: async (migrationTarget: MigrationTarget, writtenFilePath: string, targetSessionId: string) => {
       const status = await indexMigratedSessionFile(store, migrationTarget, writtenFilePath, targetSessionId);
@@ -2090,6 +2090,7 @@ function localSessionMigrationRuntime(event: IpcMainInvokeEvent) {
     onProgress: (progress: Parameters<NonNullable<import("../core/session-migration").SessionMigrationDependencies["onProgress"]>>[0]) =>
       event.sender.send("session:migration-progress", progress),
     idFactory: () => randomUUID(),
+    targetSessionIdFactory: () => randomUUID(),
     now: () => Date.now(),
     projectPathExists: pathExists,
     projectPathIsDirectory: pathIsDirectory,
@@ -2690,6 +2691,11 @@ function registerIpc(): void {
     const source = await store.getSession(request.sessionKey);
     if (source?.environmentKind === "wsl" || source?.environmentKind === "ssh") {
       await remoteSessionAccess.ensureDetails(request.sessionKey);
+      const descendants = collectMigrationDescendants(
+        source,
+        await store.searchSessions({ limit: 100_000, excludeSubagents: false }),
+      );
+      for (const child of descendants) await remoteSessionAccess.ensureDetails(child.sessionKey);
     }
     const migrationSource = await loadLocalSessionMigrationSource(store, request);
     const settings = Object.freeze(await providerService.hydrateSettings());
@@ -2715,6 +2721,7 @@ function registerIpc(): void {
           allowSsh: migrationSource.source.environmentKind === "ssh",
         },
       );
+      if (migrationSource.subagents.length > 0) portable.subagents = migrationSource.subagents;
       const progress = (item: SessionMigrationProgress): void => event.sender.send("session:migration-progress", item);
       const deps = await createSourceRemoteRestoreDependencies(environment, progress);
       return restoreRemotePortableSession({
