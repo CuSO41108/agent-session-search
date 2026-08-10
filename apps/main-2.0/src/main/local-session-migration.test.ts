@@ -218,6 +218,47 @@ describe("loadLocalSessionMigrationSource", () => {
     expect(feature.loadLocalSessionMigrationSource).toBeTypeOf("function");
   });
 
+  it("loads indexed descendant conversations for local migration", async () => {
+    const root = { ...source, rawId: "root" } as SessionSearchResult;
+    const child = {
+      ...source,
+      sessionKey: "cursor:child",
+      rawId: "child",
+      source: root.source,
+      displayTitle: "Child agent",
+      isSubagent: true,
+      parentSessionId: "root",
+      timestamp: root.timestamp + 1_000,
+    } as SessionSearchResult;
+    const childMessages: SessionMessage[] = [{
+      role: "assistant",
+      content: "child result",
+      timestamp: "2026-07-10T00:00:01Z",
+      index: 0,
+    }];
+    const store = {
+      getSession: vi.fn(async () => root),
+      getAllMessages: vi.fn(async (sessionKey: string) => sessionKey === child.sessionKey ? childMessages : messages),
+      listSessionTurns: vi.fn(async () => []),
+      getSessionTurn: vi.fn(),
+      searchSessions: vi.fn(async () => [root, child]),
+    };
+
+    const result = await (await import("./local-session-migration")).loadLocalSessionMigrationSource(store, {
+      sessionKey: root.sessionKey,
+      target: "codex",
+    });
+
+    expect(result.subagents).toEqual([
+      expect.objectContaining({
+        sourceSessionKey: child.sessionKey,
+        sourceSessionId: "child",
+        parentSessionId: "root",
+        messages: [expect.objectContaining({ content: "child result" })],
+      }),
+    ]);
+  });
+
   it("keeps messages through the selected turn and returns retained turn starts", async () => {
     const feature = await import("./local-session-migration");
     const allMessages = Array.from({ length: 6 }, (_, index): SessionMessage => ({

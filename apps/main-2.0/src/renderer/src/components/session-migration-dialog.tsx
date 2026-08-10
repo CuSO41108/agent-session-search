@@ -50,14 +50,15 @@ export function SessionMigrationDialog({
             : l("Create a new local target-agent session from", "从当前会话创建新的本地目标 Agent 会话：")} <strong>{session.displayTitle}</strong>
         </p>
         {isLocalSessionEnvironment(session) ? (
-          <label className="migration-project-option">
-            <input
-              type="checkbox"
-              checked={withoutProjectPath}
-              disabled={busy}
-              onChange={(event) => setWithoutProjectPath(event.target.checked)}
-            />
-            <span>
+          <button
+            type="button"
+            className="migration-project-option"
+            role="switch"
+            aria-checked={withoutProjectPath}
+            disabled={busy}
+            onClick={() => setWithoutProjectPath((selected) => !selected)}
+          >
+            <span className="migration-project-copy">
               <strong>{l("Create without a project path", "创建为无项目路径会话")}</strong>
               <small>
                 {session.projectPath.trim()
@@ -71,7 +72,8 @@ export function SessionMigrationDialog({
                     )}
               </small>
             </span>
-          </label>
+            <span className="migration-project-switch" aria-hidden="true"><span /></span>
+          </button>
         ) : null}
         {throughTurnIndex !== undefined ? (
           <p className="dialog-copy">

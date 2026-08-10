@@ -26,7 +26,7 @@ export interface LocalSessionMigrationRuntime<TEndpoint, TCompressor> {
     onProgress: MigrationCompressionListener | undefined,
     compressor: TCompressor | null,
   ) => Promise<PreparedMigrationSession>;
-  write: (target: MigrationTarget, session: PortableSession) => Promise<WrittenMigratedSession>;
+  write: (target: MigrationTarget, session: PortableSession, targetSessionId?: string) => Promise<WrittenMigratedSession>;
   record: (record: SessionMigrationRecord) => Promise<void> | void;
   refreshIndex: (target: MigrationTarget, targetFilePath: string, targetSessionId: string) => Promise<void>;
   launch: (target: MigrationTarget, sessionId: string, projectPath: string, settings: AppSettings) => Promise<void>;
@@ -34,6 +34,7 @@ export interface LocalSessionMigrationRuntime<TEndpoint, TCompressor> {
   fallbackResumeCommand: (target: MigrationTarget, sessionId: string, projectPath: string, settings: AppSettings) => string;
   onProgress?: (progress: SessionMigrationProgress) => void;
   idFactory: () => string;
+  targetSessionIdFactory?: () => string;
   now: () => number;
   projectPathExists: SessionMigrationDependencies["projectPathExists"];
   projectPathIsDirectory: SessionMigrationDependencies["projectPathIsDirectory"];
@@ -43,13 +44,14 @@ export async function runLocalSessionMigration<TEndpoint, TCompressor>(
   input: {
     source: SessionSearchResult;
     messages: SessionMessage[];
+    subagents?: PortableSession[];
     target: unknown;
     targetProjectPath?: string;
     settings: AppSettings;
   },
   runtime: LocalSessionMigrationRuntime<TEndpoint, TCompressor>,
 ): Promise<SessionMigrationResult> {
-  const { source, messages, target, targetProjectPath, settings } = input;
+  const { source, messages, subagents, target, targetProjectPath, settings } = input;
   if (!isMigrationTarget(target)) throw new Error(`Migration target ${String(target)} is not supported.`);
   assertMigrationTargetEnabled(target, settings);
 
@@ -58,6 +60,7 @@ export async function runLocalSessionMigration<TEndpoint, TCompressor>(
   return runtime.migrate({
     source,
     messages,
+    subagents,
     target,
     targetProjectPath,
     deps: {
@@ -71,6 +74,7 @@ export async function runLocalSessionMigration<TEndpoint, TCompressor>(
       fallbackResumeCommand: (migrationTarget, sessionId, projectPath) => runtime.fallbackResumeCommand(migrationTarget, sessionId, projectPath, settings),
       onProgress: runtime.onProgress,
       idFactory: runtime.idFactory,
+      targetSessionIdFactory: runtime.targetSessionIdFactory,
       now: runtime.now,
       projectPathExists: runtime.projectPathExists,
       projectPathIsDirectory: runtime.projectPathIsDirectory,

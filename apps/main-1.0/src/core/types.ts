@@ -120,6 +120,8 @@ export interface PortableSession {
   turnBoundaries?: number[];
   isSubagent?: boolean;
   parentSessionId?: string | null;
+  subagentDepth?: number;
+  subagentPath?: string;
   subagents?: PortableSession[];
 }
 

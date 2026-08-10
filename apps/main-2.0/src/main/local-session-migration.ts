@@ -6,6 +6,7 @@ import type {
   MigrateSessionOptions,
   SessionMigrationDependencies,
 } from "../core/session-migration";
+import { collectMigrationDescendants, portableSessionFrom } from "../core/session-migration";
 import type {
   MigrationTarget,
   PortableSession,
@@ -24,6 +25,7 @@ export interface LocalSessionMigrationSourceStore {
   getAllMessages(sessionKey: string): Promise<SessionMessage[]>;
   listSessionTurns(sessionKey: string): Promise<SessionTurnSummary[]>;
   getSessionTurn(sessionKey: string, turnId: string): Promise<SessionTurnDetail | null>;
+  searchSessions?(options: { limit?: number; excludeSubagents?: boolean }): Promise<SessionSearchResult[]>;
 }
 
 export async function loadLocalSessionMigrationSource(
@@ -33,17 +35,21 @@ export async function loadLocalSessionMigrationSource(
   source: SessionSearchResult;
   messages: SessionMessage[];
   turnSourceMessageIndexes: number[];
+  subagents: PortableSession[];
 }> {
   const source = await store.getSession(request.sessionKey);
   if (!source) throw new Error("Session not found.");
-  const [allMessages, turns] = await Promise.all([
+  const [allMessages, turns, indexedSessions] = await Promise.all([
     store.getAllMessages(request.sessionKey),
     store.listSessionTurns(request.sessionKey),
+    store.searchSessions?.({ limit: 100_000, excludeSubagents: false }) ?? Promise.resolve([]),
   ]);
+  const allDescendants = collectMigrationDescendants(source, indexedSessions);
   if (!request.throughTurnId) {
     return {
       source,
       messages: allMessages,
+      subagents: await loadPortableSubagents(store, allDescendants),
       turnSourceMessageIndexes: turns
         .map((turn) => turn.sourceMessageIndex)
         .filter((index): index is number => index !== null),
@@ -64,13 +70,38 @@ export async function loadLocalSessionMigrationSource(
     .filter((index): index is number => index !== null);
   if (sourceIndexes.length === 0) throw new Error("Turn has no migration message boundary.");
   const cutoff = Math.max(...sourceIndexes);
+  const cutoffTimestamp = Date.parse(allMessages.find((entry) => entry.index === cutoff)?.timestamp ?? "");
+  const descendants = Number.isFinite(cutoffTimestamp)
+    ? collectMigrationDescendants(source, allDescendants.filter((entry) => entry.timestamp <= cutoffTimestamp))
+    : [];
   return {
     source,
     messages: allMessages.filter((entry) => entry.index <= cutoff),
+    subagents: await loadPortableSubagents(store, descendants),
     turnSourceMessageIndexes: turns
       .map((turn) => turn.sourceMessageIndex)
       .filter((index): index is number => index !== null && index <= cutoff),
   };
+}
+
+async function loadPortableSubagents(
+  store: LocalSessionMigrationSourceStore,
+  descendants: readonly SessionSearchResult[],
+): Promise<PortableSession[]> {
+  const portable: PortableSession[] = [];
+  for (const descendant of descendants) {
+    const [messages, turns] = await Promise.all([
+      store.getAllMessages(descendant.sessionKey),
+      store.listSessionTurns(descendant.sessionKey),
+    ]);
+    portable.push(portableSessionFrom(descendant, messages, {
+      turnSourceMessageIndexes: turns
+        .map((turn) => turn.sourceMessageIndex)
+        .filter((index): index is number => index !== null),
+      allowSsh: descendant.environmentKind === "ssh",
+    }));
+  }
+  return portable;
 }
 
 export interface LocalSessionMigrationRuntime<TEndpoint, TCompressor> {
@@ -88,7 +119,7 @@ export interface LocalSessionMigrationRuntime<TEndpoint, TCompressor> {
     compressor: TCompressor | null,
     completeTokenLimit: number,
   ) => Promise<PreparedMigrationSession>;
-  write: (target: MigrationTarget, session: PortableSession) => Promise<WrittenMigratedSession>;
+  write: (target: MigrationTarget, session: PortableSession, targetSessionId?: string) => Promise<WrittenMigratedSession>;
   record: (record: SessionMigrationRecord) => Promise<void> | void;
   refreshIndex: (target: MigrationTarget, targetFilePath: string, targetSessionId: string) => Promise<void>;
   launch: (target: MigrationTarget, sessionId: string, projectPath: string, settings: AppSettings) => Promise<void>;
@@ -96,6 +127,7 @@ export interface LocalSessionMigrationRuntime<TEndpoint, TCompressor> {
   fallbackResumeCommand: (target: MigrationTarget, sessionId: string, projectPath: string, settings: AppSettings) => string;
   onProgress?: (progress: SessionMigrationProgress) => void;
   idFactory: () => string;
+  targetSessionIdFactory?: () => string;
   now: () => number;
   projectPathExists: SessionMigrationDependencies["projectPathExists"];
   projectPathIsDirectory: SessionMigrationDependencies["projectPathIsDirectory"];
@@ -105,6 +137,7 @@ export async function runLocalSessionMigration<TEndpoint, TCompressor>(
   input: {
     source: SessionSearchResult;
     messages: SessionMessage[];
+    subagents?: PortableSession[];
     turnSourceMessageIndexes?: readonly number[];
     target: unknown;
     targetProjectPath?: string;
@@ -112,7 +145,7 @@ export async function runLocalSessionMigration<TEndpoint, TCompressor>(
   },
   runtime: LocalSessionMigrationRuntime<TEndpoint, TCompressor>,
 ): Promise<SessionMigrationResult> {
-  const { source, messages, turnSourceMessageIndexes, target, targetProjectPath, settings } = input;
+  const { source, messages, subagents, turnSourceMessageIndexes, target, targetProjectPath, settings } = input;
   if (!isMigrationTarget(target)) throw new Error(`Migration target ${String(target)} is not supported.`);
   assertMigrationTargetEnabled(target, settings);
 
@@ -127,6 +160,7 @@ export async function runLocalSessionMigration<TEndpoint, TCompressor>(
   return runtime.migrate({
     source,
     messages,
+    subagents,
     target,
     targetProjectPath,
     completeTokenLimit: settings.migrationCompleteTokenLimit,
@@ -147,6 +181,7 @@ export async function runLocalSessionMigration<TEndpoint, TCompressor>(
       fallbackResumeCommand: (migrationTarget, sessionId, projectPath) => runtime.fallbackResumeCommand(migrationTarget, sessionId, projectPath, settings),
       onProgress: runtime.onProgress,
       idFactory: runtime.idFactory,
+      targetSessionIdFactory: runtime.targetSessionIdFactory,
       now: runtime.now,
       projectPathExists: runtime.projectPathExists,
       projectPathIsDirectory: runtime.projectPathIsDirectory,
