@@ -11,6 +11,8 @@ export interface McpToolDefinition {
 export interface McpServerDefinition {
   id: string;
   name: string;
+  /** Human-readable purpose shown for app-managed and user-configured servers. */
+  description?: string;
   transport: McpTransport;
   command?: string;
   args: string[];

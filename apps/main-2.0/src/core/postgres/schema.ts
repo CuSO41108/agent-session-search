@@ -1570,4 +1570,13 @@ export const POSTGRES_MIGRATIONS: readonly PostgresMigration[] = [{
         ON agent_recall.workflow_artifacts (run_id, node_id);
     `,
   ],
+}, {
+  version: 34,
+  name: "record structured Workflow run lifecycle events",
+  statements: [
+    `
+      ALTER TABLE agent_recall.workflow_runs
+        ADD COLUMN IF NOT EXISTS events jsonb NOT NULL DEFAULT '[]'::jsonb;
+    `,
+  ],
 }];

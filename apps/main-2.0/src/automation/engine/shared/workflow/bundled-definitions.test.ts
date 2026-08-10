@@ -15,7 +15,24 @@ describe("structured bundled Workflows", () => {
     ]);
     expect(discovery?.outputs[0]).toMatchObject({
       type: "list",
-      item: { type: "object", fields: expect.arrayContaining([expect.objectContaining({ key: "evidence" })]) },
+      description: expect.stringContaining("证据"),
     });
+  });
+
+  test("ships several valid examples covering Agent, Script, Review, and Approval nodes", () => {
+    const workflows = structuredBundledWorkflowDefinitions("agent-1", 10);
+
+    expect(workflows.map((workflow) => workflow.id)).toEqual([
+      "resume-technical-highlights",
+      "code-change-review",
+      "technical-design-from-code",
+      "release-readiness-check",
+    ]);
+    for (const workflow of workflows) {
+      expect(validateWorkflowDefinition(workflow, new Set(["agent-1"])), workflow.id).toEqual([]);
+    }
+    expect(new Set(workflows.flatMap((workflow) => workflow.nodes.map((node) => node.kind)))).toEqual(
+      new Set(["agent", "script", "review", "approval"]),
+    );
   });
 });

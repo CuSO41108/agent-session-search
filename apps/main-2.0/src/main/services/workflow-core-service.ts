@@ -9,9 +9,15 @@ import type { WorkflowEngine } from "../../automation/engine/main/workflows/work
 export function parseWorkflowAgentOutputs(content: string): Record<string, unknown> {
   const normalized = content.trim();
   const fenced = normalized.match(/^```(?:json)?\s*\n([\s\S]*?)\n```$/iu);
+  const embeddedJsonFences = fenced
+    ? []
+    : [...normalized.matchAll(/```json\s*\n([\s\S]*?)\n```/giu)];
+  const candidate = fenced?.[1]?.trim()
+    ?? (embeddedJsonFences.length === 1 ? embeddedJsonFences[0]?.[1]?.trim() : undefined)
+    ?? normalized;
   let value: unknown;
   try {
-    value = JSON.parse(fenced?.[1]?.trim() ?? normalized) as unknown;
+    value = JSON.parse(candidate) as unknown;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     throw new Error(`Agent output must be one JSON object: ${message}`);
@@ -43,9 +49,15 @@ export class WorkflowCoreService {
   }
 
   async ensureDefinitions(definitions: WorkflowDefinition[]): Promise<void> {
-    const existingIds = new Set((await this.dependencies.repository.listDefinitions()).map((definition) => definition.id));
+    const existing = new Map((await this.dependencies.repository.listDefinitions()).map((definition) => [definition.id, definition]));
     for (const definition of definitions) {
-      if (existingIds.has(definition.id)) continue;
+      const current = existing.get(definition.id);
+      if (current?.isTemplate) continue;
+      if (current && definition.isTemplate) {
+        await this.saveDefinition({ ...definition, createdAt: current.createdAt });
+        continue;
+      }
+      if (current) continue;
       await this.saveDefinition(definition);
     }
   }
@@ -66,6 +78,8 @@ export class WorkflowCoreService {
   }
 
   async deleteDefinition(workflowId: string): Promise<void> {
+    const definition = await this.dependencies.repository.getDefinition(workflowId);
+    if (definition?.isTemplate) throw new Error("Workflow templates are read-only.");
     await this.dependencies.repository.deleteDefinition(workflowId);
   }
 
@@ -85,5 +99,13 @@ export class WorkflowCoreService {
 
   cancelRun(runId: string): Promise<WorkflowRun> {
     return this.dependencies.engine.cancel(runId);
+  }
+
+  pauseRun(runId: string): Promise<WorkflowRun> {
+    return this.dependencies.engine.pause(runId);
+  }
+
+  resumeRun(runId: string): Promise<WorkflowRun> {
+    return this.dependencies.engine.resume(runId);
   }
 }

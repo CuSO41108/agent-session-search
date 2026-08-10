@@ -518,7 +518,8 @@ function createAutomationService(): NativeAutomationService {
         const definition = loadMcpSetup().serverDefinition();
         return {
           id: definition.id,
-          name: definition.name,
+          name: "AgentRecall Session Search",
+          description: "Search indexed Agent sessions, inspect context, and prepare resumable migrations.",
           command: definition.command,
           args: definition.args,
         };

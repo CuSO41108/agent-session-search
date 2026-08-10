@@ -1,8 +1,11 @@
+import { workflowNodeInputKey } from "../../shared/workflow/model";
 import type {
   WorkflowDefinition,
   WorkflowNode,
   WorkflowNodeRun,
   WorkflowRun,
+  WorkflowRunEvent,
+  WorkflowRunEventType,
 } from "../../shared/workflow/model";
 import { validateWorkflowNodeOutputs } from "../../shared/workflow/output";
 import {
@@ -77,18 +80,23 @@ export class WorkflowEngine {
         status: "pending",
         attempt: 0,
       } satisfies WorkflowNodeRun])),
+      events: [],
       startedAt: this.now(),
     };
+    this.record(run, "run_started");
     await this.store.saveRun(run);
-    return this.drive(run);
+    this.startDrive(run);
+    return cloneRun(run);
   }
 
   async retryNode(runId: string, nodeId: string): Promise<WorkflowRun> {
     const current = await this.requiredRun(runId);
     if (!current.definition.nodes.some((node) => node.id === nodeId)) throw new Error(`Workflow node ${nodeId} does not exist.`);
     const next = invalidateWorkflowDownstream(current.definition, current, [nodeId]);
+    this.record(next, "node_retried", { nodeId, attempt: next.nodeRuns[nodeId]?.attempt });
     await this.store.saveRun(next);
-    return this.drive(next);
+    this.startDrive(next);
+    return cloneRun(next);
   }
 
   async resolveApproval(runId: string, nodeId: string, outputs: Record<string, unknown>): Promise<WorkflowRun> {
@@ -107,14 +115,56 @@ export class WorkflowEngine {
     state.finishedAt = this.now();
     delete state.error;
     run.status = "running";
+    this.record(run, "approval_resolved", { nodeId, attempt: state.attempt });
     await this.store.saveRun(run);
-    return this.drive(run);
+    this.startDrive(run);
+    return cloneRun(run);
+  }
+
+  async pause(runId: string): Promise<WorkflowRun> {
+    const active = await this.requiredRun(runId);
+    if (active.status === "paused") return cloneRun(active);
+    if (active.status !== "running") throw new Error(`Workflow Run ${runId} is not running.`);
+    this.controllers.get(runId)?.abort();
+    await Promise.allSettled(active.definition.nodes.map(async (node) => {
+      if (active.nodeRuns[node.id]?.status !== "running") return;
+      await this.executors[node.kind as Exclude<WorkflowNode["kind"], "approval">]?.cancel?.(runId, node.id);
+    }));
+
+    const run = await this.requiredRun(runId);
+    if (run.status !== "running") return cloneRun(run);
+    for (const state of Object.values(run.nodeRuns)) {
+      if (state.status !== "ready" && state.status !== "running") continue;
+      state.status = "pending";
+      delete state.resolvedInputs;
+      delete state.outputs;
+      delete state.error;
+      delete state.startedAt;
+      delete state.finishedAt;
+    }
+    run.status = "paused";
+    delete run.finishedAt;
+    this.record(run, "run_paused");
+    await this.store.saveRun(run);
+    return cloneRun(run);
+  }
+
+  async resume(runId: string): Promise<WorkflowRun> {
+    const run = await this.requiredRun(runId);
+    if (run.status === "running") return cloneRun(run);
+    if (run.status !== "paused") throw new Error(`Workflow Run ${runId} is not paused.`);
+    run.status = "running";
+    delete run.finishedAt;
+    this.record(run, "run_resumed");
+    await this.store.saveRun(run);
+    this.startDrive(run);
+    return cloneRun(run);
   }
 
   async cancel(runId: string): Promise<WorkflowRun> {
     const run = await this.requiredRun(runId);
     this.controllers.get(runId)?.abort();
-    await Promise.all(run.definition.nodes.map(async (node) => {
+    await Promise.allSettled(run.definition.nodes.map(async (node) => {
       if (run.nodeRuns[node.id]?.status !== "running") return;
       await this.executors[node.kind as Exclude<WorkflowNode["kind"], "approval">]?.cancel?.(runId, node.id);
     }));
@@ -126,8 +176,48 @@ export class WorkflowEngine {
     }
     run.status = "cancelled";
     run.finishedAt = this.now();
+    this.record(run, "run_cancelled");
     await this.store.saveRun(run);
     return cloneRun(run);
+  }
+
+  private record(
+    run: WorkflowRun,
+    type: WorkflowRunEventType,
+    details: Pick<WorkflowRunEvent, "nodeId" | "attempt" | "durationMs" | "errorCode"> = {},
+  ): void {
+    const previousSequence = run.events.at(-1)?.sequence ?? 0;
+    run.events.push({ sequence: previousSequence + 1, type, timestamp: this.now(), ...details });
+  }
+
+  private startDrive(run: WorkflowRun): void {
+    void this.driveInBackground(run).catch(() => undefined);
+  }
+
+  private async driveInBackground(run: WorkflowRun): Promise<void> {
+    try {
+      await this.drive(run);
+    } catch (error) {
+      const current = await this.store.getRun(run.id);
+      if (!current || current.status !== "running") return;
+      const failure = runError(error);
+      for (const state of Object.values(current.nodeRuns)) {
+        if (state.status !== "ready" && state.status !== "running") continue;
+        state.status = "failed";
+        state.error = failure;
+        state.finishedAt = this.now();
+        this.record(current, "node_failed", {
+          nodeId: state.nodeId,
+          attempt: state.attempt,
+          durationMs: state.startedAt === undefined ? undefined : Math.max(0, state.finishedAt - state.startedAt),
+          errorCode: failure.code,
+        });
+      }
+      current.status = "failed";
+      current.finishedAt = this.now();
+      this.record(current, "run_failed", { errorCode: failure.code });
+      await this.store.saveRun(current);
+    }
   }
 
   private async requiredRun(runId: string): Promise<WorkflowRun> {
@@ -141,11 +231,13 @@ export class WorkflowEngine {
     for (const input of node.inputs) {
       let value: unknown;
       if (input.source === "workflow") value = run.inputs[input.workflowInputKey];
-      if (input.source === "literal") value = input.value;
-      if (input.source === "workspace") value = input.path ?? ".";
       if (input.source === "node") value = run.nodeRuns[input.nodeId]?.outputs?.[input.outputKey];
-      if (input.required && value === undefined) throw new Error(`Required node input ${node.id}.${input.key} is unavailable.`);
-      resolved[input.key] = structuredClone(value);
+      const required = input.source === "workflow"
+        ? run.definition.inputs.find((candidate) => candidate.key === input.workflowInputKey)?.required
+        : run.definition.nodes.find((candidate) => candidate.id === input.nodeId)?.outputs.find((output) => output.key === input.outputKey)?.required;
+      const key = workflowNodeInputKey(input);
+      if (required && value === undefined) throw new Error(`Required node input ${node.id}.${key} is unavailable.`);
+      resolved[key] = structuredClone(value);
     }
     return resolved;
   }
@@ -174,10 +266,12 @@ export class WorkflowEngine {
             state.status = "failed";
             state.error = runError(error);
             state.finishedAt = this.now();
+            this.record(run, "node_failed", { nodeId, attempt: state.attempt, errorCode: state.error.code });
             continue;
           }
           if (node.kind === "approval") {
             state.status = "waiting";
+            this.record(run, "node_waiting", { nodeId, attempt: state.attempt });
             continue;
           }
           const executor = this.executors[node.kind];
@@ -185,9 +279,11 @@ export class WorkflowEngine {
             state.status = "failed";
             state.error = { code: "executor_unavailable", message: `No ${node.kind} executor is configured.` };
             state.finishedAt = this.now();
+            this.record(run, "node_failed", { nodeId, attempt: state.attempt, errorCode: state.error.code });
             continue;
           }
           state.status = "running";
+          this.record(run, "node_started", { nodeId, attempt: state.attempt });
           executable.push({ node, state, resolvedInputs: state.resolvedInputs, executor });
         }
         await this.store.saveRun(run);
@@ -208,6 +304,12 @@ export class WorkflowEngine {
             state.status = "failed";
             state.error = runError(result.error);
             state.finishedAt = this.now();
+            this.record(run, "node_failed", {
+              nodeId: node.id,
+              attempt: state.attempt,
+              durationMs: Math.max(0, state.finishedAt - (state.startedAt ?? state.finishedAt)),
+              errorCode: state.error.code,
+            });
             continue;
           }
           const validationIssues = validateWorkflowNodeOutputs(node, result.outputs);
@@ -219,11 +321,22 @@ export class WorkflowEngine {
               fieldPath: validationIssues[0]!.path,
             };
             state.finishedAt = this.now();
+            this.record(run, "node_failed", {
+              nodeId: node.id,
+              attempt: state.attempt,
+              durationMs: Math.max(0, state.finishedAt - (state.startedAt ?? state.finishedAt)),
+              errorCode: state.error.code,
+            });
             continue;
           }
           state.status = "completed";
           state.outputs = structuredClone(result.outputs);
           state.finishedAt = this.now();
+          this.record(run, "node_completed", {
+            nodeId: node.id,
+            attempt: state.attempt,
+            durationMs: Math.max(0, state.finishedAt - (state.startedAt ?? state.finishedAt)),
+          });
         }
 
         let revised = false;
@@ -243,10 +356,18 @@ export class WorkflowEngine {
             }
             run.nodeRuns = next.nodeRuns;
             run.status = "running";
+            this.record(run, "review_revised", { nodeId: node.id, attempt: state.attempt });
             revised = true;
           } else {
             state.status = "failed";
             state.error = { code: "review_rejected", message: String(state.outputs.feedback ?? "Review rejected the output.") };
+            state.finishedAt = this.now();
+            this.record(run, "node_failed", {
+              nodeId: node.id,
+              attempt: state.attempt,
+              durationMs: Math.max(0, state.finishedAt - (state.startedAt ?? state.finishedAt)),
+              errorCode: state.error.code,
+            });
           }
           break;
         }
@@ -255,7 +376,10 @@ export class WorkflowEngine {
       }
 
       run.status = deriveWorkflowRunStatus(run.definition, run);
-      if (run.status === "completed" || run.status === "failed" || run.status === "cancelled") run.finishedAt = this.now();
+      if (run.status === "completed" || run.status === "failed" || run.status === "cancelled") {
+        run.finishedAt = this.now();
+        this.record(run, run.status === "completed" ? "run_completed" : run.status === "failed" ? "run_failed" : "run_cancelled");
+      }
       await this.store.saveRun(run);
       return cloneRun(run);
     } finally {

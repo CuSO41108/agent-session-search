@@ -28,10 +28,6 @@ function agent(id: string, dependencies: string[] = []): WorkflowAgentNode {
     instructions: [],
     constraints: [],
     inputs: dependencies.map((dependency) => ({
-      key: dependency,
-      name: dependency,
-      description: dependency,
-      required: true,
       source: "node" as const,
       nodeId: dependency,
       outputKey: "value",
@@ -71,6 +67,15 @@ function engine(store: MemoryStore, execute: WorkflowNodeExecutor, ids = ["run-1
   });
 }
 
+async function waitForRun(store: MemoryStore, runId: string, status: WorkflowRun["status"]): Promise<WorkflowRun> {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const run = await store.getRun(runId);
+    if (run?.status === status) return run;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  throw new Error(`Workflow Run ${runId} did not reach ${status}.`);
+}
+
 describe("WorkflowEngine", () => {
   test("executes ready branches in parallel and resolves exact upstream fields", async () => {
     const store = new MemoryStore();
@@ -86,28 +91,33 @@ describe("WorkflowEngine", () => {
       return { value: node.id };
     }));
 
-    const run = await runtime.start(definition([
+    const started = await runtime.start(definition([
       agent("root"),
       agent("left", ["root"]),
       agent("right", ["root"]),
       agent("final", ["left", "right"]),
     ]), {});
 
+    expect(started.status).toBe("running");
+    const run = await waitForRun(store, started.id, "completed");
+
     expect(run.status).toBe("completed");
     expect(peak).toBe(2);
-    expect(seenInputs.get("final")).toEqual({ left: "left", right: "right" });
+    expect(seenInputs.get("final")).toEqual({ "left.value": "left", "right.value": "right" });
   });
 
   test("fails invalid node output and leaves its dependent branch pending", async () => {
     const store = new MemoryStore();
     const runtime = engine(store, executor(async ({ node }) => node.id === "left" ? {} : { value: node.id }));
 
-    const run = await runtime.start(definition([
+    const started = await runtime.start(definition([
       agent("root"),
       agent("left", ["root"]),
       agent("right", ["root"]),
       agent("final", ["left", "right"]),
     ]), {});
+
+    const run = await waitForRun(store, started.id, "failed");
 
     expect(run.status).toBe("failed");
     expect(run.nodeRuns.left?.error).toMatchObject({ code: "invalid_output", fieldPath: "outputs.value" });
@@ -134,21 +144,20 @@ describe("WorkflowEngine", () => {
     };
     const downstream = agent("downstream");
     downstream.inputs = [{
-      key: "decision",
-      name: "Decision",
-      description: "Approval decision",
-      required: true,
       source: "node",
       nodeId: "approval",
       outputKey: "decision",
     }];
-    const runtime = engine(store, executor(async ({ node, resolvedInputs }) => ({ value: `${node.id}:${resolvedInputs.decision}` })));
+    const runtime = engine(store, executor(async ({ node, resolvedInputs }) => ({ value: `${node.id}:${resolvedInputs["approval.decision"]}` })));
 
-    const waiting = await runtime.start(definition([approval, downstream]), {});
+    const started = await runtime.start(definition([approval, downstream]), {});
+    const waiting = await waitForRun(store, started.id, "waiting");
     expect(waiting.status).toBe("waiting");
     expect(waiting.nodeRuns.approval?.status).toBe("waiting");
 
-    const completed = await runtime.resolveApproval(waiting.id, "approval", { decision: "yes", comment: "Ship it." });
+    const resumed = await runtime.resolveApproval(waiting.id, "approval", { decision: "yes", comment: "Ship it." });
+    expect(resumed.status).toBe("running");
+    const completed = await waitForRun(store, waiting.id, "completed");
     expect(completed.status).toBe("completed");
     expect(completed.nodeRuns.downstream?.outputs).toEqual({ value: "downstream:yes" });
   });
@@ -168,10 +177,10 @@ describe("WorkflowEngine", () => {
       criteria: [{ key: "quality", description: "Good quality." }],
       maxRevisions: 1,
       onReject: "revise",
-      inputs: [{ key: "draft", name: "Draft", description: "Draft", required: true, source: "node", nodeId: "draft", outputKey: "value" }],
+      inputs: [{ source: "node", nodeId: "draft", outputKey: "value" }],
       outputs: [
         output("verdict"),
-        { key: "criteriaResults", name: "Criteria", description: "Results", type: "list", required: true, item: output("criterion") },
+        { key: "criteriaResults", name: "Criteria", description: "Results", type: "list", required: true },
         output("feedback"),
       ],
       acceptanceCriteria: [],
@@ -187,7 +196,8 @@ describe("WorkflowEngine", () => {
       return { verdict: reviewAttempts === 1 ? "revise" : "pass", criteriaResults: [], feedback: "Improve it." };
     }));
 
-    const run = await runtime.start(definition([draft, review]), {});
+    const started = await runtime.start(definition([draft, review]), {});
+    const run = await waitForRun(store, started.id, "completed");
     expect(run.status).toBe("completed");
     expect(run.nodeRuns.draft?.attempt).toBe(2);
     expect(run.nodeRuns.review?.attempt).toBe(2);
@@ -205,13 +215,50 @@ describe("WorkflowEngine", () => {
       return { value: node.id };
     }));
 
-    const failed = await runtime.start(definition([agent("root"), agent("middle", ["root"]), agent("final", ["middle"])]), {});
+    const started = await runtime.start(definition([agent("root"), agent("middle", ["root"]), agent("final", ["middle"])]), {});
+    const failed = await waitForRun(store, started.id, "failed");
     fail = false;
-    const completed = await runtime.retryNode(failed.id, "middle");
+    const retried = await runtime.retryNode(failed.id, "middle");
+    expect(retried.status).toBe("running");
+    const completed = await waitForRun(store, failed.id, "completed");
 
     expect(completed.status).toBe("completed");
     expect(calls.filter((id) => id === "root")).toHaveLength(1);
     expect(calls.filter((id) => id === "middle")).toHaveLength(2);
     expect(calls.filter((id) => id === "final")).toHaveLength(1);
+  });
+
+  test("pauses an active node, records lifecycle events, and resumes it in the background", async () => {
+    const store = new MemoryStore();
+    let calls = 0;
+    const runtime = engine(store, executor(async ({ signal }) => {
+      calls += 1;
+      if (calls > 1) return { value: "resumed" };
+      return new Promise<Record<string, unknown>>((_, reject) => {
+        signal.addEventListener("abort", () => reject(new Error("paused")), { once: true });
+      });
+    }));
+
+    const started = await runtime.start(definition([agent("answer")]), {});
+    expect(started.status).toBe("running");
+    const active = await waitForRun(store, started.id, "running");
+    expect(active.nodeRuns.answer?.status).toBe("running");
+
+    const paused = await runtime.pause(started.id);
+    expect(paused.status).toBe("paused");
+    expect(paused.nodeRuns.answer?.status).toBe("pending");
+
+    const resumed = await runtime.resume(started.id);
+    expect(resumed.status).toBe("running");
+    const completed = await waitForRun(store, started.id, "completed");
+    expect(completed.nodeRuns.answer?.outputs).toEqual({ value: "resumed" });
+    expect(completed.events.map((event) => event.type)).toEqual(expect.arrayContaining([
+      "run_started",
+      "node_started",
+      "run_paused",
+      "run_resumed",
+      "node_completed",
+      "run_completed",
+    ]));
   });
 });

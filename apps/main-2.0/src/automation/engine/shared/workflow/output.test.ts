@@ -25,8 +25,8 @@ describe("validateWorkflowNodeOutputs", () => {
   test("accepts declared scalar object and list values", () => {
     const node = agent([
       field("count", "number"),
-      field("metadata", "object", { fields: [field("verified", "boolean")] }),
-      field("items", "list", { item: field("item", "text") }),
+      field("metadata", "object"),
+      field("items", "list"),
     ]);
 
     expect(validateWorkflowNodeOutputs(node, {
@@ -42,15 +42,12 @@ describe("validateWorkflowNodeOutputs", () => {
     expect(issues).toContainEqual({ path: "outputs.extra", message: "Output field is not declared by the node." });
   });
 
-  test("reports nested type errors with exact paths", () => {
-    const node = agent([field("items", "list", {
-      item: field("item", "object", { fields: [field("score", "number")] }),
-    })]);
-
-    expect(validateWorkflowNodeOutputs(node, { items: [{ score: "high" }] })).toContainEqual({
-      path: "outputs.items.0.score",
-      message: "Expected number output.",
-    });
+  test("validates flat object and list output types without nested schemas", () => {
+    const node = agent([field("metadata", "object"), field("items", "list")]);
+    expect(validateWorkflowNodeOutputs(node, { metadata: [], items: {} })).toEqual([
+      { path: "outputs.metadata", message: "Expected object output." },
+      { path: "outputs.items", message: "Expected list output." },
+    ]);
   });
 
   test.each(["/tmp/result.txt", "../result.txt", "nested/../../result.txt"])("rejects unsafe file output %s", (value) => {
@@ -62,7 +59,7 @@ describe("validateWorkflowNodeOutputs", () => {
 
   test("restricts review verdict values", () => {
     const node: WorkflowReviewNode = {
-      ...agent([field("verdict", "text"), field("criteriaResults", "list", { item: field("criterion", "text") }), field("feedback", "text")]),
+      ...agent([field("verdict", "text"), field("criteriaResults", "list"), field("feedback", "text")]),
       kind: "review",
       agentId: "reviewer",
       instructions: [],
@@ -79,4 +76,3 @@ describe("validateWorkflowNodeOutputs", () => {
     });
   });
 });
-

@@ -240,6 +240,42 @@ describe("NativeAutomationService", () => {
     expect(received.map((value) => value.workDir)).toEqual(["/repo", "/next"]);
   });
 
+  it("publishes ephemeral Workflow Runtime output only to active subscribers", () => {
+    const { service } = fixture();
+    const received: unknown[] = [];
+    const unsubscribe = service.subscribeWorkflowRunStream((event) => received.push(event));
+    const event = {
+      runId: "run-1",
+      nodeId: "agent-1",
+      type: "delta" as const,
+      content: "hello",
+      timestamp: 10,
+    };
+
+    service.publishWorkflowRunStream(event);
+    unsubscribe();
+    service.publishWorkflowRunStream({ ...event, content: "ignored" });
+
+    expect(received).toEqual([event]);
+  });
+
+  it("isolates Workflow Runtime stream listener failures from execution", () => {
+    const { service } = fixture();
+    const received: unknown[] = [];
+    service.subscribeWorkflowRunStream(() => { throw new Error("renderer closed"); });
+    service.subscribeWorkflowRunStream((event) => received.push(event));
+    const event = {
+      runId: "run-1",
+      nodeId: "agent-1",
+      type: "delta" as const,
+      content: "still running",
+      timestamp: 10,
+    };
+
+    expect(() => service.publishWorkflowRunStream(event)).not.toThrow();
+    expect(received).toEqual([event]);
+  });
+
   it("blocks Agent deletion and reports references from every owning module", async () => {
     const { service, hub, teamChats, evaluations, emit } = fixture();
     const worker = {

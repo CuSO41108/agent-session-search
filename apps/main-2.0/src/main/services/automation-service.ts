@@ -24,7 +24,7 @@ import { ConfiguredAgentExecutionService } from "../../automation/engine/main/pl
 import { WorkflowEngine } from "../../automation/engine/main/workflows/workflow-engine";
 import { createWorkflowNodeExecutors } from "../../automation/engine/main/workflows/workflow-executors";
 import { WorkflowScriptProcessRunner } from "../../automation/engine/main/workflows/workflow-script-process";
-import type { WorkflowScriptPermission } from "../../automation/engine/shared/workflow/model";
+import type { WorkflowRunStreamEvent, WorkflowScriptPermission } from "../../automation/engine/shared/workflow/model";
 import { structuredBundledWorkflowDefinitions } from "../../automation/engine/shared/workflow/bundled-definitions";
 import { PostgresWorkflowCoreRepository } from "../../automation/engine/main/hub/persisted/postgres-workflow-core-repository";
 import {
@@ -94,6 +94,7 @@ interface AutomationServiceDependencies {
 
 type SnapshotListener = (snapshot: AppSnapshot) => void;
 type ChangeListener = (change: AutomationChange) => void;
+type WorkflowRunStreamListener = (event: WorkflowRunStreamEvent) => void;
 
 function diffEntities<T>(
   previous: T[],
@@ -249,6 +250,7 @@ export class NativeAutomationService {
   private readonly setRouterBaseUrl: typeof setCodexChatRouterBaseUrl;
   private readonly listeners = new Set<SnapshotListener>();
   private readonly changeListeners = new Set<ChangeListener>();
+  private readonly workflowRunStreamListeners = new Set<WorkflowRunStreamListener>();
   private readonly unsubscribeHub: () => void;
   private currentSnapshot: AppSnapshot;
   private changeSequence = 0;
@@ -292,15 +294,16 @@ export class NativeAutomationService {
         createId: () => `workflow_run_${randomUUID()}`,
         executors: createWorkflowNodeExecutors({
           agentInvoker: {
-            invoke: async ({ agentId, prompt, outputs, signal }) => {
+            invoke: async ({ agentId, prompt, outputs, onEvent, signal }) => {
               const outputContract = outputs.map((field) => `- ${field.key}: ${field.description}`).join("\n");
               const response = await this.configuredAgentExecutor.runOneShot({
                 configuredAgentId: agentId,
                 prompt: `${prompt}\n\n## Response format\nReturn only one JSON object. Use exactly these top-level fields:\n${outputContract}`,
-              }, undefined, signal);
+              }, onEvent, signal);
               return parseWorkflowAgentOutputs(response.output);
             },
           },
+          onStream: (event) => this.publishWorkflowRunStream(event),
           scriptRunner: new WorkflowScriptProcessRunner(() => this.hubInstance.getWorkDir()),
           scriptAuthorizer: {
             authorize: async ({ runId, node, permissions }) => {
@@ -371,6 +374,7 @@ export class NativeAutomationService {
           launchConfig: () => ({
             id: "agent-recall-workflow",
             name: "AgentRecall Workflow",
+            description: "Create, inspect, and run structured AgentRecall workflows.",
             command: "node",
             args: [options.workflowMcpServerPath],
           }),
@@ -590,6 +594,21 @@ export class NativeAutomationService {
     return () => this.changeListeners.delete(listener);
   }
 
+  subscribeWorkflowRunStream(listener: WorkflowRunStreamListener): () => void {
+    this.workflowRunStreamListeners.add(listener);
+    return () => this.workflowRunStreamListeners.delete(listener);
+  }
+
+  publishWorkflowRunStream(event: WorkflowRunStreamEvent): void {
+    for (const listener of this.workflowRunStreamListeners) {
+      try {
+        listener(event);
+      } catch {
+        this.workflowRunStreamListeners.delete(listener);
+      }
+    }
+  }
+
   private handleHubChange(change: AgentHubChange): void {
     if (change.kind === "snapshot") {
       this.currentSnapshot = change.snapshot;
@@ -673,6 +692,7 @@ export class NativeAutomationService {
     this.registryInstance.close();
     this.unsubscribeHub();
     this.listeners.clear();
+    this.workflowRunStreamListeners.clear();
     this.healthState = { state: "stopped" };
   }
 }

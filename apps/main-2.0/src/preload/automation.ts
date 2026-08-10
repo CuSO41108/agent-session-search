@@ -51,6 +51,7 @@ import type {
   WorkflowCoreSnapshot,
   WorkflowDefinition,
   WorkflowRun,
+  WorkflowRunStreamEvent,
   McpServerDefinition,
 } from "../automation/contracts";
 import type {
@@ -113,6 +114,8 @@ export function createAutomationApi(ipc: AutomationIpcRenderer) {
     saveWorkflowDefinition: (definition: WorkflowDefinition): Promise<WorkflowDefinition> => ipc.invoke(AUTOMATION_CHANNELS.workflowDefinitionSave, definition),
     deleteWorkflowDefinition: (workflowId: string): Promise<void> => ipc.invoke(AUTOMATION_CHANNELS.workflowDefinitionDelete, { workflowId }),
     startWorkflowRun: (workflowId: string, inputs: Record<string, unknown>): Promise<WorkflowRun> => ipc.invoke(AUTOMATION_CHANNELS.workflowRunStart, { workflowId, inputs }),
+    pauseWorkflowRun: (runId: string): Promise<WorkflowRun> => ipc.invoke(AUTOMATION_CHANNELS.workflowRunPause, { runId }),
+    resumeWorkflowRun: (runId: string): Promise<WorkflowRun> => ipc.invoke(AUTOMATION_CHANNELS.workflowRunResume, { runId }),
     cancelWorkflowRun: (runId: string): Promise<WorkflowRun> => ipc.invoke(AUTOMATION_CHANNELS.workflowRunCancel, { runId }),
     retryWorkflowNode: (runId: string, nodeId: string): Promise<WorkflowRun> => ipc.invoke(AUTOMATION_CHANNELS.workflowNodeRetry, { runId, nodeId }),
     resolveWorkflowApproval: (runId: string, nodeId: string, outputs: Record<string, unknown>): Promise<WorkflowRun> => ipc.invoke(AUTOMATION_CHANNELS.workflowApprovalResolve, { runId, nodeId, outputs }),
@@ -165,6 +168,11 @@ export function createAutomationApi(ipc: AutomationIpcRenderer) {
       const listener = (_event: Electron.IpcRendererEvent, change: AutomationChange) => callback(change);
       ipc.on(AUTOMATION_CHANNELS.change, listener);
       return () => ipc.removeListener(AUTOMATION_CHANNELS.change, listener);
+    },
+    onWorkflowRunStream: (callback: (event: WorkflowRunStreamEvent) => void): (() => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, event: WorkflowRunStreamEvent) => callback(event);
+      ipc.on(AUTOMATION_CHANNELS.workflowRunStream, listener);
+      return () => ipc.removeListener(AUTOMATION_CHANNELS.workflowRunStream, listener);
     },
     onAgentTestEvent: (callback: (event: AgentTestEvent) => void): (() => void) => {
       const listener = (_event: Electron.IpcRendererEvent, event: AgentTestEvent) => callback(event);

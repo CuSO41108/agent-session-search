@@ -27,48 +27,17 @@ function validateKey(value: string, path: string, issues: WorkflowValidationIssu
 function validateOutputField(
   field: WorkflowOutputField,
   path: string,
-  compoundDepth: number,
   issues: WorkflowValidationIssue[],
 ): void {
   requiredText(field.key, `${path}.key`, "Output key", issues);
   validateKey(field.key, `${path}.key`, issues);
   requiredText(field.name, `${path}.name`, "Output name", issues);
   requiredText(field.description, `${path}.description`, "Output description", issues);
-
-  const nextCompoundDepth = field.type === "object" || field.type === "list" ? compoundDepth + 1 : compoundDepth;
-  if (nextCompoundDepth > 2) {
-    issues.push(issue(path, "Object and list outputs may be nested at most two levels."));
-    return;
-  }
-
-  if (field.type === "object") {
-    if (!field.fields?.length) {
-      issues.push(issue(`${path}.fields`, "Object outputs require at least one field."));
-    } else {
-      validateOutputFields(field.fields, `${path}.fields`, nextCompoundDepth, issues);
-    }
-    if (field.item !== undefined) issues.push(issue(`${path}.item`, "Only list outputs may declare an item."));
-    return;
-  }
-
-  if (field.type === "list") {
-    if (!field.item) {
-      issues.push(issue(`${path}.item`, "List outputs require an item definition."));
-    } else {
-      validateOutputField(field.item, `${path}.item.${field.item.key}`, nextCompoundDepth, issues);
-    }
-    if (field.fields !== undefined) issues.push(issue(`${path}.fields`, "Only object outputs may declare fields."));
-    return;
-  }
-
-  if (field.fields !== undefined) issues.push(issue(`${path}.fields`, "Only object outputs may declare fields."));
-  if (field.item !== undefined) issues.push(issue(`${path}.item`, "Only list outputs may declare an item."));
 }
 
 function validateOutputFields(
   fields: WorkflowOutputField[],
   path: string,
-  compoundDepth: number,
   issues: WorkflowValidationIssue[],
 ): void {
   const keys = new Set<string>();
@@ -76,7 +45,7 @@ function validateOutputFields(
     const fieldPath = `${path}.${field.key}`;
     if (keys.has(field.key)) issues.push(issue(fieldPath, "Output key must be unique within the node."));
     keys.add(field.key);
-    validateOutputField(field, fieldPath, compoundDepth, issues);
+    validateOutputField(field, fieldPath, issues);
   }
 }
 
@@ -184,16 +153,16 @@ export function validateWorkflowDefinition(
     requiredText(node.title, `${path}.title`, "Node title", issues);
     requiredText(node.goal, `${path}.goal`, "Node goal", issues);
     if (node.outputs.length === 0) issues.push(issue(`${path}.outputs`, "Nodes require at least one output field."));
-    validateOutputFields(node.outputs, `${path}.outputs`, 0, issues);
+    validateOutputFields(node.outputs, `${path}.outputs`, issues);
 
-    const inputKeys = new Set<string>();
+    const inputReferences = new Set<string>();
     for (const input of node.inputs) {
-      const inputPath = `${path}.inputs.${input.key}`;
-      if (inputKeys.has(input.key)) issues.push(issue(inputPath, "Node input keys must be unique."));
-      inputKeys.add(input.key);
-      validateKey(input.key, `${inputPath}.key`, issues);
-      requiredText(input.name, `${inputPath}.name`, "Input name", issues);
-      requiredText(input.description, `${inputPath}.description`, "Input description", issues);
+      const inputPath = input.source === "workflow"
+        ? `${path}.inputs.workflow.${input.workflowInputKey}`
+        : `${path}.inputs.node.${input.nodeId}.${input.outputKey}`;
+      const reference = input.source === "workflow" ? `workflow:${input.workflowInputKey}` : `node:${input.nodeId}:${input.outputKey}`;
+      if (inputReferences.has(reference)) issues.push(issue(inputPath, "Node input references must be unique."));
+      inputReferences.add(reference);
       if (input.source === "workflow" && !workflowInputKeys.has(input.workflowInputKey)) {
         issues.push(issue(`${inputPath}.workflowInputKey`, "Referenced workflow input does not exist."));
       }

@@ -39,10 +39,6 @@ function validDefinition(): WorkflowDefinition {
         instructions: ["Preserve facts."],
         constraints: ["Do not invent metrics."],
         inputs: [{
-          key: "source",
-          name: "Source resume",
-          description: "Original resume.",
-          required: true,
           source: "workflow",
           workflowInputKey: "source",
         }],
@@ -62,19 +58,13 @@ function validDefinition(): WorkflowDefinition {
         maxRevisions: 2,
         onReject: "revise",
         inputs: [{
-          key: "resume",
-          name: "Draft resume",
-          description: "Resume to review.",
-          required: true,
           source: "node",
           nodeId: "draft",
           outputKey: "resume",
         }],
         outputs: [
           field("verdict"),
-          field("criteriaResults", "list", { item: field("criterion", "object", {
-            fields: [field("key"), field("passed", "boolean"), field("feedback")],
-          }) }),
+          field("criteriaResults", "list"),
           field("feedback"),
         ],
         acceptanceCriteria: ["Every criterion has a result."],
@@ -110,18 +100,24 @@ describe("validateWorkflowDefinition", () => {
     };
 
     expect(validateWorkflowDefinition(definition)).toContainEqual({
-      path: "nodes.review.inputs.resume.outputKey",
+      path: "nodes.review.inputs.node.draft.missing.outputKey",
       message: "Referenced node output does not exist.",
+    });
+  });
+
+  test("reports duplicate references without requiring node-local input keys", () => {
+    const definition = validDefinition();
+    definition.nodes[0]!.inputs.push({ source: "workflow", workflowInputKey: "source" });
+
+    expect(validateWorkflowDefinition(definition)).toContainEqual({
+      path: "nodes.draft.inputs.workflow.source",
+      message: "Node input references must be unique.",
     });
   });
 
   test("rejects cyclic node input references", () => {
     const definition = validDefinition();
     definition.nodes[0]!.inputs.push({
-      key: "reviewFeedback",
-      name: "Review feedback",
-      description: "Feedback from review.",
-      required: true,
       source: "node",
       nodeId: "review",
       outputKey: "feedback",
@@ -130,20 +126,6 @@ describe("validateWorkflowDefinition", () => {
     expect(validateWorkflowDefinition(definition)).toContainEqual({
       path: "nodes",
       message: "Node input references must form an acyclic graph.",
-    });
-  });
-
-  test("limits compound output schemas to two levels", () => {
-    const definition = validDefinition();
-    definition.nodes[0]!.outputs = [field("outer", "object", {
-      fields: [field("middle", "list", {
-        item: field("inner", "object", { fields: [field("value")] }),
-      })],
-    })];
-
-    expect(validateWorkflowDefinition(definition)).toContainEqual({
-      path: "nodes.draft.outputs.outer.fields.middle.item.inner",
-      message: "Object and list outputs may be nested at most two levels.",
     });
   });
 

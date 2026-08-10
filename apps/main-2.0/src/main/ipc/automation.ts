@@ -356,6 +356,10 @@ export function registerAutomationIpc({
     const request = workflowCoreRunSchema.parse(value);
     return service.workflowCore.startRun(request.workflowId, request.inputs);
   });
+  ready(AUTOMATION_CHANNELS.workflowRunPause, (value: unknown) =>
+    service.workflowCore.pauseRun(workflowCoreRunIdSchema.parse(value).runId));
+  ready(AUTOMATION_CHANNELS.workflowRunResume, (value: unknown) =>
+    service.workflowCore.resumeRun(workflowCoreRunIdSchema.parse(value).runId));
   ready(AUTOMATION_CHANNELS.workflowRunCancel, (value: unknown) =>
     service.workflowCore.cancelRun(workflowCoreRunIdSchema.parse(value).runId));
   ready(AUTOMATION_CHANNELS.workflowNodeRetry, (value: unknown) => {
@@ -447,8 +451,11 @@ export function registerAutomationIpc({
 
   const unsubscribeSnapshot = service.subscribe((snapshot) => send(AUTOMATION_CHANNELS.snapshotChanged, snapshot));
   const unsubscribeChanges = service.subscribeChanges((change) => send(AUTOMATION_CHANNELS.change, change));
+  const unsubscribeWorkflowRunStream = service.subscribeWorkflowRunStream((event) =>
+    send(AUTOMATION_CHANNELS.workflowRunStream, event));
   return () => {
     unsubscribeSnapshot();
     unsubscribeChanges();
+    unsubscribeWorkflowRunStream();
   };
 }

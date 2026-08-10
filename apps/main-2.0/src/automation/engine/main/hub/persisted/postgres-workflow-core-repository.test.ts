@@ -47,6 +47,7 @@ function run(status: WorkflowRun["status"] = "completed"): WorkflowRun {
         finishedAt: status === "running" ? undefined : 40,
       },
     },
+    events: [{ sequence: 1, type: "run_started", timestamp: 30 }],
     startedAt: 30,
     finishedAt: status === "running" ? undefined : 40,
   };
@@ -63,6 +64,25 @@ describe("PostgresWorkflowCoreRepository", () => {
 
     await expect(repository.listDefinitions()).resolves.toEqual([definition()]);
     await expect(repository.getRun("run")).resolves.toEqual(run());
+    await database.close();
+  });
+
+  test("strips nested output schema data at the persistence boundary", async () => {
+    const database = new PostgresDatabase(new PGliteTestPool(), { migrationLock: false, migrations: POSTGRES_MIGRATIONS });
+    await database.initialize();
+    const repository = new PostgresWorkflowCoreRepository(database);
+    const value = definition();
+    Object.assign(value.nodes[0]!.outputs[0]!, {
+      fields: [{ key: "nested", name: "Nested", description: "Legacy nested field", type: "text", required: true }],
+      item: { key: "item", name: "Item", description: "Legacy item", type: "text", required: true },
+    });
+    Object.assign(value.nodes[0]!, {
+      inputs: [{ key: "workspace", name: "Workspace", description: "Legacy node-local workspace", required: true, source: "workspace", path: "." }],
+    });
+
+    await repository.saveDefinition(value);
+
+    await expect(repository.getDefinition(value.id)).resolves.toEqual(definition());
     await database.close();
   });
 

@@ -1,5 +1,5 @@
 import type { PostgresDatabase, PostgresQueryable } from "../../../../../core/postgres/database";
-import type { WorkflowDefinition, WorkflowNodeRun, WorkflowRun } from "../../../shared/workflow/model";
+import type { WorkflowDefinition, WorkflowNodeInput, WorkflowNodeRun, WorkflowRun, WorkflowRunEvent } from "../../../shared/workflow/model";
 import type { WorkflowEngineStore } from "../../workflows/workflow-engine";
 import { asRecord } from "./persisted-values";
 import { jsonParameter, postgresJson, postgresTime } from "./postgres-values";
@@ -9,7 +9,29 @@ function optionalTime(value: unknown): number | undefined {
 }
 
 function mapDefinition(value: unknown): WorkflowDefinition {
-  return structuredClone(postgresJson(value) as WorkflowDefinition);
+  const definition = structuredClone(postgresJson(value) as WorkflowDefinition);
+  return {
+    ...definition,
+    nodes: definition.nodes.map((node) => ({
+      ...node,
+      inputs: node.inputs.flatMap<WorkflowNodeInput>((input) => {
+        if (input.source === "workflow" && typeof input.workflowInputKey === "string") {
+          return [{ source: "workflow" as const, workflowInputKey: input.workflowInputKey }];
+        }
+        if (input.source === "node" && typeof input.nodeId === "string" && typeof input.outputKey === "string") {
+          return [{ source: "node" as const, nodeId: input.nodeId, outputKey: input.outputKey }];
+        }
+        return [];
+      }),
+      outputs: node.outputs.map((output) => ({
+        key: output.key,
+        name: output.name,
+        description: output.description,
+        type: output.type,
+        required: output.required,
+      })),
+    } as typeof node)),
+  };
 }
 
 function mapNodeRun(value: unknown): WorkflowNodeRun {
@@ -47,6 +69,7 @@ export class PostgresWorkflowCoreRepository implements WorkflowEngineStore {
   }
 
   async saveDefinition(definition: WorkflowDefinition): Promise<void> {
+    const flatDefinition = mapDefinition(definition);
     await this.database.query(
       `insert into agent_recall.workflows (id, name, description, definition, created_at, updated_at)
        values ($1, $2, $3, $4::jsonb, $5, $6)
@@ -55,7 +78,7 @@ export class PostgresWorkflowCoreRepository implements WorkflowEngineStore {
          description = excluded.description,
          definition = excluded.definition,
          updated_at = excluded.updated_at`,
-      [definition.id, definition.name, definition.description, jsonParameter(definition), new Date(definition.createdAt), new Date(definition.updatedAt)],
+      [flatDefinition.id, flatDefinition.name, flatDefinition.description, jsonParameter(flatDefinition), new Date(flatDefinition.createdAt), new Date(flatDefinition.updatedAt)],
     );
   }
 
@@ -78,14 +101,15 @@ export class PostgresWorkflowCoreRepository implements WorkflowEngineStore {
   async saveRun(run: WorkflowRun): Promise<void> {
     await this.database.transaction(async (database) => {
       await database.query(
-        `insert into agent_recall.workflow_runs (id, workflow_id, definition, inputs, status, started_at, finished_at)
-         values ($1, $2, $3::jsonb, $4::jsonb, $5, $6, $7)
+        `insert into agent_recall.workflow_runs (id, workflow_id, definition, inputs, status, events, started_at, finished_at)
+         values ($1, $2, $3::jsonb, $4::jsonb, $5, $6::jsonb, $7, $8)
          on conflict (id) do update set
            definition = excluded.definition,
            inputs = excluded.inputs,
            status = excluded.status,
+           events = excluded.events,
            finished_at = excluded.finished_at`,
-        [run.id, run.workflowId, jsonParameter(run.definition), jsonParameter(run.inputs), run.status, new Date(run.startedAt), run.finishedAt === undefined ? null : new Date(run.finishedAt)],
+        [run.id, run.workflowId, jsonParameter(run.definition), jsonParameter(run.inputs), run.status, jsonParameter(run.events), new Date(run.startedAt), run.finishedAt === undefined ? null : new Date(run.finishedAt)],
       );
       await database.query("delete from agent_recall.workflow_node_runs where run_id = $1", [run.id]);
       for (const nodeRun of Object.values(run.nodeRuns)) await this.insertNodeRun(database, run.id, nodeRun);
@@ -105,9 +129,16 @@ export class PostgresWorkflowCoreRepository implements WorkflowEngineStore {
       );
       await database.query(
         `update agent_recall.workflow_runs
-         set status = 'failed', finished_at = $1
+         set status = 'failed',
+             finished_at = $1,
+             events = events || jsonb_build_array(jsonb_build_object(
+               'sequence', jsonb_array_length(events) + 1,
+               'type', 'run_failed',
+               'timestamp', $2::bigint,
+               'errorCode', 'app_restarted'
+             ))
          where status in ('running', 'waiting')`,
-        [finishedAt],
+        [finishedAt, this.now()],
       );
     });
   }
@@ -124,6 +155,7 @@ export class PostgresWorkflowCoreRepository implements WorkflowEngineStore {
       inputs: postgresJson(row.inputs) as Record<string, unknown>,
       status: String(row.status) as WorkflowRun["status"],
       nodeRuns: Object.fromEntries(nodeRuns.map((nodeRun) => [nodeRun.nodeId, nodeRun])),
+      events: postgresJson(row.events) as WorkflowRunEvent[],
       startedAt: postgresTime(row.started_at),
     };
     const finishedAt = optionalTime(row.finished_at);

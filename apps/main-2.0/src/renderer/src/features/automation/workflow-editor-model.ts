@@ -10,7 +10,6 @@ export interface WorkflowConnection {
   fromNodeId: string;
   fromOutputKey: string;
   toNodeId: string;
-  toInputKey: string;
 }
 
 const resultOutput = (): WorkflowOutputField => ({
@@ -36,10 +35,6 @@ function createNode(
     title: kind === "agent" ? "Agent task" : kind === "script" ? "Script" : kind === "review" ? "Review" : "Approval",
     goal: kind === "approval" ? "Ask a person to make the decision." : "Describe what this node should accomplish.",
     inputs: previous ? [{
-      key: "upstream",
-      name: "Upstream result",
-      description: `Output from ${previous.title}`,
-      required: true,
       source: "node" as const,
       nodeId: previous.id,
       outputKey: previous.outputs[0]?.key ?? "result",
@@ -81,7 +76,6 @@ function createNode(
         description: "Result for each review criterion",
         type: "list",
         required: true,
-        item: { key: "criterion", name: "Criterion result", description: "One criterion result", type: "text", required: true },
       },
       { key: "feedback", name: "Feedback", description: "Specific revision feedback", type: "text", required: true },
     ],
@@ -114,6 +108,18 @@ export function createWorkflowDefinition(agentId: string, now = Date.now()): Wor
   };
 }
 
+export function createWorkflowFromTemplate(template: WorkflowDefinition, now = Date.now()): WorkflowDefinition {
+  const definition = structuredClone(template);
+  delete definition.isTemplate;
+  return {
+    ...definition,
+    id: `workflow_${now}`,
+    name: `${template.name} 副本`,
+    createdAt: now,
+    updatedAt: now,
+  };
+}
+
 export function addWorkflowNode(
   definition: WorkflowDefinition,
   kind: WorkflowNodeKind,
@@ -133,6 +139,5 @@ export function workflowConnections(definition: WorkflowDefinition): WorkflowCon
     fromNodeId: input.nodeId,
     fromOutputKey: input.outputKey,
     toNodeId: node.id,
-    toInputKey: input.key,
   }] : []));
 }

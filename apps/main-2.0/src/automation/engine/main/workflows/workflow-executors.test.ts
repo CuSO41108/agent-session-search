@@ -28,6 +28,7 @@ function run(): WorkflowRun {
     inputs: {},
     status: "running",
     nodeRuns: { agent: { nodeId: "agent", status: "running", attempt: 1 } },
+    events: [],
     startedAt: 1,
   };
 }
@@ -44,6 +45,37 @@ describe("workflow node executors", () => {
       prompt: expect.stringContaining("# Expected outputs"),
       outputs: agentNode.outputs,
     }));
+  });
+
+  test("agent executor separates readable Runtime steps at tool-call boundaries", async () => {
+    const onStream = vi.fn();
+    const invoke = vi.fn(async (input: { onEvent?: (event: { type: string; content?: string; name?: string }) => void }) => {
+      input.onEvent?.({ type: "meta", content: "internal setup" });
+      input.onEvent?.({ type: "delta", content: "正在检查仓库。" });
+      input.onEvent?.({ type: "tool_call", content: "rg --files", name: "Bash" });
+      input.onEvent?.({ type: "delta", content: "接下来读取配置。" });
+      input.onEvent?.({ type: "delta", content: "继续分析。" });
+      return { summary: "Ready" };
+    });
+    const executors = createWorkflowNodeExecutors({
+      agentInvoker: { invoke } as unknown as WorkflowAgentInvoker,
+      onStream,
+    } as never);
+
+    await expect(executors.agent.execute({
+      run: run(),
+      node: agentNode,
+      resolvedInputs: {},
+      signal: new AbortController().signal,
+    })).resolves.toEqual({ summary: "Ready" });
+
+    expect(onStream).toHaveBeenCalledTimes(4);
+    expect(onStream.mock.calls.map(([event]) => event)).toEqual([
+      expect.objectContaining({ runId: "run", nodeId: "agent", type: "started" }),
+      expect.objectContaining({ runId: "run", nodeId: "agent", type: "delta", content: "正在检查仓库。" }),
+      expect.objectContaining({ runId: "run", nodeId: "agent", type: "delta", content: "\n\n接下来读取配置。" }),
+      expect.objectContaining({ runId: "run", nodeId: "agent", type: "delta", content: "继续分析。" }),
+    ]);
   });
 
   test("script executor authorizes elevated permissions and passes inputs as stdin JSON", async () => {

@@ -33,6 +33,23 @@ describe("WorkflowCoreService", () => {
     expect(() => parseWorkflowAgentOutputs("[]")).toThrow("one JSON object");
   });
 
+  test("parses one fenced JSON object surrounded by Agent commentary", () => {
+    const content = [
+      "I inspected the repository and compiled the result.",
+      "",
+      "```json",
+      '{"architecture":"Electron app","constraints":["Node 22"]}',
+      "```",
+      "",
+      "Provide a requirement for a more targeted analysis.",
+    ].join("\n");
+
+    expect(parseWorkflowAgentOutputs(content)).toEqual({
+      architecture: "Electron app",
+      constraints: ["Node 22"],
+    });
+  });
+
   test("saves valid definitions and exposes a fresh snapshot", async () => {
     const definitions: WorkflowDefinition[] = [];
     const repository = {
@@ -72,7 +89,7 @@ describe("WorkflowCoreService", () => {
 
   test("starts the saved frozen definition through the engine", async () => {
     const saved = definition();
-    const completed = { id: "run", workflowId: saved.id, definition: saved, inputs: {}, status: "completed", nodeRuns: {}, startedAt: 1, finishedAt: 2 } satisfies WorkflowRun;
+    const completed = { id: "run", workflowId: saved.id, definition: saved, inputs: {}, status: "completed", nodeRuns: {}, events: [], startedAt: 1, finishedAt: 2 } satisfies WorkflowRun;
     const start = async (value: WorkflowDefinition, inputs: Record<string, unknown>) => {
       expect(value).toEqual(saved);
       expect(inputs).toEqual({});
@@ -113,5 +130,46 @@ describe("WorkflowCoreService", () => {
     await service.ensureDefinitions([definition(), { ...definition(), id: "new-workflow" }]);
 
     expect(saved.map((item) => item.id)).toEqual(["new-workflow"]);
+  });
+
+  test("upgrades bundled definitions to read-only templates and preserves their original creation time", async () => {
+    const existing = { ...definition(), name: "Previously seeded", createdAt: 9 };
+    const saved: WorkflowDefinition[] = [];
+    const service = new WorkflowCoreService({
+      repository: {
+        listDefinitions: async () => [existing],
+        listRuns: async () => [],
+        getDefinition: async () => existing,
+        saveDefinition: async (value) => { saved.push(value); },
+        deleteDefinition: async () => undefined,
+        markInterruptedRunsFailed: async () => undefined,
+      },
+      engine: {} as WorkflowEngine,
+      configuredAgentIds: () => new Set(["agent"]),
+    });
+
+    await service.ensureDefinitions([{ ...definition(), isTemplate: true }]);
+
+    expect(saved).toEqual([{ ...definition(), isTemplate: true, createdAt: 9 }]);
+  });
+
+  test("does not delete read-only templates", async () => {
+    let deleted = false;
+    const template = { ...definition(), isTemplate: true };
+    const service = new WorkflowCoreService({
+      repository: {
+        listDefinitions: async () => [template],
+        listRuns: async () => [],
+        getDefinition: async () => template,
+        saveDefinition: async () => undefined,
+        deleteDefinition: async () => { deleted = true; },
+        markInterruptedRunsFailed: async () => undefined,
+      },
+      engine: {} as WorkflowEngine,
+      configuredAgentIds: () => new Set(["agent"]),
+    });
+
+    await expect(service.deleteDefinition(template.id)).rejects.toThrow("read-only");
+    expect(deleted).toBe(false);
   });
 });

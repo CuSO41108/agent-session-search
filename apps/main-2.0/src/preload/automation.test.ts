@@ -46,6 +46,8 @@ describe("createAutomationApi", () => {
     await api.getWorkflowCore();
     await api.saveWorkflowDefinition(definition);
     await api.startWorkflowRun("workflow", { source: "resume" });
+    await api.pauseWorkflowRun("run");
+    await api.resumeWorkflowRun("run");
     await api.retryWorkflowNode("run", "node");
     await api.resolveWorkflowApproval("run", "approval", { decision: "yes" });
     await api.cancelWorkflowRun("run");
@@ -55,6 +57,8 @@ describe("createAutomationApi", () => {
       [AUTOMATION_CHANNELS.workflowCoreGet, undefined],
       [AUTOMATION_CHANNELS.workflowDefinitionSave, definition],
       [AUTOMATION_CHANNELS.workflowRunStart, { workflowId: "workflow", inputs: { source: "resume" } }],
+      [AUTOMATION_CHANNELS.workflowRunPause, { runId: "run" }],
+      [AUTOMATION_CHANNELS.workflowRunResume, { runId: "run" }],
       [AUTOMATION_CHANNELS.workflowNodeRetry, { runId: "run", nodeId: "node" }],
       [AUTOMATION_CHANNELS.workflowApprovalResolve, { runId: "run", nodeId: "approval", outputs: { decision: "yes" } }],
       [AUTOMATION_CHANNELS.workflowRunCancel, { runId: "run" }],
@@ -102,6 +106,28 @@ describe("createAutomationApi", () => {
     unsubscribe();
 
     expect(ipc.removeListener).toHaveBeenCalledWith(AUTOMATION_CHANNELS.change, listener);
+  });
+
+  it("forwards Workflow Runtime stream events and removes the exact listener", () => {
+    const ipc = { invoke: vi.fn(), on: vi.fn(), removeListener: vi.fn() };
+    const api = createAutomationApi(ipc as never);
+    const callback = vi.fn();
+    const event = {
+      runId: "run-1",
+      nodeId: "agent-1",
+      type: "delta" as const,
+      content: "hello",
+      timestamp: 10,
+    };
+
+    const unsubscribe = api.onWorkflowRunStream(callback);
+    const listener = ipc.on.mock.calls[0]?.[1];
+    listener?.({}, event);
+
+    expect(ipc.on).toHaveBeenCalledWith(AUTOMATION_CHANNELS.workflowRunStream, listener);
+    expect(callback).toHaveBeenCalledWith(event);
+    unsubscribe();
+    expect(ipc.removeListener).toHaveBeenCalledWith(AUTOMATION_CHANNELS.workflowRunStream, listener);
   });
 
   it("maps the complete Evaluation API to prefixed channels", async () => {

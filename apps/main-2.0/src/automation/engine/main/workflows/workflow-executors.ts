@@ -5,7 +5,9 @@ import type {
   WorkflowScriptNode,
   WorkflowScriptPermission,
   WorkflowScriptRuntime,
+  WorkflowRunStreamEvent,
 } from "../../shared/workflow/model";
+import type { WorkflowAgentEvent } from "../../shared/types";
 import { assembleWorkflowNodePrompt } from "../../shared/workflow/prompt";
 import type { WorkflowNodeExecutor } from "./workflow-engine";
 
@@ -16,6 +18,7 @@ export interface WorkflowAgentInvoker {
     agentId: string;
     prompt: string;
     outputs: WorkflowOutputField[];
+    onEvent?: (event: WorkflowAgentEvent) => void;
     signal: AbortSignal;
   }): Promise<Record<string, unknown>>;
 }
@@ -47,6 +50,7 @@ export interface WorkflowNodeExecutorDependencies {
   agentInvoker: WorkflowAgentInvoker;
   scriptAuthorizer?: WorkflowScriptAuthorizer;
   scriptRunner?: WorkflowScriptRunner;
+  onStream?: (event: WorkflowRunStreamEvent) => void;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -55,19 +59,41 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function createAgentExecutor<N extends WorkflowAgentNode | WorkflowReviewNode>(
   agentInvoker: WorkflowAgentInvoker,
+  onStream?: (event: WorkflowRunStreamEvent) => void,
 ): WorkflowNodeExecutor<N> {
   return {
     async execute({ run, node, resolvedInputs, signal }) {
+      let hasStreamedText = false;
+      let paragraphBreakPending = false;
+      onStream?.({ runId: run.id, nodeId: node.id, type: "started", timestamp: Date.now() });
       return agentInvoker.invoke({
         runId: run.id,
         nodeId: node.id,
         agentId: node.agentId,
         prompt: assembleWorkflowNodePrompt({
+          definition: run.definition,
           node,
           resolvedInputs,
           revisionFeedback: run.nodeRuns[node.id]?.revisionFeedback,
         }),
         outputs: structuredClone(node.outputs),
+        onEvent: (event) => {
+          if (event.type === "tool_call") {
+            if (hasStreamedText) paragraphBreakPending = true;
+            return;
+          }
+          if (event.type !== "delta" || !event.content) return;
+          const content = `${paragraphBreakPending ? "\n\n" : ""}${event.content}`;
+          paragraphBreakPending = false;
+          hasStreamedText = true;
+          onStream?.({
+            runId: run.id,
+            nodeId: node.id,
+            type: "delta",
+            content,
+            timestamp: Date.now(),
+          });
+        },
         signal,
       });
     },
@@ -126,8 +152,8 @@ export function createWorkflowNodeExecutors(dependencies: WorkflowNodeExecutorDe
   script: WorkflowNodeExecutor<WorkflowScriptNode>;
 } {
   return {
-    agent: createAgentExecutor(dependencies.agentInvoker),
-    review: createAgentExecutor(dependencies.agentInvoker),
+    agent: createAgentExecutor(dependencies.agentInvoker, dependencies.onStream),
+    review: createAgentExecutor(dependencies.agentInvoker, dependencies.onStream),
     script: createScriptExecutor(dependencies.scriptRunner, dependencies.scriptAuthorizer),
   };
 }

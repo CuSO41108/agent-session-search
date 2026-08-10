@@ -40,18 +40,10 @@ function validateFieldValue(
     return;
   }
   if (field.type === "object") {
-    if (!isRecord(value)) {
-      issues.push(issue(path, "Expected object output."));
-      return;
-    }
-    validateFields(field.fields ?? [], value, path, issues);
+    if (!isRecord(value)) issues.push(issue(path, "Expected object output."));
     return;
   }
-  if (!Array.isArray(value)) {
-    issues.push(issue(path, "Expected list output."));
-    return;
-  }
-  if (field.item) value.forEach((item, index) => validateFieldValue(field.item!, item, `${path}.${index}`, issues));
+  if (!Array.isArray(value)) issues.push(issue(path, "Expected list output."));
 }
 
 function validateFields(
@@ -82,4 +74,3 @@ export function validateWorkflowNodeOutputs(node: WorkflowNode, outputs: unknown
   }
   return issues;
 }
-

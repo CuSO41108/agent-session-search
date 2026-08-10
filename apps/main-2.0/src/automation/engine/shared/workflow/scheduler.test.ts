@@ -17,10 +17,6 @@ function node(id: string, dependencies: string[] = []): WorkflowAgentNode {
     instructions: [],
     constraints: [],
     inputs: dependencies.map((dependency) => ({
-      key: dependency,
-      name: dependency,
-      description: dependency,
-      required: true,
       source: "node",
       nodeId: dependency,
       outputKey: "value",
@@ -52,6 +48,7 @@ function run(statuses: Record<string, WorkflowNodeRun["status"]>): WorkflowRun {
     inputs: {},
     status: "running",
     nodeRuns: Object.fromEntries(Object.entries(statuses).map(([id, status]) => [id, nodeRun(id, status)])),
+    events: [],
     startedAt: 1,
   };
 }

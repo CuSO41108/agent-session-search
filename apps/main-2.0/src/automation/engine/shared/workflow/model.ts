@@ -8,18 +8,13 @@ export interface WorkflowInputDefinition {
   required: boolean;
 }
 
-interface WorkflowNodeInputBase {
-  key: string;
-  name: string;
-  description: string;
-  required: boolean;
-}
-
 export type WorkflowNodeInput =
-  | (WorkflowNodeInputBase & { source: "workflow"; workflowInputKey: string })
-  | (WorkflowNodeInputBase & { source: "workspace"; path?: string })
-  | (WorkflowNodeInputBase & { source: "node"; nodeId: string; outputKey: string })
-  | (WorkflowNodeInputBase & { source: "literal"; value: unknown });
+  | { source: "workflow"; workflowInputKey: string }
+  | { source: "node"; nodeId: string; outputKey: string };
+
+export function workflowNodeInputKey(input: WorkflowNodeInput): string {
+  return input.source === "workflow" ? input.workflowInputKey : `${input.nodeId}.${input.outputKey}`;
+}
 
 export interface WorkflowOutputField {
   key: string;
@@ -27,8 +22,6 @@ export interface WorkflowOutputField {
   description: string;
   type: WorkflowValueType;
   required: boolean;
-  fields?: WorkflowOutputField[];
-  item?: WorkflowOutputField;
 }
 
 export interface WorkflowNodeBase {
@@ -39,6 +32,7 @@ export interface WorkflowNodeBase {
   inputs: WorkflowNodeInput[];
   outputs: WorkflowOutputField[];
   acceptanceCriteria: string[];
+  position?: { x: number; y: number };
 }
 
 export interface WorkflowAgentNode extends WorkflowNodeBase {
@@ -94,14 +88,55 @@ export interface WorkflowDefinition {
   id: string;
   name: string;
   description: string;
+  isTemplate?: boolean;
   inputs: WorkflowInputDefinition[];
   nodes: WorkflowNode[];
   createdAt: number;
   updatedAt: number;
 }
 
-export type WorkflowRunStatus = "running" | "waiting" | "completed" | "failed" | "cancelled";
+export type WorkflowRunStatus = "running" | "paused" | "waiting" | "completed" | "failed" | "cancelled";
 export type WorkflowNodeRunStatus = "pending" | "ready" | "running" | "waiting" | "completed" | "failed" | "cancelled";
+
+export type WorkflowRunEventType =
+  | "run_started"
+  | "run_paused"
+  | "run_resumed"
+  | "run_completed"
+  | "run_failed"
+  | "run_cancelled"
+  | "node_started"
+  | "node_waiting"
+  | "node_completed"
+  | "node_failed"
+  | "node_retried"
+  | "approval_resolved"
+  | "review_revised";
+
+export interface WorkflowRunEvent {
+  sequence: number;
+  type: WorkflowRunEventType;
+  timestamp: number;
+  nodeId?: string;
+  attempt?: number;
+  durationMs?: number;
+  errorCode?: string;
+}
+
+export type WorkflowRunStreamEvent =
+  | {
+      runId: string;
+      nodeId: string;
+      type: "started";
+      timestamp: number;
+    }
+  | {
+      runId: string;
+      nodeId: string;
+      type: "delta";
+      content: string;
+      timestamp: number;
+    };
 
 export interface WorkflowRunError {
   code: string;
@@ -128,6 +163,7 @@ export interface WorkflowRun {
   inputs: Record<string, unknown>;
   status: WorkflowRunStatus;
   nodeRuns: Record<string, WorkflowNodeRun>;
+  events: WorkflowRunEvent[];
   startedAt: number;
   finishedAt?: number;
 }
