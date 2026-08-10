@@ -80,6 +80,10 @@ export class WorkflowCoreService {
   async deleteDefinition(workflowId: string): Promise<void> {
     const definition = await this.dependencies.repository.getDefinition(workflowId);
     if (definition?.isTemplate) throw new Error("Workflow templates are read-only.");
+    const runs = await this.dependencies.repository.listRuns(workflowId);
+    if (runs.some((run) => run.status === "running" || run.status === "paused" || run.status === "waiting")) {
+      throw new Error("Stop the active Workflow run before deleting it.");
+    }
     await this.dependencies.repository.deleteDefinition(workflowId);
   }
 

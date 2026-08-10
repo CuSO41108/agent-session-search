@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { addWorkflowNode, createWorkflowDefinition, createWorkflowFromTemplate, workflowConnections } from "./workflow-editor-model";
+import { addWorkflowNode, createWorkflowCopy, createWorkflowDefinition, workflowConnections } from "./workflow-editor-model";
 
 describe("structured Workflow editor model", () => {
   test("creates a useful Agent node with described structured output", () => {
@@ -29,13 +29,24 @@ describe("structured Workflow editor model", () => {
     }]);
   });
 
-  test("creates an editable Workflow copy without changing the template", () => {
+  test("creates an editable Workflow copy without changing the source", () => {
     const template = { ...createWorkflowDefinition("agent-1", 10), id: "template", name: "Template", isTemplate: true };
 
-    const copy = createWorkflowFromTemplate(template, 20);
+    const copy = createWorkflowCopy(template, 20);
 
     expect(copy).toMatchObject({ id: "workflow_20", name: "Template 副本", createdAt: 20, updatedAt: 20 });
     expect(copy.isTemplate).toBeUndefined();
     expect(template).toMatchObject({ id: "template", name: "Template", isTemplate: true });
+  });
+
+  test("clones a personal Workflow with a new identity", () => {
+    const personal = { ...createWorkflowDefinition("agent-1", 10), id: "personal", name: "Personal" };
+
+    const copy = createWorkflowCopy(personal, 20);
+
+    expect(copy).toMatchObject({ id: "workflow_20", name: "Personal 副本", createdAt: 20, updatedAt: 20 });
+    expect(copy.nodes).toEqual(personal.nodes);
+    expect(copy.nodes).not.toBe(personal.nodes);
+    expect(personal).toMatchObject({ id: "personal", name: "Personal" });
   });
 });
