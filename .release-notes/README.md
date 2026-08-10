@@ -1,6 +1,6 @@
 # Release note format
 
-Every independent development branch adds exactly one Markdown file in this directory.
+Every independent development branch with user-visible changes adds exactly one Markdown file in this directory. A branch may omit it only when every changed file is limited to `.github/**`, `AGENTS.md`, this README, or the release-note checker and its tests. Mixing any other path into the branch restores the exactly-one requirement.
 
 ```markdown
 # 简短的用户可见标题

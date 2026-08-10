@@ -78,7 +78,7 @@ import { reduceIndexFeedback } from "./index-status-feedback";
 import { readInitialTheme, THEME_STORAGE_KEY, type ThemeMode } from "./theme";
 import {
   MESSAGE_FONT_SIZE_STORAGE_KEY,
-  messageFontSizeCss,
+  applyMessageFontSize,
   readInitialMessageFontSize,
   type MessageFontSizeScale,
 } from "./message-font-size";
@@ -1070,7 +1070,9 @@ export function App(): ReactElement {
   }, [language]);
 
   useLayoutEffect(() => {
-    document.documentElement.style.setProperty("--message-font-size", messageFontSizeCss(messageFontSize));
+    applyMessageFontSize(messageFontSize, (factor) => {
+      void window.sessionSearch.setInterfaceZoomFactor(factor);
+    });
     window.localStorage.setItem(MESSAGE_FONT_SIZE_STORAGE_KEY, messageFontSize);
   }, [messageFontSize]);
 
