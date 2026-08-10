@@ -503,7 +503,7 @@ export function SettingsDialog({
                           <div className="connection-diagnostics">
                             <div className="connection-diagnostics-head">
                               <span>{report.summary}</span>
-                              <time>{formatRelativeTime(report.checkedAt)}</time>
+                              <time>{formatRelativeTime(report.checkedAt, language)}</time>
                             </div>
                             <div className="connection-diagnostic-list">
                               {report.checks.map((check) => (

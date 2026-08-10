@@ -233,7 +233,10 @@ export function DetailPanel({
     : turns.reduce((total, turn) => total + turn.spanCount, 0);
   const detailMeta = [
     session.projectPath || l("No project", "无项目"),
-    new Date(session.timestamp).toLocaleString(),
+    new Date(session.timestamp).toLocaleString(
+      language === "zh" ? "zh-CN" : "en-US",
+      language === "zh" ? { hourCycle: "h23" } : undefined,
+    ),
     l(`${session.messageCount} messages`, `${session.messageCount} 条消息`),
     ...(hasTokenUsage(session.tokenUsage) ? [l(`${formatTokenCount(session.tokenUsage.totalTokens)} tokens`, `${formatTokenCount(session.tokenUsage.totalTokens)} token`)] : []),
     ...(traceCount > 0 ? [l(`${traceCount} trace events`, `${traceCount} 条轨迹`)] : []),
@@ -931,7 +934,7 @@ function TraceEventBlock({ event, language, timelineKey }: { event: SessionTrace
           {event.title}
           <span className="trace-status-label">{traceStatusLabel(event, language)}</span>
         </strong>
-        <span>{formatMessageTime(event.timestamp)}</span>
+        <span>{formatMessageTime(event.timestamp, language)}</span>
       </summary>
       <div className="trace-meta">
         {event.eventType ? <span>{event.eventType}</span> : null}

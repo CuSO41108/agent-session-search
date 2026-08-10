@@ -175,7 +175,7 @@ function SessionSummaryButton({
       <span className="subagent-session-meta">
         {source} · {session.environmentLabel} ·{" "}
         {l(`${session.messageCount} messages`, `${session.messageCount} 条消息`)} ·{" "}
-        {formatRelativeTime(session.lastActivityAt)}
+        {formatRelativeTime(session.lastActivityAt, language)}
       </span>
       {session.aiSummary ? <span className="subagent-session-summary">{session.aiSummary}</span> : null}
     </button>

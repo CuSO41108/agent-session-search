@@ -297,7 +297,7 @@ function TurnSpanBlock({
           </span>
           <span className="msg-time">
             {elapsed ? <span>{elapsed}</span> : null}
-            {span.startedAt ? <span>{formatMessageTime(span.startedAt)}</span> : null}
+            {span.startedAt ? <span>{formatMessageTime(span.startedAt, language)}</span> : null}
           </span>
         </span>
       </summary>
@@ -510,7 +510,7 @@ export function TurnAccordion({
               <span className="turn-card-copy">
                 <span className="turn-card-eyebrow">
                   {turnTitle(turn, language)}
-                  {turn.startedAt ? <span>{formatMessageTime(turn.startedAt)}</span> : null}
+                  {turn.startedAt ? <span>{formatMessageTime(turn.startedAt, language)}</span> : null}
                 </span>
                 <strong>
                   {highlightTerms.length > 0
