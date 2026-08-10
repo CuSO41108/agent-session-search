@@ -17,7 +17,7 @@ import { agentRecallAutomationService } from "../../../../automation/engine/rend
 import type { LanguageMode } from "../../language";
 import { localize } from "../../language";
 import { useAutomationStoreSnapshot } from "./automation-provider";
-import { addWorkflowNode, createWorkflowDefinition, createWorkflowFromTemplate, type WorkflowNodeKind } from "./workflow-editor-model";
+import { addWorkflowNode, createWorkflowCopy, createWorkflowDefinition, type WorkflowNodeKind } from "./workflow-editor-model";
 import { WorkflowGraphCanvas } from "./workflow-graph-canvas";
 import { reduceWorkflowRunStream, workflowRunStreamKey, type WorkflowRunStreamState } from "./workflow-run-stream";
 
@@ -309,6 +309,7 @@ export function WorkflowFeaturePage({ language }: { language: LanguageMode; glob
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
   const [runStreams, setRunStreams] = useState<WorkflowRunStreamState>({});
+  const [personalMenu, setPersonalMenu] = useState<{ definitionId: string; x: number; y: number }>();
 
   const load = useCallback(async (preferId?: string) => {
     const snapshot = await api.getWorkflowCore(preferId);
@@ -324,6 +325,16 @@ export function WorkflowFeaturePage({ language }: { language: LanguageMode; glob
   useEffect(() => api.onWorkflowRunStream((event) => {
     setRunStreams((current) => reduceWorkflowRunStream(current, event));
   }), [api]);
+  useEffect(() => {
+    if (!personalMenu) return undefined;
+    const close = (): void => setPersonalMenu(undefined);
+    window.addEventListener("click", close);
+    window.addEventListener("blur", close);
+    return () => {
+      window.removeEventListener("click", close);
+      window.removeEventListener("blur", close);
+    };
+  }, [personalMenu]);
   const activeRun = runs.filter((run) => run.workflowId === selectedId).sort((left, right) => right.startedAt - left.startedAt)[0];
   useEffect(() => {
     if (!activeRun || (activeRun.status !== "running" && activeRun.status !== "waiting")) return;
@@ -352,7 +363,7 @@ export function WorkflowFeaturePage({ language }: { language: LanguageMode; glob
     if (!draft?.isTemplate) return;
     setBusy(true); setError(undefined);
     try {
-      const saved = await api.saveWorkflowDefinition(createWorkflowFromTemplate(draft));
+      const saved = await api.saveWorkflowDefinition(createWorkflowCopy(draft));
       await load(saved.id);
     } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); } finally { setBusy(false); }
   };
@@ -389,13 +400,40 @@ export function WorkflowFeaturePage({ language }: { language: LanguageMode; glob
     finally { setBusy(false); }
   };
   const updateNode = (node: WorkflowNode): void => setDraft((current) => current ? { ...current, nodes: current.nodes.map((item) => item.id === node.id ? node : item) } : current);
+  const clonePersonalWorkflow = async (definition: WorkflowDefinition): Promise<void> => {
+    setPersonalMenu(undefined); setBusy(true); setError(undefined);
+    try {
+      const saved = await api.saveWorkflowDefinition(createWorkflowCopy(definition));
+      setDefinitions((current) => [saved, ...current]);
+      setSelectedId(saved.id); setDraft(saved); setSelectedNodeId(undefined); setDefinitionInspectorOpen(false); setMode("definition");
+    } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); } finally { setBusy(false); }
+  };
+  const deletePersonalWorkflow = async (definition: WorkflowDefinition): Promise<void> => {
+    setPersonalMenu(undefined);
+    if (!window.confirm(localize(language, `Delete ${definition.name}?`, `确定删除「${definition.name}」吗？`))) return;
+    setBusy(true); setError(undefined);
+    try {
+      await api.deleteWorkflowDefinition(definition.id);
+      const remaining = definitions.filter((item) => item.id !== definition.id);
+      setDefinitions(remaining);
+      if (selectedId === definition.id) {
+        const next = remaining.find((item) => !item.isTemplate) ?? remaining[0];
+        setSelectedId(next?.id); setDraft(next ? structuredClone(next) : undefined); setSelectedNodeId(undefined); setDefinitionInspectorOpen(false);
+      }
+    } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); } finally { setBusy(false); }
+  };
+  const menuDefinition = personalMenu ? personalDefinitions.find((definition) => definition.id === personalMenu.definitionId) : undefined;
 
   return <div className="automation-page automation-workflow-page workflow-core-page" data-page="workflows">
     <header className="app-page-head automation-page-head"><div><h2>Workflow</h2><p>{localize(language, "Build dependable automations from explicit inputs, nodes, and described outputs.", "用明确的输入、节点和带描述的输出构建可靠自动化。")}</p></div></header>
     <div className="workflow-core-shell">
       <aside className="workflow-core-list"><header><strong>Workflows</strong><button type="button" className="icon-btn" aria-label="New Workflow" onClick={() => { const next = createWorkflowDefinition(agents[0]?.id ?? ""); setDefinitions((current) => [next, ...current]); setDraft(next); setSelectedId(next.id); setSelectedNodeId(undefined); setDefinitionInspectorOpen(false); setMode("definition"); }}><Plus size={16} /></button></header>
-        <div>{templates.length > 0 ? <section className="workflow-core-list-group is-template"><header><span><LayoutTemplate size={11} /> 模板</span><small>{templates.length}</small></header>{templates.map((definition) => <button type="button" key={definition.id} className={definition.id === selectedId ? "is-active" : ""} onClick={() => selectDefinition(definition)}><strong>{definition.name}</strong><span>预览</span><small>{definition.description}</small></button>)}</section> : null}<section className="workflow-core-list-group"><header><span><UserRound size={11} /> 我的 Workflow</span><small>{personalDefinitions.length}</small></header>{personalDefinitions.length > 0 ? personalDefinitions.map((definition) => <button type="button" key={definition.id} className={definition.id === selectedId ? "is-active" : ""} onClick={() => selectDefinition(definition)}><strong>{definition.name}</strong><span>{definition.nodes.length} nodes</span><small>{definition.description}</small></button>) : <p>还没有自己的 Workflow</p>}</section></div>
+        <div>{templates.length > 0 ? <section className="workflow-core-list-group is-template"><header><span><LayoutTemplate size={11} /> 模板</span><small>{templates.length}</small></header>{templates.map((definition) => <button type="button" key={definition.id} className={definition.id === selectedId ? "is-active" : ""} onClick={() => selectDefinition(definition)}><strong>{definition.name}</strong><span>预览</span><small>{definition.description}</small></button>)}</section> : null}<section className="workflow-core-list-group"><header><span><UserRound size={11} /> 我的 Workflow</span><small>{personalDefinitions.length}</small></header>{personalDefinitions.length > 0 ? personalDefinitions.map((definition) => <button type="button" key={definition.id} className={definition.id === selectedId ? "is-active" : ""} onClick={() => selectDefinition(definition)} onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); setPersonalMenu({ definitionId: definition.id, x: event.clientX, y: event.clientY }); }}><strong>{definition.name}</strong><span>{definition.nodes.length} nodes</span><small>{definition.description}</small></button>) : <p>还没有自己的 Workflow</p>}</section></div>
       </aside>
+      {personalMenu && menuDefinition ? <div className="agent-context-menu workflow-core-context-menu" style={{ left: personalMenu.x, top: personalMenu.y }} onClick={(event) => event.stopPropagation()} onContextMenu={(event) => event.preventDefault()}>
+        <button type="button" className="agent-context-menu-item" disabled={busy} onClick={() => void clonePersonalWorkflow(menuDefinition)}><Copy size={13} /><span>{localize(language, "Clone", "克隆")}</span></button>
+        <button type="button" className="agent-context-menu-item danger" disabled={busy || runs.some((run) => run.workflowId === menuDefinition.id && (run.status === "running" || run.status === "paused" || run.status === "waiting"))} onClick={() => void deletePersonalWorkflow(menuDefinition)}><Trash2 size={13} /><span>{localize(language, "Delete", "删除")}</span></button>
+      </div> : null}
       {!draft ? <main className="workflow-core-empty">Create a Workflow to begin.</main> : <main className="workflow-core-main">
         <header className="workflow-core-toolbar"><div className="workflow-core-toolbar-leading"><button type="button" className="workflow-core-title" onClick={() => { if (isTemplate) return; setSelectedNodeId(undefined); setDefinitionInspectorOpen(true); }}><strong>{draft.name}</strong><span>{draft.nodes.length} nodes · {isTemplate ? "只读模板" : `${draft.inputs.length} inputs`}</span></button>{!isTemplate ? <div className="workflow-core-mode"><button type="button" className={mode === "definition" ? "is-active" : ""} onClick={() => setMode("definition")}>Definition</button><button type="button" className={mode === "run" ? "is-active" : ""} onClick={() => { setMode("run"); setDefinitionInspectorOpen(false); }}>Current run{activeRun ? ` · ${activeRun.status}` : ""}</button></div> : <span className="workflow-core-template-badge"><LayoutTemplate size={11} /> 模板预览</span>}</div><div className="workflow-core-toolbar-actions">
           {isTemplate ? <button type="button" className="send-btn compact" disabled={busy} onClick={() => void useTemplate()}><Copy size={13} /> 使用模板</button> : <>{mode === "definition" ? <button type="button" className="icon-btn" title="Workflow properties" aria-label="Workflow properties" onClick={() => { setSelectedNodeId(undefined); setDefinitionInspectorOpen(true); }}><Settings2 size={14} /></button> : null}<button type="button" className="control-btn compact" disabled={busy} onClick={() => void save()}><Save size={13} /> Save</button>{activeRun?.status === "running" ? <><button type="button" className="control-btn compact" disabled={busy} onClick={() => void changeRunState(() => api.pauseWorkflowRun(activeRun.id))}><Pause size={13} /> 暂停</button><button type="button" className="control-btn compact is-danger" disabled={busy} onClick={() => void changeRunState(() => api.cancelWorkflowRun(activeRun.id))}><Square size={12} /> 取消</button></> : activeRun?.status === "paused" ? <><button type="button" className="send-btn compact" disabled={busy} onClick={() => void changeRunState(() => api.resumeWorkflowRun(activeRun.id))}><Play size={13} /> 继续</button><button type="button" className="control-btn compact is-danger" disabled={busy} onClick={() => void changeRunState(() => api.cancelWorkflowRun(activeRun.id))}><Square size={12} /> 取消</button></> : activeRun?.status === "waiting" ? <button type="button" className="control-btn compact is-danger" disabled={busy} onClick={() => void changeRunState(() => api.cancelWorkflowRun(activeRun.id))}><Square size={12} /> 取消</button> : <button type="button" className="send-btn compact" disabled={busy || issues.length > 0} onClick={() => void start()}><GitBranch size={13} /> Run</button>}<button type="button" className="icon-btn" aria-label="Delete Workflow" onClick={() => { if (!window.confirm(`Delete ${draft.name}?`)) return; void api.deleteWorkflowDefinition(draft.id).then(() => { setDefinitions((current) => current.filter((item) => item.id !== draft.id)); setDraft(undefined); setSelectedId(undefined); }); }}><Trash2 size={14} /></button></>}
