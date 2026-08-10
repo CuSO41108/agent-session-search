@@ -174,4 +174,36 @@ describe("WorkflowFeaturePage live output", () => {
     expect(output.textContent).toContain("新增会话来源");
     expect(output.textContent).toContain("types.ts");
   });
+
+  it("checks the right-clicked Workflow before enabling deletion", async () => {
+    const selected = runningWorkflow();
+    selected.definition.id = "workflow-a";
+    selected.definition.name = "Workflow A";
+    selected.run.workflowId = selected.definition.id;
+    const target = runningWorkflow();
+    target.definition.id = "workflow-b";
+    target.definition.name = "Workflow B";
+    target.run.workflowId = target.definition.id;
+    api.getWorkflowCore.mockImplementation(async (workflowId?: string) => workflowId === target.definition.id
+      ? { definitions: [selected.definition, target.definition], runs: [target.run] }
+      : { definitions: [selected.definition, target.definition], runs: [selected.run] });
+
+    await act(async () => {
+      root.render(<WorkflowFeaturePage language="zh" globalReviewEnabled runtimeReviewEnabled />);
+      await Promise.resolve();
+    });
+    const targetButton = [...container.querySelectorAll<HTMLButtonElement>(".workflow-core-list-group > button")]
+      .find((button) => button.textContent?.includes("Workflow B"));
+    if (!targetButton) throw new Error("Workflow B was not rendered");
+
+    await act(async () => {
+      targetButton.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, clientX: 20, clientY: 30 }));
+      await Promise.resolve();
+    });
+
+    expect(api.getWorkflowCore).toHaveBeenCalledWith(target.definition.id);
+    const deleteButton = [...container.querySelectorAll<HTMLButtonElement>(".workflow-core-context-menu button")]
+      .find((button) => button.textContent?.includes("删除"));
+    expect(deleteButton?.disabled).toBe(true);
+  });
 });
