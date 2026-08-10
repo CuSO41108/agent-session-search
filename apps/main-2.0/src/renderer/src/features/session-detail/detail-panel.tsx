@@ -931,7 +931,7 @@ function TraceEventBlock({ event, language, timelineKey }: { event: SessionTrace
           {event.title}
           <span className="trace-status-label">{traceStatusLabel(event, language)}</span>
         </strong>
-        <span>{formatMessageTime(event.timestamp)}</span>
+        <span>{formatMessageTime(event.timestamp, language)}</span>
       </summary>
       <div className="trace-meta">
         {event.eventType ? <span>{event.eventType}</span> : null}

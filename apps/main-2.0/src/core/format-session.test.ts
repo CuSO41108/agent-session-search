@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatSessionMarkdown } from "./format-session";
+import { formatMessageTime, formatSessionMarkdown } from "./format-session";
 import type { IndexedSession, SessionMessage, SessionTraceEvent } from "./types";
 
 const session: IndexedSession = {
@@ -47,5 +47,11 @@ describe("formatSessionMarkdown", () => {
     expect(markdown).toContain("I will run them.");
     expect(markdown).not.toContain("## Tool Trace");
     expect(markdown).not.toContain("shell_command · npm test");
+  });
+});
+
+describe("formatMessageTime", () => {
+  it("uses a 24-hour clock for Chinese session timestamps around midnight", () => {
+    expect(formatMessageTime("2026-08-09T00:46:00", "zh")).toBe("8月9日 00:46");
   });
 });

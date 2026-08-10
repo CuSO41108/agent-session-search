@@ -763,7 +763,7 @@ function MessageBlock({
         {message.phase === "commentary"
           ? <span className="message-phase">{localize(language, "Process note", "过程说明")}</span>
           : null}
-        <span>{formatMessageTime(message.timestamp)}</span>
+        <span>{formatMessageTime(message.timestamp, language)}</span>
       </div>
       {useMarkdown ? (
         <div className="message-md">
@@ -866,7 +866,7 @@ function TraceEventBlock({ event, language, timelineKey }: { event: SessionTrace
           {event.title}
           <span className="trace-status-label">{traceStatusLabel(event, language)}</span>
         </strong>
-        <span>{formatMessageTime(event.timestamp)}</span>
+        <span>{formatMessageTime(event.timestamp, language)}</span>
       </summary>
       <div className="trace-meta">
         {event.eventType ? <span>{event.eventType}</span> : null}

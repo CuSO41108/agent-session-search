@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatSessionJson, formatSessionMarkdown, formatSessionPlainText } from "./format-session";
+import { formatMessageTime, formatSessionJson, formatSessionMarkdown, formatSessionPlainText } from "./format-session";
 import type { IndexedSession, SessionMessage, SessionTraceEvent } from "./types";
 
 const session: IndexedSession = {
@@ -44,6 +44,12 @@ const traceEvents: SessionTraceEvent[] = [
     status: "completed",
   },
 ];
+
+describe("formatMessageTime", () => {
+  it("uses a 24-hour clock for Chinese session timestamps around midnight", () => {
+    expect(formatMessageTime("2026-08-09T00:46:00", "zh")).toBe("8月9日 00:46");
+  });
+});
 
 describe("formatSessionMarkdown", () => {
   it("omits trace events by default", () => {

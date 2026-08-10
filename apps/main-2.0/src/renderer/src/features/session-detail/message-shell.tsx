@@ -39,7 +39,7 @@ export function MessageHead({
         {phase === "commentary" ? (
           <span className="msg-phase">{localize(language, "Process note", "过程说明")}</span>
         ) : null}
-        <span className="msg-time">{formatMessageTime(timestamp)}</span>
+        <span className="msg-time">{formatMessageTime(timestamp, language)}</span>
       </div>
     </Fragment>
   );

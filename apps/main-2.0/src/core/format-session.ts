@@ -22,11 +22,18 @@ export function formatRelativeTime(ts: number): string {
   return new Date(ts).toLocaleDateString();
 }
 
-export function formatMessageTime(ts: string): string {
+export function formatMessageTime(ts: string, language: "en" | "zh" | undefined): string {
   if (!ts) return "";
   const date = new Date(ts);
   if (Number.isNaN(date.getTime())) return "";
-  return date.toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+  const locale = language === "zh" ? "zh-CN" : language === "en" ? "en-US" : undefined;
+  return date.toLocaleString(locale, {
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    ...(language === "zh" ? { hourCycle: "h23" } : {}),
+  });
 }
 
 function traceMarker(event: SessionTraceEvent): string {
@@ -40,7 +47,7 @@ function traceMarker(event: SessionTraceEvent): string {
 function traceTitle(event: SessionTraceEvent): string {
   const eventType = event.eventType ? ` · ${event.eventType}` : "";
   const callId = event.callId ? ` · \`${event.callId}\`` : "";
-  const time = formatMessageTime(event.timestamp);
+  const time = formatMessageTime(event.timestamp, undefined);
   const timeSuffix = time ? ` · *${time}*` : "";
   return `${traceMarker(event)} ${event.title}${eventType}${callId}${timeSuffix}`;
 }
@@ -80,7 +87,7 @@ export function formatSessionMarkdown(
   ];
   const body = messages.flatMap((message) => {
     const role = message.role === "user" ? "User" : "Assistant";
-    const time = formatMessageTime(message.timestamp);
+    const time = formatMessageTime(message.timestamp, undefined);
     return [`## ${time ? `${role} (${time})` : role}`, "", message.content, "", "---", ""];
   });
   const trace = options.includeToolTrace ? formatTraceMarkdown(traceEvents) : [];
