@@ -164,18 +164,14 @@ function sanitizeCompactionJson(value: unknown, key = ""): unknown {
       : "[encrypted content omitted]";
   }
   if (typeof value === "string") {
-    const normalizedKey = key.toLocaleLowerCase();
-    const opaqueField = normalizedKey === "image_url"
-      || normalizedKey === "audio_url"
-      || normalizedKey === "result"
-      || normalizedKey === "data";
-    const looksLikeEncodedBinary = value.length > 1_024 && /^[a-z0-9+/=\r\n]+$/iu.test(value);
-    if (opaqueField && (value.startsWith("data:") || looksLikeEncodedBinary)) {
+    const looksLikeDataUrl = value.slice(0, 5).toLocaleLowerCase() === "data:";
+    const looksLikeEncodedBinary = value.length > 1_024 && /^[a-z0-9+/_=\r\n-]+$/iu.test(value);
+    if (looksLikeDataUrl || looksLikeEncodedBinary) {
       return `[binary omitted: ${value.length} characters]`;
     }
     return value;
   }
-  if (Array.isArray(value)) return value.map((item) => sanitizeCompactionJson(item));
+  if (Array.isArray(value)) return value.map((item) => sanitizeCompactionJson(item, key));
   const object = record(value);
   if (!object) return value;
   return Object.fromEntries(

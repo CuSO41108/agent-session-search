@@ -42,6 +42,10 @@ describe("Codex session loading", () => {
 
   it("shows a readable sanitized copy of the original compacted payload", () => {
     const longReadableText = `retained-start-${"x".repeat(TRACE_DETAIL_PREVIEW_MAX_CHARS)}-retained-end`;
+    const nestedImageDataUrl = `data:image/png;base64,${"A".repeat(1_100)}`;
+    const arrayBase64 = "B".repeat(1_100);
+    const unknownFieldBase64 = "C".repeat(1_100);
+    const base64Url = `${"D".repeat(1_100)}-_`;
     const loaded = loadCodexSessionRows("/tmp/codex-compacted.jsonl", [
       {
         type: "session_meta",
@@ -65,6 +69,13 @@ describe("Codex session loading", () => {
               content: [
                 { type: "input_text", text: `Readable retained user request\n${longReadableText}` },
                 { type: "input_image", image_url: "data:image/png;base64,must-not-index-image", detail: "high" },
+                {
+                  type: "input_image",
+                  image_url: { url: nestedImageDataUrl },
+                  data: [arrayBase64],
+                  file_data: unknownFieldBase64,
+                },
+                { type: "input_file", data: base64Url },
               ],
               internal_chat_message_metadata_passthrough: { turn_id: "retained-turn" },
             },
@@ -123,6 +134,10 @@ describe("Codex session loading", () => {
     expect(compactions[0].detail).toContain('"window_id": "window-current"');
     expect(compactions[0].detail).toContain('"image_url": "[binary omitted:');
     expect(compactions[0].detail).toContain('"encrypted_content": "[encrypted content omitted]"');
+    expect(compactions[0].detail).not.toContain(nestedImageDataUrl);
+    expect(compactions[0].detail).not.toContain(arrayBase64);
+    expect(compactions[0].detail).not.toContain(unknownFieldBase64);
+    expect(compactions[0].detail).not.toContain(base64Url);
     expect(compactions[0].attributes?.compaction).toEqual({
       itemCount: 3,
       itemTypes: { message: 1, function_call: 1, compaction: 1 },
@@ -131,6 +146,10 @@ describe("Codex session loading", () => {
     const serializedTrace = JSON.stringify(loaded?.traceEvents);
     expect(serializedTrace).not.toContain("must-not-index-encrypted-summary");
     expect(serializedTrace).not.toContain("must-not-index-image");
+    expect(serializedTrace).not.toContain(nestedImageDataUrl);
+    expect(serializedTrace).not.toContain(arrayBase64);
+    expect(serializedTrace).not.toContain(unknownFieldBase64);
+    expect(serializedTrace).not.toContain(base64Url);
     expect(serializedTrace).not.toContain("must-not-index-world-state");
   });
 
