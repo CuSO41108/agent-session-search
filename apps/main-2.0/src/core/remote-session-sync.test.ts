@@ -805,8 +805,21 @@ describe("remote session sync model", () => {
     expect(stateFor(SESSION, { updatedAt: SESSION.lastActivityAt + 319 })).toBe("synced");
     expect(stateFor({ ...SESSION, displayTitle: "Renamed locally" })).toBe("local-newer");
     expect(stateFor({ ...SESSION, environmentKind: "ssh", fileMtimeMs: 5_000 })).toBe("local-newer");
-    expect(stateFor(SESSION, { contentHash: "cloud-change" })).toBe("remote-newer");
+    expect(stateFor(SESSION, { contentHash: "cloud-change" })).toBe("synced");
     expect(stateFor({ ...SESSION, fileMtimeMs: 5_000 }, { contentHash: "cloud-change" })).toBe("conflict");
+    expect(stateFor(
+      { ...SESSION, fileMtimeMs: 5_000 },
+      { contentHash: "cloud-change", syncedAt: 6_000 },
+    )).toBe("synced");
+    expect(stateFor({
+      ...SESSION,
+      source: "cursor-agent",
+      filePath: "C:\\Users\\me\\Cursor\\User\\globalStorage\\state.vscdb",
+      fileMtimeMs: 5_000,
+    }, {
+      sourceSource: "cursor-agent",
+      contentHash: "cloud-change",
+    })).toBe("synced");
     expect(stateFor(SESSION, {}, [])).toBe("synced");
     expect(stateFor({ ...SESSION, displayTitle: "Renamed by another app" }, {}, [])).toBe("remote-newer");
     expect(stateFor({ ...SESSION, displayTitle: "Changed locally", fileMtimeMs: 5_000 }, {}, [])).toBe("conflict");

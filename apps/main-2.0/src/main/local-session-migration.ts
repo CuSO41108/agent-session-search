@@ -107,11 +107,12 @@ export async function runLocalSessionMigration<TEndpoint, TCompressor>(
     messages: SessionMessage[];
     turnSourceMessageIndexes?: readonly number[];
     target: unknown;
+    targetProjectPath?: string;
     settings: AppSettings;
   },
   runtime: LocalSessionMigrationRuntime<TEndpoint, TCompressor>,
 ): Promise<SessionMigrationResult> {
-  const { source, messages, turnSourceMessageIndexes, target, settings } = input;
+  const { source, messages, turnSourceMessageIndexes, target, targetProjectPath, settings } = input;
   if (!isMigrationTarget(target)) throw new Error(`Migration target ${String(target)} is not supported.`);
   assertMigrationTargetEnabled(target, settings);
 
@@ -127,6 +128,7 @@ export async function runLocalSessionMigration<TEndpoint, TCompressor>(
     source,
     messages,
     target,
+    targetProjectPath,
     completeTokenLimit: settings.migrationCompleteTokenLimit,
     turnSourceMessageIndexes,
     deps: {

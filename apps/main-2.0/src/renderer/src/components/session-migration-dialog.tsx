@@ -6,6 +6,7 @@ import type {
   SessionMigrationResult,
   SessionSearchResult,
 } from "../../../core/types";
+import { isLocalSessionEnvironment } from "../../../core/session-environment";
 import { localize, type LanguageMode } from "../language";
 import { migrationAgentLabel } from "../session-ui";
 
@@ -47,6 +48,14 @@ export function SessionMigrationDialog({
             ? l("Create a new WSL target-agent session from", "从当前会话创建新的 WSL 目标 Agent 会话：")
             : l("Create a new local target-agent session from", "从当前会话创建新的本地目标 Agent 会话：")} <strong>{session.displayTitle}</strong>
         </p>
+        {isLocalSessionEnvironment(session) && !session.projectPath.trim() ? (
+          <p className="dialog-copy">
+            {l(
+              "This session has no project path. After choosing a target Agent, select the project directory for the new session.",
+              "当前会话没有项目路径。选择目标 Agent 后，请为新会话选择项目目录。",
+            )}
+          </p>
+        ) : null}
         {throughTurnIndex !== undefined ? (
           <p className="dialog-copy">
             {l(

@@ -117,8 +117,12 @@ const api = {
   copyResumeCommand: (sessionKey: string): Promise<void> => ipcRenderer.invoke("command:copy-resume", sessionKey),
   resumeSession: (sessionKey: string): Promise<ResumeRouteResult> => ipcRenderer.invoke("command:resume", sessionKey),
   resumeSessionInIterm: (sessionKey: string): Promise<void> => ipcRenderer.invoke("command:resume-iterm", sessionKey),
-  migrateSession: (sessionKey: string, target: MigrationTarget): Promise<SessionMigrationResult> =>
-    ipcRenderer.invoke("session:migrate", sessionKey, target),
+  migrateSession: (
+    sessionKey: string,
+    target: MigrationTarget,
+    targetProjectPath?: string,
+  ): Promise<SessionMigrationResult> =>
+    ipcRenderer.invoke("session:migrate", sessionKey, target, targetProjectPath),
   openNativeApp: (sessionKey: string): Promise<void> => ipcRenderer.invoke("command:open-app", sessionKey),
   revealSession: (sessionKey: string): Promise<void> => ipcRenderer.invoke("command:reveal", sessionKey),
   copyMarkdown: (sessionKey: string): Promise<void> => ipcRenderer.invoke("command:copy-markdown", sessionKey),

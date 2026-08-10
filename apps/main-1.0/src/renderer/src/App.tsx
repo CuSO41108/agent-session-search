@@ -29,7 +29,7 @@ import type { MigrationTargetSettings } from "../../core/migration-targets";
 import type { RemoteHealthReport } from "../../core/remote-health";
 import type { RemoteSessionDetailSnapshot } from "../../core/remote-session-sync";
 import type { SessionFamily } from "../../core/session-family";
-import { canDeleteSessionLocally } from "../../core/session-environment";
+import { canDeleteSessionLocally, isLocalSessionEnvironment } from "../../core/session-environment";
 import type { SessionSyncHookStatus } from "../../core/session-sync-queue";
 import { OPTIONAL_SESSION_SOURCE_DESCRIPTORS } from "../../core/session-sources";
 import type { TraceEventQueryOptions } from "../../core/session-store";
@@ -99,6 +99,7 @@ import { ApiConfigDialog } from "./features/providers/api-config-dialog";
 import { DetailPanel } from "./features/session-detail/detail-panel";
 import { useSessionFamily, type FamilySessionOpenResult } from "./features/session-detail/use-session-family";
 import { SessionMigrationDialog, SessionMigrationLaunchFailedDialog } from "./components/session-migration-dialog";
+import { initialMessageWindow, MESSAGE_PAGE_SIZE } from "./features/session-detail/message-window";
 import { BulkDeleteDialog, CommandDialog, DeleteSessionDialog, DeleteTagDialog } from "./components/session-dialogs";
 import { SkillsDialog } from "./features/skills/skills-dialog";
 import { DigitalAssetsDialog } from "./features/digital-assets/digital-assets-dialog";
@@ -179,8 +180,6 @@ function formatDateInput(date: Date): string {
   const day = String(date.getDate()).padStart(2, "0");
   return `${year}-${month}-${day}`;
 }
-const INITIAL_MESSAGE_LIMIT = 20;
-const MESSAGE_PAGE_SIZE = 80;
 const TRACE_EVENT_WINDOW_LIMIT = 300;
 
 const EMPTY_STATS: SessionStats = {
@@ -321,9 +320,9 @@ export function App(): ReactElement {
   const [detail, setDetail] = useState<SessionSearchResult | null>(null);
   const [remoteDetail, setRemoteDetail] = useState<{ snapshot: RemoteSessionDetailSnapshot; query: string } | null>(null);
   const [messages, setMessages] = useState<SessionMessage[]>([]);
-  const [matchedContextMessages, setMatchedContextMessages] = useState<SessionMessage[]>([]);
   const [matchedMessageIndex, setMatchedMessageIndex] = useState<number | null>(null);
   const [messageOffset, setMessageOffset] = useState(0);
+  const [messageEndOffset, setMessageEndOffset] = useState(0);
   const [traceEvents, setTraceEvents] = useState<SessionTraceEvent[]>([]);
   const [messagesLoading, setMessagesLoading] = useState(false);
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
@@ -1370,9 +1369,9 @@ export function App(): ReactElement {
     setRemoteDetail(null);
     setDetail(session);
     setMessages([]);
-    setMatchedContextMessages([]);
     setMatchedMessageIndex(matchHit?.messageIndex ?? null);
     setMessageOffset(0);
+    setMessageEndOffset(0);
     setTraceEvents([]);
     setMessagesLoading(true);
 
@@ -1385,21 +1384,16 @@ export function App(): ReactElement {
         return;
       }
 
-      const initialOffset = Math.max(0, fresh.messageCount - INITIAL_MESSAGE_LIMIT);
-      const [loadedMessages, loadedMatchContext] = await Promise.all([
-        window.sessionSearch.getMessages(sessionKey, initialOffset, INITIAL_MESSAGE_LIMIT),
-        matchHit
-          ? window.sessionSearch.getMessages(sessionKey, Math.max(0, matchHit.messageIndex - 1), 3)
-          : Promise.resolve([]),
-      ]);
+      const messageWindow = initialMessageWindow(fresh.messageCount, matchHit?.messageIndex ?? null);
+      const loadedMessages = await window.sessionSearch.getMessages(sessionKey, messageWindow.offset, messageWindow.limit);
       if (requestId !== detailLoadSeqRef.current) return;
       const loadedTraceEvents = await window.sessionSearch.getTraceEvents(sessionKey, traceWindowForMessages(loadedMessages));
       if (requestId !== detailLoadSeqRef.current) return;
 
       setDetail(fresh);
-      setMessageOffset(initialOffset);
+      setMessageOffset(messageWindow.offset);
+      setMessageEndOffset(Math.min(fresh.messageCount, messageWindow.offset + messageWindow.limit));
       setMessages(loadedMessages);
-      setMatchedContextMessages(loadedMatchContext);
       setTraceEvents(loadedTraceEvents);
       setMessagesLoading(false);
     } catch (error) {
@@ -1414,9 +1408,9 @@ export function App(): ReactElement {
     detailLoadSeqRef.current++;
     setDetail(null);
     setMessages([]);
-    setMatchedContextMessages([]);
     setMatchedMessageIndex(null);
     setMessageOffset(0);
+    setMessageEndOffset(0);
     setTraceEvents([]);
     setMessagesLoading(false);
   }
@@ -1426,6 +1420,7 @@ export function App(): ReactElement {
     setDetail(null);
     setMessages([]);
     setMessageOffset(0);
+    setMessageEndOffset(0);
     setTraceEvents([]);
     setMessagesLoading(false);
     setRemoteDetail({ snapshot, query: detailQuery });
@@ -1448,6 +1443,30 @@ export function App(): ReactElement {
       if (requestId !== detailLoadSeqRef.current) return;
       setMessageOffset(nextOffset);
       setMessages((current) => [...nextMessages, ...current]);
+      setTraceEvents((current) => mergeTraceEventsByIndex(current, nextTraceEvents));
+    } catch (error) {
+      if (requestId === detailLoadSeqRef.current) {
+        setActionStatus({ kind: "error", message: error instanceof Error ? error.message : String(error) });
+      }
+    } finally {
+      if (requestId === detailLoadSeqRef.current) setMessagesLoading(false);
+    }
+  }
+
+  async function loadNewerMessages(): Promise<void> {
+    const newerMessageCount = detail ? Math.max(0, detail.messageCount - messageEndOffset) : 0;
+    if (!detail || messagesLoading || newerMessageCount <= 0) return;
+    const requestId = detailLoadSeqRef.current;
+    const sessionKey = detail.sessionKey;
+    const nextOffset = messageEndOffset;
+    const limit = Math.min(MESSAGE_PAGE_SIZE, newerMessageCount);
+    setMessagesLoading(true);
+    try {
+      const nextMessages = await window.sessionSearch.getMessages(sessionKey, nextOffset, limit);
+      const nextTraceEvents = await window.sessionSearch.getTraceEvents(sessionKey, traceWindowForMessages(nextMessages));
+      if (requestId !== detailLoadSeqRef.current) return;
+      setMessages((current) => [...current, ...nextMessages]);
+      setMessageEndOffset((current) => Math.min(detail.messageCount, current + limit));
       setTraceEvents((current) => mergeTraceEventsByIndex(current, nextTraceEvents));
     } catch (error) {
       if (requestId === detailLoadSeqRef.current) {
@@ -1903,12 +1922,26 @@ export function App(): ReactElement {
   async function runMigration(target: SessionMigrationProgress["target"]): Promise<void> {
     if (!migrationDialog || migrationDialog.kind !== "select") return;
     const session = migrationDialog.session;
+    let targetProjectPath: string | undefined;
+    if (isLocalSessionEnvironment(session) && !session.projectPath.trim()) {
+      try {
+        targetProjectPath = (await window.sessionSearch.chooseLocalProjectDirectory()) ?? undefined;
+      } catch (error) {
+        setActionStatus({ kind: "error", message: error instanceof Error ? error.message : String(error) });
+        return;
+      }
+      if (!targetProjectPath) return;
+    }
     setMigrationBusy(true);
     setContextMenu(null);
     setMigrationProgress(null);
     setActionStatus({ kind: "running", message: t("Preparing migration...", "正在准备迁移...") });
     try {
-      const result: SessionMigrationResult = await window.sessionSearch.migrateSession(session.sessionKey, target);
+      const result: SessionMigrationResult = await window.sessionSearch.migrateSession(
+        session.sessionKey,
+        target,
+        targetProjectPath,
+      );
       await refreshAfterAction({ metadata: true, stats: true });
       await refreshLiveSessions();
       const strategyLabel = migrationStrategyLabel(result.strategy, language);
@@ -2467,7 +2500,6 @@ export function App(): ReactElement {
         <DetailPanel
           session={detail}
           messages={messages}
-          matchedContextMessages={matchedContextMessages}
           matchedMessageIndex={matchedMessageIndex}
           traceEvents={traceEvents}
           loading={messagesLoading}
@@ -2477,6 +2509,7 @@ export function App(): ReactElement {
           language={language}
           messagePageSize={MESSAGE_PAGE_SIZE}
           olderMessageCount={messageOffset}
+          newerMessageCount={Math.max(0, detail.messageCount - messageEndOffset)}
           revealLabel={FILE_MANAGER_LABEL}
           showItermAction={IS_MAC && detail.source !== "codex-app"}
           onClose={closeDetail}
@@ -2485,6 +2518,7 @@ export function App(): ReactElement {
           sessionFamilyLoadFailed={sessionFamilyLoadFailed}
           onRetrySessionFamily={retrySessionFamily}
           onShowMore={() => void loadMoreMessages()}
+          onShowNewer={() => void loadNewerMessages()}
           onRename={() => beginRename(detail)}
           onAddTag={() => beginAddTag(detail)}
           onRemoveTag={(tagName) => void removeTag(detail, tagName)}
@@ -2535,7 +2569,6 @@ export function App(): ReactElement {
         <DetailPanel
           session={remoteDetail.snapshot.session}
           messages={remoteDetail.snapshot.messages}
-          matchedContextMessages={[]}
           matchedMessageIndex={null}
           traceEvents={remoteDetail.snapshot.traceEvents}
           loading={false}
@@ -2545,12 +2578,14 @@ export function App(): ReactElement {
           language={language}
           messagePageSize={MESSAGE_PAGE_SIZE}
           olderMessageCount={0}
+          newerMessageCount={0}
           revealLabel={FILE_MANAGER_LABEL}
           showItermAction={false}
           backdropClassName="remote-detail-backdrop"
           sessionFamily={EMPTY_SESSION_FAMILY}
           onClose={closeRemoteDetail}
           onShowMore={() => undefined}
+          onShowNewer={() => undefined}
           onRename={() => undefined}
           onAddTag={() => undefined}
           onRemoveTag={() => undefined}

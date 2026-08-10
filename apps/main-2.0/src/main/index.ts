@@ -2729,6 +2729,7 @@ function registerIpc(): void {
     return runLocalSessionMigration({
       ...migrationSource,
       target: request.target,
+      targetProjectPath: request.targetProjectPath,
       settings,
     }, localSessionMigrationRuntime(event));
   });

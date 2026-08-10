@@ -2241,7 +2241,12 @@ function registerIpc(): void {
     await openResumeInSpecificTerminal(session, getSettings(), "iTerm", { sshArgs });
     store.markResumed(sessionKey);
   });
-  ipcMain.handle("session:migrate", async (event, sessionKey: string, target: unknown) => {
+  ipcMain.handle("session:migrate", async (
+    event,
+    sessionKey: string,
+    target: unknown,
+    targetProjectPath?: string,
+  ) => {
     const session = store.getSession(sessionKey);
     if (!session) throw new Error("Session not found.");
     if (session.environmentKind === "wsl" || session.environmentKind === "ssh") {
@@ -2278,6 +2283,7 @@ function registerIpc(): void {
       source: session,
       messages,
       target,
+      targetProjectPath,
       settings,
     }, localSessionMigrationRuntime(event));
   });

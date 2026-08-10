@@ -873,10 +873,11 @@ function sessionSyncStateFromOverview(
 ): SessionSyncState {
   const revisionVersion = remote.revisionVersion ?? 1;
   const overviewMatches = localSessionOverviewMatchesRemote(local, remote);
+  if (revisionVersion >= 2 && overviewMatches && !localSourceChangedAfter(local, remote.syncedAt)) {
+    return "synced";
+  }
   if (!binding) {
-    if (revisionVersion >= 2 && !localSourceChangedAfter(local, remote.syncedAt)) {
-      return overviewMatches ? "synced" : "remote-newer";
-    }
+    if (revisionVersion >= 2 && !localSourceChangedAfter(local, remote.syncedAt)) return "remote-newer";
     return revisionVersion < 2 ? "local-newer" : "conflict";
   }
 
@@ -898,7 +899,11 @@ function localSessionOverviewMatchesRemote(local: SessionSearchResult, remote: R
 }
 
 function localSourceChangedAfter(local: SessionSearchResult, syncedAt: number): boolean {
-  return local.fileMtimeMs > syncedAt;
+  const sourceModifiedAt = local.source === "cursor-agent"
+    && /(?:^|[\\/])state\.vscdb$/i.test(local.filePath)
+    ? local.lastActivityAt
+    : local.fileMtimeMs;
+  return sourceModifiedAt > syncedAt;
 }
 
 function sameTags(left: string[], right: string[]): boolean {

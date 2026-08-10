@@ -229,10 +229,12 @@ function TurnMessageBlock({
   message,
   query,
   language,
+  target = false,
 }: {
   message: SessionTurnMessage;
   query: string;
   language: LanguageMode;
+  target?: boolean;
 }): ReactElement {
   const [expanded, setExpanded] = useState(false);
   const truncated = message.content.length > MESSAGE_TRUNCATE_LIMIT;
@@ -248,7 +250,7 @@ function TurnMessageBlock({
   const useMarkdown = terms.length === 0;
 
   return (
-    <div className={`msg ${message.role} ${message.phase === "commentary" ? "commentary" : ""}`} data-message-index={message.sourceMessageIndex ?? undefined}>
+    <div className={`msg ${message.role} ${message.phase === "commentary" ? "commentary" : ""} ${target ? "match-target" : ""}`} data-message-index={message.sourceMessageIndex ?? undefined}>
       <MessageHead
         role={message.role}
         phase={message.phase}
@@ -334,11 +336,13 @@ function TurnDetailTimeline({
   showTools,
   query,
   language,
+  matchedMessageIndex,
 }: {
   detail: SessionTurnDetail;
   showTools: boolean;
   query: string;
   language: LanguageMode;
+  matchedMessageIndex: number | null;
 }): ReactElement {
   const timeline = useMemo(() => buildTurnTimeline(detail, showTools), [detail, showTools]);
   return (
@@ -346,7 +350,12 @@ function TurnDetailTimeline({
       {timeline.map((item) => (
         <div key={item.key} className={`turn-timeline-item ${item.kind}`} data-timeline-key={item.key}>
           {item.kind === "message" ? (
-            <TurnMessageBlock message={item.message} query={query} language={language} />
+            <TurnMessageBlock
+              message={item.message}
+              query={query}
+              language={language}
+              target={matchedMessageIndex !== null && item.message.sourceMessageIndex === matchedMessageIndex}
+            />
           ) : (
             <TurnSpanBlock span={item.span} language={language} />
           )}
@@ -361,6 +370,7 @@ export function TurnAccordion({
   turns,
   loading,
   matchedTurnId,
+  matchedMessageIndex,
   showTools,
   query,
   language,
@@ -372,6 +382,7 @@ export function TurnAccordion({
   turns: SessionTurnSummary[];
   loading: boolean;
   matchedTurnId: string | null;
+  matchedMessageIndex: number | null;
   showTools: boolean;
   query: string;
   language: LanguageMode;
@@ -444,6 +455,19 @@ export function TurnAccordion({
     });
     return () => window.cancelAnimationFrame(frame);
   }, [matchedTurnId, sessionKey, turns]);
+
+  const matchedTurnDetail = matchedTurnId ? state.detailsById[matchedTurnId] : undefined;
+  useEffect(() => {
+    if (!matchedTurnId || matchedMessageIndex === null || !matchedTurnDetail) return;
+    const frame = window.requestAnimationFrame(() => {
+      rootRef.current
+        ?.querySelector<HTMLElement>(
+          `[data-turn-id="${matchedTurnId}"] [data-message-index="${matchedMessageIndex}"]`,
+        )
+        ?.scrollIntoView({ behavior: "auto", block: "center" });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [matchedMessageIndex, matchedTurnDetail, matchedTurnId]);
 
   function toggleTurn(turnId: string): void {
     const opening = !state.expandedTurnIds.has(turnId);
@@ -564,6 +588,7 @@ export function TurnAccordion({
                     showTools={showTools}
                     query={query}
                     language={language}
+                    matchedMessageIndex={turn.id === matchedTurnId ? matchedMessageIndex : null}
                   />
                 ) : null}
               </div>

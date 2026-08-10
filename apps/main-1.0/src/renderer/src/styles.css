@@ -2556,7 +2556,7 @@ select:focus-visible {
   opacity: 0.78;
 }
 
-.matched .message.match-target {
+.message.match-target {
   border-color: var(--accent-line);
   background: var(--accent-soft);
   opacity: 1;

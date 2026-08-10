@@ -19,6 +19,7 @@ import type { McpServerDefinition } from "../../automation/contracts";
 import type { InstalledSkill } from "../../core/skill-manager";
 import type { OpenVikingMemorySnapshot } from "../../core/openviking-memory";
 import type { RemoteHealthReport } from "../../core/remote-health";
+import { isLocalSessionEnvironment } from "../../core/session-environment";
 import type { SessionSyncHookStatus } from "../../core/session-sync-queue";
 import type { V1ImportResult } from "../../core/v1-import";
 import { liveSessionDeleteKey, type SessionBulkDeletePreview, type SessionBulkDeleteRequest } from "../../core/session-bulk-delete";
@@ -440,6 +441,7 @@ export function App(): ReactElement {
     turns: detailTurns,
     turnsLoading,
     matchedTurnId,
+    matchedMessageIndex,
     openLocal: openDetail,
     closeLocal: closeDetail,
     openRemote: openRemoteDetail,
@@ -1226,6 +1228,16 @@ export function App(): ReactElement {
   async function runMigration(target: SessionMigrationProgress["target"]): Promise<void> {
     if (!migrationDialog || migrationDialog.kind !== "select") return;
     const session = migrationDialog.session;
+    let targetProjectPath: string | undefined;
+    if (isLocalSessionEnvironment(session) && !session.projectPath.trim()) {
+      try {
+        targetProjectPath = (await window.sessionSearch.chooseLocalProjectDirectory()) ?? undefined;
+      } catch (error) {
+        setActionStatus({ kind: "error", message: error instanceof Error ? error.message : String(error) });
+        return;
+      }
+      if (!targetProjectPath) return;
+    }
     setMigrationBusy(true);
     setContextMenu(null);
     setMigrationProgress(null);
@@ -1234,6 +1246,7 @@ export function App(): ReactElement {
       const result: SessionMigrationResult = await window.sessionSearch.migrateSession({
         sessionKey: session.sessionKey,
         target,
+        ...(targetProjectPath ? { targetProjectPath } : {}),
         ...(migrationDialog.throughTurnId
           ? { throughTurnId: migrationDialog.throughTurnId }
           : {}),
@@ -1886,6 +1899,7 @@ export function App(): ReactElement {
         turns={detailTurns}
         turnsLoading={turnsLoading}
         matchedTurnId={matchedTurnId}
+        matchedMessageIndex={matchedMessageIndex}
         actionStatus={actionStatus}
         query={query}
         liveState={detail
