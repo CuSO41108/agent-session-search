@@ -100,10 +100,6 @@ export function portableSessionFrom(
   if (!isLocalSessionEnvironment(session) && session.environmentKind !== "wsl" && !allowedSsh) {
     throw new Error("SSH session migration is not supported yet.");
   }
-  if (!session.projectPath.trim()) {
-    throw new Error("Session has no project path.");
-  }
-
   const portableEntries = messages
     .filter((message) => message.role === "user" || message.role === "assistant")
     .map((message, index) => ({
@@ -133,7 +129,7 @@ export function portableSessionFrom(
     sourceSessionId: session.rawId,
     sourceAgent,
     title: session.displayTitle,
-    projectPath: session.projectPath,
+    projectPath: session.projectPath.trim() ? session.projectPath : "",
     startedAt: new Date(session.timestamp).toISOString(),
     messages: portableMessages,
     ...(turnBoundaries && turnBoundaries.length > 0 ? { turnBoundaries } : {}),
@@ -173,9 +169,9 @@ export async function migrateSession({
   turnSourceMessageIndexes,
   deps,
 }: MigrateSessionOptions): Promise<SessionMigrationResult> {
-  const migrationSource = targetProjectPath?.trim()
-    ? { ...source, projectPath: targetProjectPath.trim() }
-    : source;
+  const migrationSource = targetProjectPath === undefined
+    ? source
+    : { ...source, projectPath: targetProjectPath.trim() };
   await validateMigrationRequest(migrationSource, target, deps);
 
   notifyProgress(deps.onProgress, {
@@ -297,7 +293,7 @@ async function validateMigrationRequest(
 
   const projectPath = source.projectPath;
   if (!projectPath.trim()) {
-    throw new Error("Session has no project path.");
+    return;
   }
   if (!(await deps.projectPathExists(projectPath))) {
     throw new Error(`Session project path does not exist: ${projectPath}`);

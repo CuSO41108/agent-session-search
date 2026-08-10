@@ -200,6 +200,43 @@ describe("writeMigratedSession", () => {
     },
   );
 
+  it("round-trips sessions without project paths across target formats", async () => {
+    for (const { target, source, family } of TARGETS) {
+      const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), `migration-writer-pathless-${target}-`));
+      const session = { ...portable(), projectPath: "" };
+      try {
+        const result = await writeMigratedSession({
+          target,
+          session,
+          homeDir,
+          now: NOW,
+          idFactory: idFactory(family === "codex" || target === "cursor" ? [SESSION_ID] : [SESSION_ID, ...MESSAGE_IDS]),
+        });
+
+        if (family === "claude" || family === "codebuddy" || family === "cursor") {
+          expect(result.filePath.split(path.sep)).toContain("empty-window");
+        }
+        expectRoundTrip(target, source, result.sessionId, result.filePath, readRows(result.filePath), session);
+      } finally {
+        fs.rmSync(homeDir, { recursive: true, force: true });
+      }
+    }
+
+    const codeWizHome = fs.mkdtempSync(path.join(os.tmpdir(), "migration-writer-pathless-codewiz-"));
+    try {
+      await expect(writeMigratedSession({
+        target: "codewiz",
+        session: { ...portable(), projectPath: "" },
+        homeDir: codeWizHome,
+        now: NOW,
+      })).resolves.toMatchObject({
+        filePath: path.join(codeWizHome, ".local", "share", "codewiz", "opencode.db"),
+      });
+    } finally {
+      fs.rmSync(codeWizHome, { recursive: true, force: true });
+    }
+  });
+
   it("writes a native Codex rollout and round-trips it through the existing loader", async () => {
     const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "migration-writer-codex-"));
     const includesVsCodeEvents = true;
@@ -406,6 +443,7 @@ describe("writeMigratedSession", () => {
         sourceSessionKey: "cursor:source-child",
         sourceSessionId: "source-child",
         title: "Child agent",
+        projectPath: "",
         isSubagent: true,
         parentSessionId: SESSION_ID,
       };
@@ -438,6 +476,7 @@ describe("writeMigratedSession", () => {
       const childRow = childStateDb.prepare("SELECT * FROM threads WHERE id = ?").get(CHILD_SESSION_ID) as Record<string, unknown>;
       childStateDb.close();
       expect(childRow).toMatchObject({
+        cwd: "",
         thread_source: "subagent",
         agent_path: "/root/migrated_source-child",
       });

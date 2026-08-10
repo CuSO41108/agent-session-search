@@ -72,6 +72,39 @@
   width: min(520px, calc(100vw - 40px));
 }
 
+.migration-project-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  margin-top: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 10px;
+  background: var(--panel-subtle);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.migration-project-option input {
+  margin-top: 2px;
+  accent-color: var(--accent);
+}
+
+.migration-project-option span {
+  display: grid;
+  gap: 2px;
+}
+
+.migration-project-option strong {
+  font-size: 13px;
+}
+
+.migration-project-option small {
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
 .migration-targets {
   display: grid;
   gap: 8px;

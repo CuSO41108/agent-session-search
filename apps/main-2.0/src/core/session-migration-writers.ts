@@ -559,13 +559,14 @@ const TARGET_ROOTS: Record<MigrationTarget, string> = {
   codewiz: path.join(".local", "share", "codewiz"),
   cursor: ".cursor",
 };
+const NO_PROJECT_DIRECTORY = "empty-window";
 
 function encodeClaudeProjectDir(projectPath: string): string {
-  return encodeProjectDirectory(projectPath);
+  return encodeProjectDirectory(projectPath) || NO_PROJECT_DIRECTORY;
 }
 
 function encodeCodeBuddyProjectDir(projectPath: string): string {
-  return projectPath.replace(/^[/\\]+/, "").replace(/[^a-zA-Z0-9-]/g, "-");
+  return projectPath.replace(/^[/\\]+/, "").replace(/[^a-zA-Z0-9-]/g, "-") || NO_PROJECT_DIRECTORY;
 }
 
 export function encodeProjectDirectory(projectPath: string): string {
@@ -678,7 +679,9 @@ function updateCodexAppServerState(
     const createdAt = Math.floor(createdAtMs / 1000);
     const updatedAt = Math.floor(updatedAtMs / 1000);
     const rolloutPath = path.toNamespacedPath(path.resolve(filePath));
-    const cwd = path.toNamespacedPath(path.resolve(session.projectPath));
+    const cwd = session.projectPath
+      ? path.toNamespacedPath(path.resolve(session.projectPath))
+      : "";
     const existing = db.prepare("SELECT * FROM threads WHERE id = ?").get(sessionId) as Record<string, unknown> | undefined;
     const template = existing ?? db.prepare("SELECT * FROM threads ORDER BY updated_at_ms DESC, updated_at DESC LIMIT 1").get() as Record<string, unknown> | undefined;
     const values: Record<string, unknown> = {

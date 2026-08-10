@@ -170,6 +170,30 @@ describe("runLocalSessionMigration", () => {
     expect(pathlessSource.projectPath).toBe("");
   });
 
+  it("creates a migrated session without a project path when explicitly selected", async () => {
+    const settings = defaultSettings;
+    const deps = runtime();
+    deps.migrate = migrateSession;
+
+    await runLocalSessionMigration({
+      source,
+      messages,
+      target: "codex",
+      targetProjectPath: "",
+      settings,
+    }, deps);
+
+    expect(deps.projectPathExists).not.toHaveBeenCalled();
+    expect(deps.projectPathIsDirectory).not.toHaveBeenCalled();
+    expect(deps.prepare).toHaveBeenCalledWith(
+      expect.objectContaining({ projectPath: "" }),
+      expect.any(Function),
+      expect.anything(),
+      settings.migrationCompleteTokenLimit,
+    );
+    expect(deps.launch).toHaveBeenCalledWith("codex", "id", "", settings);
+  });
+
   it("returns the independent safe command when the primary formatter throws", async () => {
     const settings = { ...defaultSettings, includeTcodex: true, tcodexBinary: "/safe/tcodex cli" };
     const deps = runtime();

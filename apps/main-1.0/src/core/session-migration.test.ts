@@ -313,10 +313,10 @@ describe("session migration model", () => {
     );
   });
 
-  it.each(["", "   "])("rejects an empty project path", (projectPath) => {
-    expect(() => portableSessionFrom(session("claude-cli", { projectPath }), messages)).toThrow(
-      "Session has no project path.",
-    );
+  it.each(["", "   "])("normalizes a missing project path", (projectPath) => {
+    expect(portableSessionFrom(session("claude-cli", { projectPath }), messages)).toMatchObject({
+      projectPath: "",
+    });
   });
 
   it("estimates tokens from Unicode JavaScript character length and rounds up", () => {
@@ -419,12 +419,6 @@ describe("migrateSession", () => {
       session("claude-cli", { environmentKind: "local", environmentId: "imported-local" }),
       "codex",
       "SSH session migration is not supported yet.",
-    ],
-    [
-      "empty project path",
-      session("claude-cli", { projectPath: "   " }),
-      "codex",
-      "Session has no project path.",
     ],
   ] as const)(
     "rejects %s before inspect or write",
