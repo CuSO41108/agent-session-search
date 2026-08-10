@@ -29,7 +29,7 @@ import type { MigrationTargetSettings } from "../../core/migration-targets";
 import type { RemoteHealthReport } from "../../core/remote-health";
 import type { RemoteSessionDetailSnapshot } from "../../core/remote-session-sync";
 import type { SessionFamily } from "../../core/session-family";
-import { canDeleteSessionLocally } from "../../core/session-environment";
+import { canDeleteSessionLocally, isLocalSessionEnvironment } from "../../core/session-environment";
 import type { SessionSyncHookStatus } from "../../core/session-sync-queue";
 import { OPTIONAL_SESSION_SOURCE_DESCRIPTORS } from "../../core/session-sources";
 import type { TraceEventQueryOptions } from "../../core/session-store";
@@ -1903,12 +1903,26 @@ export function App(): ReactElement {
   async function runMigration(target: SessionMigrationProgress["target"]): Promise<void> {
     if (!migrationDialog || migrationDialog.kind !== "select") return;
     const session = migrationDialog.session;
+    let targetProjectPath: string | undefined;
+    if (isLocalSessionEnvironment(session) && !session.projectPath.trim()) {
+      try {
+        targetProjectPath = (await window.sessionSearch.chooseRemoteRestoreProject()) ?? undefined;
+      } catch (error) {
+        setActionStatus({ kind: "error", message: error instanceof Error ? error.message : String(error) });
+        return;
+      }
+      if (!targetProjectPath) return;
+    }
     setMigrationBusy(true);
     setContextMenu(null);
     setMigrationProgress(null);
     setActionStatus({ kind: "running", message: t("Preparing migration...", "正在准备迁移...") });
     try {
-      const result: SessionMigrationResult = await window.sessionSearch.migrateSession(session.sessionKey, target);
+      const result: SessionMigrationResult = await window.sessionSearch.migrateSession(
+        session.sessionKey,
+        target,
+        targetProjectPath,
+      );
       await refreshAfterAction({ metadata: true, stats: true });
       await refreshLiveSessions();
       const strategyLabel = migrationStrategyLabel(result.strategy, language);

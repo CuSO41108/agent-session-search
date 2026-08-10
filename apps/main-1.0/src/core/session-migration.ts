@@ -56,6 +56,7 @@ export interface MigrateSessionOptions {
   source: SessionSearchResult;
   messages: SessionMessage[];
   target: MigrationTarget;
+  targetProjectPath?: string;
   deps: SessionMigrationDependencies;
 }
 
@@ -146,9 +147,13 @@ export async function migrateSession({
   source,
   messages,
   target,
+  targetProjectPath,
   deps,
 }: MigrateSessionOptions): Promise<SessionMigrationResult> {
-  await validateMigrationRequest(source, target, deps);
+  const migrationSource = targetProjectPath?.trim()
+    ? { ...source, projectPath: targetProjectPath.trim() }
+    : source;
+  await validateMigrationRequest(migrationSource, target, deps);
 
   notifyProgress(deps.onProgress, {
     sessionKey: source.sessionKey,
@@ -158,7 +163,7 @@ export async function migrateSession({
 
   await deps.inspectCli(target);
 
-  const portable = portableSessionFrom(source, messages);
+  const portable = portableSessionFrom(migrationSource, messages);
   if (estimatePortableSessionTokens(portable) > MIGRATION_TOKEN_LIMIT) {
     notifyProgress(deps.onProgress, {
       sessionKey: source.sessionKey,

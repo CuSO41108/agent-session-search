@@ -149,6 +149,7 @@ export interface SessionMigrationResult {
 export interface SessionMigrationRequest {
   sessionKey: string;
   target: MigrationTarget;
+  targetProjectPath?: string;
   throughTurnId?: string;
 }
 

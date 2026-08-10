@@ -113,6 +113,31 @@ describe("runLocalSessionMigration", () => {
     expect(seenSettings.every((settings) => settings === snapshot)).toBe(true);
   });
 
+  it("uses the selected target project for a local session without a project path", async () => {
+    const settings = defaultSettings;
+    const deps = runtime();
+    deps.migrate = migrateSession;
+    const pathlessSource = { ...source, projectPath: "" };
+
+    await runLocalSessionMigration({
+      source: pathlessSource,
+      messages,
+      target: "codex",
+      targetProjectPath: "  /chosen/project  ",
+      settings,
+    }, deps);
+
+    expect(deps.projectPathExists).toHaveBeenCalledWith("/chosen/project");
+    expect(deps.projectPathIsDirectory).toHaveBeenCalledWith("/chosen/project");
+    expect(deps.prepare).toHaveBeenCalledWith(
+      expect.objectContaining({ projectPath: "/chosen/project" }),
+      expect.any(Function),
+      expect.anything(),
+    );
+    expect(deps.launch).toHaveBeenCalledWith("codex", "id", "/chosen/project", settings);
+    expect(pathlessSource.projectPath).toBe("");
+  });
+
   it("returns the independent safe command when the primary formatter throws", async () => {
     const settings = { ...defaultSettings, includeTcodex: true, tcodexBinary: "/safe/tcodex cli" };
     const deps = runtime();
