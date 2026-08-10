@@ -75,6 +75,16 @@ export interface AgentRecallBuiltinSkillDefinition {
 
 export const AGENT_RECALL_BUILTIN_SKILLS: AgentRecallBuiltinSkillDefinition[] = [
   {
+    id: "aihot",
+    installId: "aihot",
+    sourceUrl: "https://github.com/KKKKhazix/khazix-skills/tree/main/aihot",
+  },
+  {
+    id: "resume-optimization",
+    installId: "resume-optimization",
+    sourceUrl: "https://github.com/melodic-software/claude-code-plugins/tree/main/plugins/soft-skills/skills/resume-optimization",
+  },
+  {
     id: "brainstorming",
     installId: "brainstorming",
     sourceUrl: "https://github.com/obra/superpowers/tree/main/skills/brainstorming",

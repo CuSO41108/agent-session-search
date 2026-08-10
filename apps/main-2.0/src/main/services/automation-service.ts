@@ -18,7 +18,13 @@ import {
 } from "../../automation/engine/main/bridges/mcp-bridge";
 import { McpRegistryStore } from "../../automation/engine/main/mcp-registry-store";
 import { McpAgentManagementService } from "../../automation/engine/main/mcp/agent-management-service";
-import { BuiltinWorkflowMcpServer, type BuiltinSessionSearchServer, type ManagedMcp, type McpBuiltinRuntime } from "../../automation/engine/main/mcp-builtin-server";
+import {
+  BuiltinWorkflowMcpServer,
+  type BuiltinSessionSearchServer,
+  type BuiltinSkillMcpServer,
+  type ManagedMcp,
+  type McpBuiltinRuntime,
+} from "../../automation/engine/main/mcp-builtin-server";
 import { EvaluationStore } from "../../automation/engine/main/evaluation-store";
 import { ConfiguredAgentExecutionService } from "../../automation/engine/main/platform/configured-agent-execution-service";
 import { WorkflowEngine } from "../../automation/engine/main/workflows/workflow-engine";
@@ -63,6 +69,7 @@ export interface AutomationServiceOptions {
   bundledWorkflowsPath: string;
   workflowMcpServerPath: string;
   builtinSessionSearch?: BuiltinSessionSearchServer;
+  builtinSkills?: BuiltinSkillMcpServer;
   workflowMcp?: {
     isEnabled(): boolean;
     setEnabled(next: boolean): Promise<boolean>;
@@ -374,13 +381,12 @@ export class NativeAutomationService {
           launchConfig: () => ({
             id: "agent-recall-workflow",
             name: "AgentRecall Workflow",
-            description: "Create, inspect, and run structured AgentRecall workflows.",
+            description: "创建、查看并运行结构化的 AgentRecall Workflow。",
             command: "node",
             args: [options.workflowMcpServerPath],
           }),
           testEnv: () => ({
             AGENT_RECALL_WORKFLOW_MCP_BRIDGE: this.bridge?.discoveryPath ?? this.paths.discoveryPath,
-            ...(this.bridge?.token ? { AGENT_RECALL_WORKFLOW_MCP_TOKEN: this.bridge.token } : {}),
           }),
           hubBindable: false,
           readRuntime: () => options.workflowMcp!.readRuntime(),
@@ -391,7 +397,7 @@ export class NativeAutomationService {
       registry: this.registryInstance,
       agents: this.agentsInstance,
       runtime: this.hubInstance,
-      builtins: [options.builtinSessionSearch, workflowBuiltin]
+      builtins: [options.builtinSessionSearch, options.builtinSkills, workflowBuiltin]
         .filter((item): item is NonNullable<typeof item> => Boolean(item)) as ManagedMcp[],
     });
     this.currentSnapshot = this.hubInstance.snapshot();

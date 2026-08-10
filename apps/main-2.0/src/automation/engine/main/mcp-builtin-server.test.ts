@@ -1,5 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
-import { BuiltinSessionSearchServer, BuiltinWorkflowMcpServer, type BuiltinSessionSearchDeps, type McpBuiltinRuntime } from "./mcp-builtin-server";
+import {
+  BuiltinSessionSearchServer,
+  BuiltinSkillMcpServer,
+  BuiltinWorkflowMcpServer,
+  type BuiltinSessionSearchDeps,
+  type McpBuiltinRuntime,
+} from "./mcp-builtin-server";
 import type { McpServerDefinition } from "../shared/mcp/types";
 
 const FIXED_CONFIG = {
@@ -208,5 +214,33 @@ describe("BuiltinWorkflowMcpServer", () => {
     expect(tested.status).toBe("connected");
     expect(tested.tools.map((tool) => tool.name)).toEqual(["workflow_create", "workflow_run"]);
     expect((deps.readRuntime() as McpBuiltinRuntime).status).toBe("connected");
+  });
+});
+
+describe("BuiltinSkillMcpServer", () => {
+  it("resolves as a separate hub-bindable project built-in", async () => {
+    const deps = createDeps({
+      launchConfig: () => ({
+        id: "agent-recall-skills",
+        name: "AgentRecall Skills",
+        description: "列出 AgentRecall 已管理的 Skill，并按需读取完整说明。",
+        command: "node",
+        args: ["/bin/agent-recall-skill-mcp.mjs"],
+      }),
+    });
+    const server = new BuiltinSkillMcpServer(deps);
+
+    const resolved = await server.resolve();
+
+    expect(resolved).toMatchObject({
+      id: "agent-recall-skills",
+      name: "AgentRecall Skills",
+      description: "列出 AgentRecall 已管理的 Skill，并按需读取完整说明。",
+      managed: true,
+      enabled: true,
+    });
+    expect(resolved.hubBindable).toBeUndefined();
+    expect(server.isBuiltinId("agent-recall-skills")).toBe(true);
+    expect(server.isBuiltinId("agent-recall-session-search")).toBe(false);
   });
 });

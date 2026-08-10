@@ -42,7 +42,7 @@ function server(overrides: Partial<McpServerDefinition>): McpServerDefinition {
 }
 
 describe("McpPage", () => {
-  it("separates the two project MCPs from user-configured servers without exposing internal ids", () => {
+  it("separates the three project MCPs from user-configured servers without exposing internal ids", () => {
     const sessionSearch = server({
       id: "agent-recall-session-search",
       name: "AgentRecall Session Search",
@@ -51,6 +51,7 @@ describe("McpPage", () => {
     });
     model.servers = [
       sessionSearch,
+      server({ id: "agent-recall-skills", name: "AgentRecall Skills", managed: true }),
       server({ id: "agent-recall-workflow", name: "AgentRecall Workflow", managed: true }),
       server({ id: "team-docs", name: "Team docs" }),
     ];
@@ -61,6 +62,7 @@ describe("McpPage", () => {
     expect(html).toContain("项目内置");
     expect(html).toContain("自定义");
     expect(html).toContain("AgentRecall 会话检索");
+    expect(html).toContain("AgentRecall Skill 库");
     expect(html).toContain("AgentRecall Workflow");
     expect(html).toContain("检索已索引的 Agent 会话、查看上下文，并准备可恢复的迁移");
     expect(html).not.toContain("STDIO · agent-recall-session-search");

@@ -18,6 +18,47 @@ const MAX_MESSAGES = 200;
 const MAX_MEMORY_RESULTS = 50;
 const OPENVIKING_MANIFEST_POINTER = "openviking-manifest-path";
 
+export const SESSION_MCP_DESCRIPTIONS = {
+  searchSessions: "按关键词检索历史 AI 编程会话（如 Claude Code、Codex）。会匹配标题、首个问题、对话正文和 AI 摘要，用于回顾以前如何解决某个问题。",
+  searchQuery: "要检索的关键词。",
+  sourceFilter: "可选的来源筛选，例如 claude-cli 或 codex-cli。",
+  projectFilter: "可选的项目路径子串筛选。",
+  resultLimit50: "最多返回 1～50 条，默认 20 条。",
+  getSession: "根据 sessionKey 获取单个会话的元数据、AI 摘要和消息。从 offset（默认 0）开始返回；长会话可把响应中的 nextOffset 作为下一次 offset 继续分页。",
+  sessionKey: "search_sessions 返回的 sessionKey。",
+  maxMessages: "最多返回 1～200 条消息，默认 40 条。",
+  messageOffset: "开始读取的消息序号，默认 0；继续分页时使用上次返回的 nextOffset。",
+  listProjects: "列出已索引项目及其会话数量，用于限定检索范围。",
+  listTags: "列出全部标签，用于限定检索范围。",
+  latestSessions: "按修改时间倒序获取最近活跃的会话，用于查找当前会话或最近的 Codex、Claude 会话，无需预先知道 sessionKey。迁移最近会话时，先调用本工具取得 sessionKey，再调用 migrate_session。可按 source 和 projectPath 筛选。",
+  latestProjectFilter: "可选的项目路径子串筛选。",
+  resultLimit20: "最多返回 1～20 条，默认 5 条。",
+  memorySearch: "检索托管目录中的有效长期记忆。历史对话请使用会话检索；本工具只检索已经写入 OpenViking 的记忆内容。",
+  memoryQuery: "要回忆或查找的内容。",
+  memoryScope: "可选的工作区 ID、精确目录路径、显示名称或 all。",
+  memoryTypes: "可选的记忆类型，例如偏好、决策、事件、案例或经验。",
+  memoryTimeRange: "可选的记忆时间范围。",
+  memoryAfter: "仅返回该时间之后的记忆，使用 ISO 8601 时间。",
+  memoryBefore: "仅返回该时间之前的记忆，使用 ISO 8601 时间。",
+  memoryRead: "完整读取一条 OpenViking 记忆。每个托管目录都有独立记忆空间，因此必须提供工作区 ID。",
+  workspaceId: "memory_search 返回的工作区 ID。",
+  memoryUri: "memory_search 返回的记忆 URI。",
+  memoryEvidence: "在采用一条记忆前，检查其权威来源、生命周期、源 Turn 证据、提取任务和反馈历史。",
+  memoryFeedback: "记录一条记忆是否有帮助、错误或已过时；错误和过时的记忆将不再参与自动召回。",
+  feedback: "反馈类型：helpful 表示有帮助，wrong 表示错误，outdated 表示已过时。",
+  feedbackNote: "可选的反馈备注，最多 2000 个字符。",
+  tagSession: "为会话添加或移除标签，可用于标记重要、待复查等状态。操作具备幂等性，并返回会话当前的标签列表。",
+  tagAction: "标签操作：add 为添加，remove 为移除。",
+  tagName: "标签名称，例如 important。",
+  toggleFavorite: "收藏或取消收藏会话。操作具备幂等性，请把 favorited 设置为期望的最终状态。",
+  favorited: "设为 true 表示收藏，false 表示取消收藏。",
+  setVisibility: "设置会话可见性：default 表示正常显示，favorites 表示收藏，hidden 表示隐藏。",
+  visibility: "目标可见性：default、favorites 或 hidden。",
+  migrateSession: "在 Agent 之间迁移本地会话，把 Claude Code、Codex、CodeBuddy 或 CodeWiz 会话转换为目标 Agent 可直接恢复的会话文件。先用 search_sessions 获取 sessionKey，再传入 sessionKey 和 target。完成后会返回 resumeCommand，用户需自行在终端执行；不支持远程会话。",
+  migrationSessionKey: "要迁移的源会话 sessionKey，可通过 search_sessions 获取。",
+  migrationTarget: "目标 Agent：claude、codex、codebuddy、codewiz、cursor、tclaude 或 tcodex；tclaude 和 tcodex 需先在“设置 > 可选来源”中启用。",
+};
+
 export function resolveAppVersion(packageUrl = new URL("../package.json", import.meta.url)) {
   try {
     const value = JSON.parse(readFileSync(fileURLToPath(packageUrl), "utf8"));
@@ -1167,13 +1208,12 @@ async function runServer() {
   server.registerTool(
     "search_sessions",
     {
-      description:
-        "Search past AI coding sessions (Claude Code, Codex, etc.) by keywords. Matches titles, first questions, transcripts, and AI summaries. Use this to recall how a problem was solved before.",
+      description: SESSION_MCP_DESCRIPTIONS.searchSessions,
       inputSchema: {
-        query: z.string().describe("Keywords to search for.").optional(),
-        source: z.string().describe("Optional source filter, e.g. claude-cli or codex-cli.").optional(),
-        project: z.string().describe("Optional substring match on the project path.").optional(),
-        limit: z.number().describe("Max results (1-50, default 20).").optional(),
+        query: z.string().describe(SESSION_MCP_DESCRIPTIONS.searchQuery).optional(),
+        source: z.string().describe(SESSION_MCP_DESCRIPTIONS.sourceFilter).optional(),
+        project: z.string().describe(SESSION_MCP_DESCRIPTIONS.projectFilter).optional(),
+        limit: z.number().describe(SESSION_MCP_DESCRIPTIONS.resultLimit50).optional(),
       },
     },
     async (args) => jsonContent(await searchSessions(db, args)),
@@ -1182,12 +1222,11 @@ async function runServer() {
   server.registerTool(
     "get_session",
     {
-      description:
-        "Fetch a single session's metadata, AI summary, and messages by sessionKey. Returns messages from `offset` (default 0); for long sessions use the returned `nextOffset` as the next `offset` to page through the rest.",
+      description: SESSION_MCP_DESCRIPTIONS.getSession,
       inputSchema: {
-        sessionKey: z.string().describe("The sessionKey from search_sessions."),
-        maxMessages: z.number().describe("Max messages to return (1-200, default 40).").optional(),
-        offset: z.number().describe("Message index to start from (default 0). Use nextOffset from a previous call to continue.").optional(),
+        sessionKey: z.string().describe(SESSION_MCP_DESCRIPTIONS.sessionKey),
+        maxMessages: z.number().describe(SESSION_MCP_DESCRIPTIONS.maxMessages).optional(),
+        offset: z.number().describe(SESSION_MCP_DESCRIPTIONS.messageOffset).optional(),
       },
     },
     async (args) => {
@@ -1197,30 +1236,13 @@ async function runServer() {
   );
 
   server.registerTool(
-    "list_projects",
-    { description: "List indexed projects with session counts, to scope a search.", inputSchema: {} },
-    async () => jsonContent(await listProjects(db)),
-  );
-
-  server.registerTool(
-    "list_tags",
-    { description: "List all tags, to scope a search.", inputSchema: {} },
-    async () => jsonContent(await listTags(db)),
-  );
-
-  server.registerTool(
     "get_latest_sessions",
     {
-      description:
-        "获取最近活跃的会话（按修改时间倒序）。Get the most recently active sessions by mtime. " +
-        "用于找到「当前会话」「最近的 codex/claude 会话」等，不需要 sessionKey。" +
-        "典型场景：用户说「把这次会话迁移到 claude」「迁移最近的 codex 会话」时，" +
-        "先调本工具拿到 sessionKey，再调 migrate_session。" +
-        "可选按 source（如 codex-cli、claude-cli）和 projectPath 过滤。",
+      description: SESSION_MCP_DESCRIPTIONS.latestSessions,
       inputSchema: {
-        source: z.string().describe("Optional source filter, e.g. codex-cli or claude-cli.").optional(),
-        projectPath: z.string().describe("Optional project path substring to filter by.").optional(),
-        limit: z.number().describe("Max results (1-20, default 5).").optional(),
+        source: z.string().describe(SESSION_MCP_DESCRIPTIONS.sourceFilter).optional(),
+        projectPath: z.string().describe(SESSION_MCP_DESCRIPTIONS.latestProjectFilter).optional(),
+        limit: z.number().describe(SESSION_MCP_DESCRIPTIONS.resultLimit20).optional(),
       },
     },
     async (args) => jsonContent(await getLatestSessions(db, args)),
@@ -1229,17 +1251,16 @@ async function runServer() {
   server.registerTool(
     "memory_search",
     {
-      description:
-        "Search active long-term memories from managed directories. Use session search for historical conversations; this tool searches only content already stored in OpenViking memory.",
+      description: SESSION_MCP_DESCRIPTIONS.memorySearch,
       inputSchema: {
-        query: z.string().min(1).describe("What to recall."),
-        scope: z.string().describe("Optional workspace ID, exact directory path, display name, or 'all'.").optional(),
-        types: z.array(z.string()).max(20).describe("Optional memory types such as preferences, decisions, events, cases, or experiences.").optional(),
+        query: z.string().min(1).describe(SESSION_MCP_DESCRIPTIONS.memoryQuery),
+        scope: z.string().describe(SESSION_MCP_DESCRIPTIONS.memoryScope).optional(),
+        types: z.array(z.string()).max(20).describe(SESSION_MCP_DESCRIPTIONS.memoryTypes).optional(),
         time_range: z.object({
-          after: z.string().datetime().optional(),
-          before: z.string().datetime().optional(),
-        }).strict().optional(),
-        limit: z.number().describe("Max results (1-50, default 20).").optional(),
+          after: z.string().datetime().describe(SESSION_MCP_DESCRIPTIONS.memoryAfter).optional(),
+          before: z.string().datetime().describe(SESSION_MCP_DESCRIPTIONS.memoryBefore).optional(),
+        }).strict().describe(SESSION_MCP_DESCRIPTIONS.memoryTimeRange).optional(),
+        limit: z.number().describe(SESSION_MCP_DESCRIPTIONS.resultLimit50).optional(),
       },
     },
     async (args) => memoryTool(() => memorySearch(db, args, {
@@ -1250,11 +1271,10 @@ async function runServer() {
   server.registerTool(
     "memory_read",
     {
-      description:
-        "Read one OpenViking memory in full. A workspace ID is required because every managed directory has an isolated memory space.",
+      description: SESSION_MCP_DESCRIPTIONS.memoryRead,
       inputSchema: {
-        workspaceId: z.string().min(1).describe("Workspace ID returned by memory_search."),
-        uri: z.string().min(1).describe("Memory URI returned by memory_search."),
+        workspaceId: z.string().min(1).describe(SESSION_MCP_DESCRIPTIONS.workspaceId),
+        uri: z.string().min(1).describe(SESSION_MCP_DESCRIPTIONS.memoryUri),
       },
     },
     async (args) => memoryTool(() => memoryRead(db, args, {
@@ -1265,11 +1285,10 @@ async function runServer() {
   server.registerTool(
     "memory_evidence",
     {
-      description:
-        "Inspect a memory's authority, lifecycle, source Turn evidence, extraction task, and feedback history before relying on it.",
+      description: SESSION_MCP_DESCRIPTIONS.memoryEvidence,
       inputSchema: {
-        workspaceId: z.string().min(1).describe("Workspace ID returned by memory_search."),
-        uri: z.string().min(1).describe("Memory URI returned by memory_search."),
+        workspaceId: z.string().min(1).describe(SESSION_MCP_DESCRIPTIONS.workspaceId),
+        uri: z.string().min(1).describe(SESSION_MCP_DESCRIPTIONS.memoryUri),
       },
     },
     async (args) => memoryTool(() => memoryEvidence(db, args)),
@@ -1278,13 +1297,12 @@ async function runServer() {
   server.registerTool(
     "memory_feedback",
     {
-      description:
-        "Record whether a memory was helpful, wrong, or outdated. Wrong and outdated memories stop participating in automatic recall.",
+      description: SESSION_MCP_DESCRIPTIONS.memoryFeedback,
       inputSchema: {
-        workspaceId: z.string().min(1).describe("Workspace ID returned by memory_search."),
-        uri: z.string().min(1).describe("Memory URI returned by memory_search."),
-        feedback: z.enum(["helpful", "wrong", "outdated"]),
-        note: z.string().max(2_000).optional(),
+        workspaceId: z.string().min(1).describe(SESSION_MCP_DESCRIPTIONS.workspaceId),
+        uri: z.string().min(1).describe(SESSION_MCP_DESCRIPTIONS.memoryUri),
+        feedback: z.enum(["helpful", "wrong", "outdated"]).describe(SESSION_MCP_DESCRIPTIONS.feedback),
+        note: z.string().max(2_000).describe(SESSION_MCP_DESCRIPTIONS.feedbackNote).optional(),
       },
     },
     async (args) => memoryTool(() => memoryFeedback(db, args, {
@@ -1295,12 +1313,11 @@ async function runServer() {
   server.registerTool(
     "tag_session",
     {
-      description:
-        "Add or remove a tag on a session. Use to mark sessions (e.g. 'important', 'review'). Idempotent. Returns the session's current tags.",
+      description: SESSION_MCP_DESCRIPTIONS.tagSession,
       inputSchema: {
-        sessionKey: z.string().describe("The sessionKey from search_sessions."),
-        action: z.enum(["add", "remove"]).describe("Whether to add or remove the tag."),
-        tag: z.string().describe("Tag name, e.g. 'important'."),
+        sessionKey: z.string().describe(SESSION_MCP_DESCRIPTIONS.sessionKey),
+        action: z.enum(["add", "remove"]).describe(SESSION_MCP_DESCRIPTIONS.tagAction),
+        tag: z.string().describe(SESSION_MCP_DESCRIPTIONS.tagName),
       },
     },
     async (args) => {
@@ -1312,10 +1329,10 @@ async function runServer() {
   server.registerTool(
     "toggle_favorite",
     {
-      description: "Favorite or unfavorite a session. Idempotent — set favorited to the desired final state.",
+      description: SESSION_MCP_DESCRIPTIONS.toggleFavorite,
       inputSchema: {
-        sessionKey: z.string().describe("The sessionKey from search_sessions."),
-        favorited: z.boolean().describe("true to favorite, false to unfavorite."),
+        sessionKey: z.string().describe(SESSION_MCP_DESCRIPTIONS.sessionKey),
+        favorited: z.boolean().describe(SESSION_MCP_DESCRIPTIONS.favorited),
       },
     },
     async (args) => {
@@ -1327,11 +1344,10 @@ async function runServer() {
   server.registerTool(
     "set_visibility",
     {
-      description:
-        "Set a session's visibility dimension. 'default' makes it visible, 'favorites' favorites it, and 'hidden' hides it.",
+      description: SESSION_MCP_DESCRIPTIONS.setVisibility,
       inputSchema: {
-        sessionKey: z.string().describe("The sessionKey from search_sessions."),
-        visibility: z.enum(["default", "favorites", "hidden"]).describe("Target visibility."),
+        sessionKey: z.string().describe(SESSION_MCP_DESCRIPTIONS.sessionKey),
+        visibility: z.enum(["default", "favorites", "hidden"]).describe(SESSION_MCP_DESCRIPTIONS.visibility),
       },
     },
     async (args) => {
@@ -1344,16 +1360,10 @@ async function runServer() {
     server.registerTool(
       "migrate_session",
     {
-      description:
-        "跨 Agent 迁移会话（Migrate session across agents）。把一个本地会话（Claude Code / Codex / CodeBuddy / CodeWiz）迁移到另一个目标 Agent，生成目标 Agent 能直接 resume 的会话文件。" +
-        "典型场景：用户说「把这个会话迁移到 Claude/Codex/CodeBuddy」「把当前对话搬过去」「迁移会话」时调用此工具。" +
-        "流程：先用 search_sessions 找到源会话的 sessionKey，再调用本工具传入 sessionKey 和 target。" +
-        "迁移完成后返回 resumeCommand（如 cd /repo && claude --resume <id>），launched 恒为 false，需要用户自行在终端执行该命令。" +
-        "两个可选目标 tclaude、tcodex 必须先在 Settings > Optional sources 中启用。" +
-        "仅支持本地会话（environmentKind=local），远程会话不可迁移。",
+      description: SESSION_MCP_DESCRIPTIONS.migrateSession,
       inputSchema: {
-        sessionKey: z.string().describe("要迁移的源会话 sessionKey，可通过 search_sessions 获取。"),
-        target: migrateTargetSchema.describe("目标 Agent：claude、codex、codebuddy、codewiz、cursor、tclaude 或 tcodex。两个可选目标需先在 Settings > Optional sources 启用。"),
+        sessionKey: z.string().describe(SESSION_MCP_DESCRIPTIONS.migrationSessionKey),
+        target: migrateTargetSchema.describe(SESSION_MCP_DESCRIPTIONS.migrationTarget),
       },
     },
     async (args) => {

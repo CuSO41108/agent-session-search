@@ -160,6 +160,13 @@ export class BuiltinSessionSearchServer extends ManagedMcpServer {
   }
 }
 
+/** The app-managed, hub-bindable MCP server for discovering and reading managed Skills. */
+export class BuiltinSkillMcpServer extends ManagedMcpServer {
+  constructor(deps: BuiltinSessionSearchDeps) {
+    super(deps);
+  }
+}
+
 /**
  * The app-managed AgentRecall workflow MCP server. Enabled state maps to bulk
  * registration into `~/.codex/config.toml` for configured Codex agents. It is

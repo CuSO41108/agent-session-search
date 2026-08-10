@@ -18,6 +18,7 @@
     "agent-recall-v2-openviking-memory-hook": "bin/openviking-memory-hook.cjs",
     "agent-recall-v2-setup-openviking-memory-hooks": "bin/setup-openviking-memory-hooks.cjs",
     "agent-recall-v2-mcp": "bin/agent-recall-mcp.mjs",
+    "agent-recall-v2-skill-mcp": "bin/agent-recall-skill-mcp.mjs",
     "agent-recall-v2-workflow-mcp": "bin/agent-recall-workflow-mcp.mjs",
     "agent-recall-v2-setup-mcp": "bin/setup-mcp.cjs"
   },

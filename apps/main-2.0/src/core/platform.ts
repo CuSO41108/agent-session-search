@@ -136,6 +136,7 @@ export interface AppSettings {
    */
   summaryReasoningEffort: SummaryReasoningEffort;
   sessionSearchMcpEnabled: boolean;
+  skillMcpEnabled: boolean;
   workflowMcpEnabled: boolean;
   workflowGlobalReviewEnabled: boolean;
   workflowRuntimeReviewEnabled: boolean;
@@ -216,6 +217,7 @@ export const defaultSettings: AppSettings = {
   summaryClaudeConfigDir: "",
   summaryReasoningEffort: "medium",
   sessionSearchMcpEnabled: true,
+  skillMcpEnabled: true,
   workflowMcpEnabled: false,
   workflowGlobalReviewEnabled: false,
   workflowRuntimeReviewEnabled: false,

@@ -77,7 +77,11 @@ import {
   writeMigratedSession,
 } from "../core/session-migration-writers";
 import { assertMigrationTargetEnabled, isMigrationTarget, migrationTargetDescriptor } from "../core/migration-targets";
-import { writeDatabaseUrlPointer, writeOpenVikingManifestPointer } from "../core/app-paths";
+import {
+  writeDatabaseUrlPointer,
+  writeOpenVikingManifestPointer,
+  writeSkillLibraryPointer,
+} from "../core/app-paths";
 import { PostgresDatabase } from "../core/postgres/database";
 import { POSTGRES_MIGRATIONS } from "../core/postgres/schema";
 import { diagnoseRemoteEnvironment } from "../core/remote-health";
@@ -161,7 +165,10 @@ import {
   type OpenVikingRuntimeManifest,
 } from "./services/openviking-runtime-service";
 import { NativeAutomationService } from "./services/automation-service";
-import { BuiltinSessionSearchServer } from "../automation/engine/main/mcp-builtin-server";
+import {
+  BuiltinSessionSearchServer,
+  BuiltinSkillMcpServer,
+} from "../automation/engine/main/mcp-builtin-server";
 import type { McpBuiltinRuntime } from "../automation/engine/main/mcp-builtin-server";
 import { createLocalTextFilePreviewUnderRoots } from "../automation/engine/main/platform/local-file-preview";
 import { ProviderService } from "./services/provider-service";
@@ -358,6 +365,11 @@ const mcpRuntimeStore = new Store<McpBuiltinRuntime>({
   defaults: { tools: [], disabledTools: [], status: "untested", createdAt: 0, updatedAt: 0 },
 });
 
+const skillMcpRuntimeStore = new Store<McpBuiltinRuntime>({
+  name: "skill-mcp-runtime",
+  defaults: { tools: [], disabledTools: [], status: "untested", createdAt: 0, updatedAt: 0 },
+});
+
 // Same runtime cache for the built-in workflow MCP server.
 const workflowMcpRuntimeStore = new Store<McpBuiltinRuntime>({
   name: "workflow-mcp-runtime",
@@ -521,7 +533,7 @@ function createAutomationService(): NativeAutomationService {
         return {
           id: definition.id,
           name: "AgentRecall Session Search",
-          description: "Search indexed Agent sessions, inspect context, and prepare resumable migrations.",
+          description: "检索已索引的 Agent 会话、查看上下文，并准备可恢复的迁移。",
           command: definition.command,
           args: definition.args,
         };
@@ -529,6 +541,24 @@ function createAutomationService(): NativeAutomationService {
       readRuntime: () => mcpRuntimeStore.store,
       writeRuntime: (runtime) => {
         mcpRuntimeStore.store = runtime;
+      },
+    }),
+    builtinSkills: new BuiltinSkillMcpServer({
+      isEnabled: () => getSettings().skillMcpEnabled,
+      setEnabled: async (next) => {
+        settingsStore.set("skillMcpEnabled", next);
+        return next;
+      },
+      launchConfig: () => ({
+        id: "agent-recall-skills",
+        name: "AgentRecall Skills",
+        description: "列出 AgentRecall 已管理的 Skill，并按需读取完整说明。",
+        command: "node",
+        args: [path.join(app.getAppPath(), "bin", "agent-recall-skill-mcp.mjs")],
+      }),
+      readRuntime: () => skillMcpRuntimeStore.store,
+      writeRuntime: (runtime) => {
+        skillMcpRuntimeStore.store = runtime;
       },
     }),
     workflowMcp: {
@@ -654,6 +684,8 @@ const providerService = new ProviderService({
   logError: (message) => console.error(message),
 });
 
+const skillLibraryRoot = path.join(app.getPath("userData"), "skills");
+
 const skillService = new SkillService({
   getStore: () => store,
   getSettings,
@@ -662,7 +694,7 @@ const skillService = new SkillService({
     if (!automationService) throw new Error("Runtime is not ready.");
     return automationService.evaluations;
   },
-  libraryRoot: path.join(app.getPath("userData"), "skills"),
+  libraryRoot: skillLibraryRoot,
   skillsShCachePath: path.join(app.getPath("userData"), "cache", "skills-sh.json"),
   homeDir: app.getPath("home"),
   codexHome: process.env.CODEX_HOME,
@@ -2734,6 +2766,11 @@ app.whenReady().then(async () => {
     writeDatabaseUrlPointer(postgresRuntime.connectionUrl);
   } catch {
     // Non-fatal: the MCP server can still use AGENT_RECALL_DATABASE_URL.
+  }
+  try {
+    writeSkillLibraryPointer(skillLibraryRoot);
+  } catch {
+    // Non-fatal: the MCP server can still use AGENT_RECALL_SKILL_LIBRARY.
   }
   try {
     ensureAgentRecallMcpPreference();

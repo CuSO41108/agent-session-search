@@ -2,6 +2,22 @@
 
 AgentRecall remains licensed under the MIT License. Optional components downloaded or bundled for the directory-memory feature retain their own licenses.
 
+## AIHOT Skill
+
+- Component: `aihot` Agent Skill
+- Copyright: 2026 Virxact
+- License: MIT
+- Source: https://github.com/KKKKhazix/khazix-skills/tree/main/aihot
+- License text: `assets/bundled-skills/aihot/LICENSE`
+
+## Resume Optimization Skill
+
+- Component: `resume-optimization` Agent Skill
+- Copyright: 2026 Melodic Software
+- License: MIT
+- Source: https://github.com/melodic-software/claude-code-plugins/tree/main/plugins/soft-skills/skills/resume-optimization
+- License text: `assets/bundled-skills/resume-optimization/LICENSE`
+
 ## OpenViking server
 
 - Component: OpenViking server 0.4.11, run as an unmodified standalone local process

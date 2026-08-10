@@ -9,7 +9,8 @@ import type { StartMcpBridgeOptions } from "../../automation/engine/main/bridges
 import type { EvaluationService } from "./evaluation-service";
 import type { TeamChatService } from "../team-chat/team-chat-service";
 import type { PostgresDatabase } from "../../core/postgres/database";
-import { NativeAutomationService } from "./automation-service";
+import { BuiltinSkillMcpServer, type ManagedMcp } from "../../automation/engine/main/mcp-builtin-server";
+import { NativeAutomationService, type AutomationServiceOptions } from "./automation-service";
 
 function snapshot(workDir = "/repo"): AppSnapshot {
   return {
@@ -34,7 +35,7 @@ function snapshot(workDir = "/repo"): AppSnapshot {
   };
 }
 
-function fixture(injectAgents = true) {
+function fixture(injectAgents = true, optionOverrides: Partial<AutomationServiceOptions> = {}) {
   const calls: string[] = [];
   let current = snapshot();
   let listener: ((value: AgentHubChange) => void) | undefined;
@@ -105,6 +106,7 @@ function fixture(injectAgents = true) {
       appDataPath: "/app-data",
       bundledWorkflowsPath: "/assets/workflows",
       workflowMcpServerPath: "/app/out/mcp/workflow-entry.js",
+      ...optionOverrides,
     },
     {
       hub,
@@ -156,6 +158,26 @@ function fixture(injectAgents = true) {
 }
 
 describe("NativeAutomationService", () => {
+  it("publishes the managed Skill server as a separate project built-in", async () => {
+    const skillBuiltin = new BuiltinSkillMcpServer({
+      isEnabled: () => true,
+      setEnabled: async (next) => next,
+      launchConfig: () => ({
+        id: "agent-recall-skills",
+        name: "AgentRecall Skills",
+        command: "node",
+        args: ["/bin/agent-recall-skill-mcp.mjs"],
+      }),
+      readRuntime: () => undefined,
+      writeRuntime: () => undefined,
+    });
+    const { service } = fixture(true, { builtinSkills: skillBuiltin });
+
+    expect((await service.mcp.list()).map((server) => server.id)).toEqual([
+      "agent-recall-skills",
+    ]);
+  });
+
   it("loads Workflow sidebar summaries without preparing full automation state", async () => {
     const { service, hub, database } = fixture();
 
@@ -201,6 +223,28 @@ describe("NativeAutomationService", () => {
     await service.initialize();
 
     expect(hub.setWorkflowMcpManagedToken).toHaveBeenCalledWith("test-token");
+  });
+
+  it("discovers the built-in Workflow catalog without the managed write token", async () => {
+    const { service } = fixture(true, {
+      workflowMcp: {
+        isEnabled: () => true,
+        setEnabled: async (next) => next,
+        readRuntime: () => undefined,
+        writeRuntime: () => undefined,
+      },
+    });
+    await service.initialize();
+    const mcpModule = service.mcp as unknown as {
+      dependencies: { builtins: ManagedMcp[] };
+    };
+    const workflowBuiltin = mcpModule.dependencies.builtins.find((builtin) =>
+      builtin.isBuiltinId("agent-recall-workflow")
+    );
+
+    expect(workflowBuiltin?.testEnv()).toEqual({
+      AGENT_RECALL_WORKFLOW_MCP_BRIDGE: "/user-data/automation-mcp-bridge.json",
+    });
   });
 
   it("initializes the native engine once in dependency order", async () => {
