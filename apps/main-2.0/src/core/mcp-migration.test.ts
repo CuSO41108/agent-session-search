@@ -18,7 +18,7 @@ import {
 } from "./session-loader";
 import { migrationTargetDescriptor } from "./migration-targets";
 import { defaultSettings } from "./platform";
-import type { IndexedSession, MigrationTarget, SessionMessage, SessionMigrationStrategy, SessionSource } from "./types";
+import type { IndexedSession, MigrationTarget, SessionMessage, SessionSource } from "./types";
 
 const temporaryProjectDirectories = new Set<string>();
 

@@ -8,7 +8,6 @@ import {
   AGENT_SKILL_REGISTRY,
   agentSkillDir,
   type SkillAgent,
-  type SkillInstallTarget,
   type SkillPortableScope,
   type SkillSource,
 } from "./agent-skill-registry";

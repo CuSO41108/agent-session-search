@@ -5,15 +5,8 @@ import { WORKFLOW_TOTAL_QUESTION_COUNT } from "../../../../shared/workflow-agent
 import { validateWorkflowV2Definition } from "../../../../shared/workflow-v2/validation";
 import type { WorkflowV2Node } from "../../../../shared/workflow-v2/definition";
 import type {
-  AgentChannel,
-  AgentRuntime,
-  ConfiguredAgent,
   LocalFilePreview,
-  RegisteredArtifact,
-  WorkflowV2Definition,
   WorkflowGrillMessage,
-  WorkflowRunProgressItem,
-  WorkflowStatus,
 } from "../../../../shared/types";
 import {
   agentAccent,
@@ -25,7 +18,6 @@ import {
   resolveConfiguredAgentChannel,
   runtimeStatus,
 } from "../../app/agents";
-import type { Language } from "../../app/language";
 import { Markdown } from "../../Markdown";
 import { ChatControls } from "../chat/ChatControls";
 import { ChatEventMessage } from "../chat/chat-event-display";
@@ -45,7 +37,6 @@ import type { WorkflowController } from "./workflow-controller";
 import { workflowNodeOpenTarget } from "./workflow-node-open-policy";
 import {
   WORKFLOW_THINKING_MESSAGE,
-  truncateWorkflowContext,
   workflowAssistantDisplayContent,
   workflowRunProgressSummary,
   workflowRunStatusLabel,
@@ -245,8 +236,6 @@ export function WorkflowPage({ controller: source }: { controller: WorkflowContr
     const reviewTask = reviewTaskId ? nodeTasks.find((candidate) => candidate.id === reviewTaskId) : undefined;
     return { nodeId: node.id, nodeTitle: node.title, ...(conversation ? { conversation } : {}), ...(task ? { task } : {}), ...(reviewTask ? { reviewTask } : {}) };
   });
-  const nodePositionProps = {};
-
   useEffect(() => {
     if (dismissedNodeSurfaceRunIdRef.current && dismissedNodeSurfaceRunIdRef.current !== activeRunId) dismissedNodeSurfaceRunIdRef.current = undefined;
     const attentionConversation = nodeConversations.find((conversation) => conversation.status === "waiting_for_user" || conversation.status === "completion_proposed");

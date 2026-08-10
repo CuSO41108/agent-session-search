@@ -163,6 +163,7 @@ try {
   }
   const workflowMcpEntry = path.join(installedRoot, "bin", "agent-recall-workflow-mcp.mjs");
   await access(workflowMcpEntry);
+  await access(path.join(installedRoot, "bin", "agent-recall-skill-mcp.mjs"));
   const { stdout: version } = await execFileAsync(process.execPath, [path.join(installedRoot, "bin", "agent-recall.cjs"), "--version"], { env: environment });
   const packageVersion = JSON.parse(await readFile(path.join(installedRoot, "package.json"), "utf8")).version;
   if (JSON.parse(await readFile(path.join(installedRoot, "package.json"), "utf8")).bundleDependencies?.includes("electron")) {

@@ -45,11 +45,6 @@ describe("MCP server tools", () => {
     delete process.env.AGENT_RECALL_WORKFLOW_MCP_TOKEN;
     const tools = mcpToolDefinitions();
     expect(tools.map((tool) => tool.name)).toEqual([
-      "agent_templates_list",
-      "skill_templates_list",
-      "agents_list",
-      "channels_list",
-      "models_list",
       "workflow_list",
       "workflow_get",
       "workflow_validate",
@@ -58,6 +53,34 @@ describe("MCP server tools", () => {
       "workflow_outputs_list",
     ]);
     expect(tools.every((tool) => tool.annotations?.readOnlyHint === true)).toBe(true);
+  });
+
+  test("publishes Chinese descriptions for every Workflow MCP tool", () => {
+    const tools = new Map<string, ReturnType<typeof mcpToolDefinitions>[number]>();
+    const capture = () => {
+      for (const tool of mcpToolDefinitions()) tools.set(tool.name, tool);
+    };
+
+    delete process.env.AGENT_RECALL_WORKFLOW_MCP_TOKEN;
+    capture();
+    process.env.AGENT_RECALL_WORKFLOW_MCP_TOKEN = "managed-token";
+    process.env.AGENT_RECALL_STUDIO_TOKEN = "studio-token";
+    process.env.AGENT_RECALL_WORKFLOW_MCP_SCOPE = "planning";
+    capture();
+    process.env.AGENT_RECALL_WORKFLOW_MCP_SCOPE = "review";
+    capture();
+    process.env.AGENT_RECALL_WORKFLOW_MCP_SCOPE = "runtime_review";
+    capture();
+    process.env.AGENT_RECALL_WORKFLOW_MCP_SCOPE = "node_execution";
+    process.env.AGENT_RECALL_WORKFLOW_RUN_ID = "run-1";
+    process.env.AGENT_RECALL_WORKFLOW_NODE_ID = "node-1";
+    process.env.AGENT_RECALL_WORKFLOW_NODE_EXECUTION_ID = "execution-1";
+    capture();
+
+    expect(tools.size).toBeGreaterThan(30);
+    for (const tool of tools.values()) {
+      expect(tool.description, tool.name).toMatch(/[\u3400-\u9fff]/u);
+    }
   });
 
   test("exposes lifecycle writes only to managed MCP sessions", () => {
@@ -133,7 +156,7 @@ describe("MCP server tools", () => {
     expect(script.properties.stderrPolicy.enum).toEqual(["ignore", "warn", "fail"]);
     expect(definition.properties.transactionPolicy.properties.defaultMode.enum).toEqual(["strict_atomic", "controlled", "direct"]);
     expect(tool.description).toContain("script.effectMode");
-    expect(tool.description).toContain("does not expose response bodies as script outputs");
+    expect(tool.description).toContain("不提供响应正文作为脚本输出");
   });
 
   test("exposes only the bound submission tool to managed Review sessions", () => {

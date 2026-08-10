@@ -7,7 +7,6 @@ import { CURRENT_CODEX_MODELS, DEFAULT_MODEL_ID, FALLBACK_MODEL_OPTIONS, default
 import { isRuntimeId, RUNTIME_DEFINITIONS } from "../../shared/runtime-catalog";
 import type {
   AgentChannel,
-  AgentId,
   AgentModelOption,
   AgentPluginConfig,
   ClaudeDefaultConfig,

@@ -14,6 +14,12 @@ export const RELEASE_PRODUCT_TITLES = {
   v2: "agent-recall-v2",
 };
 export const SYNCHRONIZED_RELEASE_NOTE = "本次随统一版本同步发布，暂无单独的用户可见变化。";
+const INTERNAL_RELEASE_INFRASTRUCTURE_FILES = new Set([
+  "AGENTS.md",
+  ".release-notes/README.md",
+  "scripts/release-notes.mjs",
+  "scripts/release-notes.test.mjs",
+]);
 
 const VAGUE_RELEASE_NOTE_PATTERNS = [
   /^优化代码[。.]?$/,
@@ -148,12 +154,29 @@ export function findAddedReleaseNoteFiles(baseRef = "origin/main", headRef = "HE
     .filter((file) => file.endsWith(".md") && path.basename(file).toLowerCase() !== "readme.md"))];
 }
 
+export function findChangedFiles(baseRef = "origin/main", headRef = "HEAD", runGit = defaultRunGit) {
+  return runGit(["diff", "--name-only", `${baseRef}...${headRef}`, "--"])
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+}
+
 export function validateReleaseNoteRange(baseRef = "origin/main", headRef = "HEAD", runGit = defaultRunGit) {
   const files = findAddedReleaseNoteFiles(baseRef, headRef, runGit);
+  if (files.length === 0) {
+    const changedFiles = findChangedFiles(baseRef, headRef, runGit);
+    if (changedFiles.length > 0 && changedFiles.every(isInternalReleaseInfrastructureFile)) {
+      return { internalOnly: true, file: null, note: null };
+    }
+  }
   if (files.length !== 1) {
     throw new Error(`Expected exactly one added ${RELEASE_NOTES_DIRECTORY}/*.md file between ${baseRef} and ${headRef}; found ${files.length}.`);
   }
-  return { file: files[0], note: readReleaseNote(files[0]) };
+  return { internalOnly: false, file: files[0], note: readReleaseNote(files[0]) };
+}
+
+function isInternalReleaseInfrastructureFile(file) {
+  return file.startsWith(".github/") || INTERNAL_RELEASE_INFRASTRUCTURE_FILES.has(file);
 }
 
 function defaultRunGit(args) {
@@ -182,7 +205,11 @@ export function runCli(argv) {
   }
   if (command === "check-range") {
     const result = validateReleaseNoteRange(args[0] || "origin/main", args[1] || "HEAD");
-    process.stdout.write(`${result.file}: ${result.note.features.length} feature(s), ${result.note.fixes.length} fix(es)\n`);
+    if (result.internalOnly) {
+      process.stdout.write("No product release note required for an internal release-infrastructure change.\n");
+    } else {
+      process.stdout.write(`${result.file}: ${result.note.features.length} feature(s), ${result.note.fixes.length} fix(es)\n`);
+    }
     return;
   }
   if (command === "next-version" && args[0] && args[1]) {

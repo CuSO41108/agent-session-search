@@ -18,6 +18,28 @@ import {
 import { TRACE_DETAIL_PREVIEW_MAX_CHARS } from "./trace-detail";
 
 describe("Codex session loading", () => {
+  it("preserves explicit timezone offsets as absolute instants", () => {
+    const loaded = loadCodexSessionRows("/tmp/codex-offset.jsonl", [
+      {
+        type: "session_meta",
+        timestamp: "2026-08-09T00:46:00+08:00",
+        payload: { id: "codex-offset", cwd: "/repo" },
+      },
+      {
+        type: "response_item",
+        timestamp: "2026-08-09T00:47:00+08:00",
+        payload: {
+          type: "message",
+          role: "user",
+          content: [{ type: "input_text", text: "check timezone" }],
+        },
+      },
+    ]);
+
+    expect(loaded?.session.timestamp).toBe(Date.parse("2026-08-08T16:46:00.000Z"));
+    expect(new Date(loaded?.messages[0].timestamp ?? "").toISOString()).toBe("2026-08-08T16:47:00.000Z");
+  });
+
   it("keeps an empty send_message function output distinct from its input", () => {
     const loaded = loadCodexSessionRows("/tmp/codex-send-message.jsonl", [
       {

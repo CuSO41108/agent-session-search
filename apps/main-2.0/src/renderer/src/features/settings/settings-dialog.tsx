@@ -564,7 +564,7 @@ export function SettingsDialog({
                           <div className="connection-diagnostics">
                             <div className="connection-diagnostics-head">
                               <span>{report.summary}</span>
-                              <time>{formatRelativeTime(report.checkedAt)}</time>
+                              <time>{formatRelativeTime(report.checkedAt, language)}</time>
                             </div>
                             <div className="connection-diagnostic-list">
                               {report.checks.map((check) => (
@@ -1242,7 +1242,7 @@ export function SettingsDialog({
               <section className="settings-pane">
                 <header className="settings-pane-head">
                   <h3>{l("Appearance", "外观")}</h3>
-                  <p>{l("Choose the color theme, language, and session message text size.", "选择颜色主题、语言和会话正文字号。")}</p>
+                  <p>{l("Choose the color theme, language, and interface text size.", "选择颜色主题、语言和界面字号。")}</p>
                 </header>
                 <div className="settings-field">
                   <div className="settings-field-text">
@@ -1278,12 +1278,12 @@ export function SettingsDialog({
                 </div>
                 <div className="settings-field">
                   <div className="settings-field-text">
-                    <span className="settings-field-title">{l("Session text size", "会话正文字号")}</span>
+                    <span className="settings-field-title">{l("Interface text size", "界面字号")}</span>
                     <span className="settings-field-sub">
-                      {l("Only changes message text inside the session detail panel.", "只影响会话详情里的消息正文。")}
+                      {l("Scales the whole app interface, including session messages.", "缩放整个应用界面，包括会话正文。")}
                     </span>
                   </div>
-                  <div className="message-font-size-setting-toggle" role="group" aria-label={l("Session text size", "会话正文字号")}>
+                  <div className="message-font-size-setting-toggle" role="group" aria-label={l("Interface text size", "界面字号")}>
                     {MESSAGE_FONT_SIZE_SCALES.map((scale) => (
                       <button
                         key={scale}

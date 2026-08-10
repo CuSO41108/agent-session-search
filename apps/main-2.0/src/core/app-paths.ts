@@ -11,6 +11,7 @@ import path from "node:path";
 const POINTER_DIR = ".agent-recall-v2";
 const POINTER_FILE = "database-url";
 const OPENVIKING_MANIFEST_POINTER_FILE = "openviking-manifest-path";
+const SKILL_LIBRARY_POINTER_FILE = "skill-library-path";
 
 export function databaseUrlPointerPath(home: string = homedir()): string {
   return path.join(home, POINTER_DIR, POINTER_FILE);
@@ -35,6 +36,16 @@ export function writeOpenVikingManifestPointer(
   writeFileSync(pointer, `${manifestPath}\n`, { encoding: "utf8", mode: 0o600 });
 }
 
+export function skillLibraryPointerPath(home: string = homedir()): string {
+  return path.join(home, POINTER_DIR, SKILL_LIBRARY_POINTER_FILE);
+}
+
+export function writeSkillLibraryPointer(libraryPath: string, home: string = homedir()): void {
+  const pointer = skillLibraryPointerPath(home);
+  mkdirSync(path.dirname(pointer), { recursive: true, mode: 0o700 });
+  writeFileSync(pointer, `${libraryPath}\n`, { encoding: "utf8", mode: 0o600 });
+}
+
 // Resolution order for standalone consumers: explicit env override, then the
 // pointer file written by the app. Returns null when neither is available.
 export function resolveDatabaseUrl(
@@ -44,6 +55,22 @@ export function resolveDatabaseUrl(
   const override = env.AGENT_RECALL_DATABASE_URL?.trim();
   if (override) return override;
   const pointer = databaseUrlPointerPath(home);
+  try {
+    if (!existsSync(pointer)) return null;
+    const value = readFileSync(pointer, "utf8").trim();
+    return value || null;
+  } catch {
+    return null;
+  }
+}
+
+export function resolveSkillLibraryPath(
+  env: Record<string, string | undefined> = process.env,
+  home: string = homedir(),
+): string | null {
+  const override = env.AGENT_RECALL_SKILL_LIBRARY?.trim();
+  if (override) return override;
+  const pointer = skillLibraryPointerPath(home);
   try {
     if (!existsSync(pointer)) return null;
     const value = readFileSync(pointer, "utf8").trim();

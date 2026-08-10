@@ -62,19 +62,16 @@ export {
   type VirtualSessionFileStat,
 } from "./session-loaders/common";
 import type {
-  CodeBuddyConversationLine,
   ClaudeAppSessionFile,
   ClaudeConversationLine,
   ClaudeSessionIndexFile,
   CodexConversationLine,
   CodexHistoryMode,
-  IndexedSession,
   LoadedSession,
   SessionFormat,
   SessionMessage,
   SessionSource,
   SessionTraceEvent,
-  SessionTraceKind,
   TokenUsage,
   TokenUsageEvent,
 } from "./types";
@@ -1444,10 +1441,6 @@ export async function* loadCodexSessionsAsyncIterator(
 
 function encodeClaudeProjectDir(cwd: string): string {
   return cwd.replace(/[^a-zA-Z0-9-]/g, "-");
-}
-
-function loadClaudeMessages(filePath: string): SessionMessage[] {
-  return extractMessages(readJsonl(filePath), "claude");
 }
 
 export function loadClaudeCliSessionRows(

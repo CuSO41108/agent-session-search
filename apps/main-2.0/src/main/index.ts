@@ -30,6 +30,7 @@ import { createIndexRunCoordinator } from "../core/index-run-coordinator";
 import { createIndexProgressPublisher } from "./index-progress";
 import { createSessionIndexFailureLogger } from "./session-index-failure-log";
 import { createStartupTaskScheduler } from "./startup-tasks";
+import { createInterfaceZoomController } from "./interface-zoom";
 import {
   type SessionJsonExportFormat,
 } from "../core/format-session";
@@ -71,12 +72,15 @@ import {
   runLocalSessionMigration,
 } from "./local-session-migration";
 import {
-  targetFilePath,
   targetFilePathForRemoteEnvironment,
   writeMigratedSession,
 } from "../core/session-migration-writers";
-import { assertMigrationTargetEnabled, isMigrationTarget, migrationTargetDescriptor } from "../core/migration-targets";
-import { writeDatabaseUrlPointer, writeOpenVikingManifestPointer } from "../core/app-paths";
+import { assertMigrationTargetEnabled, migrationTargetDescriptor } from "../core/migration-targets";
+import {
+  writeDatabaseUrlPointer,
+  writeOpenVikingManifestPointer,
+  writeSkillLibraryPointer,
+} from "../core/app-paths";
 import { PostgresDatabase } from "../core/postgres/database";
 import { POSTGRES_MIGRATIONS } from "../core/postgres/schema";
 import { diagnoseRemoteEnvironment } from "../core/remote-health";
@@ -160,7 +164,10 @@ import {
   type OpenVikingRuntimeManifest,
 } from "./services/openviking-runtime-service";
 import { NativeAutomationService } from "./services/automation-service";
-import { BuiltinSessionSearchServer } from "../automation/engine/main/mcp-builtin-server";
+import {
+  BuiltinSessionSearchServer,
+  BuiltinSkillMcpServer,
+} from "../automation/engine/main/mcp-builtin-server";
 import type { McpBuiltinRuntime } from "../automation/engine/main/mcp-builtin-server";
 import { createLocalTextFilePreviewUnderRoots } from "../automation/engine/main/platform/local-file-preview";
 import { ProviderService } from "./services/provider-service";
@@ -191,7 +198,6 @@ import type {
   MigrationAgent,
   MigrationTarget,
   PortableSession,
-  ProjectQueryOptions,
   SearchOptions,
   SessionEnvironment,
   SessionMigrationProgress,
@@ -328,6 +334,7 @@ let postgresRuntime: PostgresRuntime | null = null;
 let postgresRuntimeStartup: Promise<PostgresRuntime> | null = null;
 let postgresDatabase: PostgresDatabase | null = null;
 let quickSearchWindow: BrowserWindow | null = null;
+const interfaceZoomController = createInterfaceZoomController(() => [mainWindow, quickSearchWindow]);
 let tray: Tray | null = null;
 let store: SessionStore;
 let indexStatus: IndexStatus = { running: false, indexed: 0, skipped: 0, total: 0, lastIndexedAt: null, error: null };
@@ -354,6 +361,11 @@ const settingsStore = new Store<AppSettings>({
 // MCP state never leaks into the user-facing settings shape.
 const mcpRuntimeStore = new Store<McpBuiltinRuntime>({
   name: "mcp-runtime",
+  defaults: { tools: [], disabledTools: [], status: "untested", createdAt: 0, updatedAt: 0 },
+});
+
+const skillMcpRuntimeStore = new Store<McpBuiltinRuntime>({
+  name: "skill-mcp-runtime",
   defaults: { tools: [], disabledTools: [], status: "untested", createdAt: 0, updatedAt: 0 },
 });
 
@@ -487,6 +499,26 @@ function createAutomationService(): NativeAutomationService {
     appDataPath: app.getPath("appData"),
     bundledWorkflowsPath: bundledAutomationWorkflowsPath(),
     workflowMcpServerPath: path.join(app.getAppPath(), "out", "mcp", "workflow-entry.js"),
+    confirmWorkflowScriptPermissions: async ({ nodeTitle, permissions }) => {
+      const result = mainWindow ? await dialog.showMessageBox(mainWindow, {
+        type: "warning",
+        title: "Allow Workflow Script",
+        message: `Allow “${nodeTitle}” to use elevated permissions?`,
+        detail: permissions.join(", "),
+        buttons: ["Cancel", "Allow once"],
+        defaultId: 0,
+        cancelId: 0,
+      }) : await dialog.showMessageBox({
+        type: "warning",
+        title: "Allow Workflow Script",
+        message: `Allow “${nodeTitle}” to use elevated permissions?`,
+        detail: permissions.join(", "),
+        buttons: ["Cancel", "Allow once"],
+        defaultId: 0,
+        cancelId: 0,
+      });
+      return result.response === 1;
+    },
     builtinSessionSearch: new BuiltinSessionSearchServer({
       isEnabled: () => ensureAgentRecallMcpPreference(),
       setEnabled: async (next) => {
@@ -499,7 +531,8 @@ function createAutomationService(): NativeAutomationService {
         const definition = loadMcpSetup().serverDefinition();
         return {
           id: definition.id,
-          name: definition.name,
+          name: "AgentRecall Session Search",
+          description: "检索已索引的 Agent 会话、查看上下文，并准备可恢复的迁移。",
           command: definition.command,
           args: definition.args,
         };
@@ -507,6 +540,24 @@ function createAutomationService(): NativeAutomationService {
       readRuntime: () => mcpRuntimeStore.store,
       writeRuntime: (runtime) => {
         mcpRuntimeStore.store = runtime;
+      },
+    }),
+    builtinSkills: new BuiltinSkillMcpServer({
+      isEnabled: () => getSettings().skillMcpEnabled,
+      setEnabled: async (next) => {
+        settingsStore.set("skillMcpEnabled", next);
+        return next;
+      },
+      launchConfig: () => ({
+        id: "agent-recall-skills",
+        name: "AgentRecall Skills",
+        description: "列出 AgentRecall 已管理的 Skill，并按需读取完整说明。",
+        command: "node",
+        args: [path.join(app.getAppPath(), "bin", "agent-recall-skill-mcp.mjs")],
+      }),
+      readRuntime: () => skillMcpRuntimeStore.store,
+      writeRuntime: (runtime) => {
+        skillMcpRuntimeStore.store = runtime;
       },
     }),
     workflowMcp: {
@@ -632,6 +683,8 @@ const providerService = new ProviderService({
   logError: (message) => console.error(message),
 });
 
+const skillLibraryRoot = path.join(app.getPath("userData"), "skills");
+
 const skillService = new SkillService({
   getStore: () => store,
   getSettings,
@@ -640,7 +693,7 @@ const skillService = new SkillService({
     if (!automationService) throw new Error("Runtime is not ready.");
     return automationService.evaluations;
   },
-  libraryRoot: path.join(app.getPath("userData"), "skills"),
+  libraryRoot: skillLibraryRoot,
   skillsShCachePath: path.join(app.getPath("userData"), "cache", "skills-sh.json"),
   homeDir: app.getPath("home"),
   codexHome: process.env.CODEX_HOME,
@@ -1387,6 +1440,7 @@ function createQuickSearchWindow(): BrowserWindow {
   });
   window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
   window.webContents.on("will-navigate", (event) => event.preventDefault());
+  window.webContents.on("did-finish-load", () => interfaceZoomController.applyTo(window));
   window.on("blur", () => window.hide());
   window.on("closed", () => {
     if (quickSearchWindow === window) quickSearchWindow = null;
@@ -1607,7 +1661,7 @@ function ensureWslSessionIndexer(): WslSessionIndexer {
       fetchSessionFile: (environment, session) => fetchRemoteSessionFilePayload(environment, session),
       loadSession: (environment, payload, summary) =>
         loadWslSessionDetailPayload(environment, payload, summary, { includeTraceEvents: true }),
-      onComplete: (environment, result) => {
+      onComplete: (_environment, result) => {
         if (result.indexed > 0) emitEnvironmentsUpdated();
       },
       onSessionError: (session, error) => {
@@ -2588,6 +2642,7 @@ function registerIpc(): void {
     mainWindow?.webContents.send("open-session", sessionKey);
   });
   ipcMain.handle("settings:get", () => providerService.hydrateSettings());
+  ipcMain.handle("interface-zoom:set", (_event, factor: unknown) => interfaceZoomController.set(factor));
   registerProvidersIpc(ipcMain, providerService, chooseProviderConfigDirectory);
   ipcMain.handle("settings:set", (_event, settings: AppSettingsUpdate) => applySettingsUpdate(settings));
   ipcMain.handle("v1-import:run", async () => {
@@ -2716,6 +2771,11 @@ app.whenReady().then(async () => {
     writeDatabaseUrlPointer(postgresRuntime.connectionUrl);
   } catch {
     // Non-fatal: the MCP server can still use AGENT_RECALL_DATABASE_URL.
+  }
+  try {
+    writeSkillLibraryPointer(skillLibraryRoot);
+  } catch {
+    // Non-fatal: the MCP server can still use AGENT_RECALL_SKILL_LIBRARY.
   }
   try {
     ensureAgentRecallMcpPreference();

@@ -7006,7 +7006,7 @@ body.overlay-open .sidebar {
 
 .md-code code {
   font-family: var(--mono);
-  font-size: 12px;
+  font-size: 1em;
   line-height: 1.5;
   overflow-wrap: normal;
   word-break: normal;

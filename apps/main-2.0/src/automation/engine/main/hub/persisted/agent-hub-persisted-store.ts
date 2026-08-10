@@ -10,7 +10,7 @@ import type {
 } from "../../../shared/types";
 import type { AgentHubPersistedStore } from "./persisted-store";
 import { restoreScheduledWorkflowStoreCollections, restoreWorkflowStoreCollections } from "../workflow/agent-hub-workflow-restore";
-import { asRecord, type PersistedAppStateV5 } from "./agent-hub-persistence";
+import type { PersistedAppStateV5 } from "./agent-hub-persistence";
 
 export async function loadPersistedPayload(input: {
   storagePath?: string;

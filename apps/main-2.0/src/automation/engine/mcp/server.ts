@@ -234,11 +234,6 @@ const workflowProposalSchema = {
 };
 
 const READ_ONLY_TOOL_NAMES = new Set([
-  "agent_templates_list",
-  "skill_templates_list",
-  "agents_list",
-  "channels_list",
-  "models_list",
   "workflow_list",
   "workflow_get",
   "workflow_validate",
@@ -251,22 +246,22 @@ export function mcpToolDefinitions(): McpToolDefinition[] {
   const tools: McpToolDefinition[] = [
     {
       name: "agent_templates_list",
-      description: "Compatibility alias for skill_templates_list.",
+      description: "skill_templates_list 的兼容别名。",
       inputSchema: objectSchema({}),
     },
     {
       name: "skill_templates_list",
-      description: "List built-in skill templates. Templates contain skill metadata, tags, source, and original SKILL.md prompt. Runtime, provider, and model remain user configuration.",
+      description: "列出内置 Skill 模板。模板包含 Skill 元数据、标签、来源和原始 SKILL.md 提示词；运行时、服务商和模型仍由用户配置。",
       inputSchema: objectSchema({}),
     },
     {
       name: "agents_list",
-      description: "List configured agents and their runtime/channel/model selections.",
+      description: "列出已配置的 Agent 及其运行时、通道和模型选择。",
       inputSchema: objectSchema({}),
     },
     {
       name: "agents_create",
-      description: "Create a configured agent. Use skill_templates_list first when you want to seed an agent prompt from a skill.",
+      description: "创建一个已配置的 Agent；如需用 Skill 初始化 Agent 提示词，请先调用 skill_templates_list。",
       inputSchema: objectSchema(
         {
           id: { type: "string" },
@@ -284,7 +279,7 @@ export function mcpToolDefinitions(): McpToolDefinition[] {
     },
     {
       name: "agents_update",
-      description: "Update an existing configured agent. Omitted fields keep their current values.",
+      description: "更新现有 Agent；省略的字段保持不变。",
       inputSchema: objectSchema(
         {
           agentId: { type: "string" },
@@ -302,22 +297,22 @@ export function mcpToolDefinitions(): McpToolDefinition[] {
     },
     {
       name: "agents_delete",
-      description: "Delete a configured agent by id. This does not delete workflow graphs that reference it.",
+      description: "按 ID 删除 Agent；不会删除引用它的 Workflow 图。",
       inputSchema: objectSchema({ agentId: { type: "string" } }, ["agentId"]),
     },
     {
       name: "agents_test",
-      description: "Run the same connectivity smoke test as the desktop UI for a configured agent.",
+      description: "对指定 Agent 执行与桌面端相同的连接冒烟测试。",
       inputSchema: objectSchema({ agentId: { type: "string" } }, ["agentId"]),
     },
     {
       name: "channels_list",
-      description: "List available runtime provider channels. Secrets and HTTP authorization headers are not returned.",
+      description: "列出可用的运行时服务通道；不会返回密钥或 HTTP 鉴权请求头。",
       inputSchema: objectSchema({ agentId: { type: "string", enum: RUNTIME_IDS } }),
     },
     {
       name: "models_list",
-      description: "List models available on channels, optionally filtered by channelId or agent runtime.",
+      description: "列出通道可用模型，可按 channelId 或 Agent 运行时筛选。",
       inputSchema: objectSchema({
         agentId: { type: "string", enum: RUNTIME_IDS },
         channelId: { type: "string" },
@@ -325,7 +320,7 @@ export function mcpToolDefinitions(): McpToolDefinition[] {
     },
     {
       name: "workflow_create",
-      description: "Write an editable workflow DAG into the planning draft identified by workflowId. This never creates another top-level Workflow and does not confirm or publish the draft. Invalid graphs are rejected. Use interactive LLM nodes only to collect or clarify user input, and use script nodes for deterministic work such as echoing, copying, formatting, mapping, or passing values through unchanged. Governed script nodes must declare script.effectMode, script.idempotency, and script.stderrPolicy; strict_atomic brokered_external nodes must also use an available declarative Broker adapter and declare script.compensationAdapter. Strict scripts cannot declare unbrokered network capabilities. The current HTTP Broker does not expose response bodies as script outputs, so web research that feeds a downstream node must use an LLM research node with available web tools.",
+      description: "把可编辑的 Workflow DAG 写入 workflowId 指定的规划草稿；不会创建另一个顶层 Workflow，也不会确认或发布草稿。无效图会被拒绝。交互式 LLM 节点仅用于收集或澄清用户输入；回显、复制、格式化、映射或原样传值等确定性工作应使用脚本节点。受治理脚本节点必须声明 script.effectMode、script.idempotency 和 script.stderrPolicy；strict_atomic 模式下的 brokered_external 节点还必须使用可用的声明式 Broker 适配器并声明 script.compensationAdapter。严格模式脚本不得声明未经 Broker 管理的网络能力。当前 HTTP Broker 不提供响应正文作为脚本输出，因此需要把网页研究结果传给下游节点时，必须使用具备网页工具的 LLM 研究节点。",
       inputSchema: objectSchema(
         {
           workflowId: { type: "string" },
@@ -341,7 +336,7 @@ export function mcpToolDefinitions(): McpToolDefinition[] {
     },
     {
       name: "workflow_review_submit",
-      description: "Submit the current bound Workflow revision's final adversarial review. Call this exactly once after completing the review. Workflow identity and revision are injected by the managed Review session and cannot be selected by the model.",
+      description: "提交当前绑定 Workflow 修订版的最终对抗性审核。完成审核后只能调用一次；Workflow 标识和修订版由托管审核会话注入，模型无法自行选择。",
       inputSchema: objectSchema({
         verdict: { type: "string", enum: ["approve", "revise"] },
         summary: { type: "string", minLength: 1 },
@@ -367,7 +362,7 @@ export function mcpToolDefinitions(): McpToolDefinition[] {
     },
     {
       name: "workflow_review_gate_submit",
-      description: "Submit the current bound Runtime Review Gate result. Call this exactly once after assessing every configured dimension. Workflow, Run, Gate, node, candidate, and Reviewer identity are injected by the managed session.",
+      description: "提交当前绑定的运行时审核门禁结果。评估完所有配置维度后只能调用一次；Workflow、运行、门禁、节点、候选结果和审核者标识均由托管会话注入。",
       inputSchema: objectSchema({
         reasons: { type: "array", minItems: 1, items: { type: "string", minLength: 1 } },
         requiredFixes: { type: "array", minItems: 1, items: { type: "string", minLength: 1 } },
@@ -388,17 +383,17 @@ export function mcpToolDefinitions(): McpToolDefinition[] {
     },
     {
       name: "workflow_list",
-      description: "List workflow summaries in AgentRecall.",
+      description: "列出 AgentRecall 中的 Workflow 摘要。",
       inputSchema: objectSchema({}),
     },
     {
       name: "workflow_get",
-      description: "Get a workflow by workflowId, including graph, status, revision, and context.",
+      description: "按 workflowId 获取 Workflow，包括图、状态、修订版和上下文。",
       inputSchema: objectSchema({ workflowId: { type: "string" } }, ["workflowId"]),
     },
     {
       name: "workflow_update",
-      description: "Update the editable planning draft identified by workflowId. This does not confirm or publish the draft.",
+      description: "更新 workflowId 指定的可编辑规划草稿；不会确认或发布草稿。",
       inputSchema: objectSchema({
         workflowId: { type: "string" },
         expectedRevision: { type: "number" },
@@ -409,7 +404,7 @@ export function mcpToolDefinitions(): McpToolDefinition[] {
     },
     {
       name: "workflow_validate",
-      description: "Validate a workflow graph or an existing workflowId without modifying state.",
+      description: "校验 Workflow 图或已有 workflowId，不修改任何状态。",
       inputSchema: objectSchema({
         workflowId: { type: "string" },
         definition: workflowV2DefinitionSchema,
@@ -417,7 +412,7 @@ export function mcpToolDefinitions(): McpToolDefinition[] {
     },
     {
       name: "workflow_context_append",
-      description: "Append long-lived context to a workflow. File and URL artifacts are stored as references only.",
+      description: "向 Workflow 追加长期上下文；文件和 URL 产物只保存引用。",
       inputSchema: objectSchema(
         {
           workflowId: { type: "string" },
@@ -430,7 +425,7 @@ export function mcpToolDefinitions(): McpToolDefinition[] {
     },
     {
       name: "workflow_run_context_append",
-      description: "Append context to one running workflow run. This does not modify graph structure.",
+      description: "向一个正在运行的 Workflow 实例追加上下文；不会修改图结构。",
       inputSchema: objectSchema(
         {
           workflowId: { type: "string" },
@@ -445,7 +440,7 @@ export function mcpToolDefinitions(): McpToolDefinition[] {
     },
     {
       name: "workflow_confirm",
-      description: "Confirm one exact workflow revision after validation.",
+      description: "校验通过后确认一个精确的 Workflow 修订版。",
       inputSchema: objectSchema({
         workflowId: { type: "string" },
         expectedRevision: { type: "integer", minimum: 1 },
@@ -453,7 +448,7 @@ export function mcpToolDefinitions(): McpToolDefinition[] {
     },
     {
       name: "workflow_run",
-      description: "Start a confirmed workflow revision and return its runId.",
+      description: "启动一个已确认的 Workflow 修订版并返回 runId。",
       inputSchema: objectSchema({
         workflowId: { type: "string" },
         expectedRevision: { type: "integer", minimum: 1 },
@@ -462,7 +457,7 @@ export function mcpToolDefinitions(): McpToolDefinition[] {
     },
     {
       name: "workflow_run_list",
-      description: "List workflow runs with optional workflow and status filters.",
+      description: "列出 Workflow 运行记录，可按 Workflow 和状态筛选。",
       inputSchema: objectSchema({
         workflowId: { type: "string" },
         status: { type: "string", enum: ["draft", "running", "waiting_for_user", "completed", "failed", "stopped"] },
@@ -472,7 +467,7 @@ export function mcpToolDefinitions(): McpToolDefinition[] {
     },
     {
       name: "workflow_run_get",
-      description: "Get one workflow run, node states, pending actions, and output summary.",
+      description: "获取一次 Workflow 运行及其节点状态、待处理操作和输出摘要。",
       inputSchema: objectSchema({
         workflowId: { type: "string" },
         runId: { type: "string" },
@@ -480,7 +475,7 @@ export function mcpToolDefinitions(): McpToolDefinition[] {
     },
     {
       name: "workflow_stop",
-      description: "Stop one exact workflow run without affecting other runs.",
+      description: "停止一次精确指定的 Workflow 运行，不影响其他运行。",
       inputSchema: objectSchema({
         workflowId: { type: "string" },
         runId: { type: "string" },
@@ -488,7 +483,7 @@ export function mcpToolDefinitions(): McpToolDefinition[] {
     },
     {
       name: "workflow_intervention_resolve",
-      description: "Resolve the current intervention for one workflow node. Script approvals remain enforced.",
+      description: "处理一个 Workflow 节点当前的人工干预；脚本审批仍会强制执行。",
       inputSchema: objectSchema({
         workflowId: { type: "string" },
         runId: { type: "string" },
@@ -499,7 +494,7 @@ export function mcpToolDefinitions(): McpToolDefinition[] {
     },
     {
       name: "workflow_script_input_submit",
-      description: "Submit structured values requested by one script node.",
+      description: "提交一个脚本节点请求的结构化值。",
       inputSchema: objectSchema({
         workflowId: { type: "string" },
         runId: { type: "string" },
@@ -509,7 +504,7 @@ export function mcpToolDefinitions(): McpToolDefinition[] {
     },
     {
       name: "workflow_outputs_list",
-      description: "List safe output metadata for one workflow run without exposing local absolute paths.",
+      description: "列出一次 Workflow 运行的安全输出元数据，不暴露本地绝对路径。",
       inputSchema: objectSchema({
         workflowId: { type: "string" },
         runId: { type: "string" },
@@ -521,24 +516,24 @@ export function mcpToolDefinitions(): McpToolDefinition[] {
     tools.push(
       {
         name: "studio_list_members",
-        description: "List employees in the current AgentRecall studio and their current availability.",
+        description: "列出当前 AgentRecall Studio 中的员工及其可用状态。",
         inputSchema: objectSchema({}),
       },
       {
         name: "studio_get_context",
-        description: "Read the bounded room delta for the current Turn through its immutable trigger snapshot.",
+        description: "通过不可变触发快照读取当前 Turn 的有限房间增量。",
         inputSchema: objectSchema({
           limit: { type: "integer", minimum: 1, maximum: 100 },
         }),
       },
       {
         name: "studio_get_room_state",
-        description: "Read current-room metadata, the current Task, and latest room sequence.",
+        description: "读取当前房间元数据、当前任务和最新房间序号。",
         inputSchema: objectSchema({}),
       },
       {
         name: "studio_inbox_list",
-        description: "List mentions and Turn delivery states for the current studio employee.",
+        description: "列出当前 Studio 员工收到的提及和 Turn 投递状态。",
         inputSchema: objectSchema({
           status: {
             type: "string",
@@ -549,7 +544,7 @@ export function mcpToolDefinitions(): McpToolDefinition[] {
       },
       {
         name: "studio_task_finish",
-        description: "Declare the current Task completed, blocked, or waiting for user input. Repeating the identical result is safe.",
+        description: "声明当前任务已完成、受阻或正在等待用户输入；重复提交相同结果是安全的。",
         inputSchema: objectSchema({
           taskId: { type: "string" },
           status: {
@@ -566,21 +561,21 @@ export function mcpToolDefinitions(): McpToolDefinition[] {
       },
       {
         name: "studio_turn_list",
-        description: "List logical Turns and sanitized Attempt summaries in the current room.",
+        description: "列出当前房间中的逻辑 Turn 和已脱敏的 Attempt 摘要。",
         inputSchema: objectSchema({
           limit: { type: "integer", minimum: 1, maximum: 50 },
         }),
       },
       {
         name: "studio_turn_get",
-        description: "Read one logical Turn and sanitized Attempt summaries in the current room.",
+        description: "读取当前房间中的一个逻辑 Turn 及其已脱敏 Attempt 摘要。",
         inputSchema: objectSchema({
           turnId: { type: "string", minLength: 1 },
         }, ["turnId"]),
       },
       {
         name: "studio_turn_events",
-        description: "Read bounded sanitized execution events for one Turn in the current room.",
+        description: "读取当前房间中一个 Turn 的有限、已脱敏执行事件。",
         inputSchema: objectSchema({
           turnId: { type: "string", minLength: 1 },
           limit: { type: "integer", minimum: 1, maximum: 200 },
@@ -588,7 +583,7 @@ export function mcpToolDefinitions(): McpToolDefinition[] {
       },
       {
         name: "studio_read_thread",
-        description: "Read public messages belonging to one root message thread in the current room.",
+        description: "读取当前房间中属于一个根消息话题的公开消息。",
         inputSchema: objectSchema({
           rootMessageId: { type: "string", minLength: 1 },
           limit: { type: "integer", minimum: 1, maximum: 200 },
@@ -596,7 +591,7 @@ export function mcpToolDefinitions(): McpToolDefinition[] {
       },
       {
         name: "studio_post",
-        description: "Post visible studio information without activating another employee.",
+        description: "发布 Studio 可见信息，但不激活其他员工。",
         inputSchema: objectSchema({
           content: { type: "string", minLength: 1 },
           replyTo: { type: "string" },
@@ -604,14 +599,14 @@ export function mcpToolDefinitions(): McpToolDefinition[] {
       },
       {
         name: "studio_read_messages",
-        description: "Read specific messages from the current studio by ID.",
+        description: "按 ID 读取当前 Studio 中的指定消息。",
         inputSchema: objectSchema({
           messageIds: { type: "array", minItems: 1, maxItems: 50, items: { type: "string" } },
         }, ["messageIds"]),
       },
       {
         name: "studio_read_range",
-        description: "Read a bounded sequence range from the current studio timeline.",
+        description: "读取当前 Studio 时间线中有限的序号范围。",
         inputSchema: objectSchema({
           after: { type: "integer", minimum: 0 },
           before: { type: "integer", minimum: 1 },
@@ -620,7 +615,7 @@ export function mcpToolDefinitions(): McpToolDefinition[] {
       },
       {
         name: "studio_search",
-        description: "Search visible messages in the current studio.",
+        description: "检索当前 Studio 中的可见消息。",
         inputSchema: objectSchema({
           query: { type: "string", minLength: 1 },
           limit: { type: "integer", minimum: 1, maximum: 50 },
@@ -628,7 +623,7 @@ export function mcpToolDefinitions(): McpToolDefinition[] {
       },
       {
         name: "workspace_reserve",
-        description: "Declare relative project paths that this employee intends to modify.",
+        description: "声明当前员工准备修改的项目相对路径。",
         inputSchema: objectSchema({
           paths: { type: "array", minItems: 1, maxItems: 50, items: { type: "string" } },
           reason: { type: "string" },
@@ -636,14 +631,14 @@ export function mcpToolDefinitions(): McpToolDefinition[] {
       },
       {
         name: "workspace_release",
-        description: "Release relative project paths reserved by this employee.",
+        description: "释放当前员工已预留的项目相对路径。",
         inputSchema: objectSchema({
           paths: { type: "array", minItems: 1, maxItems: 50, items: { type: "string" } },
         }, ["paths"]),
       },
       {
         name: "workspace_status",
-        description: "List active path reservations in the current studio.",
+        description: "列出当前 Studio 中有效的路径预留。",
         inputSchema: objectSchema({
           paths: { type: "array", maxItems: 50, items: { type: "string" } },
         }),
@@ -654,7 +649,7 @@ export function mcpToolDefinitions(): McpToolDefinition[] {
   if (managed && process.env.AGENT_RECALL_WORKFLOW_RUN_ID && process.env.AGENT_RECALL_WORKFLOW_NODE_ID && process.env.AGENT_RECALL_WORKFLOW_NODE_EXECUTION_ID) {
     tools.push({
       name: "workflow_node_complete",
-      description: "Submit the current workflow node's validated structured result. Call this exactly once when the node is complete; ordinary text remains conversation history.",
+      description: "提交当前 Workflow 节点已经校验的结构化结果。节点完成时只能调用一次；普通文本仍保留在对话历史中。",
       inputSchema: objectSchema({
         nodeId: { type: "string", const: process.env.AGENT_RECALL_WORKFLOW_NODE_ID },
         summary: { type: "string", minLength: 1 },

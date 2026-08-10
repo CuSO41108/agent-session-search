@@ -294,23 +294,6 @@ function extractWorkflowHandoffSection(content: string): string | undefined {
   return extractWorkflowSection(content, ["handoff", "summary", "key context", "context"]);
 }
 
-function workflowStringField(content: string, field: string): string | undefined {
-  const pattern = `["']?${field}["']?\\s*:\\s*("([^"\\\\]|\\\\.)*"|'([^'\\\\]|\\\\.)*'|\`([^\`\\\\]|\\\\.)*\`)`;
-  const match = new RegExp(pattern, "s").exec(content);
-  if (!match) return undefined;
-  const raw = match[1]!;
-  const body = raw.slice(1, -1);
-  return body
-    .replace(/\\n/g, "\n")
-    .replace(/\\r/g, "\r")
-    .replace(/\\t/g, "\t")
-    .replace(/\\"/g, `"`)
-    .replace(/\\'/g, `'`)
-    .replace(/\\`/g, "`")
-    .replace(/\\\\/g, "\\")
-    .trim();
-}
-
 export interface WorkflowJudgeResult {
   complete: boolean;
   reason: string;

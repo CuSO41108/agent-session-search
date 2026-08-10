@@ -1,10 +1,17 @@
 import { describe, expect, it, vi } from "vitest";
-import { BuiltinSessionSearchServer, BuiltinWorkflowMcpServer, type BuiltinSessionSearchDeps, type McpBuiltinRuntime } from "./mcp-builtin-server";
+import {
+  BuiltinSessionSearchServer,
+  BuiltinSkillMcpServer,
+  BuiltinWorkflowMcpServer,
+  type BuiltinSessionSearchDeps,
+  type McpBuiltinRuntime,
+} from "./mcp-builtin-server";
 import type { McpServerDefinition } from "../shared/mcp/types";
 
 const FIXED_CONFIG = {
   id: "agent-recall-session-search",
-  name: "agent-recall-v2",
+  name: "AgentRecall Session Search",
+  description: "Search and resume indexed Agent sessions.",
   command: "node",
   args: ["/bin/agent-recall-mcp.mjs"],
 };
@@ -52,7 +59,8 @@ describe("BuiltinSessionSearchServer", () => {
     const resolved = await server.resolve();
     expect(resolved).toEqual({
       id: "agent-recall-session-search",
-      name: "agent-recall-v2",
+      name: "AgentRecall Session Search",
+      description: "Search and resume indexed Agent sessions.",
       transport: "stdio",
       command: "node",
       args: ["/bin/agent-recall-mcp.mjs"],
@@ -86,7 +94,7 @@ describe("BuiltinSessionSearchServer", () => {
     expect(deps.setEnabled).toHaveBeenCalledWith(false);
     const saved = await server.resolve();
     // Connection fields are re-derived, not taken from the client.
-    expect(saved.name).toBe("agent-recall-v2");
+    expect(saved.name).toBe("AgentRecall Session Search");
     expect(saved.command).toBe("node");
     expect(saved.args).toEqual(["/bin/agent-recall-mcp.mjs"]);
     // Tool catalog and toggles are preserved from the draft.
@@ -151,6 +159,7 @@ describe("BuiltinSessionSearchServer", () => {
 const WORKFLOW_LAUNCH = {
   id: "agent-recall-workflow",
   name: "AgentRecall Workflow",
+  description: "Create and run structured AgentRecall workflows.",
   command: "node",
   args: ["/out/mcp/workflow-entry.js"],
 };
@@ -162,6 +171,7 @@ describe("BuiltinWorkflowMcpServer", () => {
     const resolved = await server.resolve();
     expect(resolved.id).toBe("agent-recall-workflow");
     expect(resolved.name).toBe("AgentRecall Workflow");
+    expect(resolved.description).toBe("Create and run structured AgentRecall workflows.");
     expect(resolved.enabled).toBe(false);
     expect(resolved.env).toEqual({});
     expect(resolved.managed).toBe(true);
@@ -204,5 +214,33 @@ describe("BuiltinWorkflowMcpServer", () => {
     expect(tested.status).toBe("connected");
     expect(tested.tools.map((tool) => tool.name)).toEqual(["workflow_create", "workflow_run"]);
     expect((deps.readRuntime() as McpBuiltinRuntime).status).toBe("connected");
+  });
+});
+
+describe("BuiltinSkillMcpServer", () => {
+  it("resolves as a separate hub-bindable project built-in", async () => {
+    const deps = createDeps({
+      launchConfig: () => ({
+        id: "agent-recall-skills",
+        name: "AgentRecall Skills",
+        description: "列出 AgentRecall 已管理的 Skill，并按需读取完整说明。",
+        command: "node",
+        args: ["/bin/agent-recall-skill-mcp.mjs"],
+      }),
+    });
+    const server = new BuiltinSkillMcpServer(deps);
+
+    const resolved = await server.resolve();
+
+    expect(resolved).toMatchObject({
+      id: "agent-recall-skills",
+      name: "AgentRecall Skills",
+      description: "列出 AgentRecall 已管理的 Skill，并按需读取完整说明。",
+      managed: true,
+      enabled: true,
+    });
+    expect(resolved.hubBindable).toBeUndefined();
+    expect(server.isBuiltinId("agent-recall-skills")).toBe(true);
+    expect(server.isBuiltinId("agent-recall-session-search")).toBe(false);
   });
 });

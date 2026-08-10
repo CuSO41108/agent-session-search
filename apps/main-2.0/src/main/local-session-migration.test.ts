@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { defaultSettings, getSafeMigrationResumeCommand } from "../core/platform";
-import { migrateSession, type SessionMigrationDependencies } from "../core/session-migration";
+import { migrateSession } from "../core/session-migration";
 import type {
   SessionMessage,
   SessionSearchResult,

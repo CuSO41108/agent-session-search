@@ -6,7 +6,6 @@ import {
   type DeleteInstalledSkillResult,
   type InstalledSkill,
   type InstalledSkillsSnapshot,
-  type SkillManagerOptions,
   type SkillSource,
 } from "./skill-manager";
 import { AGENT_SKILL_REGISTRY, SKILL_INSTALL_TARGETS, agentInstallTargetDir, type SkillInstallTarget } from "./agent-skill-registry";
@@ -74,6 +73,16 @@ export interface AgentRecallBuiltinSkillDefinition {
 }
 
 export const AGENT_RECALL_BUILTIN_SKILLS: AgentRecallBuiltinSkillDefinition[] = [
+  {
+    id: "aihot",
+    installId: "aihot",
+    sourceUrl: "https://github.com/KKKKhazix/khazix-skills/tree/main/aihot",
+  },
+  {
+    id: "resume-optimization",
+    installId: "resume-optimization",
+    sourceUrl: "https://github.com/melodic-software/claude-code-plugins/tree/main/plugins/soft-skills/skills/resume-optimization",
+  },
   {
     id: "brainstorming",
     installId: "brainstorming",
@@ -427,7 +436,7 @@ export class ManagedSkillLibrary {
   }
 }
 
-export function managedSkillLinkType(platform: NodeJS.Platform): "dir" | "junction" {
+function managedSkillLinkType(platform: NodeJS.Platform): "dir" | "junction" {
   return platform === "win32" ? "junction" : "dir";
 }
 
@@ -494,16 +503,4 @@ function isManagedSkillOrigin(value: unknown): value is ManagedSkillOrigin {
   const origin = value as Partial<ManagedSkillOrigin>;
   return (origin.kind === "local" || origin.kind === "skills-sh" || origin.kind === "remote" || origin.kind === "builtin")
     && typeof origin.label === "string";
-}
-
-export function managedSkillManagerOptions(
-  libraryRoot: string,
-  options: Pick<ManagedSkillLibraryOptions, "homeDir" | "codexHome">,
-): SkillManagerOptions {
-  return {
-    homeDir: options.homeDir,
-    codexHome: options.codexHome,
-    managedRoot: libraryRoot,
-    managedOnly: true,
-  };
 }

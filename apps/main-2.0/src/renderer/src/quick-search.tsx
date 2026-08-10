@@ -82,7 +82,7 @@ export function QuickSearch(): ReactElement {
           >
             <strong>{session.displayTitle}</strong>
             <span>
-              {session.projectPath || "无项目路径"} · {formatRelativeTime(session.lastActivityAt)}
+              {session.projectPath || "无项目路径"} · {formatRelativeTime(session.lastActivityAt, "zh")}
             </span>
           </button>
         ))}

@@ -146,7 +146,7 @@ export const SessionRow = memo(function SessionRow({
             {environmentBadgeLabel(session, language)}
           </span>
           <span>{session.projectPath || l("No project path", "无项目路径")}</span>
-          <span>{formatRelativeTime(sessionSortTimestamp(session, sortBy))}</span>
+          <span>{formatRelativeTime(sessionSortTimestamp(session, sortBy), language)}</span>
           <span>{l(`${session.messageCount} messages`, `${session.messageCount} 条消息`)}</span>
           {hasTokenUsage(session.tokenUsage) ? <span>{l(`${formatTokenCount(session.tokenUsage.totalTokens)} tokens`, `${formatTokenCount(session.tokenUsage.totalTokens)} token`)}</span> : null}
         </div>
@@ -170,7 +170,7 @@ export const SessionRow = memo(function SessionRow({
                 >
                   <span className="search-match-meta">
                     <strong>{hit.role === "user" ? l("User", "用户") : l("Assistant", "助手")}</strong>
-                    {Number.isFinite(timestamp) ? <time>{formatRelativeTime(timestamp)}</time> : null}
+                    {Number.isFinite(timestamp) ? <time>{formatRelativeTime(timestamp, language)}</time> : null}
                   </span>
                   <span className="search-match-snippet">
                     <HighlightedSearchText text={hit.snippet} terms={hit.matchedTerms} />

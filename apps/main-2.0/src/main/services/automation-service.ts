@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import type { AppSnapshot, ConfiguredAgent, WorkflowSidebarItem } from "../../automation/contracts";
 import {
   AgentHub,
@@ -17,9 +18,21 @@ import {
 } from "../../automation/engine/main/bridges/mcp-bridge";
 import { McpRegistryStore } from "../../automation/engine/main/mcp-registry-store";
 import { McpAgentManagementService } from "../../automation/engine/main/mcp/agent-management-service";
-import { BuiltinWorkflowMcpServer, type BuiltinSessionSearchServer, type ManagedMcp, type McpBuiltinRuntime } from "../../automation/engine/main/mcp-builtin-server";
+import {
+  BuiltinWorkflowMcpServer,
+  type BuiltinSessionSearchServer,
+  type BuiltinSkillMcpServer,
+  type ManagedMcp,
+  type McpBuiltinRuntime,
+} from "../../automation/engine/main/mcp-builtin-server";
 import { EvaluationStore } from "../../automation/engine/main/evaluation-store";
 import { ConfiguredAgentExecutionService } from "../../automation/engine/main/platform/configured-agent-execution-service";
+import { WorkflowEngine } from "../../automation/engine/main/workflows/workflow-engine";
+import { createWorkflowNodeExecutors } from "../../automation/engine/main/workflows/workflow-executors";
+import { WorkflowScriptProcessRunner } from "../../automation/engine/main/workflows/workflow-script-process";
+import type { WorkflowRunStreamEvent, WorkflowScriptPermission } from "../../automation/engine/shared/workflow/model";
+import { structuredBundledWorkflowDefinitions } from "../../automation/engine/shared/workflow/bundled-definitions";
+import { PostgresWorkflowCoreRepository } from "../../automation/engine/main/hub/persisted/postgres-workflow-core-repository";
 import {
   loadBundledWorkflows,
   loadBundledWorkflowSummaries,
@@ -46,6 +59,7 @@ import {
   WorkflowPortableService,
   type WorkflowPortableFileSelection,
 } from "./workflow-portable-service";
+import { parseWorkflowAgentOutputs, WorkflowCoreService } from "./workflow-core-service";
 
 export interface AutomationServiceOptions {
   database: PostgresDatabase;
@@ -55,6 +69,7 @@ export interface AutomationServiceOptions {
   bundledWorkflowsPath: string;
   workflowMcpServerPath: string;
   builtinSessionSearch?: BuiltinSessionSearchServer;
+  builtinSkills?: BuiltinSkillMcpServer;
   workflowMcp?: {
     isEnabled(): boolean;
     setEnabled(next: boolean): Promise<boolean>;
@@ -64,6 +79,10 @@ export interface AutomationServiceOptions {
   chooseWorkflowImportFile?: () => Promise<WorkflowPortableFileSelection | undefined>;
   chooseWorkflowExportPath?: (defaultFileName: string) => Promise<string | undefined>;
   writeWorkflowExportFile?: (filePath: string, content: string) => Promise<void>;
+  confirmWorkflowScriptPermissions?: (input: {
+    nodeTitle: string;
+    permissions: WorkflowScriptPermission[];
+  }) => Promise<boolean>;
 }
 
 interface AutomationServiceDependencies {
@@ -72,6 +91,7 @@ interface AutomationServiceDependencies {
   agents?: McpAgentManagementService;
   evaluations?: EvaluationService;
   teamChats?: TeamChatService;
+  workflowCore?: WorkflowCoreService;
   loadBundledWorkflows?: (rootPath: string) => Promise<BundledWorkflowDefinition[]>;
   loadBundledWorkflowSummaries?: (rootPath: string) => Promise<BundledWorkflowSummary[]>;
   startBridge?: typeof startMcpBridge;
@@ -81,6 +101,7 @@ interface AutomationServiceDependencies {
 
 type SnapshotListener = (snapshot: AppSnapshot) => void;
 type ChangeListener = (change: AutomationChange) => void;
+type WorkflowRunStreamListener = (event: WorkflowRunStreamEvent) => void;
 
 function diffEntities<T>(
   previous: T[],
@@ -219,6 +240,7 @@ export class NativeAutomationService {
   readonly paths: AutomationPaths;
   readonly runtime: RuntimeAutomationModule;
   readonly workflows: WorkflowAutomationModule;
+  readonly workflowCore: WorkflowCoreService;
   readonly mcp: McpAutomationModule;
   readonly evaluations: EvaluationService;
   readonly teamChat: TeamChatService;
@@ -235,6 +257,7 @@ export class NativeAutomationService {
   private readonly setRouterBaseUrl: typeof setCodexChatRouterBaseUrl;
   private readonly listeners = new Set<SnapshotListener>();
   private readonly changeListeners = new Set<ChangeListener>();
+  private readonly workflowRunStreamListeners = new Set<WorkflowRunStreamListener>();
   private readonly unsubscribeHub: () => void;
   private currentSnapshot: AppSnapshot;
   private changeSequence = 0;
@@ -268,6 +291,40 @@ export class NativeAutomationService {
       channels: () => this.hubInstance.snapshot().channels,
       defaultWorkDir: () => this.hubInstance.getWorkDir(),
       execute: (request, onEvent, signal) => this.hubInstance.askConfiguredAgent(request, onEvent, signal),
+    });
+    const workflowRepository = new PostgresWorkflowCoreRepository(options.database);
+    const approvedScripts = new Set<string>();
+    this.workflowCore = dependencies.workflowCore ?? new WorkflowCoreService({
+      repository: workflowRepository,
+      engine: new WorkflowEngine({
+        store: workflowRepository,
+        createId: () => `workflow_run_${randomUUID()}`,
+        executors: createWorkflowNodeExecutors({
+          agentInvoker: {
+            invoke: async ({ agentId, prompt, outputs, onEvent, signal }) => {
+              const outputContract = outputs.map((field) => `- ${field.key}: ${field.description}`).join("\n");
+              const response = await this.configuredAgentExecutor.runOneShot({
+                configuredAgentId: agentId,
+                prompt: `${prompt}\n\n## Response format\nReturn only one JSON object. Use exactly these top-level fields:\n${outputContract}`,
+              }, onEvent, signal);
+              return parseWorkflowAgentOutputs(response.output);
+            },
+          },
+          onStream: (event) => this.publishWorkflowRunStream(event),
+          scriptRunner: new WorkflowScriptProcessRunner(() => this.hubInstance.getWorkDir()),
+          scriptAuthorizer: {
+            authorize: async ({ runId, node, permissions }) => {
+              const key = `${runId}:${node.id}`;
+              if (approvedScripts.has(key)) return true;
+              if (!options.confirmWorkflowScriptPermissions) return false;
+              const approved = await options.confirmWorkflowScriptPermissions({ nodeTitle: node.title, permissions });
+              if (approved) approvedScripts.add(key);
+              return approved;
+            },
+          },
+        }),
+      }),
+      configuredAgentIds: () => new Set(this.hubInstance.snapshot().configuredAgents.map((agent) => agent.id)),
     });
     this.evaluations = dependencies.evaluations ?? new EvaluationService({
       store: new EvaluationStore(options.database),
@@ -324,12 +381,12 @@ export class NativeAutomationService {
           launchConfig: () => ({
             id: "agent-recall-workflow",
             name: "AgentRecall Workflow",
+            description: "创建、查看并运行结构化的 AgentRecall Workflow。",
             command: "node",
             args: [options.workflowMcpServerPath],
           }),
           testEnv: () => ({
             AGENT_RECALL_WORKFLOW_MCP_BRIDGE: this.bridge?.discoveryPath ?? this.paths.discoveryPath,
-            ...(this.bridge?.token ? { AGENT_RECALL_WORKFLOW_MCP_TOKEN: this.bridge.token } : {}),
           }),
           hubBindable: false,
           readRuntime: () => options.workflowMcp!.readRuntime(),
@@ -340,7 +397,7 @@ export class NativeAutomationService {
       registry: this.registryInstance,
       agents: this.agentsInstance,
       runtime: this.hubInstance,
-      builtins: [options.builtinSessionSearch, workflowBuiltin]
+      builtins: [options.builtinSessionSearch, options.builtinSkills, workflowBuiltin]
         .filter((item): item is NonNullable<typeof item> => Boolean(item)) as ManagedMcp[],
     });
     this.currentSnapshot = this.hubInstance.snapshot();
@@ -390,6 +447,9 @@ export class NativeAutomationService {
   private async prepareInternal(): Promise<void> {
     await this.hubInstance.loadModelChannels(this.paths.channelsPath);
     await this.hubInstance.loadPersistedState(this.appStore);
+    await this.workflowCore.initialize();
+    const defaultAgentId = this.hubInstance.snapshot().configuredAgents[0]?.id;
+    if (defaultAgentId) await this.workflowCore.ensureDefinitions(structuredBundledWorkflowDefinitions(defaultAgentId));
     this.hubInstance.setMcpServers(await this.registryInstance.list());
     this.hubInstance.ensureBundledWorkflows(await this.bundledWorkflows());
   }
@@ -540,6 +600,21 @@ export class NativeAutomationService {
     return () => this.changeListeners.delete(listener);
   }
 
+  subscribeWorkflowRunStream(listener: WorkflowRunStreamListener): () => void {
+    this.workflowRunStreamListeners.add(listener);
+    return () => this.workflowRunStreamListeners.delete(listener);
+  }
+
+  publishWorkflowRunStream(event: WorkflowRunStreamEvent): void {
+    for (const listener of this.workflowRunStreamListeners) {
+      try {
+        listener(event);
+      } catch {
+        this.workflowRunStreamListeners.delete(listener);
+      }
+    }
+  }
+
   private handleHubChange(change: AgentHubChange): void {
     if (change.kind === "snapshot") {
       this.currentSnapshot = change.snapshot;
@@ -623,6 +698,7 @@ export class NativeAutomationService {
     this.registryInstance.close();
     this.unsubscribeHub();
     this.listeners.clear();
+    this.workflowRunStreamListeners.clear();
     this.healthState = { state: "stopped" };
   }
 }

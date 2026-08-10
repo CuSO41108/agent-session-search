@@ -6,6 +6,6 @@ const binDir = path.dirname(fileURLToPath(import.meta.url));
 const entryPath = path.join(binDir, "..", "out", "mcp", "workflow-entry.js");
 
 await import(pathToFileURL(entryPath).href).catch((error) => {
-  process.stderr.write(`AgentRecall Workflow MCP failed to start: ${error instanceof Error ? error.message : String(error)}\n`);
+  process.stderr.write(`AgentRecall Workflow MCP 启动失败：${error instanceof Error ? error.message : String(error)}\n`);
   process.exitCode = 1;
 });

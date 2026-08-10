@@ -5,7 +5,6 @@ import type {
   WorkflowDraftState,
 } from "../../../shared/types";
 import type { WorkflowGrillEvent } from "../../../shared/workflow/draft";
-import { replaceWorkflowDraftMessage } from "./agent-hub-workflow-draft";
 import { runWorkflowDraftReply } from "./agent-hub-workflow-agent";
 import {
   beginWorkflowDraftReply,

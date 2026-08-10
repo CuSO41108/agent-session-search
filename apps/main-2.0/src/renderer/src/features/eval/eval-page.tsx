@@ -4,7 +4,7 @@ import { AlertTriangle, Beaker, CheckCircle2, ChevronDown, ChevronRight, EyeOff,
 
 import type { SkillTriggerLink } from "../../../../core/session-store";
 import type { SkillFinding } from "../../../../core/skill-eval-findings";
-import type { SkillEvalDetail, SkillEvalOverview, SkillEvalOverviewItem, SkillEvalSuite } from "../../../../main/services/skill-service";
+import type { SkillEvalDetail, SkillEvalOverview, SkillEvalSuite } from "../../../../main/services/skill-service";
 import type { EvaluationEvaluator, EvaluationRun, EvaluationRunSummary, ConfiguredAgent } from "../../../../automation/contracts";
 import { formatRelativeTime } from "../../../../core/format-session";
 import { localize, type LanguageMode } from "../../language";
@@ -192,7 +192,7 @@ export function EvalPage({
                         <>
                           {l(`${item.totalTriggers} triggers`, `${item.totalTriggers} 次触发`)}
                           {item.triggers7d > 0 ? ` · 7d ${item.triggers7d}` : ""}
-                          {item.lastTriggeredAt ? ` · ${formatRelativeTime(item.lastTriggeredAt)}` : ""}
+                          {item.lastTriggeredAt ? ` · ${formatRelativeTime(item.lastTriggeredAt, language)}` : ""}
                         </>
                       ) : item.observation === "never-used" ? (
                         <span className="eval-badge eval-badge-warn">{l("Installed, never used", "已装未用")}</span>
@@ -222,9 +222,9 @@ export function EvalPage({
                     )}</p>
                   ) : (
                     <>
-                      <FindingsCard language={language} findings={findings} onOpenSession={onOpenSession} />
+                      <FindingsCard language={language} findings={findings} />
                       <EvalSuitesCard language={language} skill={selected.skill} />
-                      <SignalsCard language={language} item={selected} detail={detail} />
+                      <SignalsCard language={language} detail={detail} />
                       <VersionsCard language={language} detail={detail} />
                       <TriggersCard
                         language={language}
@@ -252,11 +252,9 @@ export function EvalPage({
 // baseline, never a score.
 function SignalsCard({
   language,
-  item,
   detail,
 }: {
   language: LanguageMode;
-  item: SkillEvalOverviewItem;
   detail: SkillEvalDetail | null;
 }): ReactElement {
   const l = (en: string, zh: string) => localize(language, en, zh);
@@ -330,7 +328,7 @@ function VersionsCard({
               <span className="eval-version-meta">
                 {l(`${group.triggerCount} triggers`, `${group.triggerCount} 次触发`)}
                 {" · "}
-                {formatRelativeTime(group.firstTriggeredAt)} → {formatRelativeTime(group.lastTriggeredAt)}
+                {formatRelativeTime(group.firstTriggeredAt, language)} → {formatRelativeTime(group.lastTriggeredAt, language)}
               </span>
             </li>
           ))}
@@ -363,7 +361,7 @@ function TriggersCard({
         <ul className="eval-trigger-list">
           {triggers.map((trigger, index) => (
             <li key={`${trigger.occurredAt}-${index}`}>
-              <span className="eval-trigger-time">{formatRelativeTime(trigger.occurredAt)}</span>
+              <span className="eval-trigger-time">{formatRelativeTime(trigger.occurredAt, language)}</span>
               <span className="eval-trigger-agent">{trigger.agent}</span>
               {trigger.sessionKey ? (
                 <button
@@ -560,7 +558,7 @@ function EvalSuitesCard({
               <div className="eval-suite-row-sub">
                 <span className="eval-muted">
                   {suite.lastRun
-                    ? `${l("Last run", "上次运行")} ${formatRelativeTime(suite.lastRun.startedAt)} · ${l("pass", "通过")} ${suite.lastRun.passRate != null ? Math.round(suite.lastRun.passRate * 100) : "—"}%`
+                    ? `${l("Last run", "上次运行")} ${formatRelativeTime(suite.lastRun.startedAt, language)} · ${l("pass", "通过")} ${suite.lastRun.passRate != null ? Math.round(suite.lastRun.passRate * 100) : "—"}%`
                     : l("Never run", "从未运行")}
                   {" · "}×{suite.repetitions}
                 </span>
@@ -870,11 +868,9 @@ function formatRatio(value: number | null): string {
 function FindingsCard({
   language,
   findings,
-  onOpenSession,
 }: {
   language: LanguageMode;
   findings: SkillFinding[] | null;
-  onOpenSession: (sessionKey: string) => void;
 }): ReactElement {
   const l = (en: string, zh: string) => localize(language, en, zh);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
@@ -1016,7 +1012,7 @@ function SuiteRunsSection({
                   <select value={baseRunId} onChange={(event) => setBaseRunId(event.target.value)}>
                     {runs.map((run) => (
                       <option key={run.id} value={run.id}>
-                        {formatRelativeTime(run.startedAt)}{run.skillHash ? ` · ${run.skillHash.slice(0, 8)}` : ""}
+                        {formatRelativeTime(run.startedAt, language)}{run.skillHash ? ` · ${run.skillHash.slice(0, 8)}` : ""}
                       </option>
                     ))}
                   </select>
@@ -1027,7 +1023,7 @@ function SuiteRunsSection({
                   <select value={compareRunId} onChange={(event) => setCompareRunId(event.target.value)}>
                     {runs.map((run) => (
                       <option key={run.id} value={run.id}>
-                        {formatRelativeTime(run.startedAt)}{run.skillHash ? ` · ${run.skillHash.slice(0, 8)}` : ""}
+                        {formatRelativeTime(run.startedAt, language)}{run.skillHash ? ` · ${run.skillHash.slice(0, 8)}` : ""}
                       </option>
                     ))}
                   </select>
@@ -1062,7 +1058,7 @@ function SuiteRunsSection({
                   <span className={`eval-badge ${run.status === "completed" ? "eval-badge-current" : run.status === "running" || run.status === "pending" ? "eval-badge-dim" : "eval-badge-warn"}`}>
                     {runStatusText(language, run.status)}
                   </span>
-                  <span className="eval-muted">{formatRelativeTime(run.startedAt)}</span>
+                  <span className="eval-muted">{formatRelativeTime(run.startedAt, language)}</span>
                   {run.passRate != null ? (
                     <span>{l("pass", "通过")} {Math.round(run.passRate * 100)}%</span>
                   ) : null}

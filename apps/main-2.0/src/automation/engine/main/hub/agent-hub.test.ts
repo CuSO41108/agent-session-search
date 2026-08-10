@@ -4995,22 +4995,6 @@ fs.writeFileSync(${JSON.stringify(argsPath)}, process.argv.slice(2).join("\\n") 
 
   test("rejects V2 definitions that exceed node limits", () => {
     const hub = new AgentHub();
-    const nodes = [
-      { id: "start", kind: "start", title: "Start", prompt: "" },
-      ...Array.from({ length: 49 }, (_value, index) => ({
-        id: `agent_${index}`,
-        kind: "agent",
-        title: `Agent ${index}`,
-        prompt: "Work.",
-      })),
-      { id: "end", kind: "end", title: "Done", prompt: "" },
-    ];
-    const edges = nodes.slice(0, -1).map((node, index) => ({
-      id: `${node.id}->${nodes[index + 1]!.id}`,
-      fromNodeId: node.id,
-      toNodeId: nodes[index + 1]!.id,
-    }));
-
     const workflowId = hub.createWorkflowDraft().workflowDraft!.workflowId;
     const result = hub.materializeWorkflowDraft(workflowId, {
       title: "Too large",

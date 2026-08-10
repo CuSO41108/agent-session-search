@@ -8,7 +8,6 @@ import type {
   LoadedSession,
   SessionFormat,
   SessionMessage,
-  SessionSource,
   SessionTraceEvent,
   SessionTraceKind,
   TokenUsage,
@@ -455,7 +454,7 @@ function traeAssistantSummary(row: Record<string, unknown>): string {
   return joinNonEmpty(parts);
 }
 
-function loadTraeMemoryFile(filePath: string, traeDir: string, stat = safeStat(filePath)): LoadedSession | null {
+function loadTraeMemoryFile(filePath: string, stat = safeStat(filePath)): LoadedSession | null {
   const rows = readJsonl(filePath).filter(isRecord);
   if (rows.length === 0) return null;
   const rawId = path.basename(filePath, ".jsonl");
@@ -498,7 +497,7 @@ export function* loadTraeSessionsIterator(traeDir = path.join(os.homedir(), ".tr
     if (!path.basename(filePath).startsWith("session_memory_")) continue;
     const stat = safeStat(filePath);
     if (shouldSkipFile(options, filePath, stat)) continue;
-    const loaded = loadTraeMemoryFile(filePath, traeDir, stat);
+    const loaded = loadTraeMemoryFile(filePath, stat);
     if (loaded) yield loaded;
   }
 }

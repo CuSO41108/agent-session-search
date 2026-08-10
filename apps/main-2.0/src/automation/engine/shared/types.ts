@@ -1,31 +1,10 @@
-import type {
-  WorkflowV2AcceptanceCriterion,
-  WorkflowV2CostBudget,
-  WorkflowV2GraphRevision,
-  WorkflowV2Plan,
-} from "./workflow-v2/planning";
-import type {
-  WorkflowV2ContextBudget,
-  WorkflowV2Definition,
-  WorkflowV2ModelProfile,
-  WorkflowV2NodeRole,
-  WorkflowV2ValidationResult,
-} from "./workflow-v2/definition";
-import type { WorkflowV2HumanIntervention, WorkflowV2InterventionAction } from "./workflow-v2/review";
 import type { RuntimeId } from "./runtime-catalog";
 import type { ResourceSourceType } from "./resource";
 import type { RuntimeConversation } from "./runtime/conversation";
 import type { RuntimeUsage } from "../../../shared/runtime/usage";
 import type { WorkflowNodeConversation } from "./workflow-v2/conversation";
 import type { ConfiguredAgent } from "./agent/types";
-import type { WorkflowDraftState, WorkflowGrillMessage, WorkflowSidebarItem, WorkflowStoreState } from "./workflow/draft";
-import type {
-  WorkflowArtifactReference,
-  WorkflowEvent,
-  WorkflowRunProgressItem,
-  WorkflowRunState,
-  WorkflowStatus,
-} from "./workflow/run";
+import type { WorkflowDraftState, WorkflowStoreState } from "./workflow/draft";
 export {
   isWorkflowRunTerminalStatus,
   type WorkflowArtifactReference,
@@ -43,6 +22,30 @@ export type { AgentRevision, AgentType, ConfiguredAgent } from "./agent/types";
 export type { AgentMcpBinding, McpServerDefinition, McpToolDefinition, McpTransport } from "./mcp/types";
 export type { EvaluationCaseResult, EvaluationDataset, EvaluationDatasetItem, EvaluationEvaluator, EvaluationExperiment, EvaluationRun, EvaluationRunPage, EvaluationRunSummary, EvaluationScore, EvaluatorKind, ListEvaluationRunsRequest } from "./evaluation/types";
 export type { WorkflowDraftState, WorkflowGrillMessage, WorkflowSidebarItem, WorkflowStoreState } from "./workflow/draft";
+export type {
+  WorkflowAgentNode,
+  WorkflowApprovalNode,
+  WorkflowApprovalOption,
+  WorkflowCoreSnapshot,
+  WorkflowDefinition,
+  WorkflowInputDefinition,
+  WorkflowNode,
+  WorkflowNodeInput,
+  WorkflowNodeRun,
+  WorkflowNodeRunStatus,
+  WorkflowOutputField,
+  WorkflowReviewCriterion,
+  WorkflowReviewNode,
+  WorkflowRun,
+  WorkflowRunError,
+  WorkflowRunStreamEvent,
+  WorkflowRunStatus,
+  WorkflowScriptNode,
+  WorkflowScriptPermission,
+  WorkflowScriptRuntime,
+  WorkflowValueType,
+} from "./workflow/model";
+export type { WorkflowValidationIssue } from "./workflow/validation";
 export type {
   ConfirmWorkflowImportRequest,
   WorkflowExportResult,

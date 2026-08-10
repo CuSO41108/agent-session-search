@@ -15,7 +15,6 @@ import {
   type TerminalChoice,
   defaultTerminalFor,
   normalizeTerminal,
-  terminalOptionsFor,
 } from "./terminal-options";
 import {
   normalizeTerminalTitle,
@@ -136,6 +135,7 @@ export interface AppSettings {
    */
   summaryReasoningEffort: SummaryReasoningEffort;
   sessionSearchMcpEnabled: boolean;
+  skillMcpEnabled: boolean;
   workflowMcpEnabled: boolean;
   workflowGlobalReviewEnabled: boolean;
   workflowRuntimeReviewEnabled: boolean;
@@ -216,6 +216,7 @@ export const defaultSettings: AppSettings = {
   summaryClaudeConfigDir: "",
   summaryReasoningEffort: "medium",
   sessionSearchMcpEnabled: true,
+  skillMcpEnabled: true,
   workflowMcpEnabled: false,
   workflowGlobalReviewEnabled: false,
   workflowRuntimeReviewEnabled: false,
@@ -1442,7 +1443,7 @@ export async function inspectMigrationCli(
   target: MigrationTarget,
   settings: AppSettings,
   runner: CliVersionRunner = runCliVersion,
-  options: { homeDir?: string; platform?: NodeJS.Platform } = {},
+  _options: { homeDir?: string; platform?: NodeJS.Platform } = {},
 ): Promise<void> {
   const binary = migrationBinary(target, settings);
   if (target === "cursor") {

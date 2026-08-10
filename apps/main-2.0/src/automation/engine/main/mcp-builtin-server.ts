@@ -29,6 +29,7 @@ export interface BuiltinSessionSearchDeps {
   launchConfig(): {
     id: string;
     name: string;
+    description?: string;
     command: string;
     args: string[];
   };
@@ -86,6 +87,7 @@ export class ManagedMcpServer implements ManagedMcp {
     return {
       id: config.id,
       name: config.name,
+      ...(config.description ? { description: config.description } : {}),
       transport: "stdio",
       command: config.command,
       args: config.args,
@@ -153,6 +155,13 @@ export class ManagedMcpServer implements ManagedMcp {
  * Claude Code / Codex / CodeBuddy configs and bindable to AgentRecall agents.
  */
 export class BuiltinSessionSearchServer extends ManagedMcpServer {
+  constructor(deps: BuiltinSessionSearchDeps) {
+    super(deps);
+  }
+}
+
+/** The app-managed, hub-bindable MCP server for discovering and reading managed Skills. */
+export class BuiltinSkillMcpServer extends ManagedMcpServer {
   constructor(deps: BuiltinSessionSearchDeps) {
     super(deps);
   }

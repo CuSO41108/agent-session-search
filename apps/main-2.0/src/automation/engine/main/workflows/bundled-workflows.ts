@@ -1,6 +1,6 @@
 import { readFile, readdir } from "node:fs/promises";
 import path from "node:path";
-import type { WorkflowV2Definition, WorkflowV2LLMNode } from "../../shared/workflow-v2/definition";
+import type { WorkflowV2Definition } from "../../shared/workflow-v2/definition";
 
 export interface BundledWorkflowDefinition {
   workflowId: string;

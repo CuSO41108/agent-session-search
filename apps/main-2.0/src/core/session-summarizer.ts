@@ -431,7 +431,7 @@ async function codexExecCompletion(endpoint: SummaryEndpoint, messages: ChatMess
       }
       reject(error);
     });
-    proc.on("close", (code, signalName) => {
+    proc.on("close", (code) => {
       if (stdoutBuffer.trim()) {
         const event = parseCodexExecLine(stdoutBuffer.trim());
         if (event?.type === "thread.started" && event.thread_id) {

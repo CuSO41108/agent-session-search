@@ -11,7 +11,7 @@ describe("OpenViking artifact resolver", () => {
   });
 
   it("loads the matching runtime manifest from the current AgentRecall release", async () => {
-    const fetchImpl = vi.fn(async (url: string) => new Response(JSON.stringify({
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({
       version: OPENVIKING_RUNTIME_VERSION,
       platform: "darwin",
       arch: "arm64",

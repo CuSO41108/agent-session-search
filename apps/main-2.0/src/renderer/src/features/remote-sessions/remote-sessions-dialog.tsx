@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ReactElement } from "react";
 import { ArrowRightLeft, Cloud, CloudUpload, Eye, FolderOpen, Laptop, MoreHorizontal, RefreshCw, Search, Server, Trash2, X } from "lucide-react";
-import type { RemoteSessionDetailSnapshot, RemoteSessionListItem, RemoteSessionStatus, SessionSyncItem, SessionSyncState } from "../../../../core/remote-session-sync";
+import type { RemoteSessionDetailSnapshot, RemoteSessionListItem, SessionSyncItem, SessionSyncState } from "../../../../core/remote-session-sync";
 import type { MigrationAgent, RemoteSessionAgent, SessionMigrationResult } from "../../../../core/types";
 import { isSessionSource, remoteSessionAgentForSource, sessionSourceDescriptor } from "../../../../core/session-sources";
 import { formatRelativeTime } from "../../../../core/format-session";
@@ -573,7 +573,7 @@ function SessionCopyCard({
   const l = (en: string, zh: string) => localize(language, en, zh);
   const isLocal = side === "local";
   const updatedLabel = summary.present && Number.isFinite(summary.updatedAt) && summary.updatedAt > 0
-    ? formatRelativeTime(summary.updatedAt)
+    ? formatRelativeTime(summary.updatedAt, language)
     : null;
   return (
     <div className={`remote-copy ${isLocal ? "local" : "cloud"}`}>
@@ -585,7 +585,7 @@ function SessionCopyCard({
         <>
           {updatedLabel ? <strong>{updatedLabel}</strong> : null}
           <span>{l(`${summary.messageCount} messages`, `${summary.messageCount} 条消息`)}</span>
-          {!isLocal && summary.syncedAt ? <small>{l(`Synced ${formatRelativeTime(summary.syncedAt)}`, `同步于 ${formatRelativeTime(summary.syncedAt)}`)}</small> : null}
+          {!isLocal && summary.syncedAt ? <small>{l(`Synced ${formatRelativeTime(summary.syncedAt, "en")}`, `同步于 ${formatRelativeTime(summary.syncedAt, "zh")}`)}</small> : null}
         </>
       ) : (
         <strong className="missing">{summary.missing === "not-uploaded" ? l("Not uploaded", "未上传") : l("No local copy", "无本地副本")}</strong>

@@ -2,7 +2,6 @@ import { createHash } from "node:crypto";
 import type {
   WorkflowOperationKind,
   WorkflowOperationRecord,
-  WorkflowOperationState,
 } from "../../../shared/workflow-v2/transaction";
 import type { WorkflowV2StorePort } from "../workflow-runtime-ports";
 
@@ -215,7 +214,7 @@ export class WorkflowV2OperationBroker {
     const operations = (await this.store.readOperations?.(input.workflowId, input.runId) ?? [])
       .filter((operation) => operation.state === "applied" && (!input.operationIds || input.operationIds.includes(operation.operationId)));
     const result: WorkflowOperationCompensationResult = { compensated: [], skipped: [] };
-    for (const { operation, index } of operations.map((operation, index) => ({ operation, index })).sort((left, right) => right.operation.updatedAt - left.operation.updatedAt || right.operation.createdAt - left.operation.createdAt || right.index - left.index)) {
+    for (const { operation } of operations.map((operation, index) => ({ operation, index })).sort((left, right) => right.operation.updatedAt - left.operation.updatedAt || right.operation.createdAt - left.operation.createdAt || right.index - left.index)) {
       const compensationAdapterId = operation.compensationAdapter;
       if (!operation.reversible || !compensationAdapterId || !operation.prepared) {
         result.skipped.push(operation.operationId);

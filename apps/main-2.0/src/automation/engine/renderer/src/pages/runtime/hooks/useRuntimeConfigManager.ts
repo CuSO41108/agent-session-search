@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type MouseEvent } from "react";
 import type { AutomationApi } from "../../../../../../../preload/automation";
-import { configChannelForSelection, selectConfigChannelsForDisplay } from "../../../../../shared/config-channels";
+import { selectConfigChannelsForDisplay } from "../../../../../shared/config-channels";
 import { DEFAULT_MODEL_ID } from "../../../../../shared/models";
 import type {
   AgentChannel,

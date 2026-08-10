@@ -40,6 +40,8 @@ describe("AgentRecall PostgreSQL schema", () => {
       "app_settings",
       "workflows",
       "workflow_runs",
+      "workflow_node_runs",
+      "workflow_artifacts",
       "mcp_servers",
       "evaluation_datasets",
       "evaluation_runs",
@@ -64,7 +66,7 @@ describe("AgentRecall PostgreSQL schema", () => {
       "openviking_operation_events",
       "openviking_recall_traces",
     ]));
-    expect(names).toHaveLength(67);
+    expect(names).toHaveLength(63);
     const sessionColumns = await database.query<{
       column_name: string;
       is_nullable: string;
@@ -91,20 +93,18 @@ describe("AgentRecall PostgreSQL schema", () => {
       `, [tableName]);
       expect(cacheCreationColumns.rows).toEqual([{ column_name: "cache_creation_input_tokens" }]);
     }
-    const workflowOriginColumns = await database.query<{ column_name: string; data_type: string; is_nullable: string }>(`
+    const workflowColumns = await database.query<{ column_name: string; data_type: string; is_nullable: string }>(`
       select column_name, data_type, is_nullable
       from information_schema.columns
       where table_schema = 'agent_recall'
         and table_name = 'workflows'
-        and column_name in ('origin', 'confirmed_revision', 'reviewer_configured_agent_id', 'reviewer_model_id', 'generation_review')
+        and column_name in ('name', 'description', 'definition')
       order by column_name
     `);
-    expect(workflowOriginColumns.rows).toEqual([
-      { column_name: "confirmed_revision", data_type: "integer", is_nullable: "YES" },
-      { column_name: "generation_review", data_type: "jsonb", is_nullable: "YES" },
-      { column_name: "origin", data_type: "jsonb", is_nullable: "YES" },
-      { column_name: "reviewer_configured_agent_id", data_type: "text", is_nullable: "YES" },
-      { column_name: "reviewer_model_id", data_type: "text", is_nullable: "YES" },
+    expect(workflowColumns.rows).toEqual([
+      { column_name: "definition", data_type: "jsonb", is_nullable: "NO" },
+      { column_name: "description", data_type: "text", is_nullable: "NO" },
+      { column_name: "name", data_type: "text", is_nullable: "NO" },
     ]);
     await database.close();
   });
@@ -171,9 +171,9 @@ describe("AgentRecall PostgreSQL schema", () => {
     const workflowColumns = await upgradedDatabase.query<{ column_name: string }>(`
       select column_name
       from information_schema.columns
-      where table_schema = 'agent_recall' and table_name = 'workflow_draft_messages'
+      where table_schema = 'agent_recall' and table_name = 'workflow_node_runs'
     `);
-    expect(workflowColumns.rows.map((row) => row.column_name)).toContain("events");
+    expect(workflowColumns.rows.map((row) => row.column_name)).toContain("outputs");
 
     const memberColumns = await upgradedDatabase.query<{ column_name: string }>(`
       select column_name
