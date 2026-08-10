@@ -59,6 +59,7 @@ import {
 import { loadUsageQuotaSnapshot } from "../core/quota";
 import { focusLiveSessionTerminal, setLiveSessionTerminalTitle } from "../core/session-focus";
 import { setSessionCustomTitleAndSyncTerminal } from "../core/session-title-sync";
+import { setCursorNativeSessionTitle } from "../core/cursor-session-title";
 import { createCachedLiveSessionSnapshotLoader } from "../core/session-activity";
 import { loadRemoteLiveSessions } from "../core/remote-session-activity";
 import { summarizeSession, type SummaryEndpoint } from "../core/session-summarizer";
@@ -2076,6 +2077,7 @@ function registerIpc(): void {
     retrySqliteWrite(() => setSessionCustomTitleAndSyncTerminal(sessionKey, title, {
       getSession: (key) => store.getSession(key),
       setCustomTitle: (key, customTitle) => store.setCustomTitle(key, customTitle),
+      setNativeSessionTitle: (session, displayTitle) => setCursorNativeSessionTitle(session, displayTitle),
       loadLiveSessions: () =>
         loadCachedLocalLiveSessionSnapshot({
           includeTrae: getSettings().includeTrae,
@@ -2089,7 +2091,7 @@ function registerIpc(): void {
           includeCodeWiz: getSettings().includeCodeWizCli,
         }),
       setLiveTerminalTitle: (pid, displayTitle) => setLiveSessionTerminalTitle(pid, displayTitle),
-      onSyncError: (error) => console.warn("[terminal-title] Could not synchronize live terminal title.", error),
+      onSyncError: (error) => console.warn("[session-title] Could not synchronize the title outside AgentRecall.", error),
     })),
   );
   ipcMain.handle("tag:add", (_event, sessionKey: string, tagName: string) =>

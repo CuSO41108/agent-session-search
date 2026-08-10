@@ -185,7 +185,7 @@ function cursorRevisionSlice(slice: SessionDatabaseSlice): SessionDatabaseSlice 
   };
 }
 
-function cursorStateDatabasePath(filePath: string): string | null {
+export function cursorStateDatabasePath(filePath: string): string | null {
   if (path.basename(filePath).toLowerCase() === "state.vscdb") return filePath;
   const marker = `${path.sep}projects${path.sep}`;
   const markerIndex = filePath.indexOf(marker);
