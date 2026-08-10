@@ -41,6 +41,7 @@ describe("Codex session loading", () => {
   });
 
   it("shows a readable sanitized copy of the original compacted payload", () => {
+    const longReadableText = `retained-start-${"x".repeat(TRACE_DETAIL_PREVIEW_MAX_CHARS)}-retained-end`;
     const loaded = loadCodexSessionRows("/tmp/codex-compacted.jsonl", [
       {
         type: "session_meta",
@@ -62,7 +63,7 @@ describe("Codex session loading", () => {
               type: "message",
               role: "user",
               content: [
-                { type: "input_text", text: "Readable retained user request" },
+                { type: "input_text", text: `Readable retained user request\n${longReadableText}` },
                 { type: "input_image", image_url: "data:image/png;base64,must-not-index-image", detail: "high" },
               ],
               internal_chat_message_metadata_passthrough: { turn_id: "retained-turn" },
@@ -111,6 +112,9 @@ describe("Codex session loading", () => {
     expect(compactions[0].detail).toContain('"replacement_history"');
     expect(compactions[0].detail).toContain('"role": "user"');
     expect(compactions[0].detail).toContain("Readable retained user request");
+    expect(compactions[0].detail).toContain(longReadableText);
+    expect(compactions[0].detail.length).toBeGreaterThan(TRACE_DETAIL_PREVIEW_MAX_CHARS);
+    expect(compactions[0].detail).not.toContain("Indexed preview truncated");
     expect(compactions[0].detail).toContain('"type": "function_call"');
     expect(compactions[0].detail).toContain('"name": "read_file"');
     expect(compactions[0].detail).toContain('"window_number": 2');

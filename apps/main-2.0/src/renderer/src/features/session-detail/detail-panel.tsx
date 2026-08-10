@@ -953,9 +953,6 @@ function TraceEventBlock({ event, language, timelineKey }: { event: SessionTrace
             {compactionSummary.itemTypes.map(({ type, count }) => (
               <span key={type}>{type} {count}</span>
             ))}
-            {compactionSummary.opaqueCompaction
-              ? <span>{localize(language, "Encrypted summary", "包含加密摘要")}</span>
-              : null}
           </>
         ) : null}
         {event.callId ? <span>{event.callId}</span> : null}

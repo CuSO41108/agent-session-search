@@ -173,7 +173,7 @@ function sanitizeCompactionJson(value: unknown, key = ""): unknown {
     if (opaqueField && (value.startsWith("data:") || looksLikeEncodedBinary)) {
       return `[binary omitted: ${value.length} characters]`;
     }
-    return truncateTraceDetail(value);
+    return value;
   }
   if (Array.isArray(value)) return value.map((item) => sanitizeCompactionJson(item));
   const object = record(value);
@@ -585,7 +585,7 @@ function compactionCheckpointTrace(
     kind: "event",
     source: "codex",
     title: "Context compacted",
-    detail: truncateTraceDetail(`payload:\n${JSON.stringify(sanitizedPayload, null, 2)}`),
+    detail: `payload:\n${JSON.stringify(sanitizedPayload, null, 2)}`,
     timestamp: stringValue(row.timestamp),
     callId: null,
     eventType: "codex.context.compaction",

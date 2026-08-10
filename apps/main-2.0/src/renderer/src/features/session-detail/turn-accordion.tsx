@@ -3,7 +3,7 @@ import type { ReactElement } from "react";
 import { AlertCircle, ArrowRightLeft, BotMessageSquare, ChevronDown, ChevronRight, Clock3, LoaderCircle, RotateCw, Wrench } from "lucide-react";
 
 import { formatMessageTime } from "../../../../core/format-session";
-import { tracePresentation } from "../../../../core/trace-presentation";
+import { traceCompactionSummary, tracePresentation } from "../../../../core/trace-presentation";
 import type {
   SessionTraceSpan,
   SessionTurnDetail,
@@ -281,6 +281,7 @@ function TurnSpanBlock({
 }): ReactElement {
   const elapsed = durationLabel(durationMs(span.startedAt, span.endedAt));
   const collaboration = collaborationMessageMetadata(span.attributes);
+  const compactionSummary = traceCompactionSummary(span.attributes);
   const eventType = typeof span.attributes.eventType === "string" ? span.attributes.eventType : "";
   const agentRelated = eventType.startsWith("codex.collaboration.") || span.name.startsWith("collaboration.");
   const SpanIcon = agentRelated ? BotMessageSquare : Wrench;
@@ -306,6 +307,18 @@ function TurnSpanBlock({
         {collaboration?.author || collaboration?.recipient
           ? <code className="msg-tool-call-id">{collaboration.author || "?"} → {collaboration.recipient || "?"}</code>
           : null}
+        {compactionSummary ? (
+          <div className="trace-meta">
+            <span>{localize(
+              language,
+              `${compactionSummary.itemCount} ${compactionSummary.itemCount === 1 ? "item" : "items"}`,
+              `共 ${compactionSummary.itemCount} 项`,
+            )}</span>
+            {compactionSummary.itemTypes.map(({ type, count }) => (
+              <span key={type}>{type} {count}</span>
+            ))}
+          </div>
+        ) : null}
         {span.input ? (
           <details className="msg-tool-payload">
             <summary>{localize(language, "Input", "输入")}</summary>
