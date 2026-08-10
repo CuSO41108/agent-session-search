@@ -10,6 +10,34 @@ describe("TurnAccordion search match positioning", () => {
   let container: HTMLDivElement;
   let root: Root;
   const scrollIntoView = vi.fn();
+  const turn = {
+    id: "turn-1",
+    turnIndex: 0,
+    sourceMessageIndex: 40,
+    synthetic: false,
+    status: "completed",
+    startedAt: "2026-08-10T10:00:00.000Z",
+    endedAt: "2026-08-10T10:00:01.000Z",
+    userPreview: "before",
+    assistantPreview: "matched phrase",
+    inputTokens: 0,
+    outputTokens: 0,
+    cachedInputTokens: 0,
+    reasoningOutputTokens: 0,
+    totalTokens: 0,
+    errorCount: 0,
+    toolNames: [],
+    messageCount: 2,
+    spanCount: 0,
+  } satisfies SessionTurnSummary;
+  const detail = {
+    ...turn,
+    messages: [
+      { messageIndex: 0, sourceMessageIndex: null, role: "user", content: "before", timestamp: turn.startedAt },
+      { messageIndex: 1, sourceMessageIndex: 42, role: "assistant", content: "matched phrase", timestamp: turn.endedAt },
+    ],
+    spans: [],
+  } satisfies SessionTurnDetail;
 
   beforeEach(() => {
     Reflect.set(globalThis, "IS_REACT_ACT_ENVIRONMENT", true);
@@ -29,34 +57,6 @@ describe("TurnAccordion search match positioning", () => {
   });
 
   it("opens the matching Turn and marks the exact matched message", async () => {
-    const turn = {
-      id: "turn-1",
-      turnIndex: 0,
-      sourceMessageIndex: 40,
-      synthetic: false,
-      status: "completed",
-      startedAt: "2026-08-10T10:00:00.000Z",
-      endedAt: "2026-08-10T10:00:01.000Z",
-      userPreview: "before",
-      assistantPreview: "matched phrase",
-      inputTokens: 0,
-      outputTokens: 0,
-      cachedInputTokens: 0,
-      reasoningOutputTokens: 0,
-      totalTokens: 0,
-      errorCount: 0,
-      toolNames: [],
-      messageCount: 2,
-      spanCount: 0,
-    } satisfies SessionTurnSummary;
-    const detail = {
-      ...turn,
-      messages: [
-        { messageIndex: 0, sourceMessageIndex: 40, role: "user", content: "before", timestamp: turn.startedAt },
-        { messageIndex: 1, sourceMessageIndex: 42, role: "assistant", content: "matched phrase", timestamp: turn.endedAt },
-      ],
-      spans: [],
-    } satisfies SessionTurnDetail;
     const onLoadTurn = vi.fn(async () => detail);
 
     await act(async () => {
@@ -83,5 +83,29 @@ describe("TurnAccordion search match positioning", () => {
     const matchedMessage = container.querySelector('[data-message-index="42"]');
     expect(matchedMessage?.classList.contains("match-target")).toBe(true);
     expect(scrollIntoView.mock.instances).toContain(matchedMessage);
+  });
+
+  it("does not mark messages with missing source indexes when no message matched", async () => {
+    await act(async () => {
+      root.render(
+        <TurnAccordion
+          sessionKey="codex:session-1"
+          turns={[turn]}
+          loading={false}
+          matchedTurnId="turn-1"
+          matchedMessageIndex={null}
+          showTools
+          query=""
+          language="en"
+          onLoadTurn={async () => detail}
+        />,
+      );
+      await Promise.resolve();
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(container.querySelector(".msg.match-target")).toBeNull();
   });
 });

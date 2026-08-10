@@ -1231,7 +1231,7 @@ export function App(): ReactElement {
     let targetProjectPath: string | undefined;
     if (isLocalSessionEnvironment(session) && !session.projectPath.trim()) {
       try {
-        targetProjectPath = (await window.sessionSearch.chooseRemoteRestoreProject()) ?? undefined;
+        targetProjectPath = (await window.sessionSearch.chooseLocalProjectDirectory()) ?? undefined;
       } catch (error) {
         setActionStatus({ kind: "error", message: error instanceof Error ? error.message : String(error) });
         return;

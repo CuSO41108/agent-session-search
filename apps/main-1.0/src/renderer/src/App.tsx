@@ -322,7 +322,7 @@ export function App(): ReactElement {
   const [messages, setMessages] = useState<SessionMessage[]>([]);
   const [matchedMessageIndex, setMatchedMessageIndex] = useState<number | null>(null);
   const [messageOffset, setMessageOffset] = useState(0);
-  const [newerMessageCount, setNewerMessageCount] = useState(0);
+  const [messageEndOffset, setMessageEndOffset] = useState(0);
   const [traceEvents, setTraceEvents] = useState<SessionTraceEvent[]>([]);
   const [messagesLoading, setMessagesLoading] = useState(false);
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
@@ -1371,7 +1371,7 @@ export function App(): ReactElement {
     setMessages([]);
     setMatchedMessageIndex(matchHit?.messageIndex ?? null);
     setMessageOffset(0);
-    setNewerMessageCount(0);
+    setMessageEndOffset(0);
     setTraceEvents([]);
     setMessagesLoading(true);
 
@@ -1392,7 +1392,7 @@ export function App(): ReactElement {
 
       setDetail(fresh);
       setMessageOffset(messageWindow.offset);
-      setNewerMessageCount(Math.max(0, fresh.messageCount - messageWindow.offset - loadedMessages.length));
+      setMessageEndOffset(Math.min(fresh.messageCount, messageWindow.offset + messageWindow.limit));
       setMessages(loadedMessages);
       setTraceEvents(loadedTraceEvents);
       setMessagesLoading(false);
@@ -1410,7 +1410,7 @@ export function App(): ReactElement {
     setMessages([]);
     setMatchedMessageIndex(null);
     setMessageOffset(0);
-    setNewerMessageCount(0);
+    setMessageEndOffset(0);
     setTraceEvents([]);
     setMessagesLoading(false);
   }
@@ -1420,7 +1420,7 @@ export function App(): ReactElement {
     setDetail(null);
     setMessages([]);
     setMessageOffset(0);
-    setNewerMessageCount(0);
+    setMessageEndOffset(0);
     setTraceEvents([]);
     setMessagesLoading(false);
     setRemoteDetail({ snapshot, query: detailQuery });
@@ -1454,10 +1454,11 @@ export function App(): ReactElement {
   }
 
   async function loadNewerMessages(): Promise<void> {
+    const newerMessageCount = detail ? Math.max(0, detail.messageCount - messageEndOffset) : 0;
     if (!detail || messagesLoading || newerMessageCount <= 0) return;
     const requestId = detailLoadSeqRef.current;
     const sessionKey = detail.sessionKey;
-    const nextOffset = messageOffset + messages.length;
+    const nextOffset = messageEndOffset;
     const limit = Math.min(MESSAGE_PAGE_SIZE, newerMessageCount);
     setMessagesLoading(true);
     try {
@@ -1465,7 +1466,7 @@ export function App(): ReactElement {
       const nextTraceEvents = await window.sessionSearch.getTraceEvents(sessionKey, traceWindowForMessages(nextMessages));
       if (requestId !== detailLoadSeqRef.current) return;
       setMessages((current) => [...current, ...nextMessages]);
-      setNewerMessageCount((current) => Math.max(0, current - nextMessages.length));
+      setMessageEndOffset((current) => Math.min(detail.messageCount, current + limit));
       setTraceEvents((current) => mergeTraceEventsByIndex(current, nextTraceEvents));
     } catch (error) {
       if (requestId === detailLoadSeqRef.current) {
@@ -1924,7 +1925,7 @@ export function App(): ReactElement {
     let targetProjectPath: string | undefined;
     if (isLocalSessionEnvironment(session) && !session.projectPath.trim()) {
       try {
-        targetProjectPath = (await window.sessionSearch.chooseRemoteRestoreProject()) ?? undefined;
+        targetProjectPath = (await window.sessionSearch.chooseLocalProjectDirectory()) ?? undefined;
       } catch (error) {
         setActionStatus({ kind: "error", message: error instanceof Error ? error.message : String(error) });
         return;
@@ -2508,7 +2509,7 @@ export function App(): ReactElement {
           language={language}
           messagePageSize={MESSAGE_PAGE_SIZE}
           olderMessageCount={messageOffset}
-          newerMessageCount={newerMessageCount}
+          newerMessageCount={Math.max(0, detail.messageCount - messageEndOffset)}
           revealLabel={FILE_MANAGER_LABEL}
           showItermAction={IS_MAC && detail.source !== "codex-app"}
           onClose={closeDetail}

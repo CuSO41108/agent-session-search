@@ -354,7 +354,7 @@ function TurnDetailTimeline({
               message={item.message}
               query={query}
               language={language}
-              target={item.message.sourceMessageIndex === matchedMessageIndex}
+              target={matchedMessageIndex !== null && item.message.sourceMessageIndex === matchedMessageIndex}
             />
           ) : (
             <TurnSpanBlock span={item.span} language={language} />

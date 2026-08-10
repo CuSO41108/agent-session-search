@@ -200,7 +200,7 @@ describe("Remote sessions IPC", () => {
     await api.loadRemoteSessionSyncSnapshot();
     await api.listSessionSyncItems();
     await api.getRemoteSessionDetail("remote-1");
-    await api.chooseRemoteRestoreProject();
+    await api.chooseLocalProjectDirectory();
     await api.restoreRemoteSession("remote-1", "codex", "/tmp/project");
     await api.restoreRemoteSessionToSourceEnvironment("remote-2", "claude");
     await api.deleteRemoteSession("remote-1");
