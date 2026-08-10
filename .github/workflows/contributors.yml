@@ -5,6 +5,7 @@ on:
 
 jobs:
   contrib-readme-job:
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     name: A job to automate contrib in readme
     permissions:
