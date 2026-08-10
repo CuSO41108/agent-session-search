@@ -72,11 +72,10 @@ import {
   runLocalSessionMigration,
 } from "./local-session-migration";
 import {
-  targetFilePath,
   targetFilePathForRemoteEnvironment,
   writeMigratedSession,
 } from "../core/session-migration-writers";
-import { assertMigrationTargetEnabled, isMigrationTarget, migrationTargetDescriptor } from "../core/migration-targets";
+import { assertMigrationTargetEnabled, migrationTargetDescriptor } from "../core/migration-targets";
 import {
   writeDatabaseUrlPointer,
   writeOpenVikingManifestPointer,
@@ -199,7 +198,6 @@ import type {
   MigrationAgent,
   MigrationTarget,
   PortableSession,
-  ProjectQueryOptions,
   SearchOptions,
   SessionEnvironment,
   SessionMigrationProgress,
@@ -1661,7 +1659,7 @@ function ensureWslSessionIndexer(): WslSessionIndexer {
       fetchSessionFile: (environment, session) => fetchRemoteSessionFilePayload(environment, session),
       loadSession: (environment, payload, summary) =>
         loadWslSessionDetailPayload(environment, payload, summary, { includeTraceEvents: true }),
-      onComplete: (environment, result) => {
+      onComplete: (_environment, result) => {
         if (result.indexed > 0) emitEnvironmentsUpdated();
       },
       onSessionError: (session, error) => {

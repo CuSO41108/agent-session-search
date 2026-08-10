@@ -28,8 +28,6 @@ export const SESSION_MCP_DESCRIPTIONS = {
   sessionKey: "search_sessions 返回的 sessionKey。",
   maxMessages: "最多返回 1～200 条消息，默认 40 条。",
   messageOffset: "开始读取的消息序号，默认 0；继续分页时使用上次返回的 nextOffset。",
-  listProjects: "列出已索引项目及其会话数量，用于限定检索范围。",
-  listTags: "列出全部标签，用于限定检索范围。",
   latestSessions: "按修改时间倒序获取最近活跃的会话，用于查找当前会话或最近的 Codex、Claude 会话，无需预先知道 sessionKey。迁移最近会话时，先调用本工具取得 sessionKey，再调用 migrate_session。可按 source 和 projectPath 筛选。",
   latestProjectFilter: "可选的项目路径子串筛选。",
   resultLimit20: "最多返回 1～20 条，默认 5 条。",
@@ -224,23 +222,6 @@ export async function getSession(db, { sessionKey, maxMessages = 40, offset = 0 
     nextOffset,
     messages: messages.map((m) => ({ role: m.role, content: m.content })),
   };
-}
-
-export async function listProjects(db) {
-  const result = await db.query(
-    `SELECT project_path, count(*)::integer AS sessions
-       FROM agent_recall.sessions
-      WHERE project_path <> ''
-      GROUP BY project_path
-      ORDER BY sessions DESC
-      LIMIT 100`,
-  );
-  return result.rows.map((row) => ({ project: row.project_path, sessions: Number(row.sessions) }));
-}
-
-export async function listTags(db) {
-  return (await db.query("SELECT name FROM agent_recall.tags ORDER BY lower(name)")).rows
-    .map((row) => row.name);
 }
 
 // Returns the most recently active sessions (by file mtime / last activity).

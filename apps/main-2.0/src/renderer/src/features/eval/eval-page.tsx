@@ -4,7 +4,7 @@ import { AlertTriangle, Beaker, CheckCircle2, ChevronDown, ChevronRight, EyeOff,
 
 import type { SkillTriggerLink } from "../../../../core/session-store";
 import type { SkillFinding } from "../../../../core/skill-eval-findings";
-import type { SkillEvalDetail, SkillEvalOverview, SkillEvalOverviewItem, SkillEvalSuite } from "../../../../main/services/skill-service";
+import type { SkillEvalDetail, SkillEvalOverview, SkillEvalSuite } from "../../../../main/services/skill-service";
 import type { EvaluationEvaluator, EvaluationRun, EvaluationRunSummary, ConfiguredAgent } from "../../../../automation/contracts";
 import { formatRelativeTime } from "../../../../core/format-session";
 import { localize, type LanguageMode } from "../../language";
@@ -222,9 +222,9 @@ export function EvalPage({
                     )}</p>
                   ) : (
                     <>
-                      <FindingsCard language={language} findings={findings} onOpenSession={onOpenSession} />
+                      <FindingsCard language={language} findings={findings} />
                       <EvalSuitesCard language={language} skill={selected.skill} />
-                      <SignalsCard language={language} item={selected} detail={detail} />
+                      <SignalsCard language={language} detail={detail} />
                       <VersionsCard language={language} detail={detail} />
                       <TriggersCard
                         language={language}
@@ -252,11 +252,9 @@ export function EvalPage({
 // baseline, never a score.
 function SignalsCard({
   language,
-  item,
   detail,
 }: {
   language: LanguageMode;
-  item: SkillEvalOverviewItem;
   detail: SkillEvalDetail | null;
 }): ReactElement {
   const l = (en: string, zh: string) => localize(language, en, zh);
@@ -870,11 +868,9 @@ function formatRatio(value: number | null): string {
 function FindingsCard({
   language,
   findings,
-  onOpenSession,
 }: {
   language: LanguageMode;
   findings: SkillFinding[] | null;
-  onOpenSession: (sessionKey: string) => void;
 }): ReactElement {
   const l = (en: string, zh: string) => localize(language, en, zh);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());

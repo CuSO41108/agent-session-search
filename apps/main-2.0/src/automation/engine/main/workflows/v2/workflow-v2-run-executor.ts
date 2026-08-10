@@ -1,11 +1,10 @@
 import type { RunTaskRequest, TaskRun } from "../../../shared/types";
 import { createHash, randomUUID } from "node:crypto";
-import type { RuntimeConversation } from "../../../shared/runtime/conversation";
 import { mergeRuntimeUsage } from "../../../../../shared/runtime/usage";
 import type { WorkflowEvent, WorkflowNodeMessage as WorkflowRunNodeMessage, WorkflowRunNodeTelemetry, WorkflowRunProgressItem } from "../../../shared/workflow/run";
 import type { WorkflowV2LLMNode, WorkflowV2ScriptNode } from "../../../shared/workflow-v2/definition";
 import type { WorkflowNodeMessage } from "../../../shared/workflow-v2/conversation";
-import type { WorkflowV2ScriptExecutionReceipt, WorkflowV2ScriptWorkerOutput, WorkflowV2WorkerOutput } from "../../../shared/workflow-v2/packets";
+import type { WorkflowV2ScriptWorkerOutput, WorkflowV2WorkerOutput } from "../../../shared/workflow-v2/packets";
 import type {
   WorkflowV2Plan,
   WorkflowV2ResultPacket,
@@ -25,7 +24,7 @@ import {
 import { executeWorkflowV2Plan } from "./workflow-v2-executor";
 import type { WorkflowRunRegistry } from "../workflow-run-registry";
 import { persistWorkflowV2PreflightBlocked, WorkflowV2RunPersistence } from "./workflow-v2-run-persistence";
-import type { ExecuteWorkflowV2RunInput, WorkflowV2RecoveryOverride } from "./workflow-v2-execution-contract";
+import type { ExecuteWorkflowV2RunInput } from "./workflow-v2-execution-contract";
 export type { WorkflowV2RecoveryOverride } from "./workflow-v2-execution-contract";
 
 function addNodeUsage(telemetry: WorkflowRunNodeTelemetry, usage: TaskRun["usage"]): WorkflowRunNodeTelemetry {
@@ -48,7 +47,6 @@ import type {
   WorkflowV2ProgressReport,
 } from "../../../shared/workflow-v2/supervision";
 import type { WorkflowV2ReviewerInput, WorkflowV2ReviewerResponse, WorkflowV2ReviewTraceEntry } from "../../../shared/workflow-v2/review";
-import { isWorkflowV2InterventionAction } from "../../../shared/workflow-v2/review";
 import {
   createWorkflowV2ExecutionLease,
   inspectWorkflowV2ExecutionLease,
@@ -66,9 +64,7 @@ import { WorkflowV2SupervisionSignal } from "./workflow-v2-supervision-signal";
 import {
   configuredAgentModelId,
   resolveWorkflowNodeAgent,
-  workflowV2ExecutionEnvironment,
   workflowV2LlmNodePrompt,
-  workflowV2ReviewerPolicy,
 } from "./workflow-v2-node-policy";
 import {
   parseWorkflowV2HookLlmValue,
@@ -79,10 +75,7 @@ import {
   parseWorkflowV2ReviewerResponse,
   workflowV2ReviewerPrompt,
 } from "./workflow-v2-reviewer";
-import {
-  type WorkflowV2DurableEvent,
-  type WorkflowV2DurableNodeControlState,
-} from "../../../shared/workflow-v2/storage";
+import type { WorkflowV2DurableNodeControlState } from "../../../shared/workflow-v2/storage";
 import type { ExecuteWorkflowV2Checkpoint } from "./workflow-v2-executor";
 import { recordWorkflowV2ScriptInputRequest, resolveWorkflowV2ScriptInput, workflowV2ScriptInputSignal } from "./workflow-v2-script-input";
 import { projectWorkflowV2PausedNodeInteraction } from "./workflow-v2-node-interaction";

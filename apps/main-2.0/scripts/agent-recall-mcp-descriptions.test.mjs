@@ -20,4 +20,8 @@ test("session MCP exposes the focused 11-tool catalog", () => {
   assert.equal(toolNames.length, 11);
   assert.ok(!toolNames.includes("list_projects"));
   assert.ok(!toolNames.includes("list_tags"));
+  assert.doesNotMatch(source, /export async function listProjects\(/u);
+  assert.doesNotMatch(source, /export async function listTags\(/u);
+  assert.ok(!Object.hasOwn(SESSION_MCP_DESCRIPTIONS, "listProjects"));
+  assert.ok(!Object.hasOwn(SESSION_MCP_DESCRIPTIONS, "listTags"));
 });

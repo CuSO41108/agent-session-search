@@ -1,4 +1,4 @@
-import type { AgentRule, RemoteRule, RestoreResult, RulesSyncSnapshot } from "../../core/rules-sync";
+import type { RemoteRule, RestoreResult, RulesSyncSnapshot } from "../../core/rules-sync";
 import { RULES_IPC } from "../../shared/ipc/rules";
 import { combineIpcDisposers, registerIpcHandler, type IpcMainRegistrar } from "./register-ipc-handler";
 

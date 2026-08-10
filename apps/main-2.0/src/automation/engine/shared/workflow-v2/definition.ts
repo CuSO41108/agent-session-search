@@ -1,5 +1,5 @@
 import type { WorkflowV2ExecutionLeasePolicy } from "./supervision";
-import type { WorkflowV2HookActionDef, WorkflowV2NodeHooks } from "./hooks";
+import type { WorkflowV2NodeHooks } from "./hooks";
 import type { WorkflowTransactionPolicy } from "./transaction";
 export type { WorkflowTransactionPolicy } from "./transaction";
 export type {

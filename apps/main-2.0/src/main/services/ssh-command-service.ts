@@ -107,7 +107,6 @@ export class SshCommandService {
 
     return new Promise<string>((resolve, reject) => {
       let settled = false;
-      let channel: ClientChannel | null = null;
       let stdoutSize = 0;
       let stderrSize = 0;
       let exitCode: number | null = null;
@@ -146,7 +145,6 @@ export class SshCommandService {
             finish(error);
             return;
           }
-          channel = stream;
           stream.on("data", (chunk: Buffer | string) => {
             const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
             stdoutSize += buffer.length;

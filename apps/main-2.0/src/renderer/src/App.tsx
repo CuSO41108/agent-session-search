@@ -1,5 +1,4 @@
 import {
-  Fragment,
   Suspense,
   lazy,
   useCallback,
@@ -73,7 +72,6 @@ import { useSkillsController } from "./features/skills/use-skills-controller";
 import { AiAssistantDialog } from "./components/ai-assistant-dialog";
 import { RemoteSessionsDialog } from "./features/remote-sessions/remote-sessions-dialog";
 import { useRemoteSessionsCache } from "./features/remote-sessions/use-remote-sessions-cache";
-import { SupabaseSetupGuide } from "./components/supabase-setup-guide";
 import { environmentTarget } from "./features/environments/environment-display";
 import { SessionsPage } from "./features/sessions/sessions-page";
 import { SessionContextMenu } from "./features/sessions/session-context-menu";
@@ -96,7 +94,6 @@ import {
   canMigrateSession,
   isBranchTag,
   displayTagName,
-  isRemoteSession,
   resumeActionLabel,
   resumeRouteMessage,
   sourceFilters,
@@ -327,7 +324,6 @@ export function App(): ReactElement {
     searchRef,
     liveSessionKeys,
     liveDetectionFailed,
-    liveSearchKeys,
     load,
     currentPage,
     totalPages,

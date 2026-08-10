@@ -15,7 +15,6 @@ import {
   type TerminalChoice,
   defaultTerminalFor,
   normalizeTerminal,
-  terminalOptionsFor,
 } from "./terminal-options";
 import {
   normalizeTerminalTitle,
@@ -1444,7 +1443,7 @@ export async function inspectMigrationCli(
   target: MigrationTarget,
   settings: AppSettings,
   runner: CliVersionRunner = runCliVersion,
-  options: { homeDir?: string; platform?: NodeJS.Platform } = {},
+  _options: { homeDir?: string; platform?: NodeJS.Platform } = {},
 ): Promise<void> {
   const binary = migrationBinary(target, settings);
   if (target === "cursor") {

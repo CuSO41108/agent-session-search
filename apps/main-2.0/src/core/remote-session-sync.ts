@@ -1758,17 +1758,6 @@ function isMissingSchemaColumnError(body: unknown): boolean {
   );
 }
 
-function latestRemoteSessionSetupSqlMessage(body: unknown): string {
-  const message = supabaseErrorMessage(400, body);
-  return [
-    message,
-    "",
-    "Run the latest Supabase remote sessions setup SQL, then try again:",
-    "",
-    buildRemoteSessionSetupSql(),
-  ].join("\n");
-}
-
 function normalizeSupabaseUrl(url: string): string {
   return url.trim().replace(/\/+$/, "");
 }

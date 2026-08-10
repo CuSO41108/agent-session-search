@@ -6,11 +6,9 @@ import appIconUrl from "../../../../assets/app-icon.png";
 import { formatRelativeTime } from "../../../core/format-session";
 import type { IndexStatus } from "../../../core/indexer";
 import type {
-  LiveSessionSnapshot,
   ProjectSummary,
   SearchOptions,
   SessionEnvironment,
-  SessionSearchResult,
   SessionStats,
   SessionStatsPeriod,
   SessionStatsTrend,

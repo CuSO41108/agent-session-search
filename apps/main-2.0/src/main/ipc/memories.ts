@@ -1,4 +1,4 @@
-import type { AgentMemory, RemoteMemory, MemoriesSyncSnapshot } from "../../core/memories-sync";
+import type { RemoteMemory, MemoriesSyncSnapshot } from "../../core/memories-sync";
 import { MEMORIES_IPC } from "../../shared/ipc/memories";
 import { combineIpcDisposers, registerIpcHandler, type IpcMainRegistrar } from "./register-ipc-handler";
 

@@ -1,4 +1,4 @@
-import type { AgentChannel, AgentEvent, AgentId, RuntimeRequest, WorkflowAgentEvent } from "../../../../../shared/types";
+import type { AgentChannel, AgentEvent, AgentId, RuntimeRequest } from "../../../../../shared/types";
 import type { RuntimeWorkflowRequestContext } from "../../../../agents/runtime/runtime-driver";
 import { WORKFLOW_EXECUTION_MODE_POLICY, WORKFLOW_SCRIPT_GOVERNANCE_POLICY } from "../../../../../shared/workflow-agent";
 import type { BoundMcpServer } from "../runtime-mcp";

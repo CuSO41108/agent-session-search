@@ -1,6 +1,6 @@
 import { useState } from "react";
 import type { ReactElement } from "react";
-import { AlertTriangle, Copy, FolderOpen, Settings2, Trash2 } from "lucide-react";
+import { Copy, FolderOpen, Settings2, Trash2 } from "lucide-react";
 import type { ManagedSkill, SkillInstallTarget } from "../../../../core/managed-skill-library";
 import type { RemoteSkill, RemoteSkillGroup, SkillSyncSnapshot, SkillSyncUploadOutcome } from "../../../../core/skill-sync";
 import { localize, type LanguageMode } from "../../language";
