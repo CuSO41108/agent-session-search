@@ -257,7 +257,6 @@ describe("writeMigratedSession", () => {
         type: "event_msg",
         payload: {
           type: "task_started",
-          turn_id: SESSION_ID,
         },
       });
     }
@@ -268,11 +267,21 @@ describe("writeMigratedSession", () => {
       "input_text",
     ]);
     if (includesVsCodeEvents) {
-      expect(rows.filter((row) => row.type === "event_msg").slice(1).map((row) => [row.payload.type, row.payload.message])).toEqual([
+      expect(rows.filter((row) => ["user_message", "agent_message"].includes(row.payload?.type)).map((row) => [row.payload.type, row.payload.message])).toEqual([
         ["user_message", portable().messages[0].content],
         ["agent_message", portable().messages[1].content],
         ["user_message", portable().messages[2].content],
       ]);
+      const lifecycleRows = rows.filter((row) => ["task_started", "task_complete"].includes(row.payload?.type));
+      expect(lifecycleRows.map((row) => row.payload.type)).toEqual([
+        "task_started",
+        "task_complete",
+        "task_started",
+        "task_complete",
+      ]);
+      expect(lifecycleRows[0].payload.turn_id).toBe(lifecycleRows[1].payload.turn_id);
+      expect(lifecycleRows[2].payload.turn_id).toBe(lifecycleRows[3].payload.turn_id);
+      expect(lifecycleRows[0].payload.turn_id).not.toBe(lifecycleRows[2].payload.turn_id);
     }
     expectRoundTrip("codex", "codex-cli", result.sessionId, result.filePath, rows);
 

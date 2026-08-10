@@ -166,45 +166,97 @@ function serializeCodex(
     },
   }];
 
-  if (includeVsCodeEvents) {
-    rows.push({
-      type: "event_msg",
-      timestamp: session.startedAt,
-      payload: {
-        type: "task_started",
-        turn_id: sessionId,
-        started_at: Math.floor(new Date(session.startedAt).getTime() / 1000),
-        model_context_window: 0,
-        collaboration_mode_kind: "default",
-      },
-    });
-  }
+  const turnBoundaries = codexTurnBoundaries(session);
+  for (let turnIndex = 0; turnIndex < turnBoundaries.length; turnIndex += 1) {
+    const start = turnBoundaries[turnIndex];
+    const end = turnBoundaries[turnIndex + 1] ?? session.messages.length;
+    const messages = session.messages.slice(start, end);
+    const startedAt = messages[0]?.timestamp ?? session.startedAt;
+    const completedAt = messages.at(-1)?.timestamp ?? startedAt;
+    const turnId = codexTurnId(sessionId, turnIndex);
 
-  for (const message of session.messages) {
-    rows.push({
-      type: "response_item",
-      timestamp: message.timestamp,
-      payload: {
-        type: "message",
-        role: message.role,
-        content: [{
-          type: message.role === "user" ? "input_text" : "output_text",
-          text: message.content,
-        }],
-      },
-    });
     if (includeVsCodeEvents) {
       rows.push({
         type: "event_msg",
+        timestamp: startedAt,
+        payload: {
+          type: "task_started",
+          turn_id: turnId,
+          started_at: Math.floor(timestampMs(startedAt) / 1000),
+          model_context_window: 0,
+          collaboration_mode_kind: "default",
+        },
+      });
+    }
+
+    for (const message of messages) {
+      rows.push({
+        type: "response_item",
         timestamp: message.timestamp,
-        payload: message.role === "user"
-          ? { type: "user_message", message: message.content, images: [], local_images: [], text_elements: [] }
-          : { type: "agent_message", message: message.content, phase: "final_answer" },
+        payload: {
+          type: "message",
+          role: message.role,
+          content: [{
+            type: message.role === "user" ? "input_text" : "output_text",
+            text: message.content,
+          }],
+          ...(includeVsCodeEvents
+            ? { internal_chat_message_metadata_passthrough: { turn_id: turnId } }
+            : {}),
+        },
+      });
+      if (includeVsCodeEvents) {
+        rows.push({
+          type: "event_msg",
+          timestamp: message.timestamp,
+          payload: message.role === "user"
+            ? { type: "user_message", message: message.content, images: [], local_images: [], text_elements: [] }
+            : { type: "agent_message", message: message.content, phase: "final_answer" },
+        });
+      }
+    }
+
+    if (includeVsCodeEvents) {
+      const startedAtMs = timestampMs(startedAt);
+      const completedAtMs = timestampMs(completedAt);
+      rows.push({
+        type: "event_msg",
+        timestamp: completedAt,
+        payload: {
+          type: "task_complete",
+          turn_id: turnId,
+          last_agent_message: [...messages].reverse().find((message) => message.role === "assistant")?.content ?? "",
+          started_at: Math.floor(startedAtMs / 1000),
+          completed_at: Math.floor(completedAtMs / 1000),
+          duration_ms: Math.max(0, completedAtMs - startedAtMs),
+        },
       });
     }
   }
 
   return rows;
+}
+
+function codexTurnBoundaries(session: PortableSession): number[] {
+  const explicit = session.turnBoundaries
+    ?.filter((boundary) => Number.isInteger(boundary) && boundary >= 0 && boundary < session.messages.length)
+    .sort((left, right) => left - right);
+  const boundaries = explicit && explicit.length > 0
+    ? [...new Set(explicit)]
+    : session.messages.reduce<number[]>((result, message, index) => {
+        if (index === 0 || message.role === "user") result.push(index);
+        return result;
+      }, []);
+  if (session.messages.length > 0 && boundaries[0] !== 0) boundaries.unshift(0);
+  return boundaries;
+}
+
+function codexTurnId(sessionId: string, turnIndex: number): string {
+  const bytes = Buffer.from(crypto.createHash("sha256").update(`${sessionId}:turn:${turnIndex}`).digest().subarray(0, 16));
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = bytes.toString("hex");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
 function serializeClaude(
@@ -791,7 +843,10 @@ function validateCodexStructure(
   modelProvider: string,
   includeVsCodeEvents: boolean,
 ): void {
-  const expectedRows = 1 + session.messages.length * (includeVsCodeEvents ? 2 : 1) + (includeVsCodeEvents ? 1 : 0);
+  const turnBoundaries = codexTurnBoundaries(session);
+  const expectedRows = 1
+    + session.messages.length * (includeVsCodeEvents ? 2 : 1)
+    + (includeVsCodeEvents ? turnBoundaries.length * 2 : 0);
   if (rows.length !== expectedRows) failValidation("codex", "has an unexpected row count");
   const meta = record(rows[0]);
   const payload = record(meta?.payload);
@@ -816,48 +871,69 @@ function validateCodexStructure(
   }
 
   let rowIndex = 1;
-  if (includeVsCodeEvents) {
-    const taskStarted = record(rows[rowIndex++]);
-    const taskPayload = record(taskStarted?.payload);
-    if (
-      taskStarted?.type !== "event_msg"
-      || taskPayload?.type !== "task_started"
-      || taskPayload.turn_id !== sessionId
-    ) {
-      failValidation("codex", "has invalid app-server task metadata");
-    }
-  }
-
-  session.messages.forEach((message) => {
-    const row = record(rows[rowIndex++]);
-    const messagePayload = record(row?.payload);
-    const content = Array.isArray(messagePayload?.content) ? messagePayload.content : [];
-    const block = record(content[0]);
-    const expectedBlockType = message.role === "user" ? "input_text" : "output_text";
-    if (
-      row?.type !== "response_item"
-      || row.timestamp !== message.timestamp
-      || messagePayload?.type !== "message"
-      || messagePayload.role !== message.role
-      || content.length !== 1
-      || block?.type !== expectedBlockType
-      || block.text !== message.content
-    ) {
-      failValidation("codex", `has invalid message structure at index ${rowIndex}`);
-    }
+  for (let turnIndex = 0; turnIndex < turnBoundaries.length; turnIndex += 1) {
+    const start = turnBoundaries[turnIndex];
+    const end = turnBoundaries[turnIndex + 1] ?? session.messages.length;
+    const turnMessages = session.messages.slice(start, end);
+    let turnId = "";
     if (includeVsCodeEvents) {
-      const event = record(rows[rowIndex++]);
-      const eventPayload = record(event?.payload);
-      const expectedEventType = message.role === "user" ? "user_message" : "agent_message";
+      const taskStarted = record(rows[rowIndex++]);
+      const taskPayload = record(taskStarted?.payload);
+      turnId = typeof taskPayload?.turn_id === "string" ? taskPayload.turn_id : "";
       if (
-        event?.type !== "event_msg"
-        || eventPayload?.type !== expectedEventType
-        || eventPayload.message !== message.content
+        taskStarted?.type !== "event_msg"
+        || taskPayload?.type !== "task_started"
+        || !UUID_PATTERN.test(turnId)
       ) {
-        failValidation("codex", `has invalid app-server message event at index ${rowIndex}`);
+        failValidation("codex", "has invalid app-server task metadata");
       }
     }
-  });
+
+    for (const message of turnMessages) {
+      const row = record(rows[rowIndex++]);
+      const messagePayload = record(row?.payload);
+      const content = Array.isArray(messagePayload?.content) ? messagePayload.content : [];
+      const block = record(content[0]);
+      const metadata = record(messagePayload?.internal_chat_message_metadata_passthrough);
+      const expectedBlockType = message.role === "user" ? "input_text" : "output_text";
+      if (
+        row?.type !== "response_item"
+        || row.timestamp !== message.timestamp
+        || messagePayload?.type !== "message"
+        || messagePayload.role !== message.role
+        || content.length !== 1
+        || block?.type !== expectedBlockType
+        || block.text !== message.content
+        || (includeVsCodeEvents && metadata?.turn_id !== turnId)
+      ) {
+        failValidation("codex", `has invalid message structure at index ${rowIndex}`);
+      }
+      if (includeVsCodeEvents) {
+        const event = record(rows[rowIndex++]);
+        const eventPayload = record(event?.payload);
+        const expectedEventType = message.role === "user" ? "user_message" : "agent_message";
+        if (
+          event?.type !== "event_msg"
+          || eventPayload?.type !== expectedEventType
+          || eventPayload.message !== message.content
+        ) {
+          failValidation("codex", `has invalid app-server message event at index ${rowIndex}`);
+        }
+      }
+    }
+
+    if (includeVsCodeEvents) {
+      const taskComplete = record(rows[rowIndex++]);
+      const taskPayload = record(taskComplete?.payload);
+      if (
+        taskComplete?.type !== "event_msg"
+        || taskPayload?.type !== "task_complete"
+        || taskPayload.turn_id !== turnId
+      ) {
+        failValidation("codex", "has invalid app-server task completion metadata");
+      }
+    }
+  }
 }
 
 function validateClaudeStructure(rows: unknown[], sessionId: string, session: PortableSession, model: string): void {
