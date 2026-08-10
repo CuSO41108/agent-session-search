@@ -35,6 +35,7 @@ import type {
   McpServerDefinition,
 } from "../../automation/contracts";
 import type { McpInstallRequest } from "../../automation/engine/shared/mcp-config";
+import type { WorkflowDefinition } from "../../automation/engine/shared/workflow/model";
 import { loadClaudeDefaultConfig, loadCodexDefaultConfig } from "../../automation/engine/main/channels/model-config";
 import { AUTOMATION_CHANNELS } from "../../shared/ipc/automation";
 import type { NativeAutomationService } from "../services/automation-service";
@@ -135,6 +136,18 @@ const evaluationRunListSchema = z.object({
   limit: z.number().int().min(1).max(100).optional(),
 }).strict();
 const workflowIdSchema = z.object({ workflowId: idSchema });
+const boundedWorkflowObjectSchema = z.record(z.string().max(200), z.unknown()).refine(
+  (value) => isBoundedJsonValue(value),
+  "Workflow data must be bounded JSON data.",
+);
+const workflowDefinitionSchema = boundedWorkflowObjectSchema;
+const workflowCoreRunSchema = z.object({
+  workflowId: idSchema,
+  inputs: boundedWorkflowObjectSchema,
+}).strict();
+const workflowCoreRunIdSchema = z.object({ runId: idSchema }).strict();
+const workflowCoreNodeSchema = workflowCoreRunIdSchema.extend({ nodeId: idSchema }).strict();
+const workflowCoreApprovalSchema = workflowCoreNodeSchema.extend({ outputs: boundedWorkflowObjectSchema }).strict();
 const workflowRequestSchema = workflowIdSchema.extend({ reviewEnabled: z.boolean().optional() }).passthrough();
 const workflowReviewSchema = workflowIdSchema.extend({ expectedRevision: z.number().int().nonnegative(), reviewEnabled: z.boolean().optional() }).passthrough();
 const workflowReviewApplySchema = workflowIdSchema.extend({ reviewedRevision: z.number().int().positive() }).strict();
@@ -331,6 +344,33 @@ export function registerAutomationIpc({
   ready(AUTOMATION_CHANNELS.evaluationRunDelete, (value: unknown) =>
     service.evaluations.deleteRun(idSchema.parse(value)));
 
+  ready(AUTOMATION_CHANNELS.workflowCoreGet, (value: unknown) =>
+    service.workflowCore.snapshot(value === undefined ? undefined : idSchema.parse(value)));
+  ready(AUTOMATION_CHANNELS.workflowDefinitionSave, (value: unknown) =>
+    service.workflowCore.saveDefinition(workflowDefinitionSchema.parse(value) as unknown as WorkflowDefinition));
+  ready(AUTOMATION_CHANNELS.workflowDefinitionDelete, (value: unknown) => {
+    const request = workflowIdSchema.strict().parse(value);
+    return service.workflowCore.deleteDefinition(request.workflowId);
+  });
+  ready(AUTOMATION_CHANNELS.workflowRunStart, (value: unknown) => {
+    const request = workflowCoreRunSchema.parse(value);
+    return service.workflowCore.startRun(request.workflowId, request.inputs);
+  });
+  ready(AUTOMATION_CHANNELS.workflowRunPause, (value: unknown) =>
+    service.workflowCore.pauseRun(workflowCoreRunIdSchema.parse(value).runId));
+  ready(AUTOMATION_CHANNELS.workflowRunResume, (value: unknown) =>
+    service.workflowCore.resumeRun(workflowCoreRunIdSchema.parse(value).runId));
+  ready(AUTOMATION_CHANNELS.workflowRunCancel, (value: unknown) =>
+    service.workflowCore.cancelRun(workflowCoreRunIdSchema.parse(value).runId));
+  ready(AUTOMATION_CHANNELS.workflowNodeRetry, (value: unknown) => {
+    const request = workflowCoreNodeSchema.parse(value);
+    return service.workflowCore.retryNode(request.runId, request.nodeId);
+  });
+  ready(AUTOMATION_CHANNELS.workflowApprovalResolve, (value: unknown) => {
+    const request = workflowCoreApprovalSchema.parse(value);
+    return service.workflowCore.resolveApproval(request.runId, request.nodeId, request.outputs);
+  });
+
   ready(AUTOMATION_CHANNELS.workflowDraftCreate, (value: unknown) =>
     service.workflows.createWorkflowDraft((value === undefined ? {} : z.object({
       title: z.string().trim().min(1).max(200).optional(),
@@ -411,8 +451,11 @@ export function registerAutomationIpc({
 
   const unsubscribeSnapshot = service.subscribe((snapshot) => send(AUTOMATION_CHANNELS.snapshotChanged, snapshot));
   const unsubscribeChanges = service.subscribeChanges((change) => send(AUTOMATION_CHANNELS.change, change));
+  const unsubscribeWorkflowRunStream = service.subscribeWorkflowRunStream((event) =>
+    send(AUTOMATION_CHANNELS.workflowRunStream, event));
   return () => {
     unsubscribeSnapshot();
     unsubscribeChanges();
+    unsubscribeWorkflowRunStream();
   };
 }

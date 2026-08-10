@@ -488,6 +488,26 @@ function createAutomationService(): NativeAutomationService {
     appDataPath: app.getPath("appData"),
     bundledWorkflowsPath: bundledAutomationWorkflowsPath(),
     workflowMcpServerPath: path.join(app.getAppPath(), "out", "mcp", "workflow-entry.js"),
+    confirmWorkflowScriptPermissions: async ({ nodeTitle, permissions }) => {
+      const result = mainWindow ? await dialog.showMessageBox(mainWindow, {
+        type: "warning",
+        title: "Allow Workflow Script",
+        message: `Allow “${nodeTitle}” to use elevated permissions?`,
+        detail: permissions.join(", "),
+        buttons: ["Cancel", "Allow once"],
+        defaultId: 0,
+        cancelId: 0,
+      }) : await dialog.showMessageBox({
+        type: "warning",
+        title: "Allow Workflow Script",
+        message: `Allow “${nodeTitle}” to use elevated permissions?`,
+        detail: permissions.join(", "),
+        buttons: ["Cancel", "Allow once"],
+        defaultId: 0,
+        cancelId: 0,
+      });
+      return result.response === 1;
+    },
     builtinSessionSearch: new BuiltinSessionSearchServer({
       isEnabled: () => ensureAgentRecallMcpPreference(),
       setEnabled: async (next) => {
@@ -500,7 +520,8 @@ function createAutomationService(): NativeAutomationService {
         const definition = loadMcpSetup().serverDefinition();
         return {
           id: definition.id,
-          name: definition.name,
+          name: "AgentRecall Session Search",
+          description: "Search indexed Agent sessions, inspect context, and prepare resumable migrations.",
           command: definition.command,
           args: definition.args,
         };

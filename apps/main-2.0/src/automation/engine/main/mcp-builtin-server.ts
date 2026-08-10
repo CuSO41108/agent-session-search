@@ -29,6 +29,7 @@ export interface BuiltinSessionSearchDeps {
   launchConfig(): {
     id: string;
     name: string;
+    description?: string;
     command: string;
     args: string[];
   };
@@ -86,6 +87,7 @@ export class ManagedMcpServer implements ManagedMcp {
     return {
       id: config.id,
       name: config.name,
+      ...(config.description ? { description: config.description } : {}),
       transport: "stdio",
       command: config.command,
       args: config.args,

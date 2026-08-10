@@ -21,7 +21,26 @@ import { McpJsonEdit } from "./McpJsonEdit";
 import { McpReferenceEditor } from "./McpReferenceEditor";
 import { toolCountLabel } from "./mcp-tools";
 import type { ConfiguredAgent } from "../../../../shared/types";
-import type { McpToolDefinition } from "../../../../shared/mcp/types";
+import type { McpServerDefinition, McpToolDefinition } from "../../../../shared/mcp/types";
+
+function serverDisplayName(server: McpServerDefinition, zh: boolean): string {
+  if (server.id === "agent-recall-session-search") {
+    return zh ? "AgentRecall 会话检索" : "AgentRecall Session Search";
+  }
+  if (server.id === "agent-recall-workflow") return "AgentRecall Workflow";
+  return server.name;
+}
+
+function serverDescription(server: McpServerDefinition, zh: boolean): string | undefined {
+  if (!zh) return server.description;
+  if (server.id === "agent-recall-session-search") {
+    return "检索已索引的 Agent 会话、查看上下文，并准备可恢复的迁移。";
+  }
+  if (server.id === "agent-recall-workflow") {
+    return "创建、查看并运行结构化的 AgentRecall Workflow。";
+  }
+  return server.description;
+}
 
 export function McpPage({
   language = "en",
@@ -53,6 +72,8 @@ export function McpPage({
     window.addEventListener(APP_SAVE_REQUEST_EVENT, save);
     return () => window.removeEventListener(APP_SAVE_REQUEST_EVENT, save);
   }, [model.dirty, model.draft, model.save]);
+  const builtins = model.servers.filter((server) => server.managed);
+  const customServers = model.servers.filter((server) => !server.managed);
   const select = useCallback(
     (id: string) => {
       if (
@@ -77,8 +98,8 @@ export function McpPage({
         title="MCP"
         description={
           zh
-            ? "管理 Agent 可装配的本地与远程工具服务。"
-            : "Manage local and remote tool servers available to Agents."
+            ? "统一管理项目内置 MCP 与自定义工具服务。"
+            : "Manage project built-ins and custom tool servers in one place."
         }
       />
       <WorkbenchTabs
@@ -118,23 +139,54 @@ export function McpPage({
                 }
               />
               <div className="workbench-browser-list">
-                {model.servers.map((server) => (
-                  <BrowserItem
-                    key={server.id}
-                    selected={server.id === draft?.id}
-                    title={server.name}
-                    meta={`${server.transport.toUpperCase()} · ${toolCountLabel(server, zh ? "工具" : "tools")}`}
-                    badge={server.managed ? (zh ? "内置" : "Built-in") : undefined}
-                    status={
-                      server.status === "connected"
-                        ? "success"
-                        : server.status === "error"
-                          ? "danger"
-                          : "muted"
-                    }
-                    onClick={() => select(server.id)}
-                  />
-                ))}
+                <section className="mcp-browser-group">
+                  <header>
+                    <span>{zh ? "项目内置" : "Project built-ins"}</span>
+                    <small>{builtins.length}</small>
+                  </header>
+                  {builtins.map((server) => (
+                    <BrowserItem
+                      key={server.id}
+                      selected={server.id === draft?.id}
+                      title={serverDisplayName(server, zh)}
+                      meta={`${server.transport.toUpperCase()} · ${toolCountLabel(server, zh ? "工具" : "tools")}`}
+                      status={
+                        server.status === "connected"
+                          ? "success"
+                          : server.status === "error"
+                            ? "danger"
+                            : "muted"
+                      }
+                      onClick={() => select(server.id)}
+                    />
+                  ))}
+                </section>
+                <section className="mcp-browser-group">
+                  <header>
+                    <span>{zh ? "自定义" : "Custom"}</span>
+                    <small>{customServers.length}</small>
+                  </header>
+                  {customServers.length ? customServers.map((server) => (
+                    <BrowserItem
+                      key={server.id}
+                      selected={server.id === draft?.id}
+                      title={server.name}
+                      meta={`${server.transport.toUpperCase()} · ${toolCountLabel(server, zh ? "工具" : "tools")}`}
+                      status={
+                        server.status === "connected"
+                          ? "success"
+                          : server.status === "error"
+                            ? "danger"
+                            : "muted"
+                      }
+                      onClick={() => select(server.id)}
+                    />
+                  )) : (
+                    <p className="mcp-browser-group-empty">
+                      {zh ? "还没有自定义 MCP" : "No custom MCP servers"}
+                    </p>
+                  )}
+                </section>
               </div>
             </>
           }
@@ -142,8 +194,8 @@ export function McpPage({
           {draft ? (
             <>
               <DetailToolbar
-                title={draft.name}
-                meta={`${draft.transport.toUpperCase()} · ${draft.id}`}
+                title={serverDisplayName(draft, zh)}
+                meta={`${draft.managed ? (zh ? "项目内置" : "Project built-in") : (zh ? "自定义" : "Custom")} · ${draft.transport.toUpperCase()}`}
                 actions={
                   <>
                     <InlineStatus
@@ -258,16 +310,19 @@ export function McpPage({
                 >
                   {draft.managed ? (
                     <p className="workbench-form-note">
-                      {zh
-                        ? "内置 Server，启动命令由 App 统一管理，此处只读。"
-                        : "Built-in server; its launch command is managed by the app and is read-only here."}
+                      <strong>{serverDescription(draft, zh)}</strong>
+                      <span>
+                        {zh
+                          ? "启动配置由 App 统一管理，此处只读。"
+                          : "Its launch configuration is managed by the app and is read-only here."}
+                      </span>
                     </p>
                   ) : null}
                   <div className="workbench-form-grid">
                     <label>
                       <span>{zh ? "名称" : "Name"}</span>
                       <input
-                        value={draft.name}
+                        value={serverDisplayName(draft, zh)}
                         disabled={draft.managed}
                         onChange={(event) =>
                           model.update({ ...draft, name: event.target.value })

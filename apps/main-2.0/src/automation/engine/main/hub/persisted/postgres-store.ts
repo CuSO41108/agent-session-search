@@ -4,15 +4,13 @@ import type { PersistedAppStateV5 } from "./agent-hub-persistence";
 import type { WorkflowSidebarItem } from "../../../shared/types";
 import type { AgentHubPersistedStore } from "./persisted-store";
 import { PostgresChatRepository } from "./postgres-chat-repository";
-import { PostgresWorkflowRepository } from "./postgres-workflow-repository";
-import { jsonParameter, postgresRecord } from "./postgres-values";
+import { jsonParameter, postgresRecord, postgresTime } from "./postgres-values";
 
 const AUX_STATE_ID = 1;
 
 export class PostgresAppStore implements AgentHubPersistedStore {
   readonly label = "PostgreSQL";
   private readonly chats = new PostgresChatRepository();
-  private readonly workflows = new PostgresWorkflowRepository();
 
   constructor(
     private readonly database: PostgresDatabase,
@@ -55,10 +53,7 @@ export class PostgresAppStore implements AgentHubPersistedStore {
     payload.activeChatId = settings.get("active_chat_id") ?? null;
     payload.workDir = settings.get("work_dir") ?? "";
     Object.assign(payload, await this.chats.load(this.database));
-    payload.workflowStore = await this.workflows.load(
-      this.database,
-      settings.get("active_workflow_id") ?? undefined,
-    );
+    payload.workflowStore = { activeWorkflowId: undefined, workflows: [], runs: [] };
     return payload;
   }
 
@@ -66,16 +61,27 @@ export class PostgresAppStore implements AgentHubPersistedStore {
     activeWorkflowId?: string;
     workflows: WorkflowSidebarItem[];
   }> {
-    const [settingsResult, workflows] = await Promise.all([
-      this.database.query<{ value_text: string | null }>(
-        "select value_text from agent_recall.app_settings where key = $1",
-        ["active_workflow_id"],
-      ),
-      this.workflows.loadSidebar(this.database),
-    ]);
-    const activeWorkflowId = settingsResult.rows[0]?.value_text ?? undefined;
+    const result = await this.database.query<{
+      id: string;
+      name: string;
+      description: string;
+      definition: { nodes?: unknown[] };
+      created_at: unknown;
+      updated_at: unknown;
+    }>("select id, name, description, definition, created_at, updated_at from agent_recall.workflows order by created_at desc, id");
+    const workflows: WorkflowSidebarItem[] = result.rows.map((row) => ({
+      workflowId: row.id,
+      sourceType: "user",
+      title: row.name,
+      status: "draft",
+      revision: 1,
+      objective: row.description,
+      nodeCount: Array.isArray(row.definition?.nodes) ? row.definition.nodes.length : 0,
+      createdAt: postgresTime(row.created_at),
+      updatedAt: postgresTime(row.updated_at),
+    }));
     return {
-      ...(activeWorkflowId ? { activeWorkflowId } : {}),
+      ...(workflows[0] ? { activeWorkflowId: workflows[0].workflowId } : {}),
       workflows,
     };
   }
@@ -89,15 +95,6 @@ export class PostgresAppStore implements AgentHubPersistedStore {
       await this.writeSetting(transaction, "payload_version", String(payload.version), now);
       await this.writeSetting(transaction, "active_chat_id", payload.activeChatId, now);
       await this.writeSetting(transaction, "work_dir", asString(payload.workDir), now);
-      const workflowStore = asRecord(payload.workflowStore);
-      await this.writeSetting(
-        transaction,
-        "active_workflow_id",
-        typeof workflowStore.activeWorkflowId === "string"
-          ? workflowStore.activeWorkflowId
-          : null,
-        now,
-      );
       await transaction.query(
         `insert into agent_recall.app_aux_state (id, payload, updated_at)
          values ($1, $2::jsonb, $3)
@@ -117,7 +114,6 @@ export class PostgresAppStore implements AgentHubPersistedStore {
         ],
       );
       await this.chats.replace(transaction, asRecord(payload));
-      await this.workflows.replace(transaction, workflowStore);
     });
   }
 

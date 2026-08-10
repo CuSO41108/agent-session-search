@@ -4,7 +4,8 @@ import type { McpServerDefinition } from "../shared/mcp/types";
 
 const FIXED_CONFIG = {
   id: "agent-recall-session-search",
-  name: "agent-recall-v2",
+  name: "AgentRecall Session Search",
+  description: "Search and resume indexed Agent sessions.",
   command: "node",
   args: ["/bin/agent-recall-mcp.mjs"],
 };
@@ -52,7 +53,8 @@ describe("BuiltinSessionSearchServer", () => {
     const resolved = await server.resolve();
     expect(resolved).toEqual({
       id: "agent-recall-session-search",
-      name: "agent-recall-v2",
+      name: "AgentRecall Session Search",
+      description: "Search and resume indexed Agent sessions.",
       transport: "stdio",
       command: "node",
       args: ["/bin/agent-recall-mcp.mjs"],
@@ -86,7 +88,7 @@ describe("BuiltinSessionSearchServer", () => {
     expect(deps.setEnabled).toHaveBeenCalledWith(false);
     const saved = await server.resolve();
     // Connection fields are re-derived, not taken from the client.
-    expect(saved.name).toBe("agent-recall-v2");
+    expect(saved.name).toBe("AgentRecall Session Search");
     expect(saved.command).toBe("node");
     expect(saved.args).toEqual(["/bin/agent-recall-mcp.mjs"]);
     // Tool catalog and toggles are preserved from the draft.
@@ -151,6 +153,7 @@ describe("BuiltinSessionSearchServer", () => {
 const WORKFLOW_LAUNCH = {
   id: "agent-recall-workflow",
   name: "AgentRecall Workflow",
+  description: "Create and run structured AgentRecall workflows.",
   command: "node",
   args: ["/out/mcp/workflow-entry.js"],
 };
@@ -162,6 +165,7 @@ describe("BuiltinWorkflowMcpServer", () => {
     const resolved = await server.resolve();
     expect(resolved.id).toBe("agent-recall-workflow");
     expect(resolved.name).toBe("AgentRecall Workflow");
+    expect(resolved.description).toBe("Create and run structured AgentRecall workflows.");
     expect(resolved.enabled).toBe(false);
     expect(resolved.env).toEqual({});
     expect(resolved.managed).toBe(true);

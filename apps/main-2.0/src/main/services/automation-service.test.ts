@@ -111,6 +111,10 @@ function fixture(injectAgents = true) {
       registry,
       evaluations,
       teamChats,
+      workflowCore: {
+        initialize: vi.fn(async () => undefined),
+        ensureDefinitions: vi.fn(async () => undefined),
+      } as never,
       ...(injectAgents ? { agents } : {}),
       loadBundledWorkflows: vi.fn(async () => [{
         workflowId: "wf",
@@ -163,7 +167,7 @@ describe("NativeAutomationService", () => {
     });
     expect(hub.loadModelChannels).not.toHaveBeenCalled();
     expect(hub.loadPersistedState).not.toHaveBeenCalled();
-    expect(database.query).toHaveBeenCalledTimes(2);
+    expect(database.query).toHaveBeenCalledTimes(1);
   });
 
   it("prepares the persisted snapshot without starting execution infrastructure", async () => {
@@ -234,6 +238,42 @@ describe("NativeAutomationService", () => {
     emit(snapshot("/ignored"));
 
     expect(received.map((value) => value.workDir)).toEqual(["/repo", "/next"]);
+  });
+
+  it("publishes ephemeral Workflow Runtime output only to active subscribers", () => {
+    const { service } = fixture();
+    const received: unknown[] = [];
+    const unsubscribe = service.subscribeWorkflowRunStream((event) => received.push(event));
+    const event = {
+      runId: "run-1",
+      nodeId: "agent-1",
+      type: "delta" as const,
+      content: "hello",
+      timestamp: 10,
+    };
+
+    service.publishWorkflowRunStream(event);
+    unsubscribe();
+    service.publishWorkflowRunStream({ ...event, content: "ignored" });
+
+    expect(received).toEqual([event]);
+  });
+
+  it("isolates Workflow Runtime stream listener failures from execution", () => {
+    const { service } = fixture();
+    const received: unknown[] = [];
+    service.subscribeWorkflowRunStream(() => { throw new Error("renderer closed"); });
+    service.subscribeWorkflowRunStream((event) => received.push(event));
+    const event = {
+      runId: "run-1",
+      nodeId: "agent-1",
+      type: "delta" as const,
+      content: "still running",
+      timestamp: 10,
+    };
+
+    expect(() => service.publishWorkflowRunStream(event)).not.toThrow();
+    expect(received).toEqual([event]);
   });
 
   it("blocks Agent deletion and reports references from every owning module", async () => {

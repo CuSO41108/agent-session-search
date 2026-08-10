@@ -15,6 +15,9 @@ type FakeBuiltin = {
 
 function setup(pickDirectory?: (defaultPath?: string) => Promise<string | undefined>, builtins?: FakeBuiltin[]) {
   const handlers = new Map<string, (...args: any[]) => unknown>();
+  let workflowRunStreamListener: ((event: unknown) => void) | undefined;
+  const unsubscribeWorkflowRunStream = vi.fn();
+  const send = vi.fn();
   const ipc = {
     handle: vi.fn((channel: string, handler: (...args: any[]) => unknown) => handlers.set(channel, handler)),
   };
@@ -74,10 +77,25 @@ function setup(pickDirectory?: (defaultPath?: string) => Promise<string | undefi
     snapshot: vi.fn(() => ({ workDir: "/repo" })),
     subscribe: vi.fn(() => () => undefined),
     subscribeChanges: vi.fn(() => () => undefined),
+    subscribeWorkflowRunStream: vi.fn((listener) => {
+      workflowRunStreamListener = listener;
+      return unsubscribeWorkflowRunStream;
+    }),
     runtime: hub,
     updateConfiguredAgents: vi.fn((value, options) => hub.updateConfiguredAgents(value, options)),
     deleteConfiguredAgent: vi.fn(async (agentId: string) => ({ configuredAgents: hub.listConfiguredAgents().filter((agent) => agent.id !== agentId) })),
     workflows: hub,
+    workflowCore: {
+      snapshot: vi.fn(async () => ({ definitions: [], runs: [] })),
+      saveDefinition: vi.fn(async (value) => value),
+      deleteDefinition: vi.fn(async () => undefined),
+      startRun: vi.fn(async (workflowId, inputs) => ({ id: "run-1", workflowId, inputs })),
+      pauseRun: vi.fn(async (runId) => ({ id: runId, status: "paused" })),
+      resumeRun: vi.fn(async (runId) => ({ id: runId, status: "running" })),
+      cancelRun: vi.fn(async (runId) => ({ id: runId, status: "cancelled" })),
+      retryNode: vi.fn(async (runId, nodeId) => ({ id: runId, nodeId })),
+      resolveApproval: vi.fn(async (runId, nodeId, outputs) => ({ id: runId, nodeId, outputs })),
+    },
     mcp,
     evaluations,
     portableWorkflows: {
@@ -89,12 +107,61 @@ function setup(pickDirectory?: (defaultPath?: string) => Promise<string | undefi
     },
     resolveRuntimeApproval: vi.fn(),
   } as unknown as NativeAutomationService;
-  registerAutomationIpc({ ipc: ipc as never, service, send: vi.fn(), pickDirectory });
+  const dispose = registerAutomationIpc({ ipc: ipc as never, service, send, pickDirectory });
   const invoke = (channel: string, ...args: unknown[]) => handlers.get(channel)?.({}, ...args);
-  return { handlers, invoke, hub, registry, evaluations, service, discoverTools };
+  return {
+    handlers,
+    invoke,
+    hub,
+    registry,
+    evaluations,
+    service,
+    discoverTools,
+    send,
+    dispose,
+    unsubscribeWorkflowRunStream,
+    emitWorkflowRunStream: (event: unknown) => workflowRunStreamListener?.(event),
+  };
 }
 
 describe("registerAutomationIpc", () => {
+  it("forwards ephemeral Workflow Runtime output and unsubscribes on cleanup", () => {
+    const { send, dispose, emitWorkflowRunStream, unsubscribeWorkflowRunStream } = setup();
+    const event = {
+      runId: "run-1",
+      nodeId: "agent-1",
+      type: "delta",
+      content: "hello",
+      timestamp: 10,
+    };
+
+    emitWorkflowRunStream(event);
+    expect(send).toHaveBeenCalledWith(AUTOMATION_CHANNELS.workflowRunStream, event);
+
+    dispose();
+    expect(unsubscribeWorkflowRunStream).toHaveBeenCalledOnce();
+  });
+
+  it("routes the structured Workflow API through Workflow Core", async () => {
+    const { invoke, service } = setup();
+    const definition = {
+      id: "workflow-1", name: "Workflow", description: "Description", inputs: [], nodes: [], createdAt: 1, updatedAt: 1,
+    };
+
+    await expect(invoke(AUTOMATION_CHANNELS.workflowCoreGet, "workflow-1")).resolves.toEqual({ definitions: [], runs: [] });
+    await expect(invoke(AUTOMATION_CHANNELS.workflowDefinitionSave, definition)).resolves.toEqual(definition);
+    await expect(invoke(AUTOMATION_CHANNELS.workflowDefinitionDelete, { workflowId: "workflow-1" })).resolves.toBeUndefined();
+    await expect(invoke(AUTOMATION_CHANNELS.workflowRunStart, { workflowId: "workflow-1", inputs: { source: "resume" } })).resolves.toMatchObject({ id: "run-1" });
+    await expect(invoke(AUTOMATION_CHANNELS.workflowRunPause, { runId: "run-1" })).resolves.toMatchObject({ status: "paused" });
+    await expect(invoke(AUTOMATION_CHANNELS.workflowRunResume, { runId: "run-1" })).resolves.toMatchObject({ status: "running" });
+    await expect(invoke(AUTOMATION_CHANNELS.workflowRunCancel, { runId: "run-1" })).resolves.toMatchObject({ status: "cancelled" });
+    await expect(invoke(AUTOMATION_CHANNELS.workflowNodeRetry, { runId: "run-1", nodeId: "answer" })).resolves.toMatchObject({ nodeId: "answer" });
+    await expect(invoke(AUTOMATION_CHANNELS.workflowApprovalResolve, { runId: "run-1", nodeId: "approve", outputs: { decision: "yes" } })).resolves.toMatchObject({ outputs: { decision: "yes" } });
+
+    expect(service.workflowCore.snapshot).toHaveBeenCalledWith("workflow-1");
+    await expect(invoke(AUTOMATION_CHANNELS.workflowRunStart, { workflowId: "workflow-1", inputs: { huge: () => undefined } })).rejects.toThrow();
+  });
+
   it("registers only AgentRecall-prefixed automation channels", () => {
     const { handlers } = setup();
     expect([...handlers.keys()].length).toBeGreaterThan(30);
