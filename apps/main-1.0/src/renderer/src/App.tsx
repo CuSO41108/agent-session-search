@@ -1070,7 +1070,9 @@ export function App(): ReactElement {
   }, [language]);
 
   useLayoutEffect(() => {
-    applyMessageFontSize(messageFontSize);
+    applyMessageFontSize(messageFontSize, (factor) => {
+      void window.sessionSearch.setInterfaceZoomFactor(factor);
+    });
     window.localStorage.setItem(MESSAGE_FONT_SIZE_STORAGE_KEY, messageFontSize);
   }, [messageFontSize]);
 

@@ -105,6 +105,7 @@ const api = {
   ...createAppUpdateApi(ipcRenderer),
   getSettings: (): Promise<AppSettings> => ipcRenderer.invoke("settings:get"),
   setSettings: (settings: AppSettingsUpdate): Promise<AppSettings> => ipcRenderer.invoke("settings:set", settings),
+  setInterfaceZoomFactor: (factor: number): Promise<number> => ipcRenderer.invoke("interface-zoom:set", factor),
   ...createProvidersApi(ipcRenderer),
   ...createSkillsApi(ipcRenderer),
   ...createRulesApi(ipcRenderer),

@@ -45,8 +45,12 @@ export function messageFontSizeZoom(scale: MessageFontSizeScale): number {
   return messageFontSizePx(scale) / MESSAGE_FONT_SIZE_BASE_PX;
 }
 
-export function applyMessageFontSize(scale: MessageFontSizeScale, root: HTMLElement = document.documentElement): void {
-  // Keep message body at the base px; page zoom carries the selected scale for the whole UI.
+export function applyMessageFontSize(
+  scale: MessageFontSizeScale,
+  setZoomFactor: (factor: number) => void,
+  root: HTMLElement = document.documentElement,
+): void {
   root.style.setProperty("--message-font-size", `${MESSAGE_FONT_SIZE_BASE_PX}px`);
-  root.style.zoom = String(messageFontSizeZoom(scale));
+  root.style.removeProperty("zoom");
+  setZoomFactor(messageFontSizeZoom(scale));
 }

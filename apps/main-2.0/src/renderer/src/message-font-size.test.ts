@@ -39,10 +39,15 @@ describe("message font size scale", () => {
     expect(messageFontSizeZoom("xlarge")).toBe(16 / MESSAGE_FONT_SIZE_BASE_PX);
   });
 
-  it("applies base message size and page zoom on the document root", () => {
+  it("keeps viewport layout unscaled while requesting native page zoom", () => {
     const root = document.createElement("html");
-    applyMessageFontSize("large", root);
+    root.style.zoom = "1.5";
+    const requestedZoom: number[] = [];
+
+    applyMessageFontSize("large", (factor) => requestedZoom.push(factor), root);
+
     expect(root.style.getPropertyValue("--message-font-size")).toBe("12px");
-    expect(root.style.zoom).toBe(String(14 / MESSAGE_FONT_SIZE_BASE_PX));
+    expect(root.style.zoom).toBe("");
+    expect(requestedZoom).toEqual([14 / MESSAGE_FONT_SIZE_BASE_PX]);
   });
 });
