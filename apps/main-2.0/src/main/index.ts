@@ -241,6 +241,7 @@ interface OpenVikingMemoryHookSetup {
     openCodePluginPath: string;
     manifestPath: string;
     nodePath: string;
+    platform: NodeJS.Platform;
     integrations: { claude: boolean; codex: boolean; opencode: boolean };
   }): { status: "configured" | "error"; detail?: string };
 }
@@ -1287,7 +1288,8 @@ function reconcileOpenVikingMemoryHooks(settings: AppSettings): void {
     hookScriptPath: OPENVIKING_MEMORY_HOOK_SCRIPT_PATH,
     openCodePluginPath: OPENVIKING_OPENCODE_PLUGIN_PATH,
     manifestPath: openVikingHookManifestService.manifestPath(),
-    nodePath: process.env.npm_node_execpath || "node",
+    nodePath: process.env.AGENT_RECALL_NODE_PATH || process.env.npm_node_execpath || "node",
+    platform: process.platform,
     integrations: openVikingIntegrations(settings),
   });
   if (result.status === "error") throw new Error(result.detail || "Could not configure OpenViking memory hooks.");
@@ -2759,6 +2761,11 @@ app.whenReady().then(async () => {
   );
   quotaService = createQuotaService();
   initializeOpenVikingMemory();
+  try {
+    reconcileOpenVikingMemoryHooks(getSettings());
+  } catch (error) {
+    console.error(`Failed to refresh OpenViking memory hooks during startup: ${error instanceof Error ? error.message : String(error)}`);
+  }
   // Publish the live endpoint so standalone MCP clients use the same store.
   try {
     writeDatabaseUrlPointer(postgresRuntime.connectionUrl);
@@ -2814,10 +2821,9 @@ app.whenReady().then(async () => {
     startupTasks.whenSettled(initialIndexSettled, async () => {
       try {
         await refreshOpenVikingHookManifest();
-        reconcileOpenVikingMemoryHooks(getSettings());
         await startConfiguredOpenVikingRuntime(getSettings());
       } catch (error) {
-        console.error(`Failed to configure OpenViking memory hooks: ${error instanceof Error ? error.message : String(error)}`);
+        console.error(`Failed to start the OpenViking runtime: ${error instanceof Error ? error.message : String(error)}`);
       }
     });
   });
