@@ -2823,7 +2823,7 @@ app.whenReady().then(async () => {
         await refreshOpenVikingHookManifest();
         await startConfiguredOpenVikingRuntime(getSettings());
       } catch (error) {
-        console.error(`Failed to configure OpenViking memory hooks: ${error instanceof Error ? error.message : String(error)}`);
+        console.error(`Failed to start the OpenViking runtime: ${error instanceof Error ? error.message : String(error)}`);
       }
     });
   });

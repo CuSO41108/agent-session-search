@@ -1190,7 +1190,8 @@ function finishCliFailure(error) {
   if (cliState === "reporting-failure") return;
   if (cliState === "finished") {
     process.stdin.destroy();
-    process.exit(0);
+    process.exitCode = 0;
+    return;
   }
   cliState = "reporting-failure";
   const options = parseArguments(process.argv.slice(2));
