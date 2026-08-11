@@ -78,8 +78,8 @@ describe("McpPage", () => {
 
     const html = renderToStaticMarkup(<McpPage language="zh" agents={[]} />);
 
-    expect(html).toContain("mcp-server-row");
-    expect(html).toContain("mcp-server-row-switch");
+    expect(html).toContain("mcp-registry-row");
+    expect(html).toContain("mcp-registry-row-switch");
     // one switch per row (built-in + custom), plus the reused binding-switch style
     expect(html).toContain('aria-label="启用 Team docs"');
     expect(html).toContain('aria-label="启用 AgentRecall Workflow"');
@@ -92,7 +92,7 @@ describe("McpPage", () => {
 
     const html = renderToStaticMarkup(<McpPage language="zh" agents={[]} />);
 
-    expect(html).toContain("mcp-server-row is-disabled");
+    expect(html).toContain("mcp-registry-row is-disabled");
     // an unchecked checkbox must not carry the checked attribute
     expect(html).not.toContain('aria-label="启用 Team docs" checked');
   });

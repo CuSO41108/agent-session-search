@@ -98,7 +98,7 @@ export function McpPage({
   const renderServerRow = (server: McpServerDefinition, title: string) => (
     <div
       key={server.id}
-      className={`mcp-server-row ${server.enabled ? "" : "is-disabled"}`}
+      className={`mcp-registry-row ${server.enabled ? "" : "is-disabled"}`}
     >
       <BrowserItem
         selected={server.id === draft?.id}
@@ -114,7 +114,7 @@ export function McpPage({
         onClick={() => select(server.id)}
       />
       <span
-        className="mcp-binding-switch mcp-server-row-switch"
+        className="mcp-binding-switch mcp-registry-row-switch"
         title={
           zh
             ? server.enabled

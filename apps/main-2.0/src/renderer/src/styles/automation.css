@@ -1443,23 +1443,50 @@
   white-space: nowrap;
 }
 
-.mcp-server-row {
-  display: flex;
+/*
+ * MCP 服务器列表行：整行承载 hover/选中背景，右侧放启用开关。
+ * 注意不要改名为 .mcp-server-row —— 该类名已被 automation-upstream 占用
+ * （三列网格 + 自带背景），会把这里的两列布局覆盖掉。
+ */
+.mcp-registry-row {
+  display: grid;
   align-items: center;
-  gap: 6px;
+  overflow: hidden;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  /* 文字列吃掉全部剩余宽度，开关列固定在右侧，与名字长短无关 */
+  grid-template-columns: minmax(0, 1fr) auto;
 }
 
-.mcp-server-row > .workbench-browser-item {
+.mcp-registry-row:hover {
+  background: var(--hover);
+}
+
+.mcp-registry-row:has(> .workbench-browser-item.is-active) {
+  border-color: color-mix(in srgb, var(--accent) 20%, var(--line));
+  background: var(--accent-tint);
+}
+
+/* 背景与描边由整行承载，按钮保持透明，避免行内再出现一层高亮 */
+.mcp-registry-row > .workbench-browser-item,
+.mcp-registry-row > .workbench-browser-item:hover,
+.mcp-registry-row > .workbench-browser-item.is-active {
+  min-width: 0;
+  border-color: transparent;
+  background: transparent;
+}
+
+/* 标题占满文字列，状态圆点贴其右端，各行圆点因此落在同一列 */
+.mcp-registry-row > .workbench-browser-item > .workbench-browser-item-main {
   flex: 1;
   min-width: 0;
 }
 
-.mcp-server-row-switch {
-  flex: none;
-  margin-right: 4px;
+.mcp-registry-row > .mcp-registry-row-switch {
+  margin: 0 10px 0 2px;
 }
 
-.mcp-server-row.is-disabled > .workbench-browser-item .workbench-browser-item-main {
+.mcp-registry-row.is-disabled > .workbench-browser-item .workbench-browser-item-main {
   opacity: 0.5;
 }
 
