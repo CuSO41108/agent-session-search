@@ -210,6 +210,7 @@ function serializeCodex(
         timestamp: message.timestamp,
         payload: {
           type: "message",
+          id: codexStatelessItemId(`${sessionId}:turn:${turnIndex}:message:${message.index}`),
           role: message.role,
           content: [{
             type: message.role === "user" ? "input_text" : "output_text",
@@ -233,7 +234,7 @@ function serializeCodex(
     }
 
     if (includeVsCodeEvents) {
-      rows.push(...codexSubagentActivityRows(session, sessionId, turnIndex, turnId));
+      rows.push(...codexSubagentActivityRows(session, sessionId, turnIndex));
     }
 
     if (includeVsCodeEvents) {
@@ -261,7 +262,6 @@ function codexSubagentActivityRows(
   session: PortableSession,
   sessionId: string,
   turnIndex: number,
-  turnId: string,
 ): unknown[] {
   const boundaries = codexTurnBoundaries(session);
   const turnStartTimes = boundaries.map((boundary) => timestampMs(session.messages[boundary]?.timestamp ?? session.startedAt));
@@ -277,54 +277,22 @@ function codexSubagentActivityRows(
       return assignedTurn === turnIndex;
     })
     .sort((left, right) => timestampMs(left.startedAt) - timestampMs(right.startedAt))
-    .flatMap((subagent) => {
+    .map((subagent) => {
       const childSessionId = subagent.sourceSessionId!;
-      const digest = crypto.createHash("sha256").update(`${sessionId}:subagent:${childSessionId}`).digest("hex");
-      const callId = `call_migrated_${digest.slice(0, 24)}`;
-      const taskName = codexSubagentTaskName(subagent);
       const agentPath = codexSubagentPath(subagent);
-      return [{
-        type: "response_item",
-        timestamp: subagent.startedAt,
-        payload: {
-          type: "function_call",
-          name: "spawn_agent",
-          namespace: "collaboration",
-          arguments: JSON.stringify({
-            task_name: taskName,
-            fork_turns: "all",
-            message: subagent.title || taskName,
-          }),
-          call_id: callId,
-          internal_chat_message_metadata_passthrough: { turn_id: turnId },
-        },
-      }, {
+      return {
         type: "event_msg",
         timestamp: subagent.startedAt,
         payload: {
           type: "sub_agent_activity",
-          event_id: callId,
+          event_id: codexStatelessItemId(`${sessionId}:subagent:${childSessionId}:activity`),
           occurred_at_ms: timestampMs(subagent.startedAt),
           agent_thread_id: childSessionId,
           agent_path: agentPath,
           kind: "started",
         },
-      }, {
-        type: "response_item",
-        timestamp: subagent.startedAt,
-        payload: {
-          type: "function_call_output",
-          call_id: callId,
-          output: JSON.stringify({ task_name: agentPath }),
-          internal_chat_message_metadata_passthrough: { turn_id: turnId },
-        },
-      }];
+      };
     });
-}
-
-function codexSubagentTaskName(session: PortableSession): string {
-  const sourceId = session.sourceSessionKey.split(":").at(-1) || session.title || "subagent";
-  return sourceId.replace(/[^A-Za-z0-9_-]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 64) || "subagent";
 }
 
 function codexTurnBoundaries(session: PortableSession): number[] {
@@ -343,6 +311,12 @@ function codexTurnBoundaries(session: PortableSession): number[] {
 
 function codexTurnId(sessionId: string, turnIndex: number): string {
   return deterministicCodexUuid(`${sessionId}:turn:${turnIndex}`);
+}
+
+function codexStatelessItemId(seed: string): string {
+  // Codex keeps a non-empty local item id while rebuilding resumed history, then
+  // strips legacy ids without an underscore before a stateless Responses request.
+  return deterministicCodexUuid(`response-item:${seed}`);
 }
 
 function deterministicCodexUuid(seed: string): string {
@@ -1020,7 +994,6 @@ function validateCodexStructure(
         session,
         sessionId,
         turnIndex,
-        codexTurnId(sessionId, turnIndex),
       ))
     : [];
   const expectedRows = 1
@@ -1081,7 +1054,7 @@ function validateCodexStructure(
         row?.type !== "response_item"
         || row.timestamp !== message.timestamp
         || messagePayload?.type !== "message"
-        || messagePayload.id !== undefined
+        || messagePayload.id !== codexStatelessItemId(`${sessionId}:turn:${turnIndex}:message:${message.index}`)
         || messagePayload.role !== message.role
         || (message.role === "assistant" && messagePayload.phase !== "final_answer")
         || (message.role === "user" && messagePayload.phase !== undefined)
@@ -1107,7 +1080,7 @@ function validateCodexStructure(
     }
 
     if (includeVsCodeEvents) {
-      const expectedActivities = codexSubagentActivityRows(session, sessionId, turnIndex, turnId);
+      const expectedActivities = codexSubagentActivityRows(session, sessionId, turnIndex);
       const actualActivities = rows.slice(rowIndex, rowIndex + expectedActivities.length);
       if (JSON.stringify(actualActivities) !== JSON.stringify(expectedActivities)) {
         failValidation("codex", "has invalid subagent activity metadata");
