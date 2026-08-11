@@ -48,6 +48,7 @@ import {
   revealInFileManager,
 } from "../core/platform";
 import { loadUsageQuotaSnapshot } from "../core/quota";
+import { repairLegacyAgentRecallCodexRollouts } from "../core/codex-migration-repair";
 import { setLiveSessionTerminalTitle } from "../core/session-focus";
 import { setSessionCustomTitleAndSyncTerminal } from "../core/session-title-sync";
 import { createCachedLiveSessionSnapshotLoader } from "../core/session-activity";
@@ -2825,7 +2826,17 @@ app.whenReady().then(async () => {
   }
   const initialIndexSettled = new Promise<void>((resolve) => {
     startupTasks.schedule(INITIAL_INDEX_DELAY_MS, () => {
-      void runIndexSync().then(() => resolve(), () => resolve());
+      void (async () => {
+        try {
+          const repair = await repairLegacyAgentRecallCodexRollouts(homedir());
+          if (repair.failedFiles > 0) {
+            console.warn(`[session-migration] ${repair.failedFiles} legacy Codex rollout(s) could not be repaired; they will be retried on the next startup.`);
+          }
+        } catch (error) {
+          console.warn("[session-migration] Legacy Codex rollout repair failed; startup indexing will continue.", error);
+        }
+        await runIndexSync();
+      })().then(() => resolve(), () => resolve());
     });
   });
   startAutoIndexRefresh();
