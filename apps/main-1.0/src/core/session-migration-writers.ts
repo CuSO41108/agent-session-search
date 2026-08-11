@@ -807,14 +807,29 @@ function updateCodexAppServerState(
         ...(updates.map((column) => values[column]) as import("node:sqlite").SQLInputValue[]),
         sessionId,
       );
-      return;
+    } else {
+      const insertColumns = Object.keys(values).filter((column) => columns.has(column));
+      const placeholders = insertColumns.map(() => "?").join(", ");
+      db.prepare(`INSERT INTO threads (${insertColumns.join(", ")}) VALUES (${placeholders})`).run(
+        ...(insertColumns.map((column) => values[column]) as import("node:sqlite").SQLInputValue[]),
+      );
     }
 
-    const insertColumns = Object.keys(values).filter((column) => columns.has(column));
-    const placeholders = insertColumns.map(() => "?").join(", ");
-    db.prepare(`INSERT INTO threads (${insertColumns.join(", ")}) VALUES (${placeholders})`).run(
-      ...(insertColumns.map((column) => values[column]) as import("node:sqlite").SQLInputValue[]),
-    );
+    if (session.isSubagent && session.parentSessionId) {
+      const edgeColumns = new Set(
+        (db.prepare("PRAGMA table_info(thread_spawn_edges)").all() as Array<{ name?: unknown }>)
+          .map((column) => typeof column.name === "string" ? column.name : ""),
+      );
+      if (["parent_thread_id", "child_thread_id", "status"].every((column) => edgeColumns.has(column))) {
+        db.prepare(`
+          INSERT INTO thread_spawn_edges (parent_thread_id, child_thread_id, status)
+          VALUES (?, ?, 'open')
+          ON CONFLICT(child_thread_id) DO UPDATE SET
+            parent_thread_id = excluded.parent_thread_id,
+            status = excluded.status
+        `).run(session.parentSessionId, sessionId);
+      }
+    }
   } catch {
     // The Codex app-server may hold the state database open. The rollout file
     // and native session index remain authoritative when this best-effort
