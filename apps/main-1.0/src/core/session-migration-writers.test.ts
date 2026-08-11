@@ -158,11 +158,16 @@ describe("writeMigratedSession", () => {
       });
       const rows = readRows(result.filePath);
       const spawn = rows.find((row) => row.type === "response_item" && row.payload?.name === "spawn_agent");
+      const spawnOutput = rows.find((row) => row.type === "response_item" && row.payload?.type === "function_call_output");
       const activity = rows.find((row) => row.type === "event_msg" && row.payload?.type === "sub_agent_activity");
 
       expect(result.sessionId).toBe(SESSION_ID);
       expect(JSON.parse(spawn?.payload.arguments)).toMatchObject({ task_name: "child", message: "Research child" });
+      expect(spawn?.payload.id).toBeUndefined();
+      expect(spawnOutput?.payload.id).toBeUndefined();
+      expect(spawnOutput?.payload.call_id).toBe(spawn?.payload.call_id);
       expect(activity?.payload).toMatchObject({
+        event_id: spawn?.payload.call_id,
         agent_thread_id: CHILD_SESSION_ID,
         agent_path: "/root/migrated_child",
         kind: "started",
@@ -226,7 +231,7 @@ describe("writeMigratedSession", () => {
       expect(messageRows.map((row) => row.payload.role)).toEqual(["user", "assistant", "user", "assistant"]);
       expect(messageRows[1].payload.content[0].text).toContain("过程更新 1\n\n过程更新 2");
       expect(messageRows[1].payload.content[0].text).toContain("过程更新 260");
-      expect(messageRows.every((row) => /^msg_[0-9a-f-]{36}$/.test(row.payload.id))).toBe(true);
+      expect(messageRows.every((row) => row.payload.id === undefined)).toBe(true);
       expect(messageRows.filter((row) => row.payload.role === "assistant").every((row) => row.payload.phase === "final_answer")).toBe(true);
       expect(rows.filter((row) => row.payload?.type === "task_started")).toHaveLength(2);
     } finally {

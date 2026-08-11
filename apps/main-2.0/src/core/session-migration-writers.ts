@@ -205,13 +205,11 @@ function serializeCodex(
     }
 
     for (const message of messages) {
-      const messageId = codexMessageId(sessionId, turnIndex, message.index);
       rows.push({
         type: "response_item",
         timestamp: message.timestamp,
         payload: {
           type: "message",
-          id: messageId,
           role: message.role,
           content: [{
             type: message.role === "user" ? "input_text" : "output_text",
@@ -290,7 +288,6 @@ function codexSubagentActivityRows(
         timestamp: subagent.startedAt,
         payload: {
           type: "function_call",
-          id: `fc_${digest}`,
           name: "spawn_agent",
           namespace: "collaboration",
           arguments: JSON.stringify({
@@ -317,7 +314,6 @@ function codexSubagentActivityRows(
         timestamp: subagent.startedAt,
         payload: {
           type: "function_call_output",
-          id: `fco_${digest}`,
           call_id: callId,
           output: JSON.stringify({ task_name: agentPath }),
           internal_chat_message_metadata_passthrough: { turn_id: turnId },
@@ -347,10 +343,6 @@ function codexTurnBoundaries(session: PortableSession): number[] {
 
 function codexTurnId(sessionId: string, turnIndex: number): string {
   return deterministicCodexUuid(`${sessionId}:turn:${turnIndex}`);
-}
-
-function codexMessageId(sessionId: string, turnIndex: number, messageIndex: number): string {
-  return `msg_${deterministicCodexUuid(`${sessionId}:turn:${turnIndex}:message:${messageIndex}`)}`;
 }
 
 function deterministicCodexUuid(seed: string): string {
@@ -1089,7 +1081,7 @@ function validateCodexStructure(
         row?.type !== "response_item"
         || row.timestamp !== message.timestamp
         || messagePayload?.type !== "message"
-        || messagePayload.id !== codexMessageId(sessionId, turnIndex, message.index)
+        || messagePayload.id !== undefined
         || messagePayload.role !== message.role
         || (message.role === "assistant" && messagePayload.phase !== "final_answer")
         || (message.role === "user" && messagePayload.phase !== undefined)
