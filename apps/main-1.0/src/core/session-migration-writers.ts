@@ -57,7 +57,7 @@ export async function writeMigratedSession(options: WriteMigratedSessionOptions)
     return writeMigratedCodeWizSession({ ...options, homeDir, now, idFactory: createId }, sessionId);
   }
   const session = migrationTargetDescriptor(options.target).family === "codex"
-    ? normalizeCodexMessageTimestamps(options.session)
+    ? normalizeCodexSession(options.session)
     : options.session;
   const codexRuntimeCwd = migrationTargetDescriptor(options.target).family === "codex"
     ? session.projectPath || options.codexRuntimeCwd || homeDir
@@ -205,16 +205,19 @@ function serializeCodex(
     }
 
     for (const message of messages) {
+      const messageId = codexMessageId(sessionId, turnIndex, message.index);
       rows.push({
         type: "response_item",
         timestamp: message.timestamp,
         payload: {
           type: "message",
+          id: messageId,
           role: message.role,
           content: [{
             type: message.role === "user" ? "input_text" : "output_text",
             text: message.content,
           }],
+          ...(message.role === "assistant" ? { phase: "final_answer" } : {}),
           ...(includeVsCodeEvents
             ? { internal_chat_message_metadata_passthrough: { turn_id: turnId } }
             : {}),
@@ -343,7 +346,15 @@ function codexTurnBoundaries(session: PortableSession): number[] {
 }
 
 function codexTurnId(sessionId: string, turnIndex: number): string {
-  const bytes = Buffer.from(crypto.createHash("sha256").update(`${sessionId}:turn:${turnIndex}`).digest().subarray(0, 16));
+  return deterministicCodexUuid(`${sessionId}:turn:${turnIndex}`);
+}
+
+function codexMessageId(sessionId: string, turnIndex: number, messageIndex: number): string {
+  return `msg_${deterministicCodexUuid(`${sessionId}:turn:${turnIndex}:message:${messageIndex}`)}`;
+}
+
+function deterministicCodexUuid(seed: string): string {
+  const bytes = Buffer.from(crypto.createHash("sha256").update(seed).digest().subarray(0, 16));
   bytes[6] = (bytes[6] & 0x0f) | 0x40;
   bytes[8] = (bytes[8] & 0x3f) | 0x80;
   const hex = bytes.toString("hex");
@@ -678,19 +689,44 @@ function timestampMs(value: string): number {
   return timestamp;
 }
 
-function normalizeCodexMessageTimestamps(session: PortableSession): PortableSession {
+function normalizeCodexSession(session: PortableSession): PortableSession {
   timestampMs(session.startedAt);
   let previousTimestamp = session.startedAt;
-  let changed = false;
   const messages = session.messages.map((message) => {
     if (Number.isFinite(new Date(message.timestamp).getTime())) {
       previousTimestamp = message.timestamp;
       return message;
     }
-    changed = true;
     return { ...message, timestamp: previousTimestamp };
   });
-  return changed ? { ...session, messages } : session;
+  const timestampNormalized = { ...session, messages };
+  const boundaries = codexTurnBoundaries(timestampNormalized);
+  const normalizedMessages: PortableSession["messages"] = [];
+  const normalizedBoundaries: number[] = [];
+
+  for (let turnIndex = 0; turnIndex < boundaries.length; turnIndex += 1) {
+    const start = boundaries[turnIndex];
+    const end = boundaries[turnIndex + 1] ?? messages.length;
+    normalizedBoundaries.push(normalizedMessages.length);
+    for (const message of messages.slice(start, end)) {
+      const previous = normalizedMessages.at(-1);
+      if (previous && previous.role === message.role && normalizedMessages.length > normalizedBoundaries.at(-1)!) {
+        normalizedMessages[normalizedMessages.length - 1] = {
+          ...previous,
+          content: `${previous.content}\n\n${message.content}`,
+          timestamp: message.timestamp,
+        };
+      } else {
+        normalizedMessages.push({ ...message, index: normalizedMessages.length });
+      }
+    }
+  }
+
+  return {
+    ...session,
+    messages: normalizedMessages.map((message, index) => ({ ...message, index })),
+    ...(normalizedBoundaries.length > 0 ? { turnBoundaries: normalizedBoundaries } : { turnBoundaries: undefined }),
+  };
 }
 
 async function writeJsonlAndSync(filePath: string, rows: unknown[]): Promise<void> {
@@ -1053,7 +1089,10 @@ function validateCodexStructure(
         row?.type !== "response_item"
         || row.timestamp !== message.timestamp
         || messagePayload?.type !== "message"
+        || messagePayload.id !== codexMessageId(sessionId, turnIndex, message.index)
         || messagePayload.role !== message.role
+        || (message.role === "assistant" && messagePayload.phase !== "final_answer")
+        || (message.role === "user" && messagePayload.phase !== undefined)
         || content.length !== 1
         || block?.type !== expectedBlockType
         || block.text !== message.content

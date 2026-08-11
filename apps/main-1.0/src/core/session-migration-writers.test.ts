@@ -193,6 +193,47 @@ describe("writeMigratedSession", () => {
     }
   });
 
+  it("coalesces fragmented assistant updates into resumable Codex turns", async () => {
+    const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "migration-writer-codex-fragments-"));
+    try {
+      const firstTimestamp = Date.parse("2026-06-20T01:02:04.005Z");
+      const fragments = Array.from({ length: 260 }, (_, index) => ({
+        role: "assistant" as const,
+        content: `过程更新 ${index + 1}`,
+        timestamp: new Date(firstTimestamp + index + 1).toISOString(),
+        index: index + 1,
+      }));
+      const session: PortableSession = {
+        ...portable(),
+        messages: [
+          { role: "user", content: "第一轮问题", timestamp: new Date(firstTimestamp).toISOString(), index: 0 },
+          ...fragments,
+          { role: "user", content: "第二轮问题", timestamp: new Date(firstTimestamp + 261).toISOString(), index: 261 },
+          { role: "assistant", content: "第二轮回答", timestamp: new Date(firstTimestamp + 262).toISOString(), index: 262 },
+        ],
+      };
+
+      const result = await writeMigratedSession({
+        target: "codex",
+        session,
+        sessionId: SESSION_ID,
+        homeDir,
+        now: NOW,
+      });
+      const rows = readRows(result.filePath);
+      const messageRows = rows.filter((row) => row.type === "response_item" && row.payload?.type === "message");
+
+      expect(messageRows.map((row) => row.payload.role)).toEqual(["user", "assistant", "user", "assistant"]);
+      expect(messageRows[1].payload.content[0].text).toContain("过程更新 1\n\n过程更新 2");
+      expect(messageRows[1].payload.content[0].text).toContain("过程更新 260");
+      expect(messageRows.every((row) => /^msg_[0-9a-f-]{36}$/.test(row.payload.id))).toBe(true);
+      expect(messageRows.filter((row) => row.payload.role === "assistant").every((row) => row.payload.phase === "final_answer")).toBe(true);
+      expect(rows.filter((row) => row.payload?.type === "task_started")).toHaveLength(2);
+    } finally {
+      fs.rmSync(homeDir, { recursive: true, force: true });
+    }
+  });
+
   it.each(TARGETS)(
     "creates the temporary and final $target files with mode 0600",
     async ({ target, root, family }) => {
