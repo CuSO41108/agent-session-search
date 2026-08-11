@@ -165,6 +165,15 @@ const COMPACTION_BINARY_FIELDS = new Set([
   "image_url",
   "screenshot",
 ]);
+const COMPACTION_BINARY_CHILD_FIELDS = new Set([
+  "b64",
+  "b64_json",
+  "base64",
+  "data",
+  "file_data",
+  "src",
+  "url",
+]);
 const COMPACTION_UNKNOWN_BINARY_MIN_CHARS = 64 * 1_024;
 const COMPACTION_MARKER_EARLY_TOLERANCE_MS = 1_000;
 const COMPACTION_MARKER_LATE_TOLERANCE_MS = 30_000;
@@ -195,7 +204,11 @@ function sanitizeCompactionJson(value: unknown, key = "", binaryContext = false)
   return Object.fromEntries(
     Object.entries(object).map(([nestedKey, nestedValue]) => [
       nestedKey,
-      sanitizeCompactionJson(nestedValue, nestedKey),
+      sanitizeCompactionJson(
+        nestedValue,
+        nestedKey,
+        insideBinaryField && COMPACTION_BINARY_CHILD_FIELDS.has(nestedKey.toLocaleLowerCase()),
+      ),
     ]),
   );
 }
@@ -953,15 +966,18 @@ export function dedupeCodexTraceEvents(events: TraceEventDraft[]): SessionTraceE
       );
       if (marker.sourceTurnId && checkpoint.sourceTurnId && !exactTurn) continue;
       const checkpointTime = Date.parse(checkpoint.timestamp);
-      if (!Number.isFinite(markerTime) || !Number.isFinite(checkpointTime)) continue;
-      const markerDelay = markerTime - checkpointTime;
-      if (exactTurn) {
+      const timesUsable = Number.isFinite(markerTime) && Number.isFinite(checkpointTime);
+      let distance = Number.POSITIVE_INFINITY;
+      if (timesUsable) {
+        const markerDelay = markerTime - checkpointTime;
         if (
-          markerDelay < -COMPACTION_MARKER_EARLY_TOLERANCE_MS
-          || markerDelay > COMPACTION_MARKER_LATE_TOLERANCE_MS
+          exactTurn
+          && (markerDelay < -COMPACTION_MARKER_EARLY_TOLERANCE_MS
+            || markerDelay > COMPACTION_MARKER_LATE_TOLERANCE_MS)
         ) continue;
-      } else if (Math.abs(markerDelay) > COMPACTION_MISSING_TURN_MATCH_WINDOW_MS) continue;
-      const distance = Math.abs(markerDelay);
+        if (!exactTurn && Math.abs(markerDelay) > COMPACTION_MISSING_TURN_MATCH_WINDOW_MS) continue;
+        distance = Math.abs(markerDelay);
+      } else if (!exactTurn) continue;
       candidates.push({ checkpointIndex, exactTurn, distance });
     }
     candidates.sort((left, right) =>

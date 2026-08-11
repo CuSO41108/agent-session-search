@@ -43,6 +43,7 @@ describe("Codex session loading", () => {
   it("shows a readable sanitized copy of the original compacted payload", () => {
     const longReadableText = `retained-start-${"x".repeat(TRACE_DETAIL_PREVIEW_MAX_CHARS)}-retained-end`;
     const nestedImageDataUrl = `data:image/png;base64,${"A".repeat(1_100)}`;
+    const nestedImageBareBase64 = "E".repeat(1_100);
     const arrayBase64 = "B".repeat(1_100);
     const unknownFieldBase64 = "C".repeat(1_100);
     const base64Url = `${"D".repeat(1_100)}-_`;
@@ -75,6 +76,7 @@ describe("Codex session loading", () => {
                   data: [arrayBase64],
                   file_data: unknownFieldBase64,
                 },
+                { type: "input_image", image_url: { url: nestedImageBareBase64 } },
                 { type: "input_file", data: base64Url },
               ],
               internal_chat_message_metadata_passthrough: { turn_id: "retained-turn" },
@@ -133,8 +135,10 @@ describe("Codex session loading", () => {
     expect(compactions[0].detail).toContain('"previous_window_id": "window-previous"');
     expect(compactions[0].detail).toContain('"window_id": "window-current"');
     expect(compactions[0].detail).toContain('"image_url": "[binary omitted:');
+    expect(compactions[0].detail).toContain('"url": "[binary omitted: 1100 characters]"');
     expect(compactions[0].detail).toContain('"encrypted_content": "[encrypted content omitted]"');
     expect(compactions[0].detail).not.toContain(nestedImageDataUrl);
+    expect(compactions[0].detail).not.toContain(nestedImageBareBase64);
     expect(compactions[0].detail).not.toContain(arrayBase64);
     expect(compactions[0].detail).not.toContain(unknownFieldBase64);
     expect(compactions[0].detail).not.toContain(base64Url);
@@ -147,6 +151,7 @@ describe("Codex session loading", () => {
     expect(serializedTrace).not.toContain("must-not-index-encrypted-summary");
     expect(serializedTrace).not.toContain("must-not-index-image");
     expect(serializedTrace).not.toContain(nestedImageDataUrl);
+    expect(serializedTrace).not.toContain(nestedImageBareBase64);
     expect(serializedTrace).not.toContain(arrayBase64);
     expect(serializedTrace).not.toContain(unknownFieldBase64);
     expect(serializedTrace).not.toContain(base64Url);
@@ -289,7 +294,13 @@ describe("Codex session loading", () => {
       started,
       checkpoint("2026-08-04T08:00:01.000Z"),
       eventMarker("not-a-timestamp"),
-    ])).toHaveLength(2);
+    ])).toHaveLength(1);
+    expect(compactions([
+      meta,
+      started,
+      checkpoint("not-a-timestamp"),
+      eventMarker("2026-08-04T08:00:01.000Z"),
+    ])).toHaveLength(1);
   });
 
   it("preserves encrypted metadata primitives and recognizes normalized compaction types", () => {
