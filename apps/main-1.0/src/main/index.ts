@@ -75,7 +75,7 @@ import {
   type ToolExecutionResult,
 } from "../core/ai-assistant";
 import { applyMigrationLengthPolicy, createMigrationCompressor } from "../core/session-migration-compression";
-import { migrateSession, portableSessionFrom, sshMigrationTarget } from "../core/session-migration";
+import { collectMigrationDescendants, migrateSession, portableSessionFrom, sshMigrationTarget } from "../core/session-migration";
 import { runLocalSessionMigration } from "./local-session-migration";
 import { targetFilePathForRemoteEnvironment, writeMigratedSession } from "../core/session-migration-writers";
 import { assertMigrationTargetEnabled, isMigrationTarget, migrationTargetDescriptor } from "../core/migration-targets";
@@ -1510,8 +1510,8 @@ function localSessionMigrationRuntime(event: IpcMainInvokeEvent) {
     inspectCli: (migrationTarget: MigrationTarget, snapshot: AppSettings) => inspectMigrationCli(migrationTarget, snapshot),
     prepare: (portable: PortableSession, onProgress: Parameters<typeof applyMigrationLengthPolicy>[2], compressor: ReturnType<typeof createMigrationCompressor> | null) =>
       applyMigrationLengthPolicy(portable, compressor, onProgress),
-    write: (migrationTarget: MigrationTarget, portable: PortableSession) =>
-      writeMigratedSession({ target: migrationTarget, session: portable }),
+    write: (migrationTarget: MigrationTarget, portable: PortableSession, targetSessionId?: string) =>
+      writeMigratedSession({ target: migrationTarget, session: portable, sessionId: targetSessionId }),
     record: (record: Parameters<SessionStore["recordSessionMigration"]>[0]) => store.recordSessionMigration(record),
     refreshIndex: async (migrationTarget: MigrationTarget, writtenFilePath: string, targetSessionId: string) => {
       const status = indexMigratedSessionFile(store, migrationTarget, writtenFilePath, targetSessionId);
@@ -1527,6 +1527,7 @@ function localSessionMigrationRuntime(event: IpcMainInvokeEvent) {
     onProgress: (progress: Parameters<NonNullable<import("../core/session-migration").SessionMigrationDependencies["onProgress"]>>[0]) =>
       event.sender.send("session:migration-progress", progress),
     idFactory: () => randomUUID(),
+    targetSessionIdFactory: () => randomUUID(),
     now: () => Date.now(),
     projectPathExists: pathExists,
     projectPathIsDirectory: pathIsDirectory,
@@ -2241,14 +2242,33 @@ function registerIpc(): void {
     await openResumeInSpecificTerminal(session, getSettings(), "iTerm", { sshArgs });
     store.markResumed(sessionKey);
   });
-  ipcMain.handle("session:migrate", async (event, sessionKey: string, target: unknown) => {
+  ipcMain.handle("session:migrate", async (
+    event,
+    sessionKey: string,
+    target: unknown,
+    targetProjectPath?: string,
+  ) => {
     const session = store.getSession(sessionKey);
     if (!session) throw new Error("Session not found.");
+    if (session.environmentKind === "wsl" || session.environmentKind === "ssh") {
+      await ensureRemoteSessionDetailsLoaded(sessionKey);
+    }
+    const descendantSessions = collectMigrationDescendants(
+      session,
+      store.searchSessions({ limit: 100_000, excludeSubagents: false }),
+    );
+    if (session.environmentKind === "wsl" || session.environmentKind === "ssh") {
+      for (const child of descendantSessions) await ensureRemoteSessionDetailsLoaded(child.sessionKey);
+    }
+    const subagents = descendantSessions.map((child) => portableSessionFrom(
+      child,
+      store.getAllMessages(child.sessionKey),
+      { allowSsh: child.environmentKind === "ssh" },
+    ));
     if (session.environmentKind === "wsl" || session.environmentKind === "ssh") {
       if (!isMigrationTarget(target)) throw new Error(`Migration target ${String(target)} is not supported.`);
       const settings = await providerService.hydrateSettings();
       assertMigrationTargetEnabled(target, settings);
-      await ensureRemoteSessionDetailsLoaded(sessionKey);
       if (session.environmentKind === "ssh" && target !== sshMigrationTarget(session.source)) {
         throw new Error("SSH sessions can only migrate between Claude Code and Codex on the same host.");
       }
@@ -2261,6 +2281,7 @@ function registerIpc(): void {
         store.getAllMessages(sessionKey),
         { allowSsh: session.environmentKind === "ssh" },
       );
+      if (subagents.length > 0) portable.subagents = subagents;
       const progress = (item: SessionMigrationProgress): void => event.sender.send("session:migration-progress", item);
       const deps = await createSourceRemoteRestoreDependencies(environment, progress);
       return restoreRemotePortableSession({
@@ -2277,7 +2298,9 @@ function registerIpc(): void {
     return runLocalSessionMigration({
       source: session,
       messages,
+      subagents,
       target,
+      targetProjectPath,
       settings,
     }, localSessionMigrationRuntime(event));
   });

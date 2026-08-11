@@ -968,6 +968,12 @@
   box-shadow: 0 0 0 1px var(--accent-soft);
 }
 
+.turn-card .msg.match-target {
+  border-radius: 7px;
+  background: var(--accent-soft);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
 .turn-card-summary {
   display: grid;
   width: 100%;

@@ -736,6 +736,14 @@ export class PostgresSessionRepository {
             storage_environment_id = excluded.storage_environment_id,
             project_path = excluded.project_path,
             file_path = excluded.file_path,
+            custom_title = case
+              when excluded.source = 'cursor-agent'
+                and agent_recall.sessions.original_title <> excluded.original_title
+                and agent_recall.sessions.custom_title is not null
+                and agent_recall.sessions.custom_title <> excluded.original_title
+              then null
+              else agent_recall.sessions.custom_title
+            end,
             original_title = excluded.original_title,
             first_question = excluded.first_question,
             started_at = excluded.started_at,

@@ -23,7 +23,9 @@ function settingsPathsFor(homeDir) {
 
 function buildHookCommand(options, agent, event) {
   const nodePath = options.nodePath || "node";
-  return `${quote(nodePath)} ${quote(options.hookScriptPath)} --agent ${agent} --event ${event} --manifest ${quote(options.manifestPath)}`;
+  const diagnosticLogPath = options.diagnosticLogPath || path.join(path.dirname(options.manifestPath), "hook-errors.log");
+  const invocation = `${quote(nodePath)} ${quote(options.hookScriptPath)} --agent ${agent} --event ${event} --manifest ${quote(options.manifestPath)} --diagnostic-log ${quote(diagnosticLogPath)}`;
+  return options.platform === "win32" && agent === "codex" ? `& ${invocation}` : invocation;
 }
 
 function isOurHookCommand(command) {
@@ -143,6 +145,7 @@ function normalizeOptions(options) {
     openCodePluginPath: opts.openCodePluginPath || path.join(__dirname, "openviking-opencode-plugin.mjs"),
     manifestPath: opts.manifestPath || path.join(os.homedir(), ".agent-recall-v2", "openviking", "hook-manifest.json"),
     nodePath: opts.nodePath || "node",
+    platform: opts.platform || process.platform,
     integrations: {
       claude: opts.integrations?.claude === true,
       codex: opts.integrations?.codex === true,

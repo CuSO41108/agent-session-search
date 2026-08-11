@@ -16,6 +16,7 @@ export function useSessionDetail(onLoadError: (error: unknown) => void) {
   const [remoteDetail, setRemoteDetail] = useState<RemoteDetail | null>(null);
   const [turns, setTurns] = useState<SessionTurnSummary[]>([]);
   const [matchedTurnId, setMatchedTurnId] = useState<string | null>(null);
+  const [matchedMessageIndex, setMatchedMessageIndex] = useState<number | null>(null);
   const [turnsLoading, setTurnsLoading] = useState(false);
   const loadSequence = useRef(0);
 
@@ -24,6 +25,7 @@ export function useSessionDetail(onLoadError: (error: unknown) => void) {
     setDetail(null);
     setTurns([]);
     setMatchedTurnId(null);
+    setMatchedMessageIndex(null);
     setTurnsLoading(false);
   }, []);
 
@@ -36,6 +38,7 @@ export function useSessionDetail(onLoadError: (error: unknown) => void) {
     setDetail(session);
     setTurns([]);
     setMatchedTurnId(matchHit?.turnId ?? session.bestTurn?.turnId ?? null);
+    setMatchedMessageIndex(matchHit?.messageIndex ?? null);
     setTurnsLoading(true);
 
     try {
@@ -52,6 +55,7 @@ export function useSessionDetail(onLoadError: (error: unknown) => void) {
       setDetail(fresh);
       setTurns(loadedTurns);
       setMatchedTurnId(matchHit?.turnId ?? fresh.bestTurn?.turnId ?? null);
+      setMatchedMessageIndex(matchHit?.messageIndex ?? null);
       setTurnsLoading(false);
     } catch (error) {
       if (requestId !== loadSequence.current) return;
@@ -65,6 +69,7 @@ export function useSessionDetail(onLoadError: (error: unknown) => void) {
     setDetail(null);
     setTurns([]);
     setMatchedTurnId(null);
+    setMatchedMessageIndex(null);
     setTurnsLoading(false);
     setRemoteDetail({ snapshot, query });
   }, []);
@@ -91,6 +96,7 @@ export function useSessionDetail(onLoadError: (error: unknown) => void) {
     turns,
     turnsLoading,
     matchedTurnId,
+    matchedMessageIndex,
     openLocal,
     closeLocal,
     openRemote,

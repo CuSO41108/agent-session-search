@@ -136,6 +136,29 @@ describe("SessionStore PostgreSQL facade", () => {
     });
   });
 
+  it("shows a renamed Cursor title instead of a stale local override", async () => {
+    const store = createStore();
+    const cursor = indexedSession({
+      sessionKey: "cursor:repo:session-a",
+      source: "cursor-agent",
+      originalTitle: "Old Cursor title",
+    });
+    await store.upsertIndexedSession(cursor, messages);
+    await store.setCustomTitle(cursor.sessionKey, "Old AgentRecall title");
+
+    await store.upsertIndexedSession({
+      ...cursor,
+      originalTitle: "Renamed in Cursor",
+      fileMtimeMs: cursor.fileMtimeMs + 1,
+    }, messages);
+
+    await expect(store.getSession(cursor.sessionKey)).resolves.toMatchObject({
+      originalTitle: "Renamed in Cursor",
+      customTitle: null,
+      displayTitle: "Renamed in Cursor",
+    });
+  });
+
   it("tracks full-content freshness separately from remote summary metadata", async () => {
     const store = createStore();
     const session = indexedSession();

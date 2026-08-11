@@ -13,6 +13,7 @@ import type { WrittenMigratedSession } from "./session-migration-writers";
 import type {
   MigrationAgent,
   MigrationTarget,
+  PortableSession,
   SessionMessage,
   SessionSearchResult,
   SessionSource,
@@ -313,10 +314,10 @@ describe("session migration model", () => {
     );
   });
 
-  it.each(["", "   "])("rejects an empty project path", (projectPath) => {
-    expect(() => portableSessionFrom(session("claude-cli", { projectPath }), messages)).toThrow(
-      "Session has no project path.",
-    );
+  it.each(["", "   "])("normalizes a missing project path", (projectPath) => {
+    expect(portableSessionFrom(session("claude-cli", { projectPath }), messages)).toMatchObject({
+      projectPath: "",
+    });
   });
 
   it("estimates tokens from Unicode JavaScript character length and rounds up", () => {
@@ -331,6 +332,82 @@ describe("session migration model", () => {
 });
 
 describe("migrateSession", () => {
+  it("migrates a Codex subagent tree and replaces completion notifications with native links", async () => {
+    const root = session("cursor-agent", { rawId: "root", sessionKey: "cursor:root" });
+    const subagents: PortableSession[] = [{
+      sourceSessionKey: "cursor:child",
+      sourceSessionId: "child",
+      sourceAgent: "cursor",
+      title: "Research child",
+      projectPath: "/repo",
+      startedAt: "2026-06-23T00:00:02Z",
+      messages: [{ role: "assistant", content: "child result", timestamp: "2026-06-23T00:00:03Z", index: 0 }],
+      isSubagent: true,
+      parentSessionId: "root",
+    }, {
+      sourceSessionKey: "cursor:grandchild",
+      sourceSessionId: "grandchild",
+      sourceAgent: "cursor",
+      title: "Nested child",
+      projectPath: "/repo",
+      startedAt: "2026-06-23T00:00:04Z",
+      messages: [{ role: "assistant", content: "nested result", timestamp: "2026-06-23T00:00:05Z", index: 0 }],
+      isSubagent: true,
+      parentSessionId: "child",
+    }];
+    const targetIds = [
+      "10000000-0000-4000-8000-000000000001",
+      "10000000-0000-4000-8000-000000000002",
+      "10000000-0000-4000-8000-000000000003",
+    ];
+    const write = vi.fn<SessionMigrationDependencies["write"]>(async (_target, _portable, targetSessionId) => ({
+      sessionId: targetSessionId!,
+      filePath: `/tmp/${targetSessionId}.jsonl`,
+    }));
+    const { deps } = createDependencies();
+    deps.write = write;
+    Object.assign(deps, { targetSessionIdFactory: vi.fn(() => targetIds.shift()!) });
+
+    const result = await migrateSession({
+      source: root,
+      messages: [
+        messages[0],
+        {
+          role: "user",
+          content: "<system_notification><task>kind: subagent title: Research child</task></system_notification>",
+          timestamp: "2026-06-23T00:00:03Z",
+          index: 10,
+        },
+        messages[1],
+      ],
+      subagents,
+      target: "codex",
+      deps,
+    });
+
+    expect(result.restoredSubagentCount).toBe(2);
+    expect(write).toHaveBeenCalledTimes(3);
+    expect(write.mock.calls[0]?.[1]).toMatchObject({
+      messages: [expect.objectContaining({ content: "你好" }), expect.objectContaining({ content: "hello" })],
+      subagents: [expect.objectContaining({
+        sourceSessionId: "10000000-0000-4000-8000-000000000002",
+        subagentDepth: 1,
+      })],
+    });
+    expect(write.mock.calls[1]?.[1]).toMatchObject({
+      parentSessionId: "10000000-0000-4000-8000-000000000001",
+      subagentDepth: 1,
+      subagents: [expect.objectContaining({
+        sourceSessionId: "10000000-0000-4000-8000-000000000003",
+        subagentDepth: 2,
+      })],
+    });
+    expect(write.mock.calls[2]?.[1]).toMatchObject({
+      parentSessionId: "10000000-0000-4000-8000-000000000002",
+      subagentDepth: 2,
+    });
+  });
+
   it("preserves a concrete migration target while keeping the portable source agent family", async () => {
     const { deps, inspectCli, write, launch, refreshIndex, seenRecords } = createDependencies();
 
@@ -419,12 +496,6 @@ describe("migrateSession", () => {
       session("claude-cli", { environmentKind: "local", environmentId: "imported-local" }),
       "codex",
       "SSH session migration is not supported yet.",
-    ],
-    [
-      "empty project path",
-      session("claude-cli", { projectPath: "   " }),
-      "codex",
-      "Session has no project path.",
     ],
   ] as const)(
     "rejects %s before inspect or write",

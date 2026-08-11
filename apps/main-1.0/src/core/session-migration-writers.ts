@@ -26,6 +26,7 @@ const { DatabaseSync } = require("node:sqlite") as {
 export interface WriteMigratedSessionOptions {
   target: MigrationTarget;
   session: PortableSession;
+  sessionId?: string;
   homeDir?: string;
   now?: Date;
   idFactory?: () => string;
@@ -47,7 +48,10 @@ export async function writeMigratedSession(options: WriteMigratedSessionOptions)
   const homeDir = options.homeDir ?? os.homedir();
   const now = options.now ?? new Date();
   const createId = options.idFactory ?? (() => crypto.randomUUID());
-  const sessionId = nextUniqueUuid(createId, new Set());
+  const sessionId = options.sessionId ?? nextUniqueUuid(createId, new Set());
+  if (!UUID_PATTERN.test(sessionId)) {
+    throw new Error(`Invalid migrated session id: ${sessionId}`);
+  }
   if (options.target === "codewiz") {
     return writeMigratedCodeWizSession({ ...options, homeDir, now, idFactory: createId }, sessionId);
   }
@@ -155,7 +159,7 @@ function serializeCodex(
       ...(includeVsCodeEvents
         ? {
             source: parentSessionId
-              ? codexSubagentSource(parentSessionId, subagentPath!, subagentNickname!)
+              ? codexSubagentSource(parentSessionId, subagentPath!, subagentNickname!, session.subagentDepth ?? 1)
               : "vscode",
             thread_source: parentSessionId ? "subagent" : "user",
             history_mode: "legacy",
@@ -166,45 +170,173 @@ function serializeCodex(
     },
   }];
 
-  if (includeVsCodeEvents) {
-    rows.push({
-      type: "event_msg",
-      timestamp: session.startedAt,
-      payload: {
-        type: "task_started",
-        turn_id: sessionId,
-        started_at: Math.floor(new Date(session.startedAt).getTime() / 1000),
-        model_context_window: 0,
-        collaboration_mode_kind: "default",
-      },
-    });
-  }
+  const turnBoundaries = codexTurnBoundaries(session);
+  for (let turnIndex = 0; turnIndex < turnBoundaries.length; turnIndex += 1) {
+    const start = turnBoundaries[turnIndex];
+    const end = turnBoundaries[turnIndex + 1] ?? session.messages.length;
+    const messages = session.messages.slice(start, end);
+    const startedAt = messages[0]?.timestamp ?? session.startedAt;
+    const completedAt = messages.at(-1)?.timestamp ?? startedAt;
+    const turnId = codexTurnId(sessionId, turnIndex);
 
-  for (const message of session.messages) {
-    rows.push({
-      type: "response_item",
-      timestamp: message.timestamp,
-      payload: {
-        type: "message",
-        role: message.role,
-        content: [{
-          type: message.role === "user" ? "input_text" : "output_text",
-          text: message.content,
-        }],
-      },
-    });
     if (includeVsCodeEvents) {
       rows.push({
         type: "event_msg",
+        timestamp: startedAt,
+        payload: {
+          type: "task_started",
+          turn_id: turnId,
+          started_at: Math.floor(timestampMs(startedAt) / 1000),
+          model_context_window: 0,
+          collaboration_mode_kind: "default",
+        },
+      });
+    }
+
+    for (const message of messages) {
+      rows.push({
+        type: "response_item",
         timestamp: message.timestamp,
-        payload: message.role === "user"
-          ? { type: "user_message", message: message.content, images: [], local_images: [], text_elements: [] }
-          : { type: "agent_message", message: message.content, phase: "final_answer" },
+        payload: {
+          type: "message",
+          role: message.role,
+          content: [{
+            type: message.role === "user" ? "input_text" : "output_text",
+            text: message.content,
+          }],
+          ...(includeVsCodeEvents
+            ? { internal_chat_message_metadata_passthrough: { turn_id: turnId } }
+            : {}),
+        },
+      });
+      if (includeVsCodeEvents) {
+        rows.push({
+          type: "event_msg",
+          timestamp: message.timestamp,
+          payload: message.role === "user"
+            ? { type: "user_message", message: message.content, images: [], local_images: [], text_elements: [] }
+            : { type: "agent_message", message: message.content, phase: "final_answer" },
+        });
+      }
+    }
+
+    if (includeVsCodeEvents) {
+      rows.push(...codexSubagentActivityRows(session, sessionId, turnIndex, turnId));
+    }
+
+    if (includeVsCodeEvents) {
+      const startedAtMs = timestampMs(startedAt);
+      const completedAtMs = timestampMs(completedAt);
+      rows.push({
+        type: "event_msg",
+        timestamp: completedAt,
+        payload: {
+          type: "task_complete",
+          turn_id: turnId,
+          last_agent_message: [...messages].reverse().find((message) => message.role === "assistant")?.content ?? "",
+          started_at: Math.floor(startedAtMs / 1000),
+          completed_at: Math.floor(completedAtMs / 1000),
+          duration_ms: Math.max(0, completedAtMs - startedAtMs),
+        },
       });
     }
   }
 
   return rows;
+}
+
+function codexSubagentActivityRows(
+  session: PortableSession,
+  sessionId: string,
+  turnIndex: number,
+  turnId: string,
+): unknown[] {
+  const boundaries = codexTurnBoundaries(session);
+  const turnStartTimes = boundaries.map((boundary) => timestampMs(session.messages[boundary]?.timestamp ?? session.startedAt));
+  return (session.subagents ?? [])
+    .filter((subagent) => UUID_PATTERN.test(subagent.sourceSessionId ?? "") && Boolean(subagent.subagentPath?.trim()))
+    .filter((subagent) => {
+      const startedAt = timestampMs(subagent.startedAt);
+      let assignedTurn = 0;
+      for (let index = 1; index < turnStartTimes.length; index += 1) {
+        if (startedAt < turnStartTimes[index]) break;
+        assignedTurn = index;
+      }
+      return assignedTurn === turnIndex;
+    })
+    .sort((left, right) => timestampMs(left.startedAt) - timestampMs(right.startedAt))
+    .flatMap((subagent) => {
+      const childSessionId = subagent.sourceSessionId!;
+      const digest = crypto.createHash("sha256").update(`${sessionId}:subagent:${childSessionId}`).digest("hex");
+      const callId = `call_migrated_${digest.slice(0, 24)}`;
+      const taskName = codexSubagentTaskName(subagent);
+      const agentPath = codexSubagentPath(subagent);
+      return [{
+        type: "response_item",
+        timestamp: subagent.startedAt,
+        payload: {
+          type: "function_call",
+          id: `fc_${digest}`,
+          name: "spawn_agent",
+          namespace: "collaboration",
+          arguments: JSON.stringify({
+            task_name: taskName,
+            fork_turns: "all",
+            message: subagent.title || taskName,
+          }),
+          call_id: callId,
+          internal_chat_message_metadata_passthrough: { turn_id: turnId },
+        },
+      }, {
+        type: "event_msg",
+        timestamp: subagent.startedAt,
+        payload: {
+          type: "sub_agent_activity",
+          event_id: callId,
+          occurred_at_ms: timestampMs(subagent.startedAt),
+          agent_thread_id: childSessionId,
+          agent_path: agentPath,
+          kind: "started",
+        },
+      }, {
+        type: "response_item",
+        timestamp: subagent.startedAt,
+        payload: {
+          type: "function_call_output",
+          id: `fco_${digest}`,
+          call_id: callId,
+          output: JSON.stringify({ task_name: agentPath }),
+          internal_chat_message_metadata_passthrough: { turn_id: turnId },
+        },
+      }];
+    });
+}
+
+function codexSubagentTaskName(session: PortableSession): string {
+  const sourceId = session.sourceSessionKey.split(":").at(-1) || session.title || "subagent";
+  return sourceId.replace(/[^A-Za-z0-9_-]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 64) || "subagent";
+}
+
+function codexTurnBoundaries(session: PortableSession): number[] {
+  const explicit = session.turnBoundaries
+    ?.filter((boundary) => Number.isInteger(boundary) && boundary >= 0 && boundary < session.messages.length)
+    .sort((left, right) => left - right);
+  const boundaries = explicit && explicit.length > 0
+    ? [...new Set(explicit)]
+    : session.messages.reduce<number[]>((result, message, index) => {
+        if (index === 0 || message.role === "user") result.push(index);
+        return result;
+      }, []);
+  if (session.messages.length > 0 && boundaries[0] !== 0) boundaries.unshift(0);
+  return boundaries;
+}
+
+function codexTurnId(sessionId: string, turnIndex: number): string {
+  const bytes = Buffer.from(crypto.createHash("sha256").update(`${sessionId}:turn:${turnIndex}`).digest().subarray(0, 16));
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = bytes.toString("hex");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
 function serializeClaude(
@@ -507,13 +639,14 @@ const TARGET_ROOTS: Record<MigrationTarget, string> = {
   codewiz: path.join(".local", "share", "codewiz"),
   cursor: ".cursor",
 };
+const NO_PROJECT_DIRECTORY = "empty-window";
 
 function encodeClaudeProjectDir(projectPath: string): string {
-  return encodeProjectDirectory(projectPath);
+  return encodeProjectDirectory(projectPath) || NO_PROJECT_DIRECTORY;
 }
 
 function encodeCodeBuddyProjectDir(projectPath: string): string {
-  return projectPath.replace(/^[/\\]+/, "").replace(/[^a-zA-Z0-9-]/g, "-");
+  return projectPath.replace(/^[/\\]+/, "").replace(/[^a-zA-Z0-9-]/g, "-") || NO_PROJECT_DIRECTORY;
 }
 
 export function encodeProjectDirectory(projectPath: string): string {
@@ -626,7 +759,9 @@ function updateCodexAppServerState(
     const createdAt = Math.floor(createdAtMs / 1000);
     const updatedAt = Math.floor(updatedAtMs / 1000);
     const rolloutPath = path.toNamespacedPath(path.resolve(filePath));
-    const cwd = path.toNamespacedPath(path.resolve(session.projectPath));
+    const cwd = session.projectPath
+      ? path.toNamespacedPath(path.resolve(session.projectPath))
+      : "";
     const existing = db.prepare("SELECT * FROM threads WHERE id = ?").get(sessionId) as Record<string, unknown> | undefined;
     const template = existing ?? db.prepare("SELECT * FROM threads ORDER BY updated_at_ms DESC, updated_at DESC LIMIT 1").get() as Record<string, unknown> | undefined;
     const values: Record<string, unknown> = {
@@ -639,6 +774,7 @@ function updateCodexAppServerState(
             session.parentSessionId,
             codexSubagentPath(session),
             session.title || "Migrated subagent",
+            session.subagentDepth ?? 1,
           ))
         : "vscode",
       model_provider: requiredRuntimeValue(runtimeMetadata.codexModelProvider, "Codex model provider"),
@@ -689,17 +825,23 @@ function updateCodexAppServerState(
 }
 
 function codexSubagentPath(session: PortableSession): string {
+  if (session.subagentPath?.trim()) return session.subagentPath.trim();
   const sourceId = session.sourceSessionId || session.sourceSessionKey.split(":").at(-1) || "subagent";
   const slug = sourceId.replace(/[^A-Za-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 80) || "subagent";
   return `/root/migrated_${slug}`;
 }
 
-function codexSubagentSource(parentSessionId: string, agentPath: string, agentNickname: string): Record<string, unknown> {
+function codexSubagentSource(
+  parentSessionId: string,
+  agentPath: string,
+  agentNickname: string,
+  depth: number,
+): Record<string, unknown> {
   return {
     subagent: {
       thread_spawn: {
         parent_thread_id: parentSessionId,
-        depth: 1,
+        depth,
         agent_path: agentPath,
         agent_nickname: agentNickname,
         agent_role: null,
@@ -791,7 +933,19 @@ function validateCodexStructure(
   modelProvider: string,
   includeVsCodeEvents: boolean,
 ): void {
-  const expectedRows = 1 + session.messages.length * (includeVsCodeEvents ? 2 : 1) + (includeVsCodeEvents ? 1 : 0);
+  const turnBoundaries = codexTurnBoundaries(session);
+  const expectedSubagentRows = includeVsCodeEvents
+    ? turnBoundaries.flatMap((_, turnIndex) => codexSubagentActivityRows(
+        session,
+        sessionId,
+        turnIndex,
+        codexTurnId(sessionId, turnIndex),
+      ))
+    : [];
+  const expectedRows = 1
+    + session.messages.length * (includeVsCodeEvents ? 2 : 1)
+    + (includeVsCodeEvents ? turnBoundaries.length * 2 : 0)
+    + expectedSubagentRows.length;
   if (rows.length !== expectedRows) failValidation("codex", "has an unexpected row count");
   const meta = record(rows[0]);
   const payload = record(meta?.payload);
@@ -816,48 +970,79 @@ function validateCodexStructure(
   }
 
   let rowIndex = 1;
-  if (includeVsCodeEvents) {
-    const taskStarted = record(rows[rowIndex++]);
-    const taskPayload = record(taskStarted?.payload);
-    if (
-      taskStarted?.type !== "event_msg"
-      || taskPayload?.type !== "task_started"
-      || taskPayload.turn_id !== sessionId
-    ) {
-      failValidation("codex", "has invalid app-server task metadata");
-    }
-  }
-
-  session.messages.forEach((message) => {
-    const row = record(rows[rowIndex++]);
-    const messagePayload = record(row?.payload);
-    const content = Array.isArray(messagePayload?.content) ? messagePayload.content : [];
-    const block = record(content[0]);
-    const expectedBlockType = message.role === "user" ? "input_text" : "output_text";
-    if (
-      row?.type !== "response_item"
-      || row.timestamp !== message.timestamp
-      || messagePayload?.type !== "message"
-      || messagePayload.role !== message.role
-      || content.length !== 1
-      || block?.type !== expectedBlockType
-      || block.text !== message.content
-    ) {
-      failValidation("codex", `has invalid message structure at index ${rowIndex}`);
-    }
+  for (let turnIndex = 0; turnIndex < turnBoundaries.length; turnIndex += 1) {
+    const start = turnBoundaries[turnIndex];
+    const end = turnBoundaries[turnIndex + 1] ?? session.messages.length;
+    const turnMessages = session.messages.slice(start, end);
+    let turnId = "";
     if (includeVsCodeEvents) {
-      const event = record(rows[rowIndex++]);
-      const eventPayload = record(event?.payload);
-      const expectedEventType = message.role === "user" ? "user_message" : "agent_message";
+      const taskStarted = record(rows[rowIndex++]);
+      const taskPayload = record(taskStarted?.payload);
+      turnId = typeof taskPayload?.turn_id === "string" ? taskPayload.turn_id : "";
       if (
-        event?.type !== "event_msg"
-        || eventPayload?.type !== expectedEventType
-        || eventPayload.message !== message.content
+        taskStarted?.type !== "event_msg"
+        || taskPayload?.type !== "task_started"
+        || !UUID_PATTERN.test(turnId)
       ) {
-        failValidation("codex", `has invalid app-server message event at index ${rowIndex}`);
+        failValidation("codex", "has invalid app-server task metadata");
       }
     }
-  });
+
+    for (const message of turnMessages) {
+      const row = record(rows[rowIndex++]);
+      const messagePayload = record(row?.payload);
+      const content = Array.isArray(messagePayload?.content) ? messagePayload.content : [];
+      const block = record(content[0]);
+      const metadata = record(messagePayload?.internal_chat_message_metadata_passthrough);
+      const expectedBlockType = message.role === "user" ? "input_text" : "output_text";
+      if (
+        row?.type !== "response_item"
+        || row.timestamp !== message.timestamp
+        || messagePayload?.type !== "message"
+        || messagePayload.role !== message.role
+        || content.length !== 1
+        || block?.type !== expectedBlockType
+        || block.text !== message.content
+        || (includeVsCodeEvents && metadata?.turn_id !== turnId)
+      ) {
+        failValidation("codex", `has invalid message structure at index ${rowIndex}`);
+      }
+      if (includeVsCodeEvents) {
+        const event = record(rows[rowIndex++]);
+        const eventPayload = record(event?.payload);
+        const expectedEventType = message.role === "user" ? "user_message" : "agent_message";
+        if (
+          event?.type !== "event_msg"
+          || eventPayload?.type !== expectedEventType
+          || eventPayload.message !== message.content
+        ) {
+          failValidation("codex", `has invalid app-server message event at index ${rowIndex}`);
+        }
+      }
+    }
+
+    if (includeVsCodeEvents) {
+      const expectedActivities = codexSubagentActivityRows(session, sessionId, turnIndex, turnId);
+      const actualActivities = rows.slice(rowIndex, rowIndex + expectedActivities.length);
+      if (JSON.stringify(actualActivities) !== JSON.stringify(expectedActivities)) {
+        failValidation("codex", "has invalid subagent activity metadata");
+      }
+      rowIndex += expectedActivities.length;
+    }
+
+    if (includeVsCodeEvents) {
+      const taskComplete = record(rows[rowIndex++]);
+      const taskPayload = record(taskComplete?.payload);
+      if (
+        taskComplete?.type !== "event_msg"
+        || taskPayload?.type !== "task_complete"
+        || taskPayload.turn_id !== turnId
+      ) {
+        failValidation("codex", "has invalid app-server task completion metadata");
+      }
+    }
+  }
+  if (rowIndex !== rows.length) failValidation("codex", "has unexpected trailing rows");
 }
 
 function validateClaudeStructure(rows: unknown[], sessionId: string, session: PortableSession, model: string): void {

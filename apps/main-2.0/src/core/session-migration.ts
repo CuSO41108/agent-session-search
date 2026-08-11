@@ -27,6 +27,7 @@ export interface SessionMigrationDependencies {
   write: (
     target: MigrationTarget,
     session: PortableSession,
+    targetSessionId?: string,
   ) => Promise<WrittenMigratedSession>;
   record: (record: SessionMigrationRecord) => Promise<void> | void;
   refreshIndex: (target: MigrationTarget, targetFilePath: string, targetSessionId: string) => Promise<void>;
@@ -47,6 +48,7 @@ export interface SessionMigrationDependencies {
   ) => string;
   onProgress?: (progress: SessionMigrationProgress) => void;
   idFactory: () => string;
+  targetSessionIdFactory?: () => string;
   now: () => number;
   projectPathExists: (projectPath: string) => Promise<boolean> | boolean;
   projectPathIsDirectory: (projectPath: string) => Promise<boolean> | boolean;
@@ -56,8 +58,10 @@ export interface MigrateSessionOptions {
   source: SessionSearchResult;
   messages: SessionMessage[];
   target: MigrationTarget;
+  targetProjectPath?: string;
   completeTokenLimit?: number;
   turnSourceMessageIndexes?: readonly number[];
+  subagents?: PortableSession[];
   deps: SessionMigrationDependencies;
 }
 
@@ -99,10 +103,6 @@ export function portableSessionFrom(
   if (!isLocalSessionEnvironment(session) && session.environmentKind !== "wsl" && !allowedSsh) {
     throw new Error("SSH session migration is not supported yet.");
   }
-  if (!session.projectPath.trim()) {
-    throw new Error("Session has no project path.");
-  }
-
   const portableEntries = messages
     .filter((message) => message.role === "user" || message.role === "assistant")
     .map((message, index) => ({
@@ -132,13 +132,48 @@ export function portableSessionFrom(
     sourceSessionId: session.rawId,
     sourceAgent,
     title: session.displayTitle,
-    projectPath: session.projectPath,
+    projectPath: session.projectPath.trim() ? session.projectPath : "",
     startedAt: new Date(session.timestamp).toISOString(),
     messages: portableMessages,
     ...(turnBoundaries && turnBoundaries.length > 0 ? { turnBoundaries } : {}),
     isSubagent: session.isSubagent === true,
     parentSessionId: session.parentSessionId ?? null,
   };
+}
+
+export function collectMigrationDescendants(
+  source: SessionSearchResult,
+  candidates: readonly SessionSearchResult[],
+  limit = 200,
+): SessionSearchResult[] {
+  const childrenByParentId = new Map<string, SessionSearchResult[]>();
+  for (const candidate of candidates) {
+    if (
+      candidate.isSubagent !== true
+      || candidate.source !== source.source
+      || candidate.environmentId !== source.environmentId
+      || !candidate.parentSessionId
+    ) continue;
+    const children = childrenByParentId.get(candidate.parentSessionId) ?? [];
+    children.push(candidate);
+    childrenByParentId.set(candidate.parentSessionId, children);
+  }
+
+  const descendants: SessionSearchResult[] = [];
+  const pendingParentIds = [source.rawId];
+  const visitedSessionKeys = new Set<string>();
+  while (pendingParentIds.length > 0 && descendants.length < limit) {
+    const parentId = pendingParentIds.shift()!;
+    const children = (childrenByParentId.get(parentId) ?? [])
+      .sort((left, right) => left.timestamp - right.timestamp || left.sessionKey.localeCompare(right.sessionKey));
+    for (const child of children) {
+      if (visitedSessionKeys.has(child.sessionKey) || descendants.length >= limit) continue;
+      visitedSessionKeys.add(child.sessionKey);
+      descendants.push(child);
+      pendingParentIds.push(child.rawId);
+    }
+  }
+  return descendants;
 }
 
 export function estimatePortableSessionTokens(session: PortableSession): number {
@@ -167,11 +202,16 @@ export async function migrateSession({
   source,
   messages,
   target,
+  targetProjectPath,
   completeTokenLimit = MIGRATION_TOKEN_LIMIT,
   turnSourceMessageIndexes,
+  subagents = [],
   deps,
 }: MigrateSessionOptions): Promise<SessionMigrationResult> {
-  await validateMigrationRequest(source, target, deps);
+  const migrationSource = targetProjectPath === undefined
+    ? source
+    : { ...source, projectPath: targetProjectPath.trim() };
+  await validateMigrationRequest(migrationSource, target, deps);
 
   notifyProgress(deps.onProgress, {
     sessionKey: source.sessionKey,
@@ -181,8 +221,17 @@ export async function migrateSession({
 
   await deps.inspectCli(target);
 
-  const portable = portableSessionFrom(source, messages, { turnSourceMessageIndexes });
-  if (estimatePortableSessionTokens(portable) > completeTokenLimit) {
+  const portable = portableSessionFrom(migrationSource, messages, { turnSourceMessageIndexes });
+  if (subagents.length > 0) portable.subagents = subagents;
+  const portableSubagents = flattenPortableSubagents(subagents);
+  const rootSourceId = portableSourceId(portable);
+  const codexLinkage = target === "codex" && portableSubagents.length > 0 && deps.targetSessionIdFactory
+    ? buildCodexMigrationLinkage(portable, portableSubagents, deps.targetSessionIdFactory)
+    : null;
+  const migrationPortable = target === "codex"
+    ? withoutSubagentSystemNotifications(portable, portableSubagents.length > 0)
+    : portable;
+  if (estimatePortableSessionTokens(migrationPortable) > completeTokenLimit) {
     notifyProgress(deps.onProgress, {
       sessionKey: source.sessionKey,
       target,
@@ -206,14 +255,23 @@ export async function migrateSession({
       }
     : undefined;
 
-  const prepared = await deps.prepare(portable, compressionListener);
+  const prepared = await deps.prepare(migrationPortable, compressionListener);
 
   notifyProgress(deps.onProgress, {
     sessionKey: source.sessionKey,
     target,
     stage: "writing",
   });
-  const written = await deps.write(target, prepared.session);
+  const mainWriteSession = codexLinkage
+    ? codexSessionForWrite(prepared.session, rootSourceId, null, codexLinkage)
+    : { ...prepared.session, subagents: [] };
+  const reservedMainTargetId = codexLinkage?.targetIdBySourceId.get(rootSourceId);
+  const written = reservedMainTargetId
+    ? await deps.write(target, mainWriteSession, reservedMainTargetId)
+    : await deps.write(target, mainWriteSession);
+  if (codexLinkage && written.sessionId !== codexLinkage.targetIdBySourceId.get(rootSourceId)) {
+    throw new Error("Codex migration writer did not preserve the reserved parent session id.");
+  }
 
   const warnings: string[] = [];
   await collectWarning(warnings, async () => {
@@ -228,6 +286,62 @@ export async function migrateSession({
       createdAt: deps.now(),
     });
   }, "Failed to record migration metadata");
+  let indexed = true;
+  let restoredSubagentCount = 0;
+  const writtenTargetIdsBySourceId = new Map<string, string>([[rootSourceId, written.sessionId]]);
+  for (const subagent of portableSubagents) {
+    const subagentSourceId = portableSourceId(subagent);
+    const sourceParentId = subagent.parentSessionId?.trim() || rootSourceId;
+    const targetParentId = writtenTargetIdsBySourceId.get(sourceParentId);
+    if (!targetParentId) {
+      warnings.push(`Skipped subagent ${subagent.title || subagentSourceId} because its migrated parent was unavailable.`);
+      continue;
+    }
+    try {
+      const directChildren = portableSubagents.filter((candidate) =>
+        (candidate.parentSessionId?.trim() || rootSourceId) === subagentSourceId);
+      const preparedSubagent = await deps.prepare({
+        ...(target === "codex"
+          ? withoutSubagentSystemNotifications(subagent, directChildren.length > 0)
+          : subagent),
+        projectPath: prepared.session.projectPath,
+        isSubagent: true,
+        parentSessionId: targetParentId,
+      });
+      const subagentWriteSession = codexLinkage
+        ? codexSessionForWrite(preparedSubagent.session, subagentSourceId, targetParentId, codexLinkage)
+        : { ...preparedSubagent.session, subagents: [] };
+      const reservedTargetId = codexLinkage?.targetIdBySourceId.get(subagentSourceId);
+      const writtenSubagent = reservedTargetId
+        ? await deps.write(target, subagentWriteSession, reservedTargetId)
+        : await deps.write(target, subagentWriteSession);
+      if (reservedTargetId && writtenSubagent.sessionId !== reservedTargetId) {
+        throw new Error("Codex migration writer did not preserve a reserved subagent session id.");
+      }
+      writtenTargetIdsBySourceId.set(subagentSourceId, writtenSubagent.sessionId);
+      restoredSubagentCount += 1;
+      await collectWarning(warnings, async () => {
+        await deps.record({
+          id: deps.idFactory(),
+          sourceSessionKey: subagent.sourceSessionKey,
+          sourceAgent: subagent.sourceAgent,
+          targetAgent: target,
+          targetSessionId: writtenSubagent.sessionId,
+          targetFilePath: writtenSubagent.filePath,
+          strategy: preparedSubagent.strategy,
+          createdAt: deps.now(),
+        });
+      }, `Failed to record migrated subagent ${subagent.title || subagentSourceId}`);
+      try {
+        await deps.refreshIndex(target, writtenSubagent.filePath, writtenSubagent.sessionId);
+      } catch (error) {
+        indexed = false;
+        warnings.push(formatWarning(`Failed to refresh migrated subagent ${subagent.title || subagentSourceId}`, error));
+      }
+    } catch (error) {
+      warnings.push(formatWarning(`Failed to migrate subagent ${subagent.title || subagentSourceId}`, error));
+    }
+  }
   const resumeCommand = safeResumeCommand(
     deps,
     warnings,
@@ -241,7 +355,6 @@ export async function migrateSession({
     target,
     stage: "indexing",
   });
-  let indexed = true;
   try {
     await deps.refreshIndex(target, written.filePath, written.sessionId);
   } catch (error) {
@@ -270,8 +383,120 @@ export async function migrateSession({
     resumeCommand,
     indexed,
     launched,
+    ...(restoredSubagentCount > 0 ? { restoredSubagentCount } : {}),
     ...(warnings.length > 0 ? { warning: warnings.join("\n") } : {}),
   };
+}
+
+interface CodexMigrationLinkage {
+  rootSourceId: string;
+  allSubagents: PortableSession[];
+  targetIdBySourceId: Map<string, string>;
+  depthBySourceId: Map<string, number>;
+  pathBySourceId: Map<string, string>;
+}
+
+function buildCodexMigrationLinkage(
+  root: PortableSession,
+  subagents: PortableSession[],
+  createTargetSessionId: () => string,
+): CodexMigrationLinkage {
+  const rootSourceId = portableSourceId(root);
+  const targetIdBySourceId = new Map<string, string>([[rootSourceId, createTargetSessionId()]]);
+  const depthBySourceId = new Map<string, number>([[rootSourceId, 0]]);
+  const pathBySourceId = new Map<string, string>([[rootSourceId, "/root"]]);
+  for (const subagent of subagents) {
+    const sourceId = portableSourceId(subagent);
+    const parentSourceId = subagent.parentSessionId?.trim() || rootSourceId;
+    const parentDepth = depthBySourceId.get(parentSourceId) ?? 0;
+    const parentPath = pathBySourceId.get(parentSourceId) ?? "/root";
+    targetIdBySourceId.set(sourceId, createTargetSessionId());
+    depthBySourceId.set(sourceId, parentDepth + 1);
+    pathBySourceId.set(sourceId, `${parentPath}/migrated_${codexSubagentSlug(sourceId)}`);
+  }
+  return { rootSourceId, allSubagents: subagents, targetIdBySourceId, depthBySourceId, pathBySourceId };
+}
+
+function codexSessionForWrite(
+  session: PortableSession,
+  sourceId: string,
+  targetParentId: string | null,
+  linkage: CodexMigrationLinkage,
+): PortableSession {
+  const targetSessionId = linkage.targetIdBySourceId.get(sourceId);
+  if (!targetSessionId) throw new Error(`Missing reserved Codex session id for ${sourceId}.`);
+  const directSubagents = linkage.allSubagents
+    .filter((candidate) => (candidate.parentSessionId?.trim() || linkage.rootSourceId) === sourceId)
+    .map((candidate) => {
+      const childSourceId = portableSourceId(candidate);
+      return {
+        ...candidate,
+        sourceSessionId: linkage.targetIdBySourceId.get(childSourceId),
+        parentSessionId: targetSessionId,
+        messages: [],
+        subagents: [],
+        subagentDepth: linkage.depthBySourceId.get(childSourceId),
+        subagentPath: linkage.pathBySourceId.get(childSourceId),
+      };
+    });
+  return {
+    ...session,
+    ...(targetParentId
+      ? {
+          isSubagent: true,
+          parentSessionId: targetParentId,
+          subagentDepth: linkage.depthBySourceId.get(sourceId),
+          subagentPath: linkage.pathBySourceId.get(sourceId),
+        }
+      : { isSubagent: false, parentSessionId: null }),
+    subagents: directSubagents,
+  };
+}
+
+function withoutSubagentSystemNotifications(
+  session: PortableSession,
+  hasSubagents: boolean,
+): PortableSession {
+  if (!hasSubagents) return session;
+  const retained = session.messages
+    .map((message, sourceIndex) => ({ message, sourceIndex }))
+    .filter(({ message }) => !(
+      message.role === "user"
+      && message.content.includes("<system_notification>")
+      && /\bkind:\s*subagent\b/i.test(message.content)
+    ));
+  if (retained.length === session.messages.length) return session;
+  const boundaries = session.turnBoundaries?.map((boundary, boundaryIndex, sourceBoundaries) => {
+    const nextBoundary = sourceBoundaries[boundaryIndex + 1] ?? Number.POSITIVE_INFINITY;
+    return retained.findIndex((entry) => entry.sourceIndex >= boundary && entry.sourceIndex < nextBoundary);
+  }).filter((index, position, indexes) => index >= 0 && indexes.indexOf(index) === position);
+  return {
+    ...session,
+    messages: retained.map(({ message }, index) => ({ ...message, index })),
+    ...(boundaries && boundaries.length > 0 ? { turnBoundaries: boundaries } : { turnBoundaries: undefined }),
+  };
+}
+
+function flattenPortableSubagents(subagents: PortableSession[]): PortableSession[] {
+  const flattened: PortableSession[] = [];
+  const pending = [...subagents];
+  const visited = new Set<string>();
+  while (pending.length > 0 && flattened.length < 200) {
+    const subagent = pending.shift()!;
+    if (visited.has(subagent.sourceSessionKey)) continue;
+    visited.add(subagent.sourceSessionKey);
+    flattened.push(subagent);
+    pending.push(...(subagent.subagents ?? []));
+  }
+  return flattened;
+}
+
+function portableSourceId(session: PortableSession): string {
+  return session.sourceSessionId || session.sourceSessionKey.split(":").at(-1) || session.sourceSessionKey;
+}
+
+function codexSubagentSlug(sourceId: string): string {
+  return sourceId.replace(/[^A-Za-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 80) || "subagent";
 }
 
 async function validateMigrationRequest(
@@ -292,7 +517,7 @@ async function validateMigrationRequest(
 
   const projectPath = source.projectPath;
   if (!projectPath.trim()) {
-    throw new Error("Session has no project path.");
+    return;
   }
   if (!(await deps.projectPathExists(projectPath))) {
     throw new Error(`Session project path does not exist: ${projectPath}`);

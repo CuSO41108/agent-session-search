@@ -144,6 +144,56 @@ describe("runLocalSessionMigration", () => {
     }));
   });
 
+  it("uses the selected target project for a local session without a project path", async () => {
+    const settings = defaultSettings;
+    const deps = runtime();
+    deps.migrate = migrateSession;
+    const pathlessSource = { ...source, projectPath: "" };
+
+    await runLocalSessionMigration({
+      source: pathlessSource,
+      messages,
+      target: "codex",
+      targetProjectPath: "  /chosen/project  ",
+      settings,
+    }, deps);
+
+    expect(deps.projectPathExists).toHaveBeenCalledWith("/chosen/project");
+    expect(deps.projectPathIsDirectory).toHaveBeenCalledWith("/chosen/project");
+    expect(deps.prepare).toHaveBeenCalledWith(
+      expect.objectContaining({ projectPath: "/chosen/project" }),
+      expect.any(Function),
+      expect.anything(),
+      settings.migrationCompleteTokenLimit,
+    );
+    expect(deps.launch).toHaveBeenCalledWith("codex", "id", "/chosen/project", settings);
+    expect(pathlessSource.projectPath).toBe("");
+  });
+
+  it("creates a migrated session without a project path when explicitly selected", async () => {
+    const settings = defaultSettings;
+    const deps = runtime();
+    deps.migrate = migrateSession;
+
+    await runLocalSessionMigration({
+      source,
+      messages,
+      target: "codex",
+      targetProjectPath: "",
+      settings,
+    }, deps);
+
+    expect(deps.projectPathExists).not.toHaveBeenCalled();
+    expect(deps.projectPathIsDirectory).not.toHaveBeenCalled();
+    expect(deps.prepare).toHaveBeenCalledWith(
+      expect.objectContaining({ projectPath: "" }),
+      expect.any(Function),
+      expect.anything(),
+      settings.migrationCompleteTokenLimit,
+    );
+    expect(deps.launch).toHaveBeenCalledWith("codex", "id", "", settings);
+  });
+
   it("returns the independent safe command when the primary formatter throws", async () => {
     const settings = { ...defaultSettings, includeTcodex: true, tcodexBinary: "/safe/tcodex cli" };
     const deps = runtime();
@@ -166,6 +216,47 @@ describe("loadLocalSessionMigrationSource", () => {
     const feature = await import("./local-session-migration");
 
     expect(feature.loadLocalSessionMigrationSource).toBeTypeOf("function");
+  });
+
+  it("loads indexed descendant conversations for local migration", async () => {
+    const root = { ...source, rawId: "root" } as SessionSearchResult;
+    const child = {
+      ...source,
+      sessionKey: "cursor:child",
+      rawId: "child",
+      source: root.source,
+      displayTitle: "Child agent",
+      isSubagent: true,
+      parentSessionId: "root",
+      timestamp: root.timestamp + 1_000,
+    } as SessionSearchResult;
+    const childMessages: SessionMessage[] = [{
+      role: "assistant",
+      content: "child result",
+      timestamp: "2026-07-10T00:00:01Z",
+      index: 0,
+    }];
+    const store = {
+      getSession: vi.fn(async () => root),
+      getAllMessages: vi.fn(async (sessionKey: string) => sessionKey === child.sessionKey ? childMessages : messages),
+      listSessionTurns: vi.fn(async () => []),
+      getSessionTurn: vi.fn(),
+      searchSessions: vi.fn(async () => [root, child]),
+    };
+
+    const result = await (await import("./local-session-migration")).loadLocalSessionMigrationSource(store, {
+      sessionKey: root.sessionKey,
+      target: "codex",
+    });
+
+    expect(result.subagents).toEqual([
+      expect.objectContaining({
+        sourceSessionKey: child.sessionKey,
+        sourceSessionId: "child",
+        parentSessionId: "root",
+        messages: [expect.objectContaining({ content: "child result" })],
+      }),
+    ]);
   });
 
   it("keeps messages through the selected turn and returns retained turn starts", async () => {

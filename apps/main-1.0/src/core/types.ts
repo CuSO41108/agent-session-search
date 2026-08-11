@@ -117,8 +117,11 @@ export interface PortableSession {
   projectPath: string;
   startedAt: string;
   messages: SessionMessage[];
+  turnBoundaries?: number[];
   isSubagent?: boolean;
   parentSessionId?: string | null;
+  subagentDepth?: number;
+  subagentPath?: string;
   subagents?: PortableSession[];
 }
 

@@ -58,6 +58,7 @@ export function SessionDetails({
   turns,
   turnsLoading,
   matchedTurnId,
+  matchedMessageIndex,
   actionStatus,
   query,
   liveState,
@@ -73,6 +74,7 @@ export function SessionDetails({
   turns: SessionTurnSummary[];
   turnsLoading: boolean;
   matchedTurnId: string | null;
+  matchedMessageIndex: number | null;
   actionStatus: ActionStatus | null;
   query: string;
   liveState: LiveSessionState;
@@ -147,7 +149,7 @@ export function SessionDetails({
         onRetrySessionFamily={() => setFamilyRetryVersion((current) => current + 1)}
         messages={[]}
         matchedContextMessages={[]}
-        matchedMessageIndex={null}
+        matchedMessageIndex={matchedMessageIndex}
         traceEvents={[]}
         loading={false}
         actionStatus={actionStatus}

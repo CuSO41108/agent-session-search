@@ -108,13 +108,13 @@ export function createWorkflowDefinition(agentId: string, now = Date.now()): Wor
   };
 }
 
-export function createWorkflowFromTemplate(template: WorkflowDefinition, now = Date.now()): WorkflowDefinition {
-  const definition = structuredClone(template);
+export function createWorkflowCopy(source: WorkflowDefinition, now = Date.now()): WorkflowDefinition {
+  const definition = structuredClone(source);
   delete definition.isTemplate;
   return {
     ...definition,
     id: `workflow_${now}`,
-    name: `${template.name} 副本`,
+    name: `${source.name} 副本`,
     createdAt: now,
     updatedAt: now,
   };

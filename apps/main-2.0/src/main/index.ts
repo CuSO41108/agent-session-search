@@ -66,7 +66,7 @@ import {
   type ToolExecutionResult,
 } from "../core/ai-assistant";
 import { applyMigrationLengthPolicy, createMigrationCompressor } from "../core/session-migration-compression";
-import { migrateSession, portableSessionFrom, sshMigrationTarget } from "../core/session-migration";
+import { collectMigrationDescendants, migrateSession, portableSessionFrom, sshMigrationTarget } from "../core/session-migration";
 import {
   loadLocalSessionMigrationSource,
   runLocalSessionMigration,
@@ -241,6 +241,7 @@ interface OpenVikingMemoryHookSetup {
     openCodePluginPath: string;
     manifestPath: string;
     nodePath: string;
+    platform: NodeJS.Platform;
     integrations: { claude: boolean; codex: boolean; opencode: boolean };
   }): { status: "configured" | "error"; detail?: string };
 }
@@ -1287,7 +1288,8 @@ function reconcileOpenVikingMemoryHooks(settings: AppSettings): void {
     hookScriptPath: OPENVIKING_MEMORY_HOOK_SCRIPT_PATH,
     openCodePluginPath: OPENVIKING_OPENCODE_PLUGIN_PATH,
     manifestPath: openVikingHookManifestService.manifestPath(),
-    nodePath: process.env.npm_node_execpath || "node",
+    nodePath: process.env.AGENT_RECALL_NODE_PATH || process.env.npm_node_execpath || "node",
+    platform: process.platform,
     integrations: openVikingIntegrations(settings),
   });
   if (result.status === "error") throw new Error(result.detail || "Could not configure OpenViking memory hooks.");
@@ -2071,8 +2073,8 @@ function localSessionMigrationRuntime(event: IpcMainInvokeEvent) {
       compressor: ReturnType<typeof createMigrationCompressor> | null,
       completeTokenLimit: number,
     ) => applyMigrationLengthPolicy(portable, compressor, onProgress, completeTokenLimit),
-    write: (migrationTarget: MigrationTarget, portable: PortableSession) =>
-      writeMigratedSession({ target: migrationTarget, session: portable }),
+    write: (migrationTarget: MigrationTarget, portable: PortableSession, targetSessionId?: string) =>
+      writeMigratedSession({ target: migrationTarget, session: portable, sessionId: targetSessionId }),
     record: (record: Parameters<SessionStore["recordSessionMigration"]>[0]) => store.recordSessionMigration(record),
     refreshIndex: async (migrationTarget: MigrationTarget, writtenFilePath: string, targetSessionId: string) => {
       const status = await indexMigratedSessionFile(store, migrationTarget, writtenFilePath, targetSessionId);
@@ -2088,6 +2090,7 @@ function localSessionMigrationRuntime(event: IpcMainInvokeEvent) {
     onProgress: (progress: Parameters<NonNullable<import("../core/session-migration").SessionMigrationDependencies["onProgress"]>>[0]) =>
       event.sender.send("session:migration-progress", progress),
     idFactory: () => randomUUID(),
+    targetSessionIdFactory: () => randomUUID(),
     now: () => Date.now(),
     projectPathExists: pathExists,
     projectPathIsDirectory: pathIsDirectory,
@@ -2688,6 +2691,11 @@ function registerIpc(): void {
     const source = await store.getSession(request.sessionKey);
     if (source?.environmentKind === "wsl" || source?.environmentKind === "ssh") {
       await remoteSessionAccess.ensureDetails(request.sessionKey);
+      const descendants = collectMigrationDescendants(
+        source,
+        await store.searchSessions({ limit: 100_000, excludeSubagents: false }),
+      );
+      for (const child of descendants) await remoteSessionAccess.ensureDetails(child.sessionKey);
     }
     const migrationSource = await loadLocalSessionMigrationSource(store, request);
     const settings = Object.freeze(await providerService.hydrateSettings());
@@ -2713,6 +2721,7 @@ function registerIpc(): void {
           allowSsh: migrationSource.source.environmentKind === "ssh",
         },
       );
+      if (migrationSource.subagents.length > 0) portable.subagents = migrationSource.subagents;
       const progress = (item: SessionMigrationProgress): void => event.sender.send("session:migration-progress", item);
       const deps = await createSourceRemoteRestoreDependencies(environment, progress);
       return restoreRemotePortableSession({
@@ -2727,6 +2736,7 @@ function registerIpc(): void {
     return runLocalSessionMigration({
       ...migrationSource,
       target: request.target,
+      targetProjectPath: request.targetProjectPath,
       settings,
     }, localSessionMigrationRuntime(event));
   });
@@ -2759,6 +2769,11 @@ app.whenReady().then(async () => {
   );
   quotaService = createQuotaService();
   initializeOpenVikingMemory();
+  try {
+    reconcileOpenVikingMemoryHooks(getSettings());
+  } catch (error) {
+    console.error(`Failed to refresh OpenViking memory hooks during startup: ${error instanceof Error ? error.message : String(error)}`);
+  }
   // Publish the live endpoint so standalone MCP clients use the same store.
   try {
     writeDatabaseUrlPointer(postgresRuntime.connectionUrl);
@@ -2814,10 +2829,9 @@ app.whenReady().then(async () => {
     startupTasks.whenSettled(initialIndexSettled, async () => {
       try {
         await refreshOpenVikingHookManifest();
-        reconcileOpenVikingMemoryHooks(getSettings());
         await startConfiguredOpenVikingRuntime(getSettings());
       } catch (error) {
-        console.error(`Failed to configure OpenViking memory hooks: ${error instanceof Error ? error.message : String(error)}`);
+        console.error(`Failed to start the OpenViking runtime: ${error instanceof Error ? error.message : String(error)}`);
       }
     });
   });

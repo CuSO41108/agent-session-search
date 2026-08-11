@@ -121,7 +121,6 @@ function conversationRoleEmptyLabel(filter: Exclude<ConversationRoleFilter, "all
 export function DetailPanel({
   session,
   messages,
-  matchedContextMessages,
   matchedMessageIndex,
   traceEvents,
   loading,
@@ -133,8 +132,10 @@ export function DetailPanel({
   showItermAction,
   messagePageSize,
   olderMessageCount,
+  newerMessageCount,
   onClose,
   onShowMore,
+  onShowNewer,
   onRename,
   onAddTag,
   onRemoveTag,
@@ -165,7 +166,6 @@ export function DetailPanel({
 }: {
   session: SessionSearchResult;
   messages: SessionMessage[];
-  matchedContextMessages: SessionMessage[];
   matchedMessageIndex: number | null;
   traceEvents: SessionTraceEvent[];
   loading: boolean;
@@ -177,8 +177,10 @@ export function DetailPanel({
   showItermAction: boolean;
   messagePageSize: number;
   olderMessageCount: number;
+  newerMessageCount: number;
   onClose: () => void;
   onShowMore: () => void;
+  onShowNewer: () => void;
   onRename: () => void;
   onAddTag: () => void;
   onRemoveTag: (tagName: string) => void;
@@ -207,7 +209,6 @@ export function DetailPanel({
   sessionFamilyLoadFailed?: boolean;
   onRetrySessionFamily?: () => void;
 }): ReactElement {
-  const context = matchedContextMessages;
   const actionRunning = actionStatus?.kind === "running";
   const l = (en: string, zh: string) => localize(language, en, zh);
   const traceCount = traceEvents.filter(
@@ -353,7 +354,7 @@ export function DetailPanel({
   useEffect(() => {
     pendingInitialScrollRef.current = session.sessionKey;
     setRoleFilter("all");
-  }, [session.sessionKey]);
+  }, [session.sessionKey, matchedMessageIndex]);
 
   useEffect(() => {
     if (loading || messages.length === 0 || pendingInitialScrollRef.current !== session.sessionKey) return;
@@ -585,23 +586,6 @@ export function DetailPanel({
           ))}
         </div>
         <div className="detail-body" ref={bodyRef}>
-          {context.length > 0 ? (
-            <section className="matched">
-              <h3>{l("Matched Context", "命中上下文")}</h3>
-              {context.map((message) => (
-                <MessageBlock
-                  key={message.index}
-                  timelineKey={`ctx-${message.index}`}
-                  sessionKey={session.sessionKey}
-                  message={message}
-                  query={query}
-                  language={language}
-                  highlight
-                  target={message.index === matchedMessageIndex}
-                />
-              ))}
-            </section>
-          ) : null}
           <section className="conversation">
             <div className="conversation-header">
               <h3>{l("Full Conversation", "完整会话")}</h3>
@@ -702,12 +686,18 @@ export function DetailPanel({
                   message={item.message}
                   query={panelSearchQuery || query}
                   language={language}
-                  highlight={panelSearchQuery ? panelSearchMatchKeys.includes(item.key) : false}
+                  highlight={item.message.index === matchedMessageIndex || (panelSearchQuery ? panelSearchMatchKeys.includes(item.key) : false)}
+                  target={item.message.index === matchedMessageIndex}
                 />
               ) : (
                 <TraceEventBlock key={item.key} timelineKey={item.key} event={item.event} language={language} />
               )
             ))}
+            {!loading && newerMessageCount > 0 ? (
+              <button className="show-more" onClick={onShowNewer}>
+                {l(`Show ${Math.min(messagePageSize, newerMessageCount)} newer messages`, `再显示 ${Math.min(messagePageSize, newerMessageCount)} 条更新消息`)}
+              </button>
+            ) : null}
           </section>
           {onOpenFamilySession ? (
             <SubagentSessionTree

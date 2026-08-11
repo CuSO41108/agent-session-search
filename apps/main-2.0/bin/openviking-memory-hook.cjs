@@ -50,8 +50,8 @@ function findWorkspaceForCwd(manifest, cwd, platform = process.platform) {
 }
 
 async function handleHook(input, options) {
+  const opts = options || {};
   try {
-    const opts = options || {};
     const manifest = opts.manifest || readManifest(opts.manifestPath);
     if (!manifest || ![1, 2].includes(manifest.version) || typeof manifest.baseUrl !== "string" || !manifest.baseUrl) return {};
     const agent = opts.agent;
@@ -125,8 +125,10 @@ async function handleHook(input, options) {
         trigger: opts.event === "PreCompact" ? "compact" : "session-end",
       });
     }
-  } catch {
+  } catch (error) {
     // Agent hooks must never prevent a prompt, compaction, or shutdown.
+    writeHookDiagnostic(opts, error);
+    return hookFailureResult(opts, error);
   }
   return {};
 }
@@ -1115,29 +1117,105 @@ function parseArguments(argv) {
     agent: valueAfter("--agent"),
     event: valueAfter("--event"),
     manifestPath: valueAfter("--manifest") || process.env.AGENT_RECALL_OPENVIKING_MANIFEST,
+    diagnosticLogPath: valueAfter("--diagnostic-log"),
   };
 }
 
-function runCli() {
+function writeHookDiagnostic(options, error) {
+  const logPath = options?.diagnosticLogPath;
+  if (!logPath) return;
+  try {
+    fs.mkdirSync(path.dirname(logPath), { recursive: true });
+    if (fs.existsSync(logPath) && fs.statSync(logPath).size > 512 * 1024) {
+      fs.rmSync(`${logPath}.previous`, { force: true });
+      fs.renameSync(logPath, `${logPath}.previous`);
+    }
+    const record = {
+      timestamp: new Date().toISOString(),
+      agent: cleanText(options.agent, 40),
+      event: cleanText(options.event, 40),
+      error: cleanText(error instanceof Error ? error.message : String(error), 4_000),
+    };
+    fs.appendFileSync(logPath, `${JSON.stringify(record)}\n`, "utf8");
+  } catch {
+    // Diagnostics must never turn a fail-open hook into a host failure.
+  }
+}
+
+function hookFailureResult(options, error) {
+  const event = cleanText(options?.event, 40) || "Unknown";
+  const detail = cleanText(error instanceof Error ? error.message : String(error), 1_000) || "Unknown error";
+  const message = `AgentRecall OpenViking ${event} hook encountered an error: ${detail}`;
+  if (event === "UserPromptSubmit") {
+    return {
+      systemMessage: message,
+      hookSpecificOutput: {
+        hookEventName: "UserPromptSubmit",
+        additionalContext: message,
+      },
+    };
+  }
+  return { systemMessage: message };
+}
+
+let cliState = "running";
+
+async function runCli() {
   const chunks = [];
   let size = 0;
-  process.stdin.on("data", (chunk) => {
+  for await (const chunk of process.stdin) {
     size += chunk.length;
     if (size <= MAX_STDIN_BYTES) chunks.push(chunk);
-  });
-  process.stdin.on("end", async () => {
-    let input = {};
-    if (size <= MAX_STDIN_BYTES) {
-      try {
-        input = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
-      } catch {
-        input = {};
-      }
+  }
+  let input = {};
+  if (size <= MAX_STDIN_BYTES) {
+    try {
+      input = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
+    } catch {
+      input = {};
     }
-    const result = await handleHook(input, parseArguments(process.argv.slice(2)));
+  }
+  const options = parseArguments(process.argv.slice(2));
+  if (process.env.AGENT_RECALL_TEST_HOME && process.env.AGENT_RECALL_TEST_OPENVIKING_HOOK_FAILURE === "1") {
+    throw new Error("Synthetic OpenViking hook failure");
+  }
+  const result = await handleHook(input, options);
+  cliState = "finished";
+  if (result && Object.keys(result).length > 0) {
     process.stdout.write(`${JSON.stringify(result)}\n`);
+  }
+}
+
+function finishCliFailure(error) {
+  if (cliState === "reporting-failure") return;
+  if (cliState === "finished") {
+    process.stdin.destroy();
+    process.exitCode = 0;
+    return;
+  }
+  cliState = "reporting-failure";
+  const options = parseArguments(process.argv.slice(2));
+  writeHookDiagnostic(options, error);
+  try {
+    process.stdout.write(`${JSON.stringify(hookFailureResult(options, error))}\n`, () => process.exit(0));
+  } catch {
+    // A broken stdout cannot be used to report the failure to the host.
+    process.exit(0);
+  }
+  process.stdin.destroy();
+  process.exitCode = 0;
+}
+
+function installCliFailureHandlers() {
+  process.on("uncaughtException", finishCliFailure);
+  process.on("unhandledRejection", finishCliFailure);
+  process.stdin.on("error", finishCliFailure);
+  process.stdout.on("error", (error) => {
+    if (error?.code !== "EPIPE") {
+      writeHookDiagnostic(parseArguments(process.argv.slice(2)), error);
+    }
+    process.exitCode = 0;
   });
-  process.stdin.resume();
 }
 
 module.exports = {
@@ -1152,4 +1230,7 @@ module.exports = {
   recallForWorkspace,
 };
 
-if (require.main === module) runCli();
+if (require.main === module) {
+  installCliFailureHandlers();
+  runCli().catch(finishCliFailure);
+}

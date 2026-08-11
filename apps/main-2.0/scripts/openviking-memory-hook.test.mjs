@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { createRequire } from "node:module";
+import { spawnSync } from "node:child_process";
 
 const require = createRequire(import.meta.url);
 const {
@@ -145,6 +146,124 @@ test("the internal request budget stays well below the Codex hook deadline", () 
   );
 
   assert.match(source, /const REQUEST_TIMEOUT_MS = 2_000;/u);
+});
+
+test("no-op UserPromptSubmit and Stop CLI hooks succeed without emitting invalid JSON", (context) => {
+  const testHome = fs.mkdtempSync(path.join(os.tmpdir(), "agent-recall-openviking-hook-cli-"));
+  context.after(() => fs.rmSync(testHome, { recursive: true, force: true }));
+  const manifestPath = path.join(testHome, "hook-manifest.json");
+  fs.writeFileSync(manifestPath, JSON.stringify({
+    version: 2,
+    baseUrl: "http://127.0.0.1:21933",
+    integrations: { claude: true, codex: true, opencode: false },
+    workspaces: [],
+  }));
+  const hookPath = path.join(import.meta.dirname, "..", "bin", "openviking-memory-hook.cjs");
+
+  for (const event of ["UserPromptSubmit", "Stop"]) {
+    const result = spawnSync(process.execPath, [
+      hookPath,
+      "--agent", "codex",
+      "--event", event,
+      "--manifest", manifestPath,
+    ], {
+      input: JSON.stringify({ cwd: testHome, session_id: "session-1", prompt: "diagnostic" }),
+      encoding: "utf8",
+    });
+    assert.equal(result.status, 0, `${event}: ${result.stderr}`);
+    assert.equal(result.stdout, "", `${event} must keep stdout empty when it has no hook output`);
+    assert.equal(result.stderr, "");
+  }
+});
+
+test("unexpected runtime failures are returned to Codex and recorded without leaking prompt content", async (context) => {
+  const testHome = fs.mkdtempSync(path.join(os.tmpdir(), "agent-recall-openviking-hook-diagnostic-"));
+  context.after(() => fs.rmSync(testHome, { recursive: true, force: true }));
+  const rootPath = path.join(testHome, "project");
+  const blockedStateDir = path.join(testHome, "state-is-a-file");
+  const diagnosticLogPath = path.join(testHome, "hook-errors.log");
+  fs.mkdirSync(rootPath, { recursive: true });
+  fs.writeFileSync(blockedStateDir, "not a directory");
+
+  const result = await handleHook({
+    cwd: rootPath,
+    session_id: "session-1",
+    prompt: "private user prompt must not enter diagnostics",
+    last_assistant_message: "private assistant output must not enter diagnostics",
+  }, {
+    agent: "codex",
+    event: "Stop",
+    manifest: managedManifest(rootPath),
+    stateDir: blockedStateDir,
+    diagnosticLogPath,
+    realpathSync: (value) => path.resolve(value),
+  });
+
+  assert.match(result.systemMessage, /AgentRecall OpenViking Stop hook encountered an error:/u);
+  assert.doesNotMatch(result.systemMessage, /private user prompt|private assistant output/u);
+  const diagnostic = fs.readFileSync(diagnosticLogPath, "utf8");
+  assert.match(diagnostic, /"agent":"codex"/u);
+  assert.match(diagnostic, /"event":"Stop"/u);
+  assert.doesNotMatch(diagnostic, /private user prompt|private assistant output/u);
+
+  const manifestPath = path.join(testHome, "hook-manifest.json");
+  fs.writeFileSync(manifestPath, JSON.stringify(managedManifest(rootPath)));
+  const hookPath = path.join(import.meta.dirname, "..", "bin", "openviking-memory-hook.cjs");
+  const cliResult = spawnSync(process.execPath, [
+    hookPath,
+    "--agent", "codex",
+    "--event", "Stop",
+    "--manifest", manifestPath,
+    "--diagnostic-log", diagnosticLogPath,
+  ], {
+    input: JSON.stringify({
+      cwd: rootPath,
+      session_id: "session-2",
+      prompt: "another private prompt",
+      last_assistant_message: "another private response",
+    }),
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      AGENT_RECALL_TEST_HOME: testHome,
+      AGENT_RECALL_TEST_OPENVIKING_HOOK_FAILURE: "1",
+    },
+  });
+  assert.equal(cliResult.status, 0, cliResult.stderr);
+  const outputLines = cliResult.stdout.trim().split(/\r?\n/u);
+  assert.equal(outputLines.length, 1, "CLI failures must emit exactly one JSON object");
+  const cliOutput = JSON.parse(outputLines[0]);
+  assert.match(cliOutput.systemMessage, /AgentRecall OpenViking Stop hook encountered an error:/u);
+  assert.doesNotMatch(cliResult.stdout, /another private prompt|another private response/u);
+  assert.doesNotMatch(fs.readFileSync(diagnosticLogPath, "utf8"), /another private prompt|another private response/u);
+});
+
+test("UserPromptSubmit runtime failures are returned as Codex context", async (context) => {
+  const testHome = fs.mkdtempSync(path.join(os.tmpdir(), "agent-recall-openviking-hook-recall-error-"));
+  context.after(() => fs.rmSync(testHome, { recursive: true, force: true }));
+  const rootPath = path.join(testHome, "project");
+  fs.mkdirSync(rootPath, { recursive: true });
+  const manifest = managedManifest(rootPath);
+  Object.defineProperty(manifest.workspaces[0], "policyPath", {
+    get() { throw new Error("policy path unavailable"); },
+  });
+
+  const result = await handleHook({
+    cwd: rootPath,
+    session_id: "session-1",
+    prompt: "private prompt",
+  }, {
+    agent: "codex",
+    event: "UserPromptSubmit",
+    manifest,
+    stateDir: path.join(testHome, "state"),
+    realpathSync: (value) => path.resolve(value),
+  });
+
+  assert.equal(result.hookSpecificOutput.hookEventName, "UserPromptSubmit");
+  assert.match(result.hookSpecificOutput.additionalContext, /AgentRecall OpenViking UserPromptSubmit hook encountered an error:/u);
+  assert.equal(result.systemMessage, result.hookSpecificOutput.additionalContext);
+  assert.doesNotMatch(JSON.stringify(result), /private prompt/u);
 });
 
 test("managed Stop appends once and waits for the session lifecycle to commit", async (context) => {

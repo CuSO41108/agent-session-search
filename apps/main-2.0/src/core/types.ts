@@ -120,6 +120,8 @@ export interface PortableSession {
   turnBoundaries?: number[];
   isSubagent?: boolean;
   parentSessionId?: string | null;
+  subagentDepth?: number;
+  subagentPath?: string;
   subagents?: PortableSession[];
 }
 
@@ -149,6 +151,7 @@ export interface SessionMigrationResult {
 export interface SessionMigrationRequest {
   sessionKey: string;
   target: MigrationTarget;
+  targetProjectPath?: string;
   throughTurnId?: string;
 }
 

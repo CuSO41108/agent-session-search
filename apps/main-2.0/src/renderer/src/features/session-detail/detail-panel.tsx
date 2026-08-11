@@ -663,6 +663,7 @@ export function DetailPanel({
                 turns={turns}
                 loading={turnsLoading}
                 matchedTurnId={matchedTurnId}
+                matchedMessageIndex={matchedMessageIndex}
                 showTools={showTools}
                 query={query}
                 language={language}

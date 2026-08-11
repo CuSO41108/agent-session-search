@@ -27,7 +27,7 @@ export function createRemoteSessionsApi(ipc: RemoteSessionsIpcRenderer) {
       previewKind: "image" | "pdf" | "text" | "file",
     ): Promise<{ kind: "image" | "text" | "unavailable"; data?: string }> =>
       ipc.invoke(REMOTE_SESSIONS_IPC.previewAttachment.channel, objectKey, sha256, mimeType, previewKind),
-    chooseRemoteRestoreProject: (): Promise<string | null> => ipc.invoke(REMOTE_SESSIONS_IPC.chooseProject.channel),
+    chooseLocalProjectDirectory: (): Promise<string | null> => ipc.invoke(REMOTE_SESSIONS_IPC.chooseProject.channel),
     restoreRemoteSession: (remoteId: string, target: MigrationAgent, localProjectPath: string): Promise<SessionMigrationResult> =>
       ipc.invoke(REMOTE_SESSIONS_IPC.restore.channel, remoteId, target, localProjectPath),
     restoreRemoteSessionToSourceEnvironment: (remoteId: string, target: MigrationAgent): Promise<SessionMigrationResult> =>

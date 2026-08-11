@@ -172,4 +172,34 @@ describe("WorkflowCoreService", () => {
     await expect(service.deleteDefinition(template.id)).rejects.toThrow("read-only");
     expect(deleted).toBe(false);
   });
+
+  test("does not delete a definition with an active run", async () => {
+    let deleted = false;
+    const saved = definition();
+    const activeRun = {
+      id: "run",
+      workflowId: saved.id,
+      definition: saved,
+      inputs: {},
+      status: "running",
+      nodeRuns: {},
+      events: [],
+      startedAt: 1,
+    } satisfies WorkflowRun;
+    const service = new WorkflowCoreService({
+      repository: {
+        listDefinitions: async () => [saved],
+        listRuns: async (workflowId) => workflowId === saved.id ? [activeRun] : [],
+        getDefinition: async () => saved,
+        saveDefinition: async () => undefined,
+        deleteDefinition: async () => { deleted = true; },
+        markInterruptedRunsFailed: async () => undefined,
+      },
+      engine: {} as WorkflowEngine,
+      configuredAgentIds: () => new Set(["agent"]),
+    });
+
+    await expect(service.deleteDefinition(saved.id)).rejects.toThrow("Stop the active Workflow run");
+    expect(deleted).toBe(false);
+  });
 });
