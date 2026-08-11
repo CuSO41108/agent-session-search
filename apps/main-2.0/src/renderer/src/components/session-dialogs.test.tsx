@@ -3,9 +3,10 @@
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { BulkDeleteDialog } from "./session-dialogs";
+import type { SessionSearchResult } from "../../../core/types";
+import { BulkDeleteDialog, CommandDialog } from "./session-dialogs";
 
-describe("cleanup date picker", () => {
+describe("session dialogs", () => {
   let container: HTMLDivElement;
   let root: Root;
 
@@ -22,6 +23,50 @@ describe("cleanup date picker", () => {
     await act(async () => root.unmount());
     container.remove();
     vi.useRealTimers();
+  });
+
+  it("offers restoring the source title only for renamed Cursor sessions", async () => {
+    const onRestoreDefault = vi.fn();
+    const cursorSession = {
+      source: "cursor-agent",
+      customTitle: "AgentRecall title",
+      originalTitle: "Cursor title",
+    } as SessionSearchResult;
+    await act(async () => root.render(createElement(CommandDialog, {
+      dialog: {
+        kind: "rename",
+        session: cursorSession,
+        value: cursorSession.customTitle ?? "",
+        useDefaultTitle: false,
+      },
+      tags: [],
+      language: "zh",
+      onChange: vi.fn(),
+      onRestoreDefault,
+      onSubmit: vi.fn(),
+      onCancel: vi.fn(),
+    })));
+
+    const restoreButton = container.querySelector<HTMLButtonElement>(".rename-default-button");
+    expect(restoreButton?.textContent).toContain("恢复默认名称");
+    await act(async () => restoreButton?.click());
+    expect(onRestoreDefault).toHaveBeenCalledOnce();
+
+    await act(async () => root.render(createElement(CommandDialog, {
+      dialog: {
+        kind: "rename",
+        session: { ...cursorSession, source: "codex-cli" },
+        value: cursorSession.customTitle ?? "",
+        useDefaultTitle: false,
+      },
+      tags: [],
+      language: "zh",
+      onChange: vi.fn(),
+      onRestoreDefault,
+      onSubmit: vi.fn(),
+      onCancel: vi.fn(),
+    })));
+    expect(container.querySelector(".rename-default-button")).toBeNull();
   });
 
   it("opens a styled year grid and returns the selected local date", async () => {

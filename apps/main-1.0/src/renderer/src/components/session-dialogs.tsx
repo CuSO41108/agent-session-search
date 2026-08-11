@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { ReactElement } from "react";
-import { CalendarDays, ChevronDown, ChevronLeft, ChevronRight, X } from "lucide-react";
+import { CalendarDays, ChevronDown, ChevronLeft, ChevronRight, RotateCcw, X } from "lucide-react";
 import type { SessionSearchResult } from "../../../core/types";
 import { displayTagName, isBranchTag } from "../session-ui";
 import { localize, type LanguageMode } from "../language";
@@ -363,6 +363,7 @@ export function CommandDialog({
   tags,
   language,
   onChange,
+  onRestoreDefault,
   onSubmit,
   onCancel,
 }: {
@@ -370,12 +371,16 @@ export function CommandDialog({
   tags: string[];
   language: LanguageMode;
   onChange: (value: string) => void;
+  onRestoreDefault: () => void;
   onSubmit: (value?: string) => void;
   onCancel: () => void;
 }): ReactElement {
   const inputRef = useRef<HTMLInputElement>(null);
   const l = (en: string, zh: string) => localize(language, en, zh);
   const matchingTags = dialog.kind === "tag" ? tags.filter((tagName) => tagName.includes(dialog.value.trim())).slice(0, 6) : [];
+  const showCursorDefaultControl = dialog.kind === "rename"
+    && dialog.session.source === "cursor-agent"
+    && Boolean(dialog.session.customTitle);
 
   useEffect(() => {
     inputRef.current?.focus();
@@ -404,6 +409,18 @@ export function CommandDialog({
           onChange={(event) => onChange(event.target.value)}
           placeholder={dialog.kind === "rename" ? l("Session title", "会话标题") : l("Tag name", "标签名")}
         />
+        {showCursorDefaultControl ? (
+          <div className="rename-default-control">
+            {dialog.kind === "rename" && dialog.useDefaultTitle ? (
+              <span>{l("The title will follow future Cursor changes after saving.", "保存后将自动跟随 Cursor 会话名称变化。")}</span>
+            ) : (
+              <button type="button" className="rename-default-button" onClick={onRestoreDefault}>
+                <RotateCcw size={13} />
+                {l("Restore default name", "恢复默认名称")}
+              </button>
+            )}
+          </div>
+        ) : null}
         {matchingTags.length > 0 ? (
           <div className="tag-suggestions">
             {matchingTags.map((tagName) => (

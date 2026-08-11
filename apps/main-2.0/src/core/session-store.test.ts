@@ -136,7 +136,7 @@ describe("SessionStore PostgreSQL facade", () => {
     });
   });
 
-  it("shows a renamed Cursor title instead of a stale local override", async () => {
+  it("keeps an AgentRecall title when the Cursor title changes", async () => {
     const store = createStore();
     const cursor = indexedSession({
       sessionKey: "cursor:repo:session-a",
@@ -154,6 +154,12 @@ describe("SessionStore PostgreSQL facade", () => {
 
     await expect(store.getSession(cursor.sessionKey)).resolves.toMatchObject({
       originalTitle: "Renamed in Cursor",
+      customTitle: "Old AgentRecall title",
+      displayTitle: "Old AgentRecall title",
+    });
+
+    await store.setCustomTitle(cursor.sessionKey, null);
+    await expect(store.getSession(cursor.sessionKey)).resolves.toMatchObject({
       customTitle: null,
       displayTitle: "Renamed in Cursor",
     });

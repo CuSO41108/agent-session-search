@@ -1581,17 +1581,6 @@ export const POSTGRES_MIGRATIONS: readonly PostgresMigration[] = [{
   ],
 }, {
   version: 35,
-  name: "prefer refreshed Cursor titles over stale local overrides",
-  statements: [
-    `
-      UPDATE agent_recall.sessions
-      SET custom_title = null,
-          file_mtime_ms = 0
-      WHERE source = 'cursor-agent'
-        AND storage_environment_id = 'local'
-        AND source_available = true
-        AND custom_title is not null
-        AND custom_title <> original_title;
-    `,
-  ],
+  name: "preserve Cursor custom title precedence",
+  statements: [],
 }];

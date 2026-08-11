@@ -3676,6 +3676,32 @@ select:focus-visible {
   box-shadow: 0 0 0 3px var(--accent-ring);
 }
 
+.rename-default-control {
+  display: flex;
+  min-height: 25px;
+  align-items: center;
+  justify-content: flex-end;
+  padding-top: 5px;
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
+.rename-default-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 3px;
+  border: 0;
+  background: transparent;
+  color: var(--accent);
+  font: inherit;
+  cursor: pointer;
+}
+
+.rename-default-button:hover {
+  color: var(--accent-bright);
+}
+
 .skills-dialog {
   display: flex;
   width: min(1320px, calc(100vw - 40px));

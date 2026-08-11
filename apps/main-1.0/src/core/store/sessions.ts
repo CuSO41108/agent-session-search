@@ -268,14 +268,6 @@ export class SessionsStore {
             storage_environment_id = excluded.storage_environment_id,
             project_path = excluded.project_path,
             file_path = excluded.file_path,
-            custom_title = CASE
-              WHEN excluded.source = 'cursor-agent'
-                AND sessions.original_title <> excluded.original_title
-                AND sessions.custom_title IS NOT NULL
-                AND sessions.custom_title <> excluded.original_title
-              THEN NULL
-              ELSE sessions.custom_title
-            END,
             original_title = excluded.original_title,
             first_question = excluded.first_question,
             timestamp = excluded.timestamp,
