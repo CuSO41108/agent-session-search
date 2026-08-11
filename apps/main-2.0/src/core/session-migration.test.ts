@@ -144,4 +144,93 @@ describe("Codex subagent migration", () => {
       subagentDepth: 1,
     });
   });
+
+  it("merges Cursor task metadata with its complete transcript before Codex migration", async () => {
+    const root = {
+      ...session("cursor-agent"),
+      sessionKey: "cursor:root",
+      rawId: "root",
+      environmentId: "local",
+      environmentKind: "local",
+      projectPath: "/repo",
+    } as SessionSearchResult;
+    const startedAt = "2026-08-08T00:00:04Z";
+    const subagents: PortableSession[] = [{
+      sourceSessionKey: "cursor:66b05627-84d3-4789-b3df-772bf1bb04ad",
+      sourceSessionId: "66b05627-84d3-4789-b3df-772bf1bb04ad",
+      sourceAgent: "cursor",
+      title: "Read documentation",
+      projectPath: "/repo",
+      startedAt,
+      messages: [
+        { role: "user", content: "full request", timestamp: startedAt, index: 0 },
+        { role: "assistant", content: "full result", timestamp: "", index: 1 },
+      ],
+      isSubagent: true,
+      parentSessionId: "root",
+    }, {
+      sourceSessionKey: "cursor:task-9026680a-0962-4466-a9b8-8e2efa96e19f",
+      sourceSessionId: "task-9026680a-0962-4466-a9b8-8e2efa96e19f",
+      sourceAgent: "cursor",
+      title: "Read documentation",
+      projectPath: "/repo",
+      startedAt,
+      messages: [{ role: "assistant", content: "summary only", timestamp: startedAt, index: 0 }],
+      isSubagent: true,
+      parentSessionId: "coordinator",
+    }, {
+      sourceSessionKey: "cursor:coordinator",
+      sourceSessionId: "coordinator",
+      sourceAgent: "cursor",
+      title: "Coordinator",
+      projectPath: "/repo",
+      startedAt: "2026-08-08T00:00:02Z",
+      messages: [{ role: "assistant", content: "coordinate", timestamp: "2026-08-08T00:00:03Z", index: 0 }],
+      isSubagent: true,
+      parentSessionId: "root",
+    }];
+    const targetIds = [
+      "10000000-0000-4000-8000-000000000001",
+      "10000000-0000-4000-8000-000000000002",
+      "10000000-0000-4000-8000-000000000003",
+    ];
+    const write = vi.fn<SessionMigrationDependencies["write"]>(async (_target, _portable, targetSessionId) => ({
+      sessionId: targetSessionId!,
+      filePath: `/tmp/${targetSessionId}.jsonl`,
+    }));
+    const deps: SessionMigrationDependencies = {
+      inspectCli: vi.fn(),
+      prepare: vi.fn<SessionMigrationDependencies["prepare"]>(async (portable) => ({ session: portable, strategy: "complete" })),
+      write,
+      record: vi.fn(),
+      refreshIndex: vi.fn(),
+      launch: vi.fn(),
+      resumeCommand: vi.fn(() => "codex resume"),
+      fallbackResumeCommand: vi.fn(() => "codex resume"),
+      idFactory: vi.fn(() => "record-id"),
+      targetSessionIdFactory: vi.fn(() => targetIds.shift()!),
+      now: vi.fn(() => 1),
+      projectPathExists: vi.fn(() => true),
+      projectPathIsDirectory: vi.fn(() => true),
+    };
+
+    const result = await migrateSession({ source: root, messages, subagents, target: "codex", deps });
+
+    expect(result.restoredSubagentCount).toBe(2);
+    expect(write).toHaveBeenCalledTimes(3);
+    expect(write.mock.calls[0]?.[1].subagents).toEqual([
+      expect.objectContaining({ sourceSessionId: "10000000-0000-4000-8000-000000000002" }),
+    ]);
+    expect(write.mock.calls[1]?.[1].subagents).toEqual([
+      expect.objectContaining({ sourceSessionId: "10000000-0000-4000-8000-000000000003" }),
+    ]);
+    expect(write.mock.calls[2]?.[1]).toMatchObject({
+      sourceSessionId: "66b05627-84d3-4789-b3df-772bf1bb04ad",
+      parentSessionId: "10000000-0000-4000-8000-000000000002",
+      messages: [
+        expect.objectContaining({ content: "full request" }),
+        expect.objectContaining({ content: "full result" }),
+      ],
+    });
+  });
 });

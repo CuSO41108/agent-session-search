@@ -55,10 +55,13 @@ export async function writeMigratedSession(options: WriteMigratedSessionOptions)
   if (options.target === "codewiz") {
     return writeMigratedCodeWizSession({ ...options, homeDir, now, idFactory: createId }, sessionId);
   }
-  const filePath = targetFilePath(options.target, options.session.projectPath, sessionId, homeDir, now);
+  const session = migrationTargetDescriptor(options.target).family === "codex"
+    ? normalizeCodexMessageTimestamps(options.session)
+    : options.session;
+  const filePath = targetFilePath(options.target, session.projectPath, sessionId, homeDir, now);
   const targetHome = path.join(homeDir, TARGET_ROOTS[options.target]);
   const runtimeMetadata = await loadMigrationTargetRuntimeMetadata(options.target, targetHome);
-  const rows = serializeSession(options.target, options.session, sessionId, createId, runtimeMetadata);
+  const rows = serializeSession(options.target, session, sessionId, createId, runtimeMetadata);
   const tempPath = `${filePath}.tmp-${crypto.randomUUID()}`;
   let finalFileCreated = false;
 
@@ -67,19 +70,19 @@ export async function writeMigratedSession(options: WriteMigratedSessionOptions)
     await writeJsonlAndSync(tempPath, rows);
     if (options.beforeValidate) await options.beforeValidate(tempPath);
     const writtenRows = readJsonlStrict(tempPath, options.target);
-    validateNativeStructure(options.target, writtenRows, sessionId, options.session, runtimeMetadata);
-    const loaded = loadWrittenSession(options.target, tempPath, sessionId, options.session);
-    validateRoundTrip(loaded, options.target, sessionId, options.session);
+    validateNativeStructure(options.target, writtenRows, sessionId, session, runtimeMetadata);
+    const loaded = loadWrittenSession(options.target, tempPath, sessionId, session);
+    validateRoundTrip(loaded, options.target, sessionId, session);
     if (options.validate) {
       const additionallyLoaded = await options.validate(tempPath);
-      validateRoundTrip(additionallyLoaded, options.target, sessionId, options.session);
+      validateRoundTrip(additionallyLoaded, options.target, sessionId, session);
     }
     await fs.promises.chmod(tempPath, 0o600);
     if (options.rename) await options.rename(tempPath, filePath);
     else await fs.promises.rename(tempPath, filePath);
     finalFileCreated = true;
-    await updateCodexSessionIndex(options.target, targetHome, options.session, sessionId, now);
-    updateCodexAppServerState(options.target, targetHome, filePath, options.session, sessionId, now, runtimeMetadata);
+    await updateCodexSessionIndex(options.target, targetHome, session, sessionId, now);
+    updateCodexAppServerState(options.target, targetHome, filePath, session, sessionId, now, runtimeMetadata);
     return { sessionId, filePath };
   } catch (error) {
     await fs.promises.rm(tempPath, { force: true });
@@ -667,6 +670,21 @@ function timestampMs(value: string): number {
   return timestamp;
 }
 
+function normalizeCodexMessageTimestamps(session: PortableSession): PortableSession {
+  timestampMs(session.startedAt);
+  let previousTimestamp = session.startedAt;
+  let changed = false;
+  const messages = session.messages.map((message) => {
+    if (Number.isFinite(new Date(message.timestamp).getTime())) {
+      previousTimestamp = message.timestamp;
+      return message;
+    }
+    changed = true;
+    return { ...message, timestamp: previousTimestamp };
+  });
+  return changed ? { ...session, messages } : session;
+}
+
 async function writeJsonlAndSync(filePath: string, rows: unknown[]): Promise<void> {
   const handle = await fs.promises.open(filePath, "wx", 0o600);
   try {
@@ -840,10 +858,20 @@ function updateCodexAppServerState(
 }
 
 function codexSubagentPath(session: PortableSession): string {
-  if (session.subagentPath?.trim()) return session.subagentPath.trim();
+  const providedSegments = session.subagentPath?.trim()
+    .split("/")
+    .filter(Boolean);
+  if (providedSegments?.[0]?.toLowerCase() === "root") providedSegments.shift();
+  if (providedSegments && providedSegments.length > 0) {
+    return `/root/${providedSegments.map(codexAgentPathSegment).join("/")}`;
+  }
   const sourceId = session.sourceSessionId || session.sourceSessionKey.split(":").at(-1) || "subagent";
-  const slug = sourceId.replace(/[^A-Za-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 80) || "subagent";
-  return `/root/migrated_${slug}`;
+  return `/root/migrated_${codexAgentPathSegment(sourceId)}`;
+}
+
+function codexAgentPathSegment(value: string): string {
+  const segment = value.toLowerCase().replace(/[^a-z0-9_]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 80);
+  return segment && segment !== "root" ? segment : "subagent";
 }
 
 function codexSubagentSource(

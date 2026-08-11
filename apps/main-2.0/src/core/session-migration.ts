@@ -223,8 +223,11 @@ export async function migrateSession({
 
   const portable = portableSessionFrom(migrationSource, messages, { turnSourceMessageIndexes });
   if (subagents.length > 0) portable.subagents = subagents;
-  const portableSubagents = flattenPortableSubagents(subagents);
   const rootSourceId = portableSourceId(portable);
+  const flattenedSubagents = flattenPortableSubagents(subagents);
+  const portableSubagents = target === "codex"
+    ? normalizeCursorCodexSubagents(flattenedSubagents, rootSourceId)
+    : flattenedSubagents;
   const codexLinkage = target === "codex" && portableSubagents.length > 0 && deps.targetSessionIdFactory
     ? buildCodexMigrationLinkage(portable, portableSubagents, deps.targetSessionIdFactory)
     : null;
@@ -495,8 +498,66 @@ function portableSourceId(session: PortableSession): string {
   return session.sourceSessionId || session.sourceSessionKey.split(":").at(-1) || session.sourceSessionKey;
 }
 
+function normalizeCursorCodexSubagents(
+  subagents: PortableSession[],
+  rootSourceId: string,
+): PortableSession[] {
+  const duplicates = new Map<string, { transcript: PortableSession[]; task: PortableSession[] }>();
+  for (const subagent of subagents) {
+    if (subagent.sourceAgent !== "cursor") continue;
+    const startedAt = Date.parse(subagent.startedAt);
+    const normalizedTitle = subagent.title.trim().toLowerCase();
+    if (!Number.isFinite(startedAt) || !normalizedTitle) continue;
+    const key = `${startedAt}:${normalizedTitle}`;
+    const group = duplicates.get(key) ?? { transcript: [], task: [] };
+    const sourceId = portableSourceId(subagent);
+    (sourceId.toLowerCase().startsWith("task-") ? group.task : group.transcript).push(subagent);
+    duplicates.set(key, group);
+  }
+
+  const sourceAliases = new Map<string, string>();
+  const replacements = new Map<string, PortableSession>();
+  for (const group of duplicates.values()) {
+    if (group.transcript.length !== 1 || group.task.length !== 1) continue;
+    const transcript = group.transcript[0];
+    const task = group.task[0];
+    const transcriptId = portableSourceId(transcript);
+    const taskId = portableSourceId(task);
+    sourceAliases.set(taskId, transcriptId);
+    replacements.set(transcriptId, {
+      ...transcript,
+      title: task.title || transcript.title,
+      parentSessionId: task.parentSessionId?.trim() || transcript.parentSessionId,
+    });
+  }
+
+  const retained = subagents
+    .filter((subagent) => !sourceAliases.has(portableSourceId(subagent)))
+    .map((subagent) => {
+      const sourceId = portableSourceId(subagent);
+      const replacement = replacements.get(sourceId) ?? subagent;
+      const parentId = replacement.parentSessionId?.trim();
+      return parentId && sourceAliases.has(parentId)
+        ? { ...replacement, parentSessionId: sourceAliases.get(parentId)! }
+        : replacement;
+    });
+
+  const ordered: PortableSession[] = [];
+  const availableParentIds = new Set([rootSourceId]);
+  const pending = [...retained];
+  while (pending.length > 0) {
+    const nextIndex = pending.findIndex((subagent) =>
+      availableParentIds.has(subagent.parentSessionId?.trim() || rootSourceId));
+    if (nextIndex < 0) break;
+    const [next] = pending.splice(nextIndex, 1);
+    ordered.push(next);
+    availableParentIds.add(portableSourceId(next));
+  }
+  return [...ordered, ...pending];
+}
+
 function codexSubagentSlug(sourceId: string): string {
-  return sourceId.replace(/[^A-Za-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 80) || "subagent";
+  return sourceId.toLowerCase().replace(/[^a-z0-9_]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 80) || "subagent";
 }
 
 async function validateMigrationRequest(

@@ -147,7 +147,7 @@ describe("writeMigratedSession", () => {
           isSubagent: true,
           parentSessionId: SESSION_ID,
           subagentDepth: 1,
-          subagentPath: "/root/migrated_child",
+          subagentPath: "/root/Migrated-Child",
           subagents: [],
         }],
       };
@@ -169,6 +169,27 @@ describe("writeMigratedSession", () => {
         agent_path: "/root/migrated_child",
         kind: "started",
       });
+    } finally {
+      fs.rmSync(homeDir, { recursive: true, force: true });
+    }
+  });
+
+  it("uses the previous valid timestamp when a Codex message has no timestamp", async () => {
+    const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "migration-writer-empty-timestamp-"));
+    try {
+      const session = portable();
+      session.messages[1] = { ...session.messages[1], timestamp: "" };
+      const result = await writeMigratedSession({
+        target: "codex",
+        session,
+        sessionId: SESSION_ID,
+        homeDir,
+        now: NOW,
+      });
+      const rows = readRows(result.filePath);
+      const messageRows = rows.filter((row) => row.type === "response_item" && row.payload?.type === "message");
+
+      expect(messageRows[1]?.timestamp).toBe(session.messages[0].timestamp);
     } finally {
       fs.rmSync(homeDir, { recursive: true, force: true });
     }
@@ -540,7 +561,7 @@ describe("writeMigratedSession", () => {
       expect(childRow).toMatchObject({
         cwd: "",
         thread_source: "subagent",
-        agent_path: "/root/migrated_source-child",
+        agent_path: "/root/migrated_source_child",
       });
       expect(JSON.parse(String(childRow.source))).toMatchObject({
         subagent: { thread_spawn: { parent_thread_id: SESSION_ID } },
