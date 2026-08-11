@@ -227,6 +227,7 @@ describe("TurnAccordion span payloads", () => {
           turns: [turn],
           loading: false,
           matchedTurnId: null,
+          matchedMessageIndex: null,
           showTools: true,
           query: "",
           language: "en",
