@@ -1489,7 +1489,7 @@ export function App(): ReactElement {
 
   function beginRename(session: SessionSearchResult): void {
     setContextMenu(null);
-    setDialog({ kind: "rename", session, value: session.customTitle || session.displayTitle });
+    setDialog({ kind: "rename", session, value: session.customTitle || session.displayTitle, useDefaultTitle: false });
   }
 
   function beginAddTag(session: SessionSearchResult): void {
@@ -1502,7 +1502,7 @@ export function App(): ReactElement {
     const dialogKind = dialog.kind;
     const value = (valueOverride ?? dialog.value).trim();
     if (dialog.kind === "rename") {
-      await window.sessionSearch.setCustomTitle(dialog.session.sessionKey, value || null);
+      await window.sessionSearch.setCustomTitle(dialog.session.sessionKey, dialog.useDefaultTitle ? null : value || null);
     } else if (value) {
       await window.sessionSearch.addTag(dialog.session.sessionKey, value);
     }
@@ -2694,7 +2694,17 @@ export function App(): ReactElement {
           dialog={dialog}
           tags={tags}
           language={language}
-          onChange={(value) => setDialog({ ...dialog, value })}
+          onChange={(value) => setDialog(dialog.kind === "rename"
+            ? { ...dialog, value, useDefaultTitle: false }
+            : { ...dialog, value })}
+          onRestoreDefault={() => {
+            if (dialog.kind !== "rename") return;
+            setDialog({
+              ...dialog,
+              value: dialog.session.originalTitle || dialog.session.firstQuestion || "",
+              useDefaultTitle: true,
+            });
+          }}
           onSubmit={(value) => void submitDialog(value)}
           onCancel={() => setDialog(null)}
         />

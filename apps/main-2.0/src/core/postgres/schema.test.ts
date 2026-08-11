@@ -625,7 +625,7 @@ describe("AgentRecall PostgreSQL schema", () => {
     await upgradedDatabase.close();
   });
 
-  it("removes stale local Cursor title overrides during upgrade", async () => {
+  it("preserves Cursor custom titles during upgrade", async () => {
     const pool = new PGliteTestPool();
     const legacyDatabase = new PostgresDatabase(pool, {
       migrationLock: false,
@@ -640,7 +640,7 @@ describe("AgentRecall PostgreSQL schema", () => {
       ) values (
         'cursor:renamed', 'renamed', 'cursor-agent', 'local', 'local',
         '/repo', '/tmp/cursor.jsonl', 'Renamed in Cursor', 'Question', now(),
-        123, 10, 'Old AgentRecall title', now()
+        123, 10, 'AgentRecall title', now()
       )
     `);
 
@@ -661,7 +661,7 @@ describe("AgentRecall PostgreSQL schema", () => {
     expect(rows.rows.map((row) => ({
       custom_title: row.custom_title,
       file_mtime_ms: Number(row.file_mtime_ms),
-    }))).toEqual([{ custom_title: null, file_mtime_ms: 0 }]);
+    }))).toEqual([{ custom_title: "AgentRecall title", file_mtime_ms: 123 }]);
     await upgradedDatabase.close();
   });
 });

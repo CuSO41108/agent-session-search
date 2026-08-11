@@ -146,7 +146,7 @@ describe("SessionsStore", () => {
     }
   });
 
-  it("shows a renamed Cursor title instead of a stale local override", () => {
+  it("keeps an AgentRecall title when the Cursor title changes", () => {
     const db = new DatabaseSync(":memory:");
     try {
       migrateSessionStore(db);
@@ -167,6 +167,12 @@ describe("SessionsStore", () => {
 
       expect(store.getSession(cursor.sessionKey)).toMatchObject({
         originalTitle: "Renamed in Cursor",
+        customTitle: "Old AgentRecall title",
+        displayTitle: "Old AgentRecall title",
+      });
+
+      store.setCustomTitle(cursor.sessionKey, null);
+      expect(store.getSession(cursor.sessionKey)).toMatchObject({
         customTitle: null,
         displayTitle: "Renamed in Cursor",
       });

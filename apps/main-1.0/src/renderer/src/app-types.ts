@@ -19,7 +19,13 @@ export interface ContextMenuState {
 
 export type DialogState =
   | {
-      kind: "rename" | "tag";
+      kind: "rename";
+      session: SessionSearchResult;
+      value: string;
+      useDefaultTitle: boolean;
+    }
+  | {
+      kind: "tag";
       session: SessionSearchResult;
       value: string;
     }

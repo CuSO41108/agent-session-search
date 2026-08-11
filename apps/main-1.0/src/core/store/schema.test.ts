@@ -376,43 +376,6 @@ describe("session store schema", () => {
     }
   });
 
-  it("removes stale local Cursor title overrides exactly once", () => {
-    const db = new DatabaseSync(":memory:");
-    try {
-      migrateSessionStore(db);
-      db.prepare("DELETE FROM data_migrations WHERE id = 'cursor-native-title-precedence-v1'").run();
-      db.prepare(`
-        INSERT INTO sessions (
-          session_key, raw_id, source, project_path, file_path,
-          original_title, first_question, timestamp, file_mtime_ms, file_size, custom_title
-        ) VALUES ('cursor:renamed', 'renamed', 'cursor-agent', '/repo', '/tmp/cursor.jsonl',
-          'Renamed in Cursor', 'Question', 1, 123, 10, 'Old AgentRecall title')
-      `).run();
-
-      migrateSessionStore(db);
-
-      expect(db.prepare(`
-        SELECT custom_title, file_mtime_ms
-        FROM sessions
-        WHERE session_key = 'cursor:renamed'
-      `).get()).toEqual({ custom_title: null, file_mtime_ms: 0 });
-
-      db.prepare(`
-        UPDATE sessions
-        SET custom_title = 'New local title', file_mtime_ms = 456
-        WHERE session_key = 'cursor:renamed'
-      `).run();
-      migrateSessionStore(db);
-      expect(db.prepare(`
-        SELECT custom_title, file_mtime_ms
-        FROM sessions
-        WHERE session_key = 'cursor:renamed'
-      `).get()).toEqual({ custom_title: "New local title", file_mtime_ms: 456 });
-    } finally {
-      db.close();
-    }
-  });
-
   it("backfills the storage environment from the execution environment exactly once", () => {
     const db = new DatabaseSync(":memory:");
     try {
