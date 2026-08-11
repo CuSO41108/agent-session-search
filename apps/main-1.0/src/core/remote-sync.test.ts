@@ -1414,9 +1414,79 @@ db.close()
       expect(script).toContain("(AGENTS|CLAUDE)");
       expect(script).toContain("system-reminder");
       expect(script).toContain("local-command-caveat");
+      expect(script).toContain("def strip_injected_user_noise(text):");
+      expect(script).toContain("subagent_notification|task-notification");
+      expect(script).toContain("Perform any necessary follow-up actions");
     }
     // The collector must not keep the looser legacy heuristic that disagreed with paging.
     expect(collectorScript).not.toContain("def meaningful(text):");
+  });
+
+  it("removes injected collaboration noise from remote Codex message pages", async () => {
+    const store = createInMemoryStore();
+    const environment = upsertSshEnvironment(store);
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "agent-recall-remote-noise-"));
+    const filePath = path.join(root, "session.jsonl");
+    fs.writeFileSync(filePath, [
+      { type: "session_meta", payload: { id: "remote-noise", cwd: "/repo" } },
+      {
+        type: "response_item",
+        payload: {
+          type: "message",
+          role: "user",
+          content: [{ type: "input_text", text: "<subagent_notification source=\"worker\">done</subagent_notification>" }],
+        },
+      },
+      {
+        type: "response_item",
+        payload: {
+          type: "message",
+          role: "user",
+          content: [{ type: "input_text", text: "<task-notification>done</task-notification>\n真实输入" }],
+        },
+      },
+      {
+        type: "response_item",
+        payload: {
+          type: "message",
+          role: "user",
+          content: [{ type: "input_text", text: "Perform any necessary follow-up actions in response to the subagent completion above. If no follow-up work is needed, no further action is required." }],
+        },
+      },
+      {
+        type: "response_item",
+        payload: {
+          type: "message",
+          role: "user",
+          content: [{
+            type: "input_text",
+            text: "<timestamp>Friday</timestamp>\n<system_notification><task>done</task></system_notification>\n<user_query>包装后的真实输入</user_query>",
+          }],
+        },
+      },
+      {
+        type: "response_item",
+        payload: { type: "message", role: "assistant", content: [{ type: "output_text", text: "done" }] },
+      },
+    ].map((row) => JSON.stringify(row)).join("\n"), "utf8");
+
+    try {
+      const messages = await fetchRemoteSessionMessagePage(
+        environment,
+        { source: "codex-cli", filePath } as SessionSearchResult,
+        0,
+        10,
+        { runSsh: executeDecodedPython },
+      );
+      expect(messages.map((message) => [message.role, message.content])).toEqual([
+        ["user", "真实输入"],
+        ["user", "包装后的真实输入"],
+        ["assistant", "done"],
+      ]);
+    } finally {
+      store.close();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it("keeps remote CodeBuddy summary counts and tail paging aligned with the local adapter", async () => {

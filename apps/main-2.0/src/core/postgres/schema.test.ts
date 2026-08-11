@@ -624,4 +624,71 @@ describe("AgentRecall PostgreSQL schema", () => {
     }]);
     await upgradedDatabase.close();
   });
+
+  it("invalidates sessions whose stored user turns contain injected collaboration noise", async () => {
+    const pool = new PGliteTestPool();
+    const legacyDatabase = new PostgresDatabase(pool, {
+      migrationLock: false,
+      migrations: POSTGRES_MIGRATIONS.filter((migration) => migration.version <= 27),
+    });
+    await legacyDatabase.initialize();
+    await legacyDatabase.query(`
+      insert into agent_recall.sessions (
+        session_key, raw_id, source, environment_id, project_path, file_path,
+        original_title, first_question, started_at, file_mtime_ms, file_size,
+        message_count, turn_count, input_tokens, output_tokens,
+        cached_input_tokens, reasoning_output_tokens, total_tokens, indexed_at,
+        content_indexed_mtime_ms, content_indexed_size, is_subagent
+      ) values
+        ('codex:dirty', 'dirty', 'codex-cli', 'local', '/repo', '/dirty.jsonl',
+          'Dirty', 'Question', now(), 123, 456, 1, 1, 0, 0, 0, 0, 0, now(), 123, 456, false),
+        ('codex:clean', 'clean', 'codex-cli', 'local', '/repo', '/clean.jsonl',
+          'Clean', 'Question', now(), 123, 456, 1, 1, 0, 0, 0, 0, 0, now(), 123, 456, false);
+
+      insert into agent_recall.session_turns (
+        id, session_key, turn_index, synthetic, status,
+        user_text, assistant_text, tool_text, search_text,
+        input_tokens, output_tokens, cached_input_tokens, reasoning_output_tokens,
+        total_tokens, error_count, tool_names, derivation_version
+      ) values
+        ('turn:dirty', 'codex:dirty', 0, false, 'completed', 'noise', '', '', 'noise',
+          0, 0, 0, 0, 0, 0, '{}', 4),
+        ('turn:clean', 'codex:clean', 0, false, 'completed', 'real prompt', '', '', 'real prompt',
+          0, 0, 0, 0, 0, 0, '{}', 4);
+
+      insert into agent_recall.turn_messages (
+        turn_id, message_index, source_message_index, role, content, metadata
+      ) values
+        ('turn:dirty', 0, 0, 'user',
+          '<task-notification source="worker">done</task-notification>', '{}'::jsonb),
+        ('turn:clean', 0, 0, 'user', 'real prompt', '{}'::jsonb);
+    `);
+
+    const upgradedDatabase = new PostgresDatabase(pool, {
+      migrationLock: false,
+      migrations: POSTGRES_MIGRATIONS,
+    });
+    await upgradedDatabase.initialize();
+
+    const result = await upgradedDatabase.query<{
+      session_key: string;
+      file_mtime_ms: number | string;
+      content_indexed_mtime_ms: number | string;
+      content_indexed_size: number | string;
+    }>(`
+      select session_key, file_mtime_ms, content_indexed_mtime_ms, content_indexed_size
+      from agent_recall.sessions
+      order by session_key
+    `);
+    expect(result.rows.map((row) => ({
+      session_key: row.session_key,
+      file_mtime_ms: Number(row.file_mtime_ms),
+      content_indexed_mtime_ms: Number(row.content_indexed_mtime_ms),
+      content_indexed_size: Number(row.content_indexed_size),
+    }))).toEqual([
+      { session_key: "codex:clean", file_mtime_ms: 123, content_indexed_mtime_ms: 123, content_indexed_size: 456 },
+      { session_key: "codex:dirty", file_mtime_ms: 0, content_indexed_mtime_ms: 0, content_indexed_size: 0 },
+    ]);
+    await upgradedDatabase.close();
+  });
 });

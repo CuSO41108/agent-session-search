@@ -1563,6 +1563,41 @@ describe("Codex session loading", () => {
     expect(JSON.stringify(loaded?.messages)).not.toContain("不能进入对话");
   });
 
+  it("cleans paginated item_completed user messages before indexing", () => {
+    const userCompleted = (id: string, text: string) => ({
+      type: "event_msg",
+      timestamp: "2026-08-05T15:45:00Z",
+      payload: {
+        type: "item_completed",
+        turn_id: "turn-1",
+        item: { type: "UserMessage", id, content: [{ type: "text", text }] },
+      },
+    });
+    const rows = [
+      {
+        type: "session_meta",
+        timestamp: "2026-08-05T15:44:59Z",
+        payload: { id: "codex-noise", cwd: "/repo", history_mode: "paginated" },
+      },
+      {
+        type: "event_msg",
+        timestamp: "2026-08-05T15:45:00Z",
+        payload: { type: "task_started", turn_id: "turn-1" },
+      },
+      userCompleted("noise", "<subagent_notification source=\"worker\">done</subagent_notification>"),
+      userCompleted(
+        "mixed",
+        "<timestamp>Friday</timestamp>\n<system_notification><task>done</task></system_notification>\n<user_query>真实输入</user_query>",
+      ),
+    ];
+
+    const loaded = loadCodexSessionRows("/tmp/codex-noise.jsonl", rows);
+
+    expect(loaded?.messages).toMatchObject([{ role: "user", content: "真实输入" }]);
+    expect(loaded?.session.firstQuestion).toBe("真实输入");
+    expect(loaded?.session.originalTitle).toBe("真实输入");
+  });
+
   it("reattributes assistant messages that keep a completed Codex turn passthrough id", () => {
     const userItem = (turnId: string, id: string, text: string, timestamp: string) => ({
       type: "event_msg",

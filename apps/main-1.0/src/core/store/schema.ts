@@ -317,6 +317,7 @@ export function migrateSessionStore(db: SessionStoreDatabase): void {
   runCacheTokenSemanticsMigration(db);
   runCodexSessionSemanticsMigration(db);
   runCodexTraceDetailMigration(db);
+  runInjectedUserNoiseMigration(db);
   addColumnIfMissing(db, "skill_sync_bindings", "remote_version", "INTEGER NOT NULL DEFAULT 1");
   addColumnIfMissing(db, "skill_sync_bindings", "portable_identity", "TEXT NOT NULL DEFAULT ''");
   addColumnIfMissing(db, "skill_sync_bindings", "last_content_hash", "TEXT NOT NULL DEFAULT ''");
@@ -637,6 +638,42 @@ function runCodexSessionSemanticsMigration(db: SessionStoreDatabase): void {
           WHERE source IN (
             'claude-cli', 'claude-app', 'tclaude-cli',
             'codex-cli', 'codex-app', 'tcodex-cli'
+          )
+        `,
+      ).run();
+      db.prepare("INSERT INTO data_migrations (id, applied_at) VALUES (?, ?)").run(migrationId, Date.now());
+    }
+    db.exec("COMMIT");
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
+}
+
+function runInjectedUserNoiseMigration(db: SessionStoreDatabase): void {
+  const migrationId = "injected-user-noise-v3";
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    const applied = db.prepare("SELECT 1 FROM data_migrations WHERE id = ?").get(migrationId);
+    if (!applied) {
+      db.prepare(
+        `
+          UPDATE sessions
+          SET file_mtime_ms = 0,
+              content_indexed_mtime_ms = 0,
+              content_indexed_size = 0
+          WHERE EXISTS (
+            SELECT 1
+            FROM messages
+            WHERE messages.session_key = sessions.session_key
+              AND messages.role = 'user'
+              AND (
+                instr(lower(messages.content), '<subagent_notification') > 0
+                OR instr(lower(messages.content), '<task-notification') > 0
+                OR instr(lower(messages.content), '<system_notification') > 0
+                OR lower(ltrim(messages.content)) LIKE
+                  'perform any necessary follow-up actions in response to the subagent completion above.%'
+              )
           )
         `,
       ).run();

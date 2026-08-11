@@ -233,8 +233,7 @@ export function extractCursorUserQuery(text: string): string {
   const extracted = queryMatch
     ? queryMatch[1].trim()
     : text.replace(/<timestamp>[\s\S]*?<\/timestamp>\s*/gi, "").trim();
-  const cleaned = stripCursorInjectedNoise(extracted);
-  return isCursorSubagentFollowUpInstruction(cleaned) ? "" : cleaned;
+  return stripCursorInjectedNoise(extracted);
 }
 
 /**
@@ -242,7 +241,10 @@ export function extractCursorUserQuery(text: string): string {
  * blocks, while retaining any real user prompt in the same message.
  */
 export function stripCodexInjectedNoise(text: string): string {
-  return stripSubagentNotificationNoise(text);
+  const wrappedQuery = /<system_notification\b/i.test(text)
+    ? text.match(/<user_query>\s*([\s\S]*?)\s*<\/user_query>/i)?.[1]
+    : undefined;
+  return stripSubagentNotificationNoise(wrappedQuery ?? text);
 }
 
 /**
@@ -251,10 +253,11 @@ export function stripCodexInjectedNoise(text: string): string {
  * leak the notification back into conversation bubbles.
  */
 export function stripSubagentNotificationNoise(text: string): string {
-  return text
+  const cleaned = text
     .replace(/<subagent_notification\b[^>]*>[\s\S]*?<\/subagent_notification>\s*/gi, "")
     .replace(/<task-notification\b[^>]*>[\s\S]*?<\/task-notification>\s*/gi, "")
     .trim();
+  return isCursorSubagentFollowUpInstruction(cleaned) ? "" : cleaned;
 }
 
 function timestampFromCursorRaw(raw: unknown): string {

@@ -535,6 +535,54 @@ describe("session store schema", () => {
     }
   });
 
+  it("invalidates only sessions whose stored user messages contain injected collaboration noise", () => {
+    const db = new DatabaseSync(":memory:");
+    try {
+      migrateSessionStore(db);
+      db.prepare("DELETE FROM data_migrations WHERE id = 'injected-user-noise-v3'").run();
+      const insertSession = db.prepare(`
+        INSERT INTO sessions (
+          session_key, raw_id, source, project_path, file_path,
+          original_title, first_question, timestamp, file_mtime_ms, file_size,
+          message_count, content_indexed_mtime_ms, content_indexed_size
+        ) VALUES (?, ?, 'codex-cli', '/repo', ?, 'Title', 'Question', 1, 123, 456, 1, 123, 456)
+      `);
+      for (const sessionKey of ["codex:tag", "codex:follow-up", "codex:clean"]) {
+        insertSession.run(sessionKey, sessionKey, `/tmp/${sessionKey}.jsonl`);
+      }
+      const insertMessage = db.prepare(
+        "INSERT INTO messages (session_key, message_index, role, content, timestamp) VALUES (?, 0, 'user', ?, '')",
+      );
+      insertMessage.run(
+        "codex:tag",
+        "<subagent_notification source=\"worker\">done</subagent_notification>\nreal prompt",
+      );
+      insertMessage.run(
+        "codex:follow-up",
+        "Perform any necessary follow-up actions in response to the subagent completion above. If no follow-up work is needed, no further action is required.",
+      );
+      insertMessage.run("codex:clean", "real prompt");
+
+      migrateSessionStore(db);
+
+      expect(db.prepare(`
+        SELECT session_key, file_mtime_ms, content_indexed_mtime_ms, content_indexed_size
+        FROM sessions ORDER BY session_key
+      `).all()).toEqual([
+        { session_key: "codex:clean", file_mtime_ms: 123, content_indexed_mtime_ms: 123, content_indexed_size: 456 },
+        { session_key: "codex:follow-up", file_mtime_ms: 0, content_indexed_mtime_ms: 0, content_indexed_size: 0 },
+        { session_key: "codex:tag", file_mtime_ms: 0, content_indexed_mtime_ms: 0, content_indexed_size: 0 },
+      ]);
+
+      db.prepare("UPDATE sessions SET file_mtime_ms = 999 WHERE session_key = 'codex:tag'").run();
+      migrateSessionStore(db);
+      expect(db.prepare("SELECT file_mtime_ms FROM sessions WHERE session_key = 'codex:tag'").get())
+        .toEqual({ file_mtime_ms: 999 });
+    } finally {
+      db.close();
+    }
+  });
+
   it("removes claude-internal and codex-internal sessions, their FTS rows, and orphaned tags exactly once", () => {
     const db = new DatabaseSync(":memory:");
     try {

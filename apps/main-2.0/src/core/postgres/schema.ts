@@ -1583,4 +1583,29 @@ export const POSTGRES_MIGRATIONS: readonly PostgresMigration[] = [{
   version: 35,
   name: "preserve Cursor custom title precedence",
   statements: [],
+}, {
+  version: 36,
+  name: "reindex sessions containing injected user-role notifications",
+  statements: [
+    `
+      UPDATE agent_recall.sessions sessions
+      SET file_mtime_ms = 0,
+          content_indexed_mtime_ms = 0,
+          content_indexed_size = 0
+      WHERE EXISTS (
+        SELECT 1
+        FROM agent_recall.session_turns turns
+        JOIN agent_recall.turn_messages messages ON messages.turn_id = turns.id
+        WHERE turns.session_key = sessions.session_key
+          AND messages.role = 'user'
+          AND (
+            strpos(lower(messages.content), '<subagent_notification') > 0
+            OR strpos(lower(messages.content), '<task-notification') > 0
+            OR strpos(lower(messages.content), '<system_notification') > 0
+            OR lower(ltrim(messages.content)) LIKE
+              'perform any necessary follow-up actions in response to the subagent completion above.%'
+          )
+      );
+    `,
+  ],
 }];

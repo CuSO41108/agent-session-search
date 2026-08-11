@@ -9,7 +9,7 @@ import type {
 } from "../types";
 import { tracePresentation } from "../trace-presentation";
 
-export const TURN_DERIVATION_VERSION = 4;
+export const TURN_DERIVATION_VERSION = 5;
 
 export interface DerivedRawEvent {
   eventIndex: number;

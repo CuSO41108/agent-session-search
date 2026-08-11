@@ -84,8 +84,24 @@ def text_from_blocks(content):
       parts.append(text)
   return "\n".join(parts)
 
-def strip_cursor_injected_noise(text):
-  return re.sub(r"<subagent_notification>[\s\S]*?</subagent_notification>\s*", "", text, flags=re.I).strip()
+def strip_injected_user_noise(text):
+  query = None
+  if re.search(r"<system_notification\b", text, flags=re.I):
+    match = re.search(r"<user_query>\s*([\s\S]*?)\s*</user_query>", text, flags=re.I)
+    query = match.group(1) if match else None
+  value = re.sub(
+    r"<(?:subagent_notification|task-notification)\b[^>]*>[\s\S]*?</(?:subagent_notification|task-notification)>\s*",
+    "",
+    query if query is not None else text,
+    flags=re.I,
+  ).strip()
+  if re.match(
+    r"^Perform any necessary follow-up actions in response to the subagent completion above\.\s*If no follow-up work is needed, no further action is required\.",
+    value,
+    flags=re.I,
+  ):
+    return ""
+  return value
 
 def meaningful_user(text):
   value = text.strip()
@@ -135,7 +151,7 @@ def parse_message(row, kind):
       return None
     text = text_from_blocks(content)
     if role == "user":
-      text = strip_cursor_injected_noise(text)
+      text = strip_injected_user_noise(text)
     if not text or (role == "user" and not meaningful_user(text)):
       return None
     return {"role": role, "content": text, "timestamp": row.get("timestamp") if isinstance(row.get("timestamp"), str) else ""}
@@ -145,7 +161,7 @@ def parse_message(row, kind):
     text = text_from_blocks(row.get("content"))
     role = row.get("role")
     if role == "user":
-      text = strip_cursor_injected_noise(text)
+      text = strip_injected_user_noise(text)
     if not text or (role == "user" and not meaningful_user(text)):
       return None
     if role == "user" and row.get("parentId") is None and text.strip() == "code":
@@ -159,7 +175,7 @@ def parse_message(row, kind):
     content = message.get("content") if isinstance(message, dict) else None
     text = text_from_blocks(content)
     if role == "user":
-      text = strip_cursor_injected_noise(text)
+      text = strip_injected_user_noise(text)
     if not text or (role == "user" and not meaningful_user(text)):
       return None
     return {"role": role, "content": text, "timestamp": ""}
@@ -169,7 +185,7 @@ def parse_message(row, kind):
   content = message.get("content") if isinstance(message, dict) else None
   text = text_from_blocks(content)
   if row.get("type") == "user":
-    text = strip_cursor_injected_noise(text)
+    text = strip_injected_user_noise(text)
   if not text or (row.get("type") == "user" and not meaningful_user(text)):
     return None
   return {"role": row.get("type"), "content": text, "timestamp": row.get("timestamp") if isinstance(row.get("timestamp"), str) else ""}`;

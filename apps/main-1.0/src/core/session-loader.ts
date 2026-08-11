@@ -8,6 +8,7 @@ import {
   extractCursorUserQuery,
   getAdapter,
   isMeaningfulUserMessage,
+  stripCodexInjectedNoise,
 } from "./format-adapters";
 import { scanCompleteJsonl, scanCompleteJsonlAsync } from "./codex-jsonl-stream";
 import {
@@ -256,7 +257,7 @@ function codexVisibleConversationRows(rows: unknown[]): unknown[] {
     const userContent = responseUser
       ? parsed.content
       : completedMessage?.role === "user"
-        ? completedMessage.content
+        ? stripCodexInjectedNoise(completedMessage.content)
         : "";
     if ((responseUser || completedUser) && userContent && isMeaningfulUserMessage(userContent)) {
       if (currentTurn && !currentTurn.hasUserMessage) {
@@ -725,10 +726,14 @@ function extractCodexMessages(rows: unknown[]): {
     const context = result.message;
     if (result.completedMessage) {
       const completed = result.completedMessage;
+      const content = completed.role === "user"
+        ? stripCodexInjectedNoise(completed.content)
+        : completed.content;
+      if (completed.role === "user" && !isMeaningfulUserMessage(content)) continue;
       const replacement = provenanceIndexes.get(completed.replacesSourceRecordId) ?? -1;
       const nextMessage: SessionMessage = {
         role: completed.role,
-        content: completed.content,
+        content,
         timestamp: completed.timestamp,
         index: replacement >= 0 ? replacement : messages.length,
         sourceTurnId: completed.sourceTurnId,
@@ -745,7 +750,7 @@ function extractCodexMessages(rows: unknown[]): {
         };
         provenanceIndexes.delete(completed.replacesSourceRecordId);
         provenanceIndexes.set(completed.sourceRecordId, replacement);
-      } else if (completed.role !== "user" || isMeaningfulUserMessage(completed.content)) {
+      } else {
         messages.push(nextMessage);
         messageProvenance.push({
           messageIndex: nextMessage.index,
@@ -1671,11 +1676,22 @@ function createCodexScanAccumulator(base?: { offset: number; loaded: LoadedSessi
         : null;
       if (rolloutRecord.completedMessage) {
         const completed = rolloutRecord.completedMessage;
+        const content = completed.role === "user"
+          ? stripCodexInjectedNoise(completed.content)
+          : completed.content;
         const existing = provenanceMessages.get(completed.replacesSourceRecordId);
-        if (existing) {
+        if (completed.role === "user" && !isMeaningfulUserMessage(content)) {
+          if (existing) {
+            const messageIndex = allMessages.indexOf(existing);
+            if (messageIndex >= 0) allMessages.splice(messageIndex, 1);
+            messageProvenance.delete(existing);
+            provenanceMessages.delete(completed.replacesSourceRecordId);
+          }
+          message = null;
+        } else if (existing) {
           Object.assign(existing, {
             role: completed.role,
-            content: completed.content,
+            content,
             timestamp: completed.timestamp,
             sourceTurnId: completed.sourceTurnId,
             phase: completed.phase,
@@ -1684,10 +1700,10 @@ function createCodexScanAccumulator(base?: { offset: number; loaded: LoadedSessi
           provenanceMessages.delete(completed.replacesSourceRecordId);
           provenanceMessages.set(completed.sourceRecordId, existing);
           message = null;
-        } else if (completed.role !== "user" || isMeaningfulUserMessage(completed.content)) {
+        } else {
           message = {
             role: completed.role,
-            content: completed.content,
+            content,
             timestamp: completed.timestamp,
             index: 0,
             sourceTurnId: completed.sourceTurnId,

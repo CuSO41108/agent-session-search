@@ -104,6 +104,20 @@ function clamp(value, fallback, max) {
   return Math.min(Math.floor(n), max);
 }
 
+export function cleanUserMessageContent(text) {
+  const source = String(text ?? "");
+  const wrappedQuery = /<system_notification\b/iu.test(source)
+    ? source.match(/<user_query>\s*([\s\S]*?)\s*<\/user_query>/iu)?.[1]
+    : undefined;
+  const cleaned = (wrappedQuery ?? source)
+    .replace(/<(?:subagent_notification|task-notification)\b[^>]*>[\s\S]*?<\/(?:subagent_notification|task-notification)>\s*/giu, "")
+    .trim();
+  if (/^Perform any necessary follow-up actions in response to the subagent completion above\.\s*If no follow-up work is needed, no further action is required\./iu.test(cleaned)) {
+    return "";
+  }
+  return cleaned;
+}
+
 function searchTerms(query) {
   const terms = [];
   const pattern = /"([^"]+)"|(\S+)/gu;
@@ -193,34 +207,69 @@ export async function getSession(db, { sessionKey, maxMessages = 40, offset = 0 
   if (!row) return null;
   const cap = clamp(maxMessages, 40, MAX_MESSAGES);
   const start = Number.isFinite(offset) && offset > 0 ? Math.floor(offset) : 0;
-  const totalRow = (await db.query(
-    `SELECT count(*)::integer AS n
+  const hasInjectedNoise = Boolean((await db.query(
+    `SELECT 1
        FROM agent_recall.turn_messages m
        JOIN agent_recall.session_turns t ON t.id = m.turn_id
-      WHERE t.session_key = $1`,
+      WHERE t.session_key = $1 AND m.role = 'user'
+        AND (
+          strpos(lower(m.content), '<subagent_notification') > 0
+          OR strpos(lower(m.content), '<task-notification') > 0
+          OR strpos(lower(m.content), '<system_notification') > 0
+          OR lower(ltrim(m.content)) LIKE
+            'perform any necessary follow-up actions in response to the subagent completion above.%'
+        )
+      LIMIT 1`,
     [sessionKey],
-  )).rows[0];
-  const totalMessages = Number(totalRow?.n ?? 0);
-  const messages = (await db.query(
-    `SELECT m.role, m.content
-       FROM agent_recall.turn_messages m
-       JOIN agent_recall.session_turns t ON t.id = m.turn_id
-      WHERE t.session_key = $1
-      ORDER BY t.turn_index, m.message_index
-      LIMIT $2 OFFSET $3`,
-    [sessionKey, cap, start],
-  )).rows;
-  const nextOffset = start + messages.length < totalMessages
-    ? start + messages.length
+  )).rows[0]);
+  let totalMessages;
+  let page;
+  if (hasInjectedNoise) {
+    const messages = (await db.query(
+      `SELECT m.role, m.content
+         FROM agent_recall.turn_messages m
+         JOIN agent_recall.session_turns t ON t.id = m.turn_id
+        WHERE t.session_key = $1
+        ORDER BY t.turn_index, m.message_index`,
+      [sessionKey],
+    )).rows
+      .map((message) => ({
+        role: message.role,
+        content: message.role === "user" ? cleanUserMessageContent(message.content) : message.content,
+      }))
+      .filter((message) => message.role !== "user" || message.content);
+    totalMessages = messages.length;
+    page = messages.slice(start, start + cap);
+  } else {
+    const totalRow = (await db.query(
+      `SELECT count(*)::integer AS n
+         FROM agent_recall.turn_messages m
+         JOIN agent_recall.session_turns t ON t.id = m.turn_id
+        WHERE t.session_key = $1`,
+      [sessionKey],
+    )).rows[0];
+    totalMessages = Number(totalRow?.n ?? 0);
+    page = (await db.query(
+      `SELECT m.role, m.content
+         FROM agent_recall.turn_messages m
+         JOIN agent_recall.session_turns t ON t.id = m.turn_id
+        WHERE t.session_key = $1
+        ORDER BY t.turn_index, m.message_index
+        LIMIT $2 OFFSET $3`,
+      [sessionKey, cap, start],
+    )).rows;
+  }
+  const nextOffset = start + page.length < totalMessages
+    ? start + page.length
     : null;
   return {
     ...toResult(row),
     totalMessages,
     offset: start,
-    returned: messages.length,
+    returned: page.length,
     // Non-null when the session has more messages; pass it back as `offset` to continue.
     nextOffset,
-    messages: messages.map((m) => ({ role: m.role, content: m.content })),
+    messages: page,
   };
 }
 

@@ -79,6 +79,26 @@ describe("format adapters", () => {
     ).toBeNull();
   });
 
+  it("extracts the real Codex user_query from a system notification wrapper", () => {
+    const wrapped = (query: string) => `<timestamp>Friday</timestamp>
+<system_notification><task>completed</task></system_notification>
+<user_query>${query}</user_query>`;
+    const row = (text: string) => ({
+      type: "response_item",
+      payload: {
+        type: "message",
+        role: "user",
+        content: [{ type: "input_text", text }],
+      },
+    });
+
+    expect(codexAdapter.parseLine(row(wrapped("真实输入"))))
+      .toMatchObject({ role: "user", content: "真实输入" });
+    expect(codexAdapter.parseLine(row(wrapped(
+      "Perform any necessary follow-up actions in response to the subagent completion above. If no follow-up work is needed, no further action is required.",
+    )))).toBeNull();
+  });
+
   it("keeps explicit image attachments without treating tool paths as files", () => {
     const parsed = codexAdapter.parseLine({
       type: "response_item",
