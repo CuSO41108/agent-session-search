@@ -209,6 +209,14 @@ describe("parseSummaryResponse", () => {
     expect(parseSummaryResponse(reply).summary).toBe('Fixed the {0} placeholder and the "quoted" label.');
   });
 
+  it("keeps the summary when the prose ahead of it has unbalanced quotes or braces", () => {
+    // Prose is not JSON: a stray quote or brace in it must not consume the object behind it.
+    const oddQuote = 'Here is the 12" result:\n{"summary":"Did X.","title":"X","tags":[]}';
+    expect(parseSummaryResponse(oddQuote).summary).toBe("Did X.");
+    const strayBrace = 'Reading "config.json… the shape is { — anyway:\n{"summary":"Did Y.","title":"Y","tags":[]}';
+    expect(parseSummaryResponse(strayBrace).summary).toBe("Did Y.");
+  });
+
   it("throws when summary is missing", () => {
     expect(() => parseSummaryResponse('{"title":"x","tags":[]}')).toThrow("had no summary");
     expect(() => parseSummaryResponse("not json")).toThrow("was not valid JSON");

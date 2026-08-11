@@ -197,16 +197,33 @@ function normalizeTags(value: unknown): string[] {
  * Models wrap the JSON in prose or code fences, and CLI providers can emit a preamble before the
  * answer. Slicing from the first `{` to the last `}` swallows that surrounding text whenever it
  * contains a brace of its own — a trailing note, an echoed snippet, two objects — and the summary
- * then fails as unparseable. So scan for every complete top-level object instead, tracking string
- * literals and escapes so braces inside a summary string do not shift the boundaries.
+ * then fails as unparseable. So collect every span that closes as a complete object instead.
  */
 function extractJsonObjects(text: string): string[] {
   const objects: string[] = [];
+  for (let index = 0; index < text.length; index += 1) {
+    if (text[index] !== "{") continue;
+    const end = findObjectEnd(text, index);
+    // A brace the surrounding prose never closes is not an object; the real one may still
+    // follow, so keep looking from the next character instead of giving up on the reply.
+    if (end === -1) continue;
+    objects.push(text.slice(index, end + 1));
+    index = end;
+  }
+  return objects;
+}
+
+/**
+ * Index of the brace closing the object opened at `start`, or -1 when it never closes. State is
+ * per-object rather than per-reply: quotes in the prose ahead of an object are not JSON strings,
+ * and treating them as such would hide the object behind them. Within the object, string literals
+ * and escapes are tracked so a brace or quote in a summary cannot end it early.
+ */
+function findObjectEnd(text: string, start: number): number {
   let depth = 0;
-  let start = -1;
   let inString = false;
   let escaped = false;
-  for (let index = 0; index < text.length; index += 1) {
+  for (let index = start; index < text.length; index += 1) {
     const char = text[index];
     if (inString) {
       if (escaped) escaped = false;
@@ -215,18 +232,13 @@ function extractJsonObjects(text: string): string[] {
       continue;
     }
     if (char === '"') inString = true;
-    else if (char === "{") {
-      if (depth === 0) start = index;
-      depth += 1;
-    } else if (char === "}" && depth > 0) {
+    else if (char === "{") depth += 1;
+    else if (char === "}") {
       depth -= 1;
-      if (depth === 0) {
-        objects.push(text.slice(start, index + 1));
-        start = -1;
-      }
+      if (depth === 0) return index;
     }
   }
-  return objects;
+  return -1;
 }
 
 export type ChatCompletionFn = (endpoint: SummaryEndpoint, messages: ChatMessage[], signal?: AbortSignal) => Promise<string>;
