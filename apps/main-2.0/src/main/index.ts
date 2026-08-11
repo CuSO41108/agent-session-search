@@ -2105,8 +2105,14 @@ async function writeMigratedSessionToSshEnvironment(
   const now = new Date();
   const tempHome = await fs.mkdtemp(path.join(app.getPath("temp"), "agent-session-remote-restore-"));
   try {
-    const written = await writeMigratedSession({ target, session, homeDir: tempHome, now });
     const remoteHome = await remoteHomeDir(environment);
+    const written = await writeMigratedSession({
+      target,
+      session,
+      homeDir: tempHome,
+      now,
+      codexRuntimeCwd: session.projectPath || remoteHome,
+    });
     const remotePath = targetFilePathForRemoteEnvironment(target, session.projectPath, written.sessionId, remoteHome, now);
     const content = await fs.readFile(written.filePath);
     await runRemotePython(environment, REMOTE_WRITE_FILE_SCRIPT, {
@@ -2155,7 +2161,7 @@ async function updateRemoteCodexAppState(
       home: remoteHome,
       id: sessionId,
       rolloutPath,
-      cwd: session.projectPath,
+      cwd: session.projectPath || remoteHome,
       title,
       firstUserMessage,
       createdAtMs: new Date(session.startedAt).getTime(),
