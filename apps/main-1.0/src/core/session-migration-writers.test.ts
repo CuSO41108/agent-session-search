@@ -453,6 +453,11 @@ describe("writeMigratedSession", () => {
           recency_at INTEGER NOT NULL DEFAULT 0,
           recency_at_ms INTEGER NOT NULL DEFAULT 0,
           history_mode TEXT NOT NULL DEFAULT 'legacy'
+        );
+        CREATE TABLE thread_spawn_edges (
+          parent_thread_id TEXT NOT NULL,
+          child_thread_id TEXT NOT NULL PRIMARY KEY,
+          status TEXT NOT NULL
         )
       `);
       db.close();
@@ -516,6 +521,8 @@ describe("writeMigratedSession", () => {
       });
       const childStateDb = new DatabaseSync(statePath);
       const childRow = childStateDb.prepare("SELECT * FROM threads WHERE id = ?").get(CHILD_SESSION_ID) as Record<string, unknown>;
+      const childEdge = childStateDb.prepare("SELECT * FROM thread_spawn_edges WHERE child_thread_id = ?")
+        .get(CHILD_SESSION_ID) as Record<string, unknown>;
       childStateDb.close();
       expect(childRow).toMatchObject({
         cwd: "",
@@ -524,6 +531,11 @@ describe("writeMigratedSession", () => {
       });
       expect(JSON.parse(String(childRow.source))).toMatchObject({
         subagent: { thread_spawn: { parent_thread_id: SESSION_ID } },
+      });
+      expect(childEdge).toEqual({
+        parent_thread_id: SESSION_ID,
+        child_thread_id: CHILD_SESSION_ID,
+        status: "open",
       });
       expect(readRows(path.join(homeDir, ".codex", "session_index.jsonl"))).toEqual([
         { id: SESSION_ID, thread_name: portable().title, updated_at: NOW.toISOString() },
