@@ -144,7 +144,6 @@ export function portableSessionFrom(
 export function collectMigrationDescendants(
   source: SessionSearchResult,
   candidates: readonly SessionSearchResult[],
-  limit = 200,
 ): SessionSearchResult[] {
   const childrenByParentId = new Map<string, SessionSearchResult[]>();
   for (const candidate of candidates) {
@@ -162,12 +161,13 @@ export function collectMigrationDescendants(
   const descendants: SessionSearchResult[] = [];
   const pendingParentIds = [source.rawId];
   const visitedSessionKeys = new Set<string>();
-  while (pendingParentIds.length > 0 && descendants.length < limit) {
-    const parentId = pendingParentIds.shift()!;
+  let pendingParentIndex = 0;
+  while (pendingParentIndex < pendingParentIds.length) {
+    const parentId = pendingParentIds[pendingParentIndex++];
     const children = (childrenByParentId.get(parentId) ?? [])
       .sort((left, right) => left.timestamp - right.timestamp || left.sessionKey.localeCompare(right.sessionKey));
     for (const child of children) {
-      if (visitedSessionKeys.has(child.sessionKey) || descendants.length >= limit) continue;
+      if (visitedSessionKeys.has(child.sessionKey)) continue;
       visitedSessionKeys.add(child.sessionKey);
       descendants.push(child);
       pendingParentIds.push(child.rawId);
@@ -307,11 +307,14 @@ export async function migrateSession({
       continue;
     }
     try {
-      const directChildren = portableSubagents.filter((candidate) =>
-        (candidate.parentSessionId?.trim() || rootSourceId) === subagentSourceId);
+      const hasDirectChildren = target === "codex" && (
+        (codexLinkage?.childrenByParentSourceId.get(subagentSourceId)?.length ?? 0) > 0
+        || (!codexLinkage && portableSubagents.some((candidate) =>
+          (candidate.parentSessionId?.trim() || rootSourceId) === subagentSourceId))
+      );
       const preparedSubagent = await deps.prepare({
         ...(target === "codex"
-          ? withoutSubagentSystemNotifications(subagent, directChildren.length > 0)
+          ? withoutSubagentSystemNotifications(subagent, hasDirectChildren)
           : subagent),
         projectPath: prepared.session.projectPath,
         isSubagent: true,
@@ -397,15 +400,14 @@ export async function migrateSession({
   };
 }
 
-interface CodexMigrationLinkage {
-  rootSourceId: string;
-  allSubagents: PortableSession[];
+export interface CodexMigrationLinkage {
   targetIdBySourceId: Map<string, string>;
   depthBySourceId: Map<string, number>;
   pathBySourceId: Map<string, string>;
+  childrenByParentSourceId: Map<string, PortableSession[]>;
 }
 
-function buildCodexMigrationLinkage(
+export function buildCodexMigrationLinkage(
   root: PortableSession,
   subagents: PortableSession[],
   sourceAliases: Map<string, string>,
@@ -415,9 +417,13 @@ function buildCodexMigrationLinkage(
   const targetIdBySourceId = new Map<string, string>([[rootSourceId, createTargetSessionId()]]);
   const depthBySourceId = new Map<string, number>([[rootSourceId, 0]]);
   const pathBySourceId = new Map<string, string>([[rootSourceId, "/root"]]);
+  const childrenByParentSourceId = new Map<string, PortableSession[]>();
   for (const subagent of subagents) {
     const sourceId = portableSourceId(subagent);
     const parentSourceId = subagent.parentSessionId?.trim() || rootSourceId;
+    const siblings = childrenByParentSourceId.get(parentSourceId) ?? [];
+    siblings.push(subagent);
+    childrenByParentSourceId.set(parentSourceId, siblings);
     const parentDepth = depthBySourceId.get(parentSourceId) ?? 0;
     const parentPath = pathBySourceId.get(parentSourceId) ?? "/root";
     targetIdBySourceId.set(sourceId, createTargetSessionId());
@@ -428,10 +434,10 @@ function buildCodexMigrationLinkage(
     const targetId = targetIdBySourceId.get(canonicalSourceId);
     if (targetId) targetIdBySourceId.set(aliasSourceId, targetId);
   }
-  return { rootSourceId, allSubagents: subagents, targetIdBySourceId, depthBySourceId, pathBySourceId };
+  return { targetIdBySourceId, depthBySourceId, pathBySourceId, childrenByParentSourceId };
 }
 
-function codexSessionForWrite(
+export function codexSessionForWrite(
   session: PortableSession,
   sourceId: string,
   targetParentId: string | null,
@@ -450,8 +456,7 @@ function codexSessionForWrite(
     });
     return content === message.content ? message : { ...message, content };
   });
-  const directSubagents = linkage.allSubagents
-    .filter((candidate) => (candidate.parentSessionId?.trim() || linkage.rootSourceId) === sourceId)
+  const directSubagents = (linkage.childrenByParentSourceId.get(sourceId) ?? [])
     .map((candidate) => {
       const childSourceId = portableSourceId(candidate);
       return {
@@ -479,7 +484,7 @@ function codexSessionForWrite(
   };
 }
 
-function withoutSubagentSystemNotifications(
+export function withoutSubagentSystemNotifications(
   session: PortableSession,
   hasSubagents: boolean,
 ): PortableSession {
@@ -503,12 +508,13 @@ function withoutSubagentSystemNotifications(
   };
 }
 
-function flattenPortableSubagents(subagents: PortableSession[]): PortableSession[] {
+export function flattenPortableSubagents(subagents: PortableSession[]): PortableSession[] {
   const flattened: PortableSession[] = [];
   const pending = [...subagents];
   const visited = new Set<string>();
-  while (pending.length > 0 && flattened.length < 200) {
-    const subagent = pending.shift()!;
+  let pendingIndex = 0;
+  while (pendingIndex < pending.length) {
+    const subagent = pending[pendingIndex++];
     if (visited.has(subagent.sourceSessionKey)) continue;
     visited.add(subagent.sourceSessionKey);
     flattened.push(subagent);
@@ -517,11 +523,11 @@ function flattenPortableSubagents(subagents: PortableSession[]): PortableSession
   return flattened;
 }
 
-function portableSourceId(session: PortableSession): string {
+export function portableSourceId(session: PortableSession): string {
   return session.sourceSessionId || session.sourceSessionKey.split(":").at(-1) || session.sourceSessionKey;
 }
 
-function normalizeCursorCodexSubagents(
+export function normalizeCursorCodexSubagents(
   subagents: PortableSession[],
   rootSourceId: string,
 ): { subagents: PortableSession[]; sourceAliases: Map<string, string> } {

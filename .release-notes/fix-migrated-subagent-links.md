@@ -1,5 +1,7 @@
 # 修复迁移后无法打开子 Agent 会话
 
+<!-- release-target: both -->
+
 ## Bug 修复
 
 - 修复 Cursor 会话迁移到 Codex 后子 Agent 名称显示为链接却无法打开的问题，链接现在会准确指向迁移后的完整子会话。

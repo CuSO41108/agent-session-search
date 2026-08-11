@@ -1893,7 +1893,7 @@ async function createLocalRemoteRestoreDependencies(
       listener,
       settings.migrationCompleteTokenLimit,
     ),
-    write: (target, session) => writeMigratedSession({ target, session }),
+    write: (target, session, targetSessionId) => writeMigratedSession({ target, session, sessionId: targetSessionId }),
     record: (record) => store.recordSessionMigration(record),
     refreshIndex: async (target, writtenFilePath, targetSessionId) => {
       indexStatus = await indexMigratedSessionFile(store, target, writtenFilePath, targetSessionId);
@@ -1905,6 +1905,7 @@ async function createLocalRemoteRestoreDependencies(
     fallbackResumeCommand: fallbackMigrationResumeDisplayCommand,
     onProgress,
     idFactory: () => randomUUID(),
+    targetSessionIdFactory: () => randomUUID(),
     now: () => Date.now(),
     projectPathExists: pathExists,
     projectPathIsDirectory: pathIsDirectory,
@@ -1935,7 +1936,8 @@ async function createSourceRemoteRestoreDependencies(
       listener,
       settings.migrationCompleteTokenLimit,
     ),
-    write: (target, session) => writeMigratedSessionToSshEnvironment(environment, target, session),
+    write: (target, session, targetSessionId) =>
+      writeMigratedSessionToSshEnvironment(environment, target, session, targetSessionId),
     record: (record) => store.recordSessionMigration(record),
     refreshIndex: async () => {
       await syncRemoteEnvironment(store, environment, {
@@ -1963,6 +1965,7 @@ async function createSourceRemoteRestoreDependencies(
       remoteMigrationResumeDisplayCommand(environment, target, targetSessionId, projectPath),
     onProgress,
     idFactory: () => randomUUID(),
+    targetSessionIdFactory: () => randomUUID(),
     now: () => Date.now(),
     projectPathExists: (projectPath) => remotePathExists(environment, projectPath),
     projectPathIsDirectory: (projectPath) => remotePathIsDirectory(environment, projectPath),
@@ -2101,6 +2104,7 @@ async function writeMigratedSessionToSshEnvironment(
   environment: SessionEnvironment,
   target: MigrationAgent,
   session: PortableSession,
+  targetSessionId?: string,
 ): Promise<{ sessionId: string; filePath: string }> {
   const now = new Date();
   const tempHome = await fs.mkdtemp(path.join(app.getPath("temp"), "agent-session-remote-restore-"));
@@ -2109,6 +2113,7 @@ async function writeMigratedSessionToSshEnvironment(
     const written = await writeMigratedSession({
       target,
       session,
+      sessionId: targetSessionId,
       homeDir: tempHome,
       now,
       codexRuntimeCwd: session.projectPath || remoteHome,

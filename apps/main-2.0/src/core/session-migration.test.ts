@@ -1,5 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
-import { migrateSession, portableSessionFrom, sshMigrationTarget, type SessionMigrationDependencies } from "./session-migration";
+import {
+  collectMigrationDescendants,
+  migrateSession,
+  portableSessionFrom,
+  sshMigrationTarget,
+  type SessionMigrationDependencies,
+} from "./session-migration";
 import type { PortableSession, SessionMessage, SessionSearchResult, SessionSource } from "./types";
 
 function session(source: SessionSource): SessionSearchResult {
@@ -38,6 +44,28 @@ function session(source: SessionSource): SessionSearchResult {
 const messages: SessionMessage[] = [
   { role: "user", content: "hello", timestamp: "2026-08-08T00:00:00Z", index: 0 },
 ];
+
+describe("session migration descendants", () => {
+  it("keeps every indexed descendant instead of silently truncating large trees", () => {
+    const root = {
+      ...session("codex-cli"),
+      rawId: "root",
+      sessionKey: "codex:root",
+      environmentId: "local",
+      environmentKind: "local",
+    } as SessionSearchResult;
+    const descendants = Array.from({ length: 201 }, (_, index) => ({
+      ...root,
+      sessionKey: `codex:child-${index}`,
+      rawId: `child-${index}`,
+      isSubagent: true,
+      parentSessionId: "root",
+      timestamp: root.timestamp + index,
+    } as SessionSearchResult));
+
+    expect(collectMigrationDescendants(root, descendants)).toHaveLength(201);
+  });
+});
 
 describe("SSH session migration policy", () => {
   it.each([

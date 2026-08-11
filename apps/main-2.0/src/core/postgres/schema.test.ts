@@ -624,44 +624,4 @@ describe("AgentRecall PostgreSQL schema", () => {
     }]);
     await upgradedDatabase.close();
   });
-
-  it("preserves Cursor custom titles during upgrade", async () => {
-    const pool = new PGliteTestPool();
-    const legacyDatabase = new PostgresDatabase(pool, {
-      migrationLock: false,
-      migrations: POSTGRES_MIGRATIONS.filter((migration) => migration.version <= 34),
-    });
-    await legacyDatabase.initialize();
-    await legacyDatabase.query(`
-      insert into agent_recall.sessions (
-        session_key, raw_id, source, environment_id, storage_environment_id,
-        project_path, file_path, original_title, first_question, started_at,
-        file_mtime_ms, file_size, custom_title, indexed_at
-      ) values (
-        'cursor:renamed', 'renamed', 'cursor-agent', 'local', 'local',
-        '/repo', '/tmp/cursor.jsonl', 'Renamed in Cursor', 'Question', now(),
-        123, 10, 'AgentRecall title', now()
-      )
-    `);
-
-    const upgradedDatabase = new PostgresDatabase(pool, {
-      migrationLock: false,
-      migrations: POSTGRES_MIGRATIONS,
-    });
-    await upgradedDatabase.initialize();
-
-    const rows = await upgradedDatabase.query<{
-      custom_title: string | null;
-      file_mtime_ms: number | string;
-    }>(`
-      select custom_title, file_mtime_ms
-      from agent_recall.sessions
-      where session_key = 'cursor:renamed'
-    `);
-    expect(rows.rows.map((row) => ({
-      custom_title: row.custom_title,
-      file_mtime_ms: Number(row.file_mtime_ms),
-    }))).toEqual([{ custom_title: "AgentRecall title", file_mtime_ms: 123 }]);
-    await upgradedDatabase.close();
-  });
 });

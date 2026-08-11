@@ -1,5 +1,15 @@
 import type { MigrationCompressionListener, PreparedMigrationSession } from "./session-migration-compression";
-import { estimatePortableSessionTokens, migrationCompressionPercent, MIGRATION_TOKEN_LIMIT } from "./session-migration";
+import {
+  buildCodexMigrationLinkage,
+  codexSessionForWrite,
+  estimatePortableSessionTokens,
+  flattenPortableSubagents,
+  migrationCompressionPercent,
+  MIGRATION_TOKEN_LIMIT,
+  normalizeCursorCodexSubagents,
+  portableSourceId,
+  withoutSubagentSystemNotifications,
+} from "./session-migration";
 import type { WrittenMigratedSession } from "./session-migration-writers";
 import type {
   MigrationAgent,
@@ -15,7 +25,7 @@ export interface RemoteSessionRestoreDependencies {
     session: PortableSession,
     onProgress?: MigrationCompressionListener,
   ) => Promise<PreparedMigrationSession>;
-  write: (target: MigrationAgent, session: PortableSession) => Promise<WrittenMigratedSession>;
+  write: (target: MigrationAgent, session: PortableSession, targetSessionId?: string) => Promise<WrittenMigratedSession>;
   record: (record: SessionMigrationRecord) => Promise<void> | void;
   refreshIndex: (target: MigrationAgent, targetFilePath: string, targetSessionId: string) => Promise<void>;
   launch: (target: MigrationAgent, sessionId: string, projectPath: string) => Promise<void>;
@@ -23,6 +33,7 @@ export interface RemoteSessionRestoreDependencies {
   fallbackResumeCommand: (target: MigrationAgent, sessionId: string, projectPath: string) => string;
   onProgress?: (progress: SessionMigrationProgress) => void;
   idFactory: () => string;
+  targetSessionIdFactory?: () => string;
   now: () => number;
   projectPathExists: (projectPath: string) => Promise<boolean> | boolean;
   projectPathIsDirectory: (projectPath: string) => Promise<boolean> | boolean;
@@ -68,8 +79,25 @@ export async function restoreRemotePortableSession({
       [],
     ),
   };
+  const rootSourceId = portableSourceId(localPortable);
+  const flattenedSubagents = flattenPortableSubagents(localPortable.subagents ?? []);
+  const codexSubagentNormalization = target === "codex"
+    ? normalizeCursorCodexSubagents(flattenedSubagents, rootSourceId)
+    : { subagents: flattenedSubagents, sourceAliases: new Map<string, string>() };
+  const portableSubagents = codexSubagentNormalization.subagents;
+  const codexLinkage = target === "codex" && portableSubagents.length > 0 && deps.targetSessionIdFactory
+    ? buildCodexMigrationLinkage(
+        localPortable,
+        portableSubagents,
+        codexSubagentNormalization.sourceAliases,
+        deps.targetSessionIdFactory,
+      )
+    : null;
+  const migrationPortable = target === "codex"
+    ? withoutSubagentSystemNotifications(localPortable, portableSubagents.length > 0)
+    : localPortable;
 
-  if (estimatePortableSessionTokens(localPortable) > completeTokenLimit) {
+  if (estimatePortableSessionTokens(migrationPortable) > completeTokenLimit) {
     notifyProgress(deps.onProgress, {
       sessionKey: remoteId,
       target,
@@ -93,20 +121,29 @@ export async function restoreRemotePortableSession({
       }
     : undefined;
 
-  const prepared = await deps.prepare(localPortable, compressionListener);
+  const prepared = await deps.prepare(migrationPortable, compressionListener);
 
   notifyProgress(deps.onProgress, {
     sessionKey: remoteId,
     target,
     stage: "writing",
   });
-  const written = await deps.write(target, prepared.session);
+  const mainWriteSession = codexLinkage
+    ? codexSessionForWrite(prepared.session, rootSourceId, null, codexLinkage)
+    : { ...prepared.session, subagents: [] };
+  const reservedMainTargetId = codexLinkage?.targetIdBySourceId.get(rootSourceId);
+  const written = reservedMainTargetId
+    ? await deps.write(target, mainWriteSession, reservedMainTargetId)
+    : await deps.write(target, mainWriteSession);
+  if (reservedMainTargetId && written.sessionId !== reservedMainTargetId) {
+    throw new Error("Codex migration writer did not preserve the reserved parent session id.");
+  }
 
   const warnings: string[] = [];
   let indexed = true;
   let restoredSubagentCount = 0;
   const targetIdsBySourceId = new Map<string, string>();
-  targetIdsBySourceId.set(portableSourceId(localPortable), written.sessionId);
+  targetIdsBySourceId.set(rootSourceId, written.sessionId);
 
   await collectWarning(warnings, async () => {
     await deps.record({
@@ -121,23 +158,39 @@ export async function restoreRemotePortableSession({
     });
   }, "Failed to record remote restore metadata");
 
-  for (const subagent of flattenPortableSubagents(localPortable.subagents ?? [])) {
-    const sourceParentId = subagent.parentSessionId?.trim();
-    const targetParentId = sourceParentId ? targetIdsBySourceId.get(sourceParentId) : written.sessionId;
+  for (const subagent of portableSubagents) {
+    const subagentSourceId = portableSourceId(subagent);
+    const sourceParentId = subagent.parentSessionId?.trim() || rootSourceId;
+    const targetParentId = targetIdsBySourceId.get(sourceParentId);
     if (!targetParentId) {
       warnings.push(`Skipped subagent ${subagent.title || portableSourceId(subagent)} because its restored parent was unavailable.`);
       continue;
     }
     try {
+      const hasDirectChildren = target === "codex" && (
+        (codexLinkage?.childrenByParentSourceId.get(subagentSourceId)?.length ?? 0) > 0
+        || (!codexLinkage && portableSubagents.some((candidate) =>
+          (candidate.parentSessionId?.trim() || rootSourceId) === subagentSourceId))
+      );
       const preparedSubagent = await deps.prepare({
-        ...subagent,
+        ...(target === "codex"
+          ? withoutSubagentSystemNotifications(subagent, hasDirectChildren)
+          : subagent),
         projectPath: localProjectPath,
         isSubagent: true,
         parentSessionId: targetParentId,
-        subagents: [],
       });
-      const writtenSubagent = await deps.write(target, preparedSubagent.session);
-      targetIdsBySourceId.set(portableSourceId(subagent), writtenSubagent.sessionId);
+      const subagentWriteSession = codexLinkage
+        ? codexSessionForWrite(preparedSubagent.session, subagentSourceId, targetParentId, codexLinkage)
+        : { ...preparedSubagent.session, subagents: [] };
+      const reservedTargetId = codexLinkage?.targetIdBySourceId.get(subagentSourceId);
+      const writtenSubagent = reservedTargetId
+        ? await deps.write(target, subagentWriteSession, reservedTargetId)
+        : await deps.write(target, subagentWriteSession);
+      if (reservedTargetId && writtenSubagent.sessionId !== reservedTargetId) {
+        throw new Error("Codex migration writer did not preserve a reserved subagent session id.");
+      }
+      targetIdsBySourceId.set(subagentSourceId, writtenSubagent.sessionId);
       restoredSubagentCount += 1;
       await collectWarning(warnings, async () => {
         await deps.record({
@@ -200,21 +253,6 @@ export async function restoreRemotePortableSession({
     ...(restoredSubagentCount > 0 ? { restoredSubagentCount } : {}),
     ...(warnings.length > 0 ? { warning: warnings.join("\n") } : {}),
   };
-}
-
-function portableSourceId(session: PortableSession): string {
-  return session.sourceSessionId || session.sourceSessionKey.split(":").at(-1) || session.sourceSessionKey;
-}
-
-function flattenPortableSubagents(subagents: PortableSession[]): PortableSession[] {
-  const flattened: PortableSession[] = [];
-  const pending = [...subagents];
-  while (pending.length > 0 && flattened.length < 200) {
-    const subagent = pending.shift()!;
-    flattened.push(subagent);
-    pending.push(...(subagent.subagents ?? []));
-  }
-  return flattened;
 }
 
 async function validateRestoreRequest(
