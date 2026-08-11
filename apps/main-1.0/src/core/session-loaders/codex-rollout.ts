@@ -166,6 +166,9 @@ const COMPACTION_BINARY_FIELDS = new Set([
   "screenshot",
 ]);
 const COMPACTION_UNKNOWN_BINARY_MIN_CHARS = 64 * 1_024;
+const COMPACTION_MARKER_EARLY_TOLERANCE_MS = 1_000;
+const COMPACTION_MARKER_LATE_TOLERANCE_MS = 30_000;
+const COMPACTION_MISSING_TURN_MATCH_WINDOW_MS = 1_000;
 
 function sanitizeCompactionJson(value: unknown, key = "", binaryContext = false): unknown {
   const normalizedKey = key.toLocaleLowerCase();
@@ -192,7 +195,7 @@ function sanitizeCompactionJson(value: unknown, key = "", binaryContext = false)
   return Object.fromEntries(
     Object.entries(object).map(([nestedKey, nestedValue]) => [
       nestedKey,
-      sanitizeCompactionJson(nestedValue, nestedKey, insideBinaryField),
+      sanitizeCompactionJson(nestedValue, nestedKey),
     ]),
   );
 }
@@ -950,10 +953,15 @@ export function dedupeCodexTraceEvents(events: TraceEventDraft[]): SessionTraceE
       );
       if (marker.sourceTurnId && checkpoint.sourceTurnId && !exactTurn) continue;
       const checkpointTime = Date.parse(checkpoint.timestamp);
-      const distance = Number.isFinite(markerTime) && Number.isFinite(checkpointTime)
-        ? Math.abs(markerTime - checkpointTime)
-        : Number.POSITIVE_INFINITY;
-      if (!exactTurn && distance > 1_000) continue;
+      if (!Number.isFinite(markerTime) || !Number.isFinite(checkpointTime)) continue;
+      const markerDelay = markerTime - checkpointTime;
+      if (exactTurn) {
+        if (
+          markerDelay < -COMPACTION_MARKER_EARLY_TOLERANCE_MS
+          || markerDelay > COMPACTION_MARKER_LATE_TOLERANCE_MS
+        ) continue;
+      } else if (Math.abs(markerDelay) > COMPACTION_MISSING_TURN_MATCH_WINDOW_MS) continue;
+      const distance = Math.abs(markerDelay);
       candidates.push({ checkpointIndex, exactTurn, distance });
     }
     candidates.sort((left, right) =>

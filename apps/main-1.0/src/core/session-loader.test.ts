@@ -179,6 +179,7 @@ describe("Codex session loading", () => {
 
   it("preserves long encoded-looking text outside binary fields", () => {
     const readableSlug = "feature-branch-name-".repeat(80);
+    const nestedReadableSlug = "nested-feature-branch-name-".repeat(70);
     const loaded = loadCodexSessionRows("/tmp/codex-readable-compact-string.jsonl", [
       {
         type: "session_meta",
@@ -192,6 +193,7 @@ describe("Codex session loading", () => {
           replacement_history: [{
             type: "message",
             diagnostic_label: readableSlug,
+            data: { diagnostic_label: nestedReadableSlug },
             file_data: "A".repeat(1_100),
             unknown_binary: "B".repeat(64 * 1_024),
           }],
@@ -203,6 +205,7 @@ describe("Codex session loading", () => {
       (event) => event.eventType === "codex.context.compaction",
     )?.detail ?? "";
     expect(detail).toContain(readableSlug);
+    expect(detail).toContain(nestedReadableSlug);
     expect(detail).toContain('"file_data": "[binary omitted: 1100 characters]"');
     expect(detail).toContain('"unknown_binary": "[binary omitted: 65536 characters]"');
   });
@@ -268,6 +271,24 @@ describe("Codex session loading", () => {
         timestamp: "2026-08-04T08:00:01.050Z",
         payload: { type: "context_compacted", turn_id: "turn-other" },
       },
+    ])).toHaveLength(2);
+    expect(compactions([
+      meta,
+      started,
+      checkpoint("2026-08-04T08:00:01.000Z"),
+      eventMarker("2026-08-04T09:00:01.000Z"),
+    ])).toHaveLength(2);
+    expect(compactions([
+      meta,
+      started,
+      eventMarker("2026-08-04T08:00:01.000Z"),
+      checkpoint("2026-08-04T08:10:01.000Z"),
+    ])).toHaveLength(2);
+    expect(compactions([
+      meta,
+      started,
+      checkpoint("2026-08-04T08:00:01.000Z"),
+      eventMarker("not-a-timestamp"),
     ])).toHaveLength(2);
   });
 
