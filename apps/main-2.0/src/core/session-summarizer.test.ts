@@ -194,9 +194,38 @@ describe("parseSummaryResponse", () => {
     expect(result.tags).toEqual(["node-js"]);
   });
 
+  it("keeps the summary when surrounding prose also contains braces", () => {
+    // Slicing from the first "{" to the last "}" used to swallow these and fail the summary.
+    const withLeadingBrace = 'The session edited a config like {"retries":1}. Summary:\n{"summary":"Did X.","title":"X","tags":["x"]}';
+    expect(parseSummaryResponse(withLeadingBrace).summary).toBe("Did X.");
+    const withTrailingBrace = '{"summary":"Did Y.","title":"Y","tags":["y"]}\n\nNote: tags use {kebab-case}.';
+    expect(parseSummaryResponse(withTrailingBrace).summary).toBe("Did Y.");
+    const withPreambleObject = '{"summary": string, "title": string}\n{"summary":"Did Z.","title":"Z","tags":["z"]}';
+    expect(parseSummaryResponse(withPreambleObject).summary).toBe("Did Z.");
+  });
+
+  it("keeps braces that appear inside the summary text", () => {
+    const reply = '{"summary":"Fixed the {0} placeholder and the \\"quoted\\" label.","title":"Placeholder","tags":["i18n"]}';
+    expect(parseSummaryResponse(reply).summary).toBe('Fixed the {0} placeholder and the "quoted" label.');
+  });
+
+  it("keeps the summary when the prose ahead of it has unbalanced quotes or braces", () => {
+    // Prose is not JSON: a stray quote or brace in it must not consume the object behind it.
+    const oddQuote = 'Here is the 12" result:\n{"summary":"Did X.","title":"X","tags":[]}';
+    expect(parseSummaryResponse(oddQuote).summary).toBe("Did X.");
+    const strayBrace = 'Reading "config.json… the shape is { — anyway:\n{"summary":"Did Y.","title":"Y","tags":[]}';
+    expect(parseSummaryResponse(strayBrace).summary).toBe("Did Y.");
+  });
+
   it("throws when summary is missing", () => {
-    expect(() => parseSummaryResponse('{"title":"x","tags":[]}')).toThrow();
-    expect(() => parseSummaryResponse("not json")).toThrow();
+    expect(() => parseSummaryResponse('{"title":"x","tags":[]}')).toThrow("had no summary");
+    expect(() => parseSummaryResponse("not json")).toThrow("was not valid JSON");
+  });
+
+  it("reports what the model actually replied so the failure is diagnosable", () => {
+    expect(() => parseSummaryResponse("Not logged in · Please run /login")).toThrow(
+      "AI summary response was not valid JSON. Model replied: Not logged in · Please run /login",
+    );
   });
 });
 
