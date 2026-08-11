@@ -224,6 +224,46 @@ function payloadText(payload: Record<string, unknown>): string {
 }
 
 const MESSAGE_TRUNCATE_LIMIT = 3_000;
+const SPAN_PAYLOAD_PREVIEW_LIMIT = 2_400;
+
+function TurnSpanPayload({
+  label,
+  payload,
+  previewLimit,
+  language,
+}: {
+  label: string;
+  payload: Record<string, unknown>;
+  previewLimit?: number;
+  language: LanguageMode;
+}): ReactElement {
+  const [expanded, setExpanded] = useState(false);
+  const text = payloadText(payload);
+  const truncated = previewLimit !== undefined && text.length > previewLimit;
+  const visibleText = truncated && !expanded
+    ? `${text.slice(0, previewLimit)}${localize(language, "...(truncated)", "...（已截断）")}`
+    : text;
+
+  return (
+    <details className="msg-tool-payload">
+      <summary>{label}</summary>
+      <pre>{visibleText}</pre>
+      {truncated ? (
+        <button
+          type="button"
+          className="expand-toggle"
+          aria-expanded={expanded}
+          onClick={() => setExpanded((current) => !current)}
+        >
+          {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+          {expanded
+            ? localize(language, "Collapse detail", "收起详情")
+            : localize(language, "Show full detail", "展开详情")}
+        </button>
+      ) : null}
+    </details>
+  );
+}
 
 function TurnMessageBlock({
   message,
@@ -320,16 +360,20 @@ function TurnSpanBlock({
           </div>
         ) : null}
         {span.input ? (
-          <details className="msg-tool-payload">
-            <summary>{localize(language, "Input", "输入")}</summary>
-            <pre>{payloadText(span.input)}</pre>
-          </details>
+          <TurnSpanPayload
+            label={localize(language, "Input", "输入")}
+            payload={span.input}
+            previewLimit={eventType === "codex.context.compaction" ? SPAN_PAYLOAD_PREVIEW_LIMIT : undefined}
+            language={language}
+          />
         ) : null}
         {span.output ? (
-          <details className="msg-tool-payload">
-            <summary>{localize(language, "Output", "输出")}</summary>
-            <pre>{payloadText(span.output)}</pre>
-          </details>
+          <TurnSpanPayload
+            label={localize(language, "Output", "输出")}
+            payload={span.output}
+            previewLimit={eventType === "codex.context.compaction" ? SPAN_PAYLOAD_PREVIEW_LIMIT : undefined}
+            language={language}
+          />
         ) : null}
         {span.error ? (
           <div className="msg-tool-error">

@@ -159,9 +159,9 @@ export function sanitizeCodexTraceValue(value: unknown): unknown {
 
 function sanitizeCompactionJson(value: unknown, key = ""): unknown {
   if (key.toLocaleLowerCase().includes("encrypted")) {
-    return value === null || value === undefined || value === ""
-      ? value
-      : "[encrypted content omitted]";
+    if (value === null || value === undefined || value === "") return value;
+    if (typeof value === "boolean" || typeof value === "number") return value;
+    return "[encrypted content omitted]";
   }
   if (typeof value === "string") {
     const looksLikeDataUrl = value.slice(0, 5).toLocaleLowerCase() === "data:";
@@ -566,22 +566,30 @@ function compactionCheckpointTrace(
   for (const value of replacementHistory ?? []) {
     const item = record(value);
     const type = stringValue(item?.type) || "unknown";
+    const normalizedType = normalizeItemType(type);
+    const encryptedContent = item?.encrypted_content ?? item?.encryptedContent;
     itemTypes[type] = (itemTypes[type] ?? 0) + 1;
     if (
-      (type === "compaction" || type === "compaction_summary" || type === "context_compaction")
-      && typeof item?.encrypted_content === "string"
-      && item.encrypted_content.length > 0
+      (normalizedType === "compaction"
+        || normalizedType === "compactionsummary"
+        || normalizedType === "contextcompaction")
+      && typeof encryptedContent === "string"
+      && encryptedContent.length > 0
     ) {
       encryptedSummary = true;
     }
   }
   const sanitizedPayload = sanitizeCompactionJson(payload);
+  const detail = truncateTraceDetail(
+    `payload:\n${JSON.stringify(sanitizedPayload, null, 2)}`,
+    512 * 1_024,
+  );
 
   return {
     kind: "event",
     source: "codex",
     title: "Context compacted",
-    detail: `payload:\n${JSON.stringify(sanitizedPayload, null, 2)}`,
+    detail,
     timestamp: stringValue(row.timestamp),
     callId: null,
     eventType: "codex.context.compaction",
@@ -897,23 +905,49 @@ export function dedupeCodexTraceEvents(events: TraceEventDraft[]): SessionTraceE
     };
     for (const key of keys) semanticIndexes.set(key, existingIndex);
   }
-  const pendingCompactionCheckpoints = new Map<string, number>();
-  const withoutDuplicateCompactionMarkers = normalized.filter((event) => {
-    if (event.eventType !== "codex.context.compaction") return true;
+  const compactionMarkerTypes = new Set([
+    "compaction",
+    "context_compaction",
+    "contextcompaction",
+    "context_compacted",
+  ]);
+  const unmatchedCheckpoints = new Set(normalized.flatMap((event, index) => (
+    event.eventType === "codex.context.compaction"
+      && stringValue(codexAttributes(event)?.rawType) === "compacted"
+      ? [index]
+      : []
+  )));
+  const duplicateCompactionMarkers = new Set<number>();
+  normalized.forEach((event, markerIndex) => {
+    if (event.eventType !== "codex.context.compaction" || event.detail.trim()) return;
     const rawType = stringValue(codexAttributes(event)?.rawType);
-    const turnKey = event.sourceTurnId || "";
-    if (rawType === "compacted") {
-      pendingCompactionCheckpoints.set(turnKey, (pendingCompactionCheckpoints.get(turnKey) ?? 0) + 1);
-      return true;
+    if (!compactionMarkerTypes.has(rawType)) return;
+    const markerTime = Date.parse(event.timestamp);
+    if (!Number.isFinite(markerTime)) return;
+
+    let matchingCheckpoint: number | null = null;
+    let smallestDistance = Number.POSITIVE_INFINITY;
+    for (const checkpointIndex of unmatchedCheckpoints) {
+      const checkpoint = normalized[checkpointIndex];
+      if (
+        event.sourceTurnId
+        && checkpoint.sourceTurnId
+        && event.sourceTurnId !== checkpoint.sourceTurnId
+      ) continue;
+      const checkpointTime = Date.parse(checkpoint.timestamp);
+      if (!Number.isFinite(checkpointTime)) continue;
+      const distance = Math.abs(markerTime - checkpointTime);
+      if (distance > 1_000 || distance >= smallestDistance) continue;
+      matchingCheckpoint = checkpointIndex;
+      smallestDistance = distance;
     }
-    const isEmptyLifecycleMarker = !event.detail.trim()
-      && (rawType === "contextcompaction" || rawType === "context_compacted");
-    const pendingCount = pendingCompactionCheckpoints.get(turnKey) ?? 0;
-    if (!isEmptyLifecycleMarker || pendingCount === 0) return true;
-    if (pendingCount === 1) pendingCompactionCheckpoints.delete(turnKey);
-    else pendingCompactionCheckpoints.set(turnKey, pendingCount - 1);
-    return false;
+    if (matchingCheckpoint === null) return;
+    unmatchedCheckpoints.delete(matchingCheckpoint);
+    duplicateCompactionMarkers.add(markerIndex);
   });
+  const withoutDuplicateCompactionMarkers = normalized.filter(
+    (_event, index) => !duplicateCompactionMarkers.has(index),
+  );
   const reasoningSignature = (event: TraceEventDraft) =>
     `${event.sourceTurnId || ""}:${event.detail.normalize("NFKC").trim().replace(/\s+/gu, " ")}`;
   const completedReasoning = new Set(

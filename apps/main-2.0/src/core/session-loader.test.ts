@@ -153,6 +153,102 @@ describe("Codex session loading", () => {
     expect(serializedTrace).not.toContain("must-not-index-world-state");
   });
 
+  it("caps oversized compacted details after sanitization", () => {
+    const readable = `oversized-start ${"readable compact content ".repeat(30_000)} oversized-end`;
+    const loaded = loadCodexSessionRows("/tmp/codex-oversized-compacted.jsonl", [
+      {
+        type: "session_meta",
+        timestamp: "2026-08-04T08:00:00.000Z",
+        payload: { id: "codex-oversized-compacted", cwd: "/repo" },
+      },
+      {
+        type: "compacted",
+        timestamp: "2026-08-04T08:00:01.000Z",
+        payload: { replacement_history: [{ type: "message", content: readable }] },
+      },
+    ]);
+
+    const detail = loaded?.traceEvents?.find(
+      (event) => event.eventType === "codex.context.compaction",
+    )?.detail ?? "";
+    expect(detail.length).toBeLessThanOrEqual(512 * 1_024);
+    expect(detail).toContain("oversized-start");
+    expect(detail).toContain("[Indexed preview truncated:");
+    expect(detail).not.toContain("oversized-end");
+  });
+
+  it("deduplicates matching compact markers without depending on record order or exact turn attribution", () => {
+    const meta = {
+      type: "session_meta",
+      timestamp: "2026-08-04T08:00:00.000Z",
+      payload: { id: "codex-compact-dedupe", cwd: "/repo" },
+    };
+    const started = {
+      type: "event_msg",
+      timestamp: "2026-08-04T08:00:00.100Z",
+      payload: { type: "task_started", turn_id: "turn-compact" },
+    };
+    const checkpoint = (timestamp: string) => ({
+      type: "compacted",
+      timestamp,
+      payload: { replacement_history: [] },
+    });
+    const responseMarker = (type: "compaction" | "context_compaction", timestamp: string) => ({
+      type: "response_item",
+      timestamp,
+      payload: {
+        type,
+        internal_chat_message_metadata_passthrough: { turn_id: "turn-compact" },
+      },
+    });
+    const eventMarker = (timestamp: string) => ({
+      type: "event_msg",
+      timestamp,
+      payload: { type: "context_compacted", turn_id: "turn-compact" },
+    });
+    const compactions = (rows: unknown[]) => loadCodexSessionRows(
+      "/tmp/codex-compact-dedupe.jsonl",
+      rows,
+    )?.traceEvents?.filter((event) => event.eventType === "codex.context.compaction") ?? [];
+
+    expect(compactions([meta, started, checkpoint("2026-08-04T08:00:01.000Z"), responseMarker("compaction", "2026-08-04T08:00:01.050Z")])).toHaveLength(1);
+    expect(compactions([meta, started, checkpoint("2026-08-04T08:00:01.000Z"), responseMarker("context_compaction", "2026-08-04T08:00:01.050Z")])).toHaveLength(1);
+    expect(compactions([meta, started, eventMarker("2026-08-04T08:00:01.000Z"), checkpoint("2026-08-04T08:00:01.050Z")])).toHaveLength(1);
+    expect(compactions([meta, checkpoint("2026-08-04T08:00:01.000Z"), started, eventMarker("2026-08-04T08:00:01.050Z")])).toHaveLength(1);
+    expect(compactions([meta, started, checkpoint("2026-08-04T08:00:01.000Z"), eventMarker("2026-08-04T08:00:03.000Z")])).toHaveLength(2);
+  });
+
+  it("preserves encrypted metadata primitives and recognizes normalized compaction types", () => {
+    const loaded = loadCodexSessionRows("/tmp/codex-encrypted-metadata.jsonl", [
+      {
+        type: "session_meta",
+        timestamp: "2026-08-04T08:00:00.000Z",
+        payload: { id: "codex-encrypted-metadata", cwd: "/repo" },
+      },
+      {
+        type: "compacted",
+        timestamp: "2026-08-04T08:00:01.000Z",
+        payload: {
+          replacement_history: [{
+            type: "ContextCompaction",
+            encrypted_content: "must-not-index-encrypted-content",
+            is_encrypted: false,
+            encrypted_bytes: 512,
+          }],
+        },
+      },
+    ]);
+
+    const compaction = loaded?.traceEvents?.find(
+      (event) => event.eventType === "codex.context.compaction",
+    );
+    expect(compaction?.detail).toContain('"encrypted_content": "[encrypted content omitted]"');
+    expect(compaction?.detail).toContain('"is_encrypted": false');
+    expect(compaction?.detail).toContain('"encrypted_bytes": 512');
+    expect(compaction?.detail).not.toContain("must-not-index-encrypted-content");
+    expect(compaction?.attributes?.compaction).toMatchObject({ opaqueCompaction: true });
+  });
+
   it("keeps an empty send_message function output distinct from its input", () => {
     const loaded = loadCodexSessionRows("/tmp/codex-send-message.jsonl", [
       {
