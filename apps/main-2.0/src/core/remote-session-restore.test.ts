@@ -91,12 +91,25 @@ describe("restoreRemotePortableSession", () => {
   });
 
   it("restores bundled subagents with remapped native parent ids", async () => {
-    const writes = [
-      { sessionId: "target-parent", filePath: "/target/parent.jsonl" },
-      { sessionId: "target-child", filePath: "/target/child.jsonl" },
-      { sessionId: "target-grandchild", filePath: "/target/grandchild.jsonl" },
+    const extraSubagents = Array.from({ length: 199 }, (_, index): PortableSession => ({
+      ...PORTABLE,
+      sourceSessionKey: `cursor:extra-${index}`,
+      sourceSessionId: `source-extra-${index}`,
+      title: `Extra ${index}`,
+      isSubagent: true,
+      parentSessionId: "source-parent",
+      subagents: [],
+    }));
+    const targetIds = [
+      "target-parent",
+      "target-child",
+      "target-grandchild",
+      ...extraSubagents.map((_, index) => `target-extra-${index}`),
     ];
-    const write = vi.fn(async () => writes.shift()!);
+    const write = vi.fn(async (_target, _session, targetSessionId?: string) => ({
+      sessionId: targetSessionId!,
+      filePath: `/target/${targetSessionId}.jsonl`,
+    }));
     const portable: PortableSession = {
       ...PORTABLE,
       sourceSessionId: "source-parent",
@@ -119,6 +132,7 @@ describe("restoreRemotePortableSession", () => {
           parentSessionId: "source-child",
           subagents: [],
         },
+        ...extraSubagents,
       ],
     };
     const refreshIndex = vi.fn();
@@ -141,21 +155,35 @@ describe("restoreRemotePortableSession", () => {
           .mockReturnValueOnce("migration-parent")
           .mockReturnValueOnce("migration-child")
           .mockReturnValueOnce("migration-grandchild"),
+        targetSessionIdFactory: vi.fn(() => targetIds.shift()!),
         now: () => 123,
         projectPathExists: async () => true,
         projectPathIsDirectory: async () => true,
       },
     });
 
+    expect(write).toHaveBeenNthCalledWith(1, "codex", expect.objectContaining({
+      sourceSessionId: "source-parent",
+      subagents: expect.arrayContaining([expect.objectContaining({
+        sourceSessionId: "target-child",
+        parentSessionId: "target-parent",
+        subagentPath: "/root/migrated_source_child",
+      })]),
+    }), "target-parent");
     expect(write).toHaveBeenNthCalledWith(2, "codex", expect.objectContaining({
       sourceSessionId: "source-child",
       parentSessionId: "target-parent",
-    }));
+      subagents: [expect.objectContaining({
+        sourceSessionId: "target-grandchild",
+        parentSessionId: "target-child",
+      })],
+    }), "target-child");
     expect(write).toHaveBeenNthCalledWith(3, "codex", expect.objectContaining({
       sourceSessionId: "source-grandchild",
       parentSessionId: "target-child",
-    }));
-    expect(refreshIndex).toHaveBeenCalledTimes(3);
-    expect(result).toMatchObject({ targetSessionId: "target-parent", restoredSubagentCount: 2, indexed: true });
+    }), "target-grandchild");
+    expect(write).toHaveBeenCalledTimes(202);
+    expect(refreshIndex).toHaveBeenCalledTimes(202);
+    expect(result).toMatchObject({ targetSessionId: "target-parent", restoredSubagentCount: 201, indexed: true });
   });
 });

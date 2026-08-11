@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   MIGRATION_TOKEN_LIMIT,
+  collectMigrationDescendants,
   estimatePortableSessionTokens,
   migrateSession,
   migrationAgentForSource,
@@ -66,6 +67,21 @@ const messages: SessionMessage[] = [
   { role: "user", content: "你好", timestamp: "2026-06-23T00:00:00Z", index: 9 },
   { role: "assistant", content: "hello", timestamp: "2026-06-23T00:00:01Z", index: 15 },
 ];
+
+describe("session migration descendants", () => {
+  it("keeps every indexed descendant instead of silently truncating large trees", () => {
+    const root = session("codex-cli", { rawId: "root", sessionKey: "codex:root" });
+    const descendants = Array.from({ length: 201 }, (_, index) => session("codex-cli", {
+      sessionKey: `codex:child-${index}`,
+      rawId: `child-${index}`,
+      isSubagent: true,
+      parentSessionId: "root",
+      timestamp: root.timestamp + index,
+    }));
+
+    expect(collectMigrationDescendants(root, descendants)).toHaveLength(201);
+  });
+});
 
 function longMessages(): SessionMessage[] {
   return [

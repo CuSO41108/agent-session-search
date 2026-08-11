@@ -212,12 +212,6 @@ describe("runLocalSessionMigration", () => {
 });
 
 describe("loadLocalSessionMigrationSource", () => {
-  it("exposes the turn-scoped migration source loader", async () => {
-    const feature = await import("./local-session-migration");
-
-    expect(feature.loadLocalSessionMigrationSource).toBeTypeOf("function");
-  });
-
   it("loads indexed descendant conversations for local migration", async () => {
     const root = { ...source, rawId: "root" } as SessionSearchResult;
     const child = {
