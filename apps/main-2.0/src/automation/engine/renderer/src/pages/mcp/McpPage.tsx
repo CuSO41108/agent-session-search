@@ -95,6 +95,47 @@ export function McpPage({
     [model, zh],
   );
   const draft = model.draft;
+  const renderServerRow = (server: McpServerDefinition, title: string) => (
+    <div
+      key={server.id}
+      className={`mcp-registry-row ${server.enabled ? "" : "is-disabled"}`}
+    >
+      <BrowserItem
+        selected={server.id === draft?.id}
+        title={title}
+        meta={`${server.transport.toUpperCase()} · ${toolCountLabel(server, zh ? "工具" : "tools")}`}
+        status={
+          server.status === "connected"
+            ? "success"
+            : server.status === "error"
+              ? "danger"
+              : "muted"
+        }
+        onClick={() => select(server.id)}
+      />
+      <span
+        className="mcp-binding-switch mcp-registry-row-switch"
+        title={
+          zh
+            ? server.enabled
+              ? "关闭后，该 MCP Server 将不再提供给任何 Agent（配置保留）。"
+              : "开启后，该 MCP Server 可供 Agent 装配使用。"
+            : server.enabled
+              ? "When off, this MCP server is offered to no agents (its config is kept)."
+              : "When on, this MCP server can be assigned to agents."
+        }
+      >
+        <input
+          type="checkbox"
+          aria-label={zh ? `启用 ${title}` : `Enable ${title}`}
+          checked={server.enabled}
+          disabled={Boolean(model.busy)}
+          onChange={() => void model.toggleServerEnabled(server.id)}
+        />
+        <i aria-hidden="true" />
+      </span>
+    </div>
+  );
   return (
     <section className="mcp-workbench">
       <WorkbenchHeader
@@ -148,44 +189,14 @@ export function McpPage({
                     <span>{zh ? "项目内置" : "Project built-ins"}</span>
                     <small>{builtins.length}</small>
                   </header>
-                  {builtins.map((server) => (
-                    <BrowserItem
-                      key={server.id}
-                      selected={server.id === draft?.id}
-                      title={serverDisplayName(server, zh)}
-                      meta={`${server.transport.toUpperCase()} · ${toolCountLabel(server, zh ? "工具" : "tools")}`}
-                      status={
-                        server.status === "connected"
-                          ? "success"
-                          : server.status === "error"
-                            ? "danger"
-                            : "muted"
-                      }
-                      onClick={() => select(server.id)}
-                    />
-                  ))}
+                  {builtins.map((server) => renderServerRow(server, serverDisplayName(server, zh)))}
                 </section>
                 <section className="mcp-browser-group">
                   <header>
                     <span>{zh ? "自定义" : "Custom"}</span>
                     <small>{customServers.length}</small>
                   </header>
-                  {customServers.length ? customServers.map((server) => (
-                    <BrowserItem
-                      key={server.id}
-                      selected={server.id === draft?.id}
-                      title={server.name}
-                      meta={`${server.transport.toUpperCase()} · ${toolCountLabel(server, zh ? "工具" : "tools")}`}
-                      status={
-                        server.status === "connected"
-                          ? "success"
-                          : server.status === "error"
-                            ? "danger"
-                            : "muted"
-                      }
-                      onClick={() => select(server.id)}
-                    />
-                  )) : (
+                  {customServers.length ? customServers.map((server) => renderServerRow(server, server.name)) : (
                     <p className="mcp-browser-group-empty">
                       {zh ? "还没有自定义 MCP" : "No custom MCP servers"}
                     </p>
