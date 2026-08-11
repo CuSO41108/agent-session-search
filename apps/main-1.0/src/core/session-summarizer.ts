@@ -151,21 +151,34 @@ function buildTranscript(excerpt: SessionExcerpt): string {
 }
 
 export function parseSummaryResponse(text: string): SessionSummaryResult {
-  const json = extractJsonObject(text);
-  if (!json) throw new Error("AI summary response was not valid JSON.");
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(json);
-  } catch {
-    throw new Error("AI summary response was not valid JSON.");
+  const candidates = extractJsonObjects(text);
+  let sawObject = false;
+  // The answer is the last complete object the model produced, so a schema echo or a
+  // preamble that happens to contain an object cannot win over the real summary.
+  for (let index = candidates.length - 1; index >= 0; index -= 1) {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(candidates[index]);
+    } catch {
+      continue;
+    }
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) continue;
+    sawObject = true;
+    const record = parsed as Record<string, unknown>;
+    const summary = typeof record.summary === "string" ? record.summary.trim() : "";
+    if (!summary) continue;
+    const title = typeof record.title === "string" ? record.title.trim() : "";
+    return { summary, title, tags: normalizeTags(record.tags) };
   }
-  if (!parsed || typeof parsed !== "object") throw new Error("AI summary response was not an object.");
-  const record = parsed as Record<string, unknown>;
-  const summary = typeof record.summary === "string" ? record.summary.trim() : "";
-  const title = typeof record.title === "string" ? record.title.trim() : "";
-  const tags = normalizeTags(record.tags);
-  if (!summary) throw new Error("AI summary response had no summary.");
-  return { summary, title, tags };
+  if (sawObject) throw new Error("AI summary response had no summary.");
+  throw new Error(`AI summary response was not valid JSON. ${describeSummaryReply(text)}`.trim());
+}
+
+// The reply is the only evidence of why a summary failed, and it is otherwise discarded.
+function describeSummaryReply(text: string): string {
+  const collapsed = text.trim().replace(/\s+/g, " ");
+  if (!collapsed) return "";
+  return `Model replied: ${collapsed.length > 200 ? `${collapsed.slice(0, 200)}…` : collapsed}`;
 }
 
 function normalizeTags(value: unknown): string[] {
@@ -180,12 +193,40 @@ function normalizeTags(value: unknown): string[] {
   return tags;
 }
 
-// Models sometimes wrap JSON in prose or code fences; grab the outermost object.
-function extractJsonObject(text: string): string | null {
-  const start = text.indexOf("{");
-  const end = text.lastIndexOf("}");
-  if (start === -1 || end === -1 || end < start) return null;
-  return text.slice(start, end + 1);
+/**
+ * Models wrap the JSON in prose or code fences, and CLI providers can emit a preamble before the
+ * answer. Slicing from the first `{` to the last `}` swallows that surrounding text whenever it
+ * contains a brace of its own — a trailing note, an echoed snippet, two objects — and the summary
+ * then fails as unparseable. So scan for every complete top-level object instead, tracking string
+ * literals and escapes so braces inside a summary string do not shift the boundaries.
+ */
+function extractJsonObjects(text: string): string[] {
+  const objects: string[] = [];
+  let depth = 0;
+  let start = -1;
+  let inString = false;
+  let escaped = false;
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (char === "\\") escaped = true;
+      else if (char === '"') inString = false;
+      continue;
+    }
+    if (char === '"') inString = true;
+    else if (char === "{") {
+      if (depth === 0) start = index;
+      depth += 1;
+    } else if (char === "}" && depth > 0) {
+      depth -= 1;
+      if (depth === 0) {
+        objects.push(text.slice(start, index + 1));
+        start = -1;
+      }
+    }
+  }
+  return objects;
 }
 
 export type ChatCompletionFn = (endpoint: SummaryEndpoint, messages: ChatMessage[], signal?: AbortSignal) => Promise<string>;
@@ -413,7 +454,7 @@ async function codexExecCompletion(endpoint: SummaryEndpoint, messages: ChatMess
         }
         if (event?.type === "item.completed") {
           const text = extractCodexExecItemText(event.item);
-          if (text) content += text;
+          if (text) content += content ? `\n${text}` : text;
         }
       });
     });
@@ -439,7 +480,7 @@ async function codexExecCompletion(endpoint: SummaryEndpoint, messages: ChatMess
         }
         if (event?.type === "item.completed") {
           const text = extractCodexExecItemText(event.item);
-          if (text) content += text;
+          if (text) content += content ? `\n${text}` : text;
         }
       }
       if (code !== 0) {
