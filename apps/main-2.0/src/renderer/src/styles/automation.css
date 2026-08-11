@@ -1443,6 +1443,26 @@
   white-space: nowrap;
 }
 
+.mcp-server-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.mcp-server-row > .workbench-browser-item {
+  flex: 1;
+  min-width: 0;
+}
+
+.mcp-server-row-switch {
+  flex: none;
+  margin-right: 4px;
+}
+
+.mcp-server-row.is-disabled > .workbench-browser-item .workbench-browser-item-main {
+  opacity: 0.5;
+}
+
 .mcp-modal-backdrop {
   position: fixed;
   inset: 0;

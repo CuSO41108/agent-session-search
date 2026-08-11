@@ -127,6 +127,34 @@ export function useMcpRegistry() {
     if (!draft) return;
     await save({ ...draft, enabled: !draft.enabled });
   }, [draft, save]);
+  const toggleServerEnabled = useCallback(
+    async (id: string) => {
+      // Toggle straight from the server list without changing the current
+      // selection. When the toggled server is the one being edited, keep its
+      // unsaved edits by flipping the draft; otherwise flip the stored copy.
+      const base = draft?.id === id && dirty ? draft : servers.find((item) => item.id === id);
+      if (!base?.name.trim()) return;
+      setBusy("save");
+      setError(undefined);
+      try {
+        const saved = await agentRecallAutomationService().saveMcpServer({
+          ...base,
+          enabled: !base.enabled,
+          updatedAt: Date.now(),
+        });
+        setServers((items) =>
+          sortServers([...items.filter((item) => item.id !== saved.id), saved]),
+        );
+        setDraft((current) => (current && current.id === saved.id ? saved : current));
+        if (draft?.id === id) setDirty(false);
+      } catch (cause) {
+        setError(cause instanceof Error ? cause.message : String(cause));
+      } finally {
+        setBusy(undefined);
+      }
+    },
+    [draft, dirty, servers],
+  );
   const test = useCallback(async () => {
     if (!draft) return;
     setBusy("test");
@@ -188,6 +216,7 @@ export function useMcpRegistry() {
     toggleTool,
     save,
     toggleEnabled,
+    toggleServerEnabled,
     test,
     remove,
     importServers,
