@@ -157,7 +157,19 @@ export function sanitizeCodexTraceValue(value: unknown): unknown {
   return sanitizedCodexTraceValue(value, false);
 }
 
-function sanitizeCompactionJson(value: unknown, key = ""): unknown {
+const COMPACTION_BINARY_FIELDS = new Set([
+  "audio_url",
+  "b64_json",
+  "data",
+  "file_data",
+  "image_url",
+  "screenshot",
+]);
+const COMPACTION_UNKNOWN_BINARY_MIN_CHARS = 64 * 1_024;
+
+function sanitizeCompactionJson(value: unknown, key = "", binaryContext = false): unknown {
+  const normalizedKey = key.toLocaleLowerCase();
+  const insideBinaryField = binaryContext || COMPACTION_BINARY_FIELDS.has(normalizedKey);
   if (key.toLocaleLowerCase().includes("encrypted")) {
     if (value === null || value === undefined || value === "") return value;
     if (typeof value === "boolean" || typeof value === "number") return value;
@@ -166,18 +178,21 @@ function sanitizeCompactionJson(value: unknown, key = ""): unknown {
   if (typeof value === "string") {
     const looksLikeDataUrl = value.slice(0, 5).toLocaleLowerCase() === "data:";
     const looksLikeEncodedBinary = value.length > 1_024 && /^[a-z0-9+/_=\r\n-]+$/iu.test(value);
-    if (looksLikeDataUrl || looksLikeEncodedBinary) {
+    const unknownFieldBinaryFallback = value.length >= COMPACTION_UNKNOWN_BINARY_MIN_CHARS;
+    if (looksLikeDataUrl || (looksLikeEncodedBinary && (insideBinaryField || unknownFieldBinaryFallback))) {
       return `[binary omitted: ${value.length} characters]`;
     }
     return value;
   }
-  if (Array.isArray(value)) return value.map((item) => sanitizeCompactionJson(item, key));
+  if (Array.isArray(value)) {
+    return value.map((item) => sanitizeCompactionJson(item, key, insideBinaryField));
+  }
   const object = record(value);
   if (!object) return value;
   return Object.fromEntries(
     Object.entries(object).map(([nestedKey, nestedValue]) => [
       nestedKey,
-      sanitizeCompactionJson(nestedValue, nestedKey),
+      sanitizeCompactionJson(nestedValue, nestedKey, insideBinaryField),
     ]),
   );
 }
@@ -911,40 +926,68 @@ export function dedupeCodexTraceEvents(events: TraceEventDraft[]): SessionTraceE
     "contextcompaction",
     "context_compacted",
   ]);
-  const unmatchedCheckpoints = new Set(normalized.flatMap((event, index) => (
+  const checkpointIndexes = normalized.flatMap((event, index) => (
     event.eventType === "codex.context.compaction"
       && stringValue(codexAttributes(event)?.rawType) === "compacted"
       ? [index]
       : []
-  )));
-  const duplicateCompactionMarkers = new Set<number>();
-  normalized.forEach((event, markerIndex) => {
-    if (event.eventType !== "codex.context.compaction" || event.detail.trim()) return;
-    const rawType = stringValue(codexAttributes(event)?.rawType);
-    if (!compactionMarkerTypes.has(rawType)) return;
-    const markerTime = Date.parse(event.timestamp);
-    if (!Number.isFinite(markerTime)) return;
-
-    let matchingCheckpoint: number | null = null;
-    let smallestDistance = Number.POSITIVE_INFINITY;
-    for (const checkpointIndex of unmatchedCheckpoints) {
-      const checkpoint = normalized[checkpointIndex];
-      if (
-        event.sourceTurnId
-        && checkpoint.sourceTurnId
-        && event.sourceTurnId !== checkpoint.sourceTurnId
-      ) continue;
-      const checkpointTime = Date.parse(checkpoint.timestamp);
-      if (!Number.isFinite(checkpointTime)) continue;
-      const distance = Math.abs(markerTime - checkpointTime);
-      if (distance > 1_000 || distance >= smallestDistance) continue;
-      matchingCheckpoint = checkpointIndex;
-      smallestDistance = distance;
-    }
-    if (matchingCheckpoint === null) return;
-    unmatchedCheckpoints.delete(matchingCheckpoint);
-    duplicateCompactionMarkers.add(markerIndex);
+  ));
+  const markerIndexes = normalized.flatMap((event, index) => {
+    if (event.eventType !== "codex.context.compaction" || event.detail.trim()) return [];
+    return compactionMarkerTypes.has(stringValue(codexAttributes(event)?.rawType)) ? [index] : [];
   });
+  const markerCandidates = new Map<number, number[]>();
+  for (const markerIndex of markerIndexes) {
+    const marker = normalized[markerIndex];
+    const markerTime = Date.parse(marker.timestamp);
+    const candidates: Array<{ checkpointIndex: number; exactTurn: boolean; distance: number }> = [];
+    for (const checkpointIndex of checkpointIndexes) {
+      const checkpoint = normalized[checkpointIndex];
+      const exactTurn = Boolean(
+        marker.sourceTurnId
+        && checkpoint.sourceTurnId
+        && marker.sourceTurnId === checkpoint.sourceTurnId,
+      );
+      if (marker.sourceTurnId && checkpoint.sourceTurnId && !exactTurn) continue;
+      const checkpointTime = Date.parse(checkpoint.timestamp);
+      const distance = Number.isFinite(markerTime) && Number.isFinite(checkpointTime)
+        ? Math.abs(markerTime - checkpointTime)
+        : Number.POSITIVE_INFINITY;
+      if (!exactTurn && distance > 1_000) continue;
+      candidates.push({ checkpointIndex, exactTurn, distance });
+    }
+    candidates.sort((left, right) =>
+      Number(right.exactTurn) - Number(left.exactTurn)
+      || left.distance - right.distance
+      || left.checkpointIndex - right.checkpointIndex,
+    );
+    markerCandidates.set(markerIndex, candidates.map((candidate) => candidate.checkpointIndex));
+  }
+  const markerByCheckpoint = new Map<number, number>();
+  const assignMarker = (markerIndex: number, visitedCheckpoints: Set<number>): boolean => {
+    for (const checkpointIndex of markerCandidates.get(markerIndex) ?? []) {
+      if (visitedCheckpoints.has(checkpointIndex)) continue;
+      visitedCheckpoints.add(checkpointIndex);
+      const previousMarker = markerByCheckpoint.get(checkpointIndex);
+      if (previousMarker === undefined || assignMarker(previousMarker, visitedCheckpoints)) {
+        markerByCheckpoint.set(checkpointIndex, markerIndex);
+        return true;
+      }
+    }
+    return false;
+  };
+  markerIndexes
+    .sort((left, right) => {
+      const leftTime = Date.parse(normalized[left].timestamp);
+      const rightTime = Date.parse(normalized[right].timestamp);
+      if (Number.isFinite(leftTime) && Number.isFinite(rightTime) && leftTime !== rightTime) {
+        return leftTime - rightTime;
+      }
+      if (Number.isFinite(leftTime) !== Number.isFinite(rightTime)) return Number.isFinite(leftTime) ? -1 : 1;
+      return left - right;
+    })
+    .forEach((markerIndex) => assignMarker(markerIndex, new Set()));
+  const duplicateCompactionMarkers = new Set(markerByCheckpoint.values());
   const withoutDuplicateCompactionMarkers = normalized.filter(
     (_event, index) => !duplicateCompactionMarkers.has(index),
   );

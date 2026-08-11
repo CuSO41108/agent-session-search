@@ -177,6 +177,36 @@ describe("Codex session loading", () => {
     expect(detail).not.toContain("oversized-end");
   });
 
+  it("preserves long encoded-looking text outside binary fields", () => {
+    const readableSlug = "feature-branch-name-".repeat(80);
+    const loaded = loadCodexSessionRows("/tmp/codex-readable-compact-string.jsonl", [
+      {
+        type: "session_meta",
+        timestamp: "2026-08-04T08:00:00.000Z",
+        payload: { id: "codex-readable-compact-string", cwd: "/repo" },
+      },
+      {
+        type: "compacted",
+        timestamp: "2026-08-04T08:00:01.000Z",
+        payload: {
+          replacement_history: [{
+            type: "message",
+            diagnostic_label: readableSlug,
+            file_data: "A".repeat(1_100),
+            unknown_binary: "B".repeat(64 * 1_024),
+          }],
+        },
+      },
+    ]);
+
+    const detail = loaded?.traceEvents?.find(
+      (event) => event.eventType === "codex.context.compaction",
+    )?.detail ?? "";
+    expect(detail).toContain(readableSlug);
+    expect(detail).toContain('"file_data": "[binary omitted: 1100 characters]"');
+    expect(detail).toContain('"unknown_binary": "[binary omitted: 65536 characters]"');
+  });
+
   it("deduplicates matching compact markers without depending on record order or exact turn attribution", () => {
     const meta = {
       type: "session_meta",
@@ -215,7 +245,30 @@ describe("Codex session loading", () => {
     expect(compactions([meta, started, checkpoint("2026-08-04T08:00:01.000Z"), responseMarker("context_compaction", "2026-08-04T08:00:01.050Z")])).toHaveLength(1);
     expect(compactions([meta, started, eventMarker("2026-08-04T08:00:01.000Z"), checkpoint("2026-08-04T08:00:01.050Z")])).toHaveLength(1);
     expect(compactions([meta, checkpoint("2026-08-04T08:00:01.000Z"), started, eventMarker("2026-08-04T08:00:01.050Z")])).toHaveLength(1);
-    expect(compactions([meta, started, checkpoint("2026-08-04T08:00:01.000Z"), eventMarker("2026-08-04T08:00:03.000Z")])).toHaveLength(2);
+    expect(compactions([meta, started, checkpoint("2026-08-04T08:00:01.000Z"), eventMarker("2026-08-04T08:00:03.000Z")])).toHaveLength(1);
+    expect(compactions([
+      meta,
+      started,
+      checkpoint("2026-08-04T08:00:01.000Z"),
+      eventMarker("2026-08-04T08:00:01.700Z"),
+      checkpoint("2026-08-04T08:00:01.900Z"),
+      eventMarker("2026-08-04T08:00:02.800Z"),
+    ])).toHaveLength(2);
+    expect(compactions([
+      meta,
+      started,
+      checkpoint("2026-08-04T08:00:01.000Z"),
+      {
+        type: "event_msg",
+        timestamp: "2026-08-04T08:00:01.025Z",
+        payload: { type: "task_started", turn_id: "turn-other" },
+      },
+      {
+        type: "event_msg",
+        timestamp: "2026-08-04T08:00:01.050Z",
+        payload: { type: "context_compacted", turn_id: "turn-other" },
+      },
+    ])).toHaveLength(2);
   });
 
   it("preserves encrypted metadata primitives and recognizes normalized compaction types", () => {
