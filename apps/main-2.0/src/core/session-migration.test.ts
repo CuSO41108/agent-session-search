@@ -214,13 +214,27 @@ describe("Codex subagent migration", () => {
       projectPathIsDirectory: vi.fn(() => true),
     };
 
-    const result = await migrateSession({ source: root, messages, subagents, target: "codex", deps });
+    const result = await migrateSession({
+      source: root,
+      messages: [...messages, {
+        role: "assistant",
+        content: "[full](66b05627-84d3-4789-b3df-772bf1bb04ad) [metadata](task-9026680a-0962-4466-a9b8-8e2efa96e19f) [docs](https://example.com)",
+        timestamp: "2026-08-08T00:00:06Z",
+        index: 1,
+      }],
+      subagents,
+      target: "codex",
+      deps,
+    });
 
     expect(result.restoredSubagentCount).toBe(2);
     expect(write).toHaveBeenCalledTimes(3);
     expect(write.mock.calls[0]?.[1].subagents).toEqual([
       expect.objectContaining({ sourceSessionId: "10000000-0000-4000-8000-000000000002" }),
     ]);
+    expect(write.mock.calls[0]?.[1].messages.at(-1)?.content).toBe(
+      "[full](10000000-0000-4000-8000-000000000003) [metadata](10000000-0000-4000-8000-000000000003) [docs](https://example.com)",
+    );
     expect(write.mock.calls[1]?.[1].subagents).toEqual([
       expect.objectContaining({ sourceSessionId: "10000000-0000-4000-8000-000000000003" }),
     ]);

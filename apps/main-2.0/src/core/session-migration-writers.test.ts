@@ -281,7 +281,17 @@ describe("writeMigratedSession", () => {
         if (family === "claude" || family === "codebuddy" || family === "cursor") {
           expect(result.filePath.split(path.sep)).toContain("empty-window");
         }
-        expectRoundTrip(target, source, result.sessionId, result.filePath, readRows(result.filePath), session);
+        const rows = readRows(result.filePath);
+        if (family === "codex") {
+          expect(rows[0]).toMatchObject({
+            type: "session_meta",
+            payload: {
+              cwd: homeDir,
+              agent_recall_project_path: "",
+            },
+          });
+        }
+        expectRoundTrip(target, source, result.sessionId, result.filePath, rows, session);
       } finally {
         fs.rmSync(homeDir, { recursive: true, force: true });
       }
@@ -559,7 +569,7 @@ describe("writeMigratedSession", () => {
         .get(CHILD_SESSION_ID) as Record<string, unknown>;
       childStateDb.close();
       expect(childRow).toMatchObject({
-        cwd: "",
+        cwd: path.toNamespacedPath(path.resolve(homeDir)),
         thread_source: "subagent",
         agent_path: "/root/migrated_source_child",
       });

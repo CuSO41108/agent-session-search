@@ -225,11 +225,17 @@ export async function migrateSession({
   if (subagents.length > 0) portable.subagents = subagents;
   const rootSourceId = portableSourceId(portable);
   const flattenedSubagents = flattenPortableSubagents(subagents);
-  const portableSubagents = target === "codex"
+  const codexSubagentNormalization = target === "codex"
     ? normalizeCursorCodexSubagents(flattenedSubagents, rootSourceId)
-    : flattenedSubagents;
+    : { subagents: flattenedSubagents, sourceAliases: new Map<string, string>() };
+  const portableSubagents = codexSubagentNormalization.subagents;
   const codexLinkage = target === "codex" && portableSubagents.length > 0 && deps.targetSessionIdFactory
-    ? buildCodexMigrationLinkage(portable, portableSubagents, deps.targetSessionIdFactory)
+    ? buildCodexMigrationLinkage(
+        portable,
+        portableSubagents,
+        codexSubagentNormalization.sourceAliases,
+        deps.targetSessionIdFactory,
+      )
     : null;
   const migrationPortable = target === "codex"
     ? withoutSubagentSystemNotifications(portable, portableSubagents.length > 0)
@@ -402,6 +408,7 @@ interface CodexMigrationLinkage {
 function buildCodexMigrationLinkage(
   root: PortableSession,
   subagents: PortableSession[],
+  sourceAliases: Map<string, string>,
   createTargetSessionId: () => string,
 ): CodexMigrationLinkage {
   const rootSourceId = portableSourceId(root);
@@ -417,6 +424,10 @@ function buildCodexMigrationLinkage(
     depthBySourceId.set(sourceId, parentDepth + 1);
     pathBySourceId.set(sourceId, `${parentPath}/migrated_${codexSubagentSlug(sourceId)}`);
   }
+  for (const [aliasSourceId, canonicalSourceId] of sourceAliases) {
+    const targetId = targetIdBySourceId.get(canonicalSourceId);
+    if (targetId) targetIdBySourceId.set(aliasSourceId, targetId);
+  }
   return { rootSourceId, allSubagents: subagents, targetIdBySourceId, depthBySourceId, pathBySourceId };
 }
 
@@ -428,6 +439,17 @@ function codexSessionForWrite(
 ): PortableSession {
   const targetSessionId = linkage.targetIdBySourceId.get(sourceId);
   if (!targetSessionId) throw new Error(`Missing reserved Codex session id for ${sourceId}.`);
+  const targetIdByLowercaseSourceId = new Map(
+    [...linkage.targetIdBySourceId].map(([sourceSessionId, targetId]) => [sourceSessionId.toLowerCase(), targetId]),
+  );
+  const messages = session.messages.map((message) => {
+    const content = message.content.replace(/\]\(([^)\s]+)\)/g, (match, sourceSessionId: string) => {
+      const targetId = linkage.targetIdBySourceId.get(sourceSessionId)
+        ?? targetIdByLowercaseSourceId.get(sourceSessionId.toLowerCase());
+      return targetId ? `](${targetId})` : match;
+    });
+    return content === message.content ? message : { ...message, content };
+  });
   const directSubagents = linkage.allSubagents
     .filter((candidate) => (candidate.parentSessionId?.trim() || linkage.rootSourceId) === sourceId)
     .map((candidate) => {
@@ -444,6 +466,7 @@ function codexSessionForWrite(
     });
   return {
     ...session,
+    messages,
     ...(targetParentId
       ? {
           isSubagent: true,
@@ -501,7 +524,7 @@ function portableSourceId(session: PortableSession): string {
 function normalizeCursorCodexSubagents(
   subagents: PortableSession[],
   rootSourceId: string,
-): PortableSession[] {
+): { subagents: PortableSession[]; sourceAliases: Map<string, string> } {
   const duplicates = new Map<string, { transcript: PortableSession[]; task: PortableSession[] }>();
   for (const subagent of subagents) {
     if (subagent.sourceAgent !== "cursor") continue;
@@ -553,7 +576,7 @@ function normalizeCursorCodexSubagents(
     ordered.push(next);
     availableParentIds.add(portableSourceId(next));
   }
-  return [...ordered, ...pending];
+  return { subagents: [...ordered, ...pending], sourceAliases };
 }
 
 function codexSubagentSlug(sourceId: string): string {

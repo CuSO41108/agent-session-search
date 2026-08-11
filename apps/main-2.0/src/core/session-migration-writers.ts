@@ -28,6 +28,7 @@ export interface WriteMigratedSessionOptions {
   session: PortableSession;
   sessionId?: string;
   homeDir?: string;
+  codexRuntimeCwd?: string;
   now?: Date;
   idFactory?: () => string;
   beforeValidate?: (filePath: string) => void | Promise<void>;
@@ -58,10 +59,13 @@ export async function writeMigratedSession(options: WriteMigratedSessionOptions)
   const session = migrationTargetDescriptor(options.target).family === "codex"
     ? normalizeCodexMessageTimestamps(options.session)
     : options.session;
+  const codexRuntimeCwd = migrationTargetDescriptor(options.target).family === "codex"
+    ? session.projectPath || options.codexRuntimeCwd || homeDir
+    : session.projectPath;
   const filePath = targetFilePath(options.target, session.projectPath, sessionId, homeDir, now);
   const targetHome = path.join(homeDir, TARGET_ROOTS[options.target]);
   const runtimeMetadata = await loadMigrationTargetRuntimeMetadata(options.target, targetHome);
-  const rows = serializeSession(options.target, session, sessionId, createId, runtimeMetadata);
+  const rows = serializeSession(options.target, session, sessionId, createId, runtimeMetadata, codexRuntimeCwd);
   const tempPath = `${filePath}.tmp-${crypto.randomUUID()}`;
   let finalFileCreated = false;
 
@@ -70,7 +74,7 @@ export async function writeMigratedSession(options: WriteMigratedSessionOptions)
     await writeJsonlAndSync(tempPath, rows);
     if (options.beforeValidate) await options.beforeValidate(tempPath);
     const writtenRows = readJsonlStrict(tempPath, options.target);
-    validateNativeStructure(options.target, writtenRows, sessionId, session, runtimeMetadata);
+    validateNativeStructure(options.target, writtenRows, sessionId, session, runtimeMetadata, codexRuntimeCwd);
     const loaded = loadWrittenSession(options.target, tempPath, sessionId, session);
     validateRoundTrip(loaded, options.target, sessionId, session);
     if (options.validate) {
@@ -82,7 +86,7 @@ export async function writeMigratedSession(options: WriteMigratedSessionOptions)
     else await fs.promises.rename(tempPath, filePath);
     finalFileCreated = true;
     await updateCodexSessionIndex(options.target, targetHome, session, sessionId, now);
-    updateCodexAppServerState(options.target, targetHome, filePath, session, sessionId, now, runtimeMetadata);
+    updateCodexAppServerState(options.target, targetHome, filePath, session, sessionId, now, runtimeMetadata, codexRuntimeCwd);
     return { sessionId, filePath };
   } catch (error) {
     await fs.promises.rm(tempPath, { force: true });
@@ -121,6 +125,7 @@ function serializeSession(
   sessionId: string,
   createId: () => string,
   runtimeMetadata: MigrationTargetRuntimeMetadata,
+  codexRuntimeCwd: string,
 ): unknown[] {
   if (target === "cursor") return serializeCursor(session);
   const family = migrationTargetDescriptor(target).family;
@@ -130,6 +135,7 @@ function serializeSession(
       sessionId,
       requiredRuntimeValue(runtimeMetadata.codexModelProvider, "Codex model provider"),
       target === "codex",
+      codexRuntimeCwd,
     );
   }
   if (family === "claude") {
@@ -143,6 +149,7 @@ function serializeCodex(
   sessionId: string,
   modelProvider: string,
   includeVsCodeEvents: boolean,
+  runtimeCwd: string,
 ): unknown[] {
   const parentSessionId = session.isSubagent ? session.parentSessionId?.trim() || null : null;
   const subagentPath = parentSessionId ? codexSubagentPath(session) : null;
@@ -155,7 +162,8 @@ function serializeCodex(
       id: sessionId,
       ...(parentSessionId ? { forked_from_id: parentSessionId, parent_thread_id: parentSessionId } : {}),
       timestamp: session.startedAt,
-      cwd: session.projectPath,
+      cwd: runtimeCwd,
+      ...(runtimeCwd !== session.projectPath ? { agent_recall_project_path: session.projectPath } : {}),
       title: session.title,
       originator: "agent-recall-v2",
       cli_version: "migration",
@@ -743,6 +751,7 @@ function updateCodexAppServerState(
   sessionId: string,
   now: Date,
   runtimeMetadata: MigrationTargetRuntimeMetadata,
+  runtimeCwd: string,
 ): void {
   if (target !== "codex") return;
 
@@ -777,9 +786,7 @@ function updateCodexAppServerState(
     const createdAt = Math.floor(createdAtMs / 1000);
     const updatedAt = Math.floor(updatedAtMs / 1000);
     const rolloutPath = path.toNamespacedPath(path.resolve(filePath));
-    const cwd = session.projectPath
-      ? path.toNamespacedPath(path.resolve(session.projectPath))
-      : "";
+    const cwd = path.toNamespacedPath(path.resolve(runtimeCwd));
     const existing = db.prepare("SELECT * FROM threads WHERE id = ?").get(sessionId) as Record<string, unknown> | undefined;
     const template = existing ?? db.prepare("SELECT * FROM threads ORDER BY updated_at_ms DESC, updated_at DESC LIMIT 1").get() as Record<string, unknown> | undefined;
     const values: Record<string, unknown> = {
@@ -950,6 +957,7 @@ function validateNativeStructure(
   sessionId: string,
   session: PortableSession,
   runtimeMetadata: MigrationTargetRuntimeMetadata,
+  codexRuntimeCwd: string,
 ): void {
   const family = migrationTargetDescriptor(target).family;
   if (family === "codex") {
@@ -959,6 +967,7 @@ function validateNativeStructure(
       session,
       requiredRuntimeValue(runtimeMetadata.codexModelProvider, "Codex model provider"),
       target === "codex",
+      codexRuntimeCwd,
     );
   } else if (family === "claude") {
     validateClaudeStructure(rows, sessionId, session, requiredRuntimeValue(runtimeMetadata.claudeModel, "Claude model"));
@@ -975,6 +984,7 @@ function validateCodexStructure(
   session: PortableSession,
   modelProvider: string,
   includeVsCodeEvents: boolean,
+  runtimeCwd: string,
 ): void {
   const turnBoundaries = codexTurnBoundaries(session);
   const expectedSubagentRows = includeVsCodeEvents
@@ -998,7 +1008,8 @@ function validateCodexStructure(
     || meta.timestamp !== session.startedAt
     || payload?.id !== sessionId
     || payload.title !== session.title
-    || payload.cwd !== session.projectPath
+    || payload.cwd !== runtimeCwd
+    || (runtimeCwd !== session.projectPath && payload.agent_recall_project_path !== session.projectPath)
     || payload.model_provider !== modelProvider
     || (includeVsCodeEvents && (
       payload.session_id !== (parentSessionId ?? sessionId)

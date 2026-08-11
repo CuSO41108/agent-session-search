@@ -18,6 +18,21 @@ import {
 import { TRACE_DETAIL_PREVIEW_MAX_CHARS } from "./trace-detail";
 
 describe("Codex session loading", () => {
+  it("keeps a migrated pathless session separate from its Codex runtime cwd", () => {
+    expect(parseCodexSessionMetaLine({
+      type: "session_meta",
+      timestamp: "2026-08-11T08:00:00.000Z",
+      payload: {
+        id: "pathless-session",
+        cwd: "/Users/tester",
+        agent_recall_project_path: "",
+      },
+    })).toMatchObject({
+      id: "pathless-session",
+      projectPath: "",
+    });
+  });
+
   it("preserves explicit timezone offsets as absolute instants", () => {
     const loaded = loadCodexSessionRows("/tmp/codex-offset.jsonl", [
       {

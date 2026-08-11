@@ -109,7 +109,9 @@ export function parseCodexSessionMetaLine(parsed: unknown): {
       || (parentSessionId === null ? "/root" : null);
     return {
       id: line.payload.id,
-      projectPath: line.payload.cwd || "",
+      projectPath: typeof line.payload.agent_recall_project_path === "string"
+        ? line.payload.agent_recall_project_path
+        : line.payload.cwd || "",
       ts: line.timestamp ? new Date(line.timestamp).getTime() : 0,
       title: line.payload.title,
       gitBranch: line.payload.git?.branch,
