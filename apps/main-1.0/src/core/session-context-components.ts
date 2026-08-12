@@ -1,6 +1,7 @@
 import { createReadStream } from "node:fs";
 import * as fs from "node:fs/promises";
 import { createInterface } from "node:readline";
+import { extractCodexExecToolNames } from "./session-loaders/codex-rollout";
 import { sessionSourceDescriptor } from "./session-sources";
 import type { SessionFormat, SessionSource } from "./types";
 
@@ -123,10 +124,10 @@ export async function extractCodexContextComponents(filePath: string): Promise<C
     }
 
     if ((row.type === "response_item" || row.type === "event_msg") && payload) {
-      const callName = toolNameFromCallPayload(payload);
-      if (callName) {
+      const callNames = toolNamesFromCallPayload(payload);
+      if (callNames.length > 0) {
         toolsFromCalls = true;
-        toolNames.add(callName);
+        for (const name of callNames) toolNames.add(name);
         continue;
       }
     }
@@ -362,21 +363,25 @@ function toolNamesFromDynamic(dynamicTools: unknown): string[] {
 }
 
 /** Infer tool names from response_item payloads when dynamic_tools is absent. */
-function toolNameFromCallPayload(payload: Record<string, unknown>): string | null {
+function toolNamesFromCallPayload(payload: Record<string, unknown>): string[] {
   const type = typeof payload.type === "string" ? payload.type : "";
   if (type === "function_call" || type === "custom_tool_call" || type === "tool_call") {
     const name = stringField(payload, "name").trim();
-    return name || null;
+    const names = name ? [name] : [];
+    if (type === "custom_tool_call" && name === "exec") {
+      names.push(...extractCodexExecToolNames(payload.input).map((tool) => tool.replaceAll("__", ".")));
+    }
+    return names;
   }
   if (type === "mcp_tool_call" || type === "mcp_tool_call_end") {
     const invocation = objectField(payload, "invocation");
-    if (!invocation) return null;
+    if (!invocation) return [];
     const server = stringField(invocation, "server").trim();
     const tool = stringField(invocation, "tool").trim();
-    if (server && tool) return `${server}/${tool}`;
-    return tool || server || null;
+    if (server && tool) return [`${server}/${tool}`];
+    return tool || server ? [tool || server] : [];
   }
-  return null;
+  return [];
 }
 
 function collectDynamicToolNames(raw: unknown, names: string[]): void {

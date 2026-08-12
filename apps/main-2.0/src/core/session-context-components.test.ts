@@ -111,6 +111,10 @@ describe("session context components", () => {
           name: "exec",
           call_id: "call_1",
           status: "completed",
+          input: [
+            'const result = await tools.exec_command({ cmd: "pwd" });',
+            'const search = await tools.web__run({ search_query: [{ q: "Codex" }] });',
+          ].join("\n"),
         },
       },
       {
@@ -148,7 +152,7 @@ describe("session context components", () => {
       "tool_inventory",
     ]);
     const tools = components.find((item) => item.kind === "tool_inventory");
-    expect(tools?.items).toEqual(["exec", "mem0/search_memories", "wait"]);
+    expect(tools?.items).toEqual(["exec", "exec_command", "mem0/search_memories", "wait", "web.run"]);
     expect(tools?.sourceHint).toBe("response_item/event_msg tool calls");
     expect(tools?.note).toMatch(/tool call 反推/);
   });
