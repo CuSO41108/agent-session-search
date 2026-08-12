@@ -16,6 +16,14 @@ describe("repairLegacyAgentRecallCodexRollouts", () => {
       const tcodexPath = writeLegacyRollout(homeDir, ".tcodex", "tcodex", "agent-recall-v2", false, "legacy-nondeterministic");
       const partialPath = writeLegacyRollout(homeDir, ".codex", "partial", "agent-recall", true, "repaired");
       const missingMessageIdPath = writeLegacyRollout(homeDir, ".codex", "missing-id", "agent-recall", true, "missing");
+      const legacySingleTurnPath = writeLegacyRollout(
+        homeDir,
+        ".codex",
+        "legacy-single-turn",
+        "agent-recall",
+        true,
+        "missing-legacy-turn",
+      );
       const currentWriterPath = writeLegacyRollout(homeDir, ".codex", "current", "agent-recall", true, "current");
       const nativePath = path.join(homeDir, ".codex", "sessions", "native.jsonl");
       const nativeContent = `${JSON.stringify({
@@ -25,33 +33,45 @@ describe("repairLegacyAgentRecallCodexRollouts", () => {
       fs.writeFileSync(nativePath, nativeContent);
       const originalSize = fs.statSync(v1Path).size;
       const originalMissingMessageIdSize = fs.statSync(missingMessageIdPath).size;
+      const nativeSuffix = `${JSON.stringify({ type: "event_msg", payload: { type: "task_started", turn_id: "native-turn" } })}\n${JSON.stringify({
+        type: "response_item",
+        timestamp: "2026-08-10T06:24:27.000Z",
+        payload: { type: "message", id: `msg_${"f".repeat(8)}-ffff-4fff-8fff-${"f".repeat(12)}`, role: "user", content: [] },
+      })}\n`;
+      expect(fs.readFileSync(missingMessageIdPath, "utf8")).toContain(nativeSuffix);
 
       const result = await repairLegacyAgentRecallCodexRollouts(homeDir);
 
-      expect(result).toEqual({ scannedFiles: 7, repairedFiles: 5, repairedItemIds: 13, failedFiles: 0 });
+      expect(result).toEqual({ scannedFiles: 8, repairedFiles: 5, repairedItemIds: 12, failedFiles: 0 });
       for (const filePath of [v1Path, v2Path, partialPath]) {
         const repaired = fs.readFileSync(filePath, "utf8");
         expect(repaired).toContain(`"id":"msg-${legacyMessageUuid()}"`);
       }
-      for (const filePath of [v1Path, v2Path, partialPath, missingMessageIdPath]) {
+      for (const filePath of [v1Path, v2Path, partialPath]) {
         const repaired = fs.readFileSync(filePath, "utf8");
         expect(repaired).toContain(`"id":"fc-${"a".repeat(64)}"`);
         expect(repaired).toContain(`"id":"fco-${"b".repeat(64)}"`);
         expect(repaired).toContain(`"id":"msg_${"f".repeat(8)}-ffff-4fff-8fff-${"f".repeat(12)}"`);
         expect(repaired).toContain("content keeps msg_ text unchanged");
-        expect(repaired).toContain('"cli_version":"repair-v1"');
+        expect(repaired).toContain('"cli_version":"migrati0n"');
       }
       const repairedMissingMessageId = fs.readFileSync(missingMessageIdPath, "utf8");
-      expect(repairedMissingMessageId).toContain('"timestamp":"2026-08-10","payload":{"type":"message","id":"0"');
-      expect(() => repairedMissingMessageId.trim().split("\n").forEach((line) => JSON.parse(line))).not.toThrow();
+      expect(repairedMissingMessageId).toContain('"timestamp":"2026-08-10T06:22:27.000Z","payload":{"type":"message","role":"user"');
+      expect(repairedMissingMessageId).toContain(`"id":"fc-${"a".repeat(64)}"`);
+      expect(repairedMissingMessageId).toContain(`"id":"fco-${"b".repeat(64)}"`);
+      expect(repairedMissingMessageId).toContain('"cli_version":"migrati0n"');
+      expect(repairedMissingMessageId).toContain(nativeSuffix);
+      const legacySingleTurn = fs.readFileSync(legacySingleTurnPath, "utf8");
+      expect(legacySingleTurn).toContain('"cli_version":"migrati0n"');
+      expect(legacySingleTurn).toContain('"timestamp":"2026-08-10T06:22:27.000Z","payload":{"type":"message","role":"user"');
       const repairedTcodex = fs.readFileSync(tcodexPath, "utf8");
       expect(repairedTcodex).toContain(`"id":"msg-${legacyMessageUuid()}"`);
       expect(repairedTcodex).toContain(`"id":"msg-${deterministicUuid(`${SESSION_ID}:turn:0:message:1`)}"`);
       expect(repairedTcodex).toContain(`"id":"msg_${"f".repeat(8)}-ffff-4fff-8fff-${"f".repeat(12)}"`);
-      expect(repairedTcodex).toContain('"cli_version":"repair-v1"');
+      expect(repairedTcodex).toContain('"cli_version":"migrati0n"');
       const currentWriter = fs.readFileSync(currentWriterPath, "utf8");
       expect(currentWriter).toContain(`"id":"${currentMessageUuid()}"`);
-      expect(currentWriter).toContain('"cli_version":"repair-v1"');
+      expect(currentWriter).toContain('"cli_version":"migrati0n"');
       expect(fs.statSync(v1Path).size).toBe(originalSize);
       expect(fs.statSync(missingMessageIdPath).size).toBe(originalMissingMessageIdSize);
       expect(fs.readFileSync(nativePath, "utf8")).toBe(nativeContent);
@@ -68,7 +88,7 @@ function writeLegacyRollout(
   name: string,
   originator: string,
   includeVsCodeEvents: boolean,
-  messageId: "legacy" | "legacy-nondeterministic" | "repaired" | "missing" | "current" = "legacy",
+  messageId: "legacy" | "legacy-nondeterministic" | "repaired" | "missing" | "missing-legacy-turn" | "current" = "legacy",
 ): string {
   const filePath = path.join(homeDir, root, "sessions", `${name}.jsonl`);
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
@@ -76,14 +96,20 @@ function writeLegacyRollout(
   const rows = [
     { type: "session_meta", payload: { id: SESSION_ID, originator, cli_version: "migration", ...(includeVsCodeEvents ? { source: "vscode" } : {}) } },
     ...(includeVsCodeEvents
-      ? [{ type: "event_msg", payload: { type: "task_started", turn_id: deterministicUuid(`${SESSION_ID}:turn:0`) } }]
+      ? [{
+          type: "event_msg",
+          payload: {
+            type: "task_started",
+            turn_id: messageId === "missing-legacy-turn" ? SESSION_ID : deterministicUuid(`${SESSION_ID}:turn:0`),
+          },
+        }]
       : []),
     {
       type: "response_item",
       timestamp: "2026-08-10T06:22:27.000Z",
       payload: {
         type: "message",
-        ...(messageId === "missing"
+        ...(messageId === "missing" || messageId === "missing-legacy-turn"
           ? {}
           : {
               id: messageId === "current"
@@ -106,7 +132,7 @@ function writeLegacyRollout(
           },
         }]
       : []),
-    ...(includeVsCodeEvents && messageId !== "current"
+    ...(includeVsCodeEvents && messageId !== "current" && messageId !== "missing-legacy-turn"
       ? [
           { type: "response_item", payload: { type: "function_call", id: `fc_${"a".repeat(64)}`, name: "spawn_agent", namespace: "collaboration", call_id: callId } },
           { type: "event_msg", payload: { type: "sub_agent_activity", event_id: callId, agent_thread_id: "20000000-0000-4000-8000-000000000002" } },
@@ -114,7 +140,11 @@ function writeLegacyRollout(
           { type: "event_msg", payload: { type: "task_started", turn_id: "native-turn" } },
         ]
       : []),
-    { type: "response_item", payload: { type: "message", id: `msg_${"f".repeat(8)}-ffff-4fff-8fff-${"f".repeat(12)}`, role: "user", content: [] } },
+    {
+      type: "response_item",
+      timestamp: "2026-08-10T06:24:27.000Z",
+      payload: { type: "message", id: `msg_${"f".repeat(8)}-ffff-4fff-8fff-${"f".repeat(12)}`, role: "user", content: [] },
+    },
   ];
   fs.writeFileSync(filePath, `${rows.map((row) => JSON.stringify(row)).join("\n")}\n`);
   return filePath;

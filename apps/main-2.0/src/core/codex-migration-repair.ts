@@ -8,7 +8,8 @@ const FIRST_LINE_LIMIT = 256 * 1024;
 const FIRST_LINE_CHUNK_SIZE = 16 * 1024;
 const FILE_SCAN_CHUNK_SIZE = 64 * 1024;
 const CURRENT_WRITER_PROBE_LIMIT = FIRST_LINE_LIMIT + FIRST_LINE_CHUNK_SIZE;
-const REPAIRED_CLI_VERSION = "repair-v1";
+const REPAIRED_CLI_VERSION = "migrati0n";
+const REPAIR_MARKER_INDEX = 7;
 const LEGACY_MESSAGE_ID = /^msg_[0-9a-f-]{36}$/i;
 const REPAIRED_MESSAGE_ID = /^msg-[0-9a-f-]{36}$/i;
 const LEGACY_FUNCTION_CALL_ID = /^fc_[0-9a-f]{64}$/i;
@@ -120,15 +121,6 @@ async function repairLegacyRolloutFile(filePath: string): Promise<number> {
     // Keep every edit byte-for-byte the same length. Codex may already have the
     // rollout open for append, so replacing the file or shifting offsets could
     // detach subsequent turns from the path that the App resumes.
-    for (const rewrite of scan.messageRewrites) {
-      const currentPrefix = await readBufferAt(handle, rewrite.original.length, rewrite.offset);
-      if (currentPrefix.equals(rewrite.replacement)) continue;
-      if (!currentPrefix.equals(rewrite.original)) {
-        throw new Error("Legacy Codex rollout changed during repair.");
-      }
-      await writeBufferAt(handle, rewrite.replacement, rewrite.offset);
-      repaired += 1;
-    }
     const current = Buffer.allocUnsafe(1);
     const replacement = Buffer.from("-");
     for (const offset of scan.offsets) {
@@ -179,11 +171,13 @@ function firstJsonlRow(content: Buffer): Record<string, unknown> | null {
 }
 
 async function writeRepairMarker(handle: fs.promises.FileHandle, offset: number): Promise<void> {
-  const current = await readBufferAt(handle, REPAIRED_CLI_VERSION.length, offset);
+  const current = await readBufferAt(handle, "migration".length, offset);
   const value = current.toString("utf8");
   if (value === REPAIRED_CLI_VERSION) return;
   if (value !== "migration") throw new Error("Legacy Codex rollout changed during repair.");
-  await writeBufferAt(handle, Buffer.from(REPAIRED_CLI_VERSION), offset);
+  // A one-byte marker stays valid JSON even if V1 and V2 start together, and
+  // cannot leave a partially rewritten cli_version if the process exits.
+  await writeBufferAt(handle, Buffer.from("0"), offset + REPAIR_MARKER_INDEX);
 }
 
 async function readBufferAt(handle: fs.promises.FileHandle, length: number, offset: number): Promise<Buffer> {
@@ -233,15 +227,8 @@ async function readFirstJsonlRow(filePath: string): Promise<Record<string, unkno
 
 interface LegacyItemIdScan {
   offsets: number[];
-  messageRewrites: MessagePrefixRewrite[];
   cliVersionOffset: number;
   complete: boolean;
-}
-
-interface MessagePrefixRewrite {
-  offset: number;
-  original: Buffer;
-  replacement: Buffer;
 }
 
 async function scanLegacyItemIds(
@@ -249,7 +236,6 @@ async function scanLegacyItemIds(
   sessionId: string,
 ): Promise<LegacyItemIdScan | null> {
   const offsets: number[] = [];
-  const messageRewrites: MessagePrefixRewrite[] = [];
   let cliVersionOffset: number | null = null;
   let complete = true;
   let firstLine = true;
@@ -292,6 +278,11 @@ async function scanLegacyItemIds(
       const nextTurnIndex = turnIndex + 1;
       if (hasVsCodeEvents && stringField(payload, "turn_id") === deterministicCodexUuid(`${sessionId}:turn:${nextTurnIndex}`)) {
         turnIndex = nextTurnIndex;
+      } else if (hasVsCodeEvents && turnIndex < 0 && stringField(payload, "turn_id") === sessionId) {
+        // The first App migration writer represented its whole snapshot as one
+        // turn. Keep scanning its known migration prefix so later synthetic
+        // tool rows can still be repaired.
+        turnIndex = 0;
       } else {
         return true;
       }
@@ -324,10 +315,17 @@ async function scanLegacyItemIds(
           if (offset !== null) offsets.push(offset);
         }
       } else if (!id) {
-        const rewrite = missingMessageIdRewrite(line, lineStart, stringField(row, "timestamp"), messageIndex);
-        if (!rewrite) throw new Error("Unsupported legacy Codex message layout.");
-        messageRewrites.push(rewrite);
-      } else if (id !== repairedMessageId(messageIndex)) {
+        // Older AgentRecall snapshots intentionally left local IDs absent.
+        // Keep those messages byte-identical: current Codex resumes them
+        // without sending a server-backed item reference. Continue scanning,
+        // because a later AgentRecall subagent row can still carry a bad ID.
+        // Once that known migration prefix is fully inspected, the one-byte
+        // marker avoids rescanning the same large, already-safe history.
+      } else {
+        // A short unprefixed ID comes from a partially completed repair built
+        // before full RFC3339 timestamps were enforced. Keep the marker as
+        // `migration` so it is never mistaken for a fully repaired rollout.
+        complete = false;
         return true;
       }
       messageIndex += 1;
@@ -362,41 +360,7 @@ async function scanLegacyItemIds(
   });
 
   if (firstLine || cliVersionOffset === null) return null;
-  return { offsets, messageRewrites, cliVersionOffset, complete };
-}
-
-function missingMessageIdRewrite(
-  line: Buffer,
-  lineStart: number,
-  timestamp: string,
-  messageIndex: number,
-): MessagePrefixRewrite | null {
-  const payloadPrefix = Buffer.from('"payload":{"type":"message",');
-  const payloadOffset = line.indexOf(payloadPrefix);
-  if (payloadOffset < 0 || !line.subarray(0, payloadOffset).includes(Buffer.from('"timestamp":'))) return null;
-  const original = Buffer.from(line.subarray(0, payloadOffset + payloadPrefix.length));
-  const itemId = repairedMessageId(messageIndex);
-  // These older rows have no spare field for an ID. Keep the required
-  // timestamp string (normally retaining its date), use the freed precision
-  // for a short per-file ID, and pad the prefix so every later byte stays put.
-  const availableTimestampLength = Buffer.byteLength(timestamp) - Buffer.byteLength(itemId) - 8;
-  if (availableTimestampLength < 0) return null;
-  const retainedTimestamp = availableTimestampLength >= 10 && /^\d{4}-\d{2}-\d{2}/.test(timestamp)
-    ? timestamp.slice(0, 10)
-    : availableTimestampLength >= 4 && /^\d{4}/.test(timestamp)
-      ? timestamp.slice(0, 4)
-      : "";
-  const replacementText = Buffer.from(
-    `{"type":"response_item","timestamp":${JSON.stringify(retainedTimestamp)},"payload":{"type":"message","id":"${itemId}",`,
-  );
-  if (replacementText.length > original.length) return null;
-  const replacement = Buffer.alloc(original.length, 0x20);
-  replacementText.copy(replacement);
-  return { offset: lineStart, original, replacement };
-}
-
-function repairedMessageId(messageIndex: number): string {
-  return messageIndex.toString(36);
+  return { offsets, cliVersionOffset, complete };
 }
 
 async function visitJsonlLines(
