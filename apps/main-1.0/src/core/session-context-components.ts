@@ -123,8 +123,8 @@ export async function extractCodexContextComponents(filePath: string): Promise<C
       continue;
     }
 
-    if ((row.type === "response_item" || row.type === "event_msg") && payload) {
-      const callNames = toolNamesFromCallPayload(payload);
+    if ((row.type === "response_item" || row.type === "event_msg" || row.type === "item_completed") && payload) {
+      const callNames = toolNamesFromCallPayload(payload, row.type);
       if (callNames.length > 0) {
         toolsFromCalls = true;
         for (const name of callNames) toolNames.add(name);
@@ -185,7 +185,7 @@ export async function extractCodexContextComponents(filePath: string): Promise<C
       ? "session_meta.dynamic_tools + tool calls"
       : toolsFromDynamic
         ? "session_meta.dynamic_tools"
-        : "response_item/event_msg tool calls";
+        : "response_item/event_msg/item_completed tool calls";
     components.push({
       kind: "tool_inventory",
       title: "工具清单",
@@ -324,7 +324,9 @@ function isCodexContextLine(line: string): boolean {
     || line.includes("\"system\"")
     || line.includes("function_call")
     || line.includes("custom_tool_call")
-    || line.includes("mcp_tool_call");
+    || line.includes("mcp_tool_call")
+    || line.includes("DynamicToolCall")
+    || line.includes("dynamic_tool_call");
 }
 
 function isClaudeContextLine(line: string): boolean {
@@ -363,8 +365,8 @@ function toolNamesFromDynamic(dynamicTools: unknown): string[] {
 }
 
 /** Infer tool names from response_item payloads when dynamic_tools is absent. */
-function toolNamesFromCallPayload(payload: Record<string, unknown>): string[] {
-  const type = typeof payload.type === "string" ? payload.type : "";
+function toolNamesFromCallPayload(payload: Record<string, unknown>, rowType = ""): string[] {
+  const type = typeof payload.type === "string" ? payload.type : rowType;
   if (type === "function_call" || type === "custom_tool_call" || type === "tool_call") {
     const name = stringField(payload, "name").trim();
     const names = name ? [name] : [];
@@ -380,6 +382,27 @@ function toolNamesFromCallPayload(payload: Record<string, unknown>): string[] {
     const tool = stringField(invocation, "tool").trim();
     if (server && tool) return [`${server}/${tool}`];
     return tool || server ? [tool || server] : [];
+  }
+  if (type === "item_completed") {
+    const rawItem = objectField(payload, "item");
+    if (!rawItem) return [];
+    let item = rawItem;
+    let itemType = stringField(item, "type").replaceAll(/[^a-z0-9]/giu, "").toLocaleLowerCase();
+    if (!itemType) {
+      for (const [key, value] of Object.entries(rawItem)) {
+        if (!isObject(value)) continue;
+        item = value;
+        itemType = key.replaceAll(/[^a-z0-9]/giu, "").toLocaleLowerCase();
+        break;
+      }
+    }
+    if (itemType !== "dynamictoolcall") return [];
+    const tool = stringField(item, "tool").trim();
+    const names = tool ? [tool] : [];
+    if (tool === "exec") {
+      names.push(...extractCodexExecToolNames(item.arguments).map((name) => name.replaceAll("__", ".")));
+    }
+    return names;
   }
   return [];
 }

@@ -1660,6 +1660,58 @@ describe("Codex session loading", () => {
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
+  it("keeps nested exec tools when a paginated DynamicToolCall completes", () => {
+    const input = [
+      'await tools.exec_command({ cmd: "pwd" });',
+      'await tools.web__run({ search_query: [{ q: "Codex" }] });',
+    ].join("\n");
+    const loaded = loadCodexSessionRows("/tmp/codex-completed-exec.jsonl", [
+      {
+        type: "session_meta",
+        timestamp: "2026-08-12T08:00:00Z",
+        payload: { id: "codex-completed-exec", cwd: "/repo", history_mode: "paginated" },
+      },
+      {
+        type: "response_item",
+        timestamp: "2026-08-12T08:00:01Z",
+        payload: {
+          type: "custom_tool_call",
+          name: "exec",
+          call_id: "exec-1",
+          input,
+        },
+      },
+      {
+        type: "event_msg",
+        timestamp: "2026-08-12T08:00:02Z",
+        payload: {
+          type: "item_completed",
+          turn_id: "turn-1",
+          item: {
+            type: "DynamicToolCall",
+            id: "exec-1",
+            namespace: "workspace",
+            tool: "exec",
+            arguments: input,
+            status: "completed",
+            success: true,
+          },
+        },
+      },
+    ]);
+
+    expect(loaded?.traceEvents).toHaveLength(1);
+    expect(loaded?.traceEvents?.[0]).toMatchObject({
+      kind: "tool_result",
+      title: "workspace.exec · exec_command, web.run",
+      callId: "exec-1",
+      eventType: "codex.dynamic_tool",
+      attributes: {
+        nestedTools: ["exec_command", "web__run"],
+      },
+    });
+  });
+
   it("preserves Codex tool identity and timing across intermediate call events", () => {
     const loaded = loadCodexSessionRows("/tmp/codex-intermediate-tool-event.jsonl", [
       {

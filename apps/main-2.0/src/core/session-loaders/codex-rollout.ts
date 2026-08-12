@@ -404,10 +404,14 @@ function itemToolTrace(
   } else if (type === "dynamictoolcall") {
     const namespace = stringValue(item.namespace);
     const tool = stringValue(item.tool) || "dynamic tool";
-    title = namespace ? `${namespace}.${tool}` : tool;
+    const nestedTools = tool === "exec" ? extractCodexExecToolNames(item.arguments) : [];
+    const nestedToolSummary = nestedTools.map((name) => name.replaceAll("__", ".")).join(", ");
+    const qualifiedTool = namespace ? `${namespace}.${tool}` : tool;
+    title = nestedToolSummary ? `${qualifiedTool} · ${nestedToolSummary}` : qualifiedTool;
     eventType = "codex.dynamic_tool";
     input = item.arguments;
     output = item.error || item.content_items || { success: item.success };
+    if (nestedTools.length > 0) attributes.nestedTools = nestedTools;
     if (item.success === false) status = "failed";
   } else if (type === "mcptoolcall") {
     title = [stringValue(item.server), stringValue(item.tool)].filter(Boolean).join(".") || "MCP tool";
