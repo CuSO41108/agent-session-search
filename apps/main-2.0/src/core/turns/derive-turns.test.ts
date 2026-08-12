@@ -860,6 +860,53 @@ describe("deriveSessionTimeline", () => {
     });
   });
 
+  it("keeps complete compact detail in the Turn span output", () => {
+    const compactDetail = `payload:\nretained-start-${"x".repeat(12_000)}-retained-end`;
+    const timeline = deriveSessionTimeline({
+      sessionKey: "codex:compact-detail",
+      messages: [{
+        role: "user",
+        content: "Continue after compact",
+        timestamp: "2026-08-10T04:44:00.000Z",
+        index: 0,
+        sourceTurnId: "turn-compact",
+      }],
+      traceEvents: [{
+        index: 0,
+        kind: "event",
+        source: "codex",
+        title: "Context compacted",
+        detail: compactDetail,
+        timestamp: "2026-08-10T04:44:12.000Z",
+        eventType: "codex.context.compaction",
+        status: "completed",
+        sourceTurnId: "turn-compact",
+        attributes: {
+          compaction: {
+            itemCount: 27,
+            itemTypes: { message: 26, compaction: 1 },
+            opaqueCompaction: true,
+          },
+        },
+      }],
+    });
+
+    expect(timeline.turns).toHaveLength(1);
+    expect(timeline.turns[0].spans[0]).toMatchObject({
+      kind: "event",
+      name: "Context compacted",
+      output: { text: compactDetail },
+      attributes: {
+        compaction: {
+          itemCount: 27,
+          itemTypes: { message: 26, compaction: 1 },
+          opaqueCompaction: true,
+        },
+      },
+    });
+    expect(timeline.rawEvents[1].payload).toMatchObject({ detail: compactDetail });
+  });
+
   it("keeps preamble events in a synthetic Turn instead of attributing them to the first request", () => {
     const timeline = deriveSessionTimeline({
       sessionKey: "codex:preamble",

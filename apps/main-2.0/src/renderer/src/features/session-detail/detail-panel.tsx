@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { ReactElement } from "react";
 import { ArrowRightLeft, ChevronDown, ChevronUp, CloudUpload, Container, Copy, Download, Edit3, Eye, EyeOff, FolderOpen, Laptop, Paperclip, Play, Search, Server, Sparkles, Star, Tag, Terminal as TerminalIcon, Trash2, X } from "lucide-react";
 import { formatMessageTime } from "../../../../core/format-session";
-import { traceDetailText, traceDurationLabel, tracePresentation } from "../../../../core/trace-presentation";
+import { traceCompactionSummary, traceDetailText, traceDurationLabel, tracePresentation } from "../../../../core/trace-presentation";
 import type {
   SessionMessage,
   SessionSearchResult,
@@ -919,6 +919,7 @@ function TraceEventBlock({ event, language, timelineKey }: { event: SessionTrace
   const truncated = Boolean(event.detail) && event.detail.length > TRACE_TRUNCATE_LIMIT;
   const [expanded, setExpanded] = useState(false);
   const durationText = traceDurationLabel(event.attributes);
+  const compactionSummary = traceCompactionSummary(event.attributes);
   const collaboration = collaborationMessageMetadata(event.attributes);
   const detail = useMemo(() => {
     if (!event.detail) return localize(language, "No detail captured.", "没有记录详情。");
@@ -943,6 +944,18 @@ function TraceEventBlock({ event, language, timelineKey }: { event: SessionTrace
           ? <span>{collaboration.author || "?"} → {collaboration.recipient || "?"}</span>
           : null}
         {durationText ? <span className="trace-duration">{durationText}</span> : null}
+        {compactionSummary ? (
+          <>
+            <span>{localize(
+              language,
+              `${compactionSummary.itemCount} ${compactionSummary.itemCount === 1 ? "item" : "items"}`,
+              `共 ${compactionSummary.itemCount} 项`,
+            )}</span>
+            {compactionSummary.itemTypes.map(({ type, count }) => (
+              <span key={type}>{type} {count}</span>
+            ))}
+          </>
+        ) : null}
         {event.callId ? <span>{event.callId}</span> : null}
       </div>
       <pre>{detail}</pre>

@@ -3277,6 +3277,19 @@ describe("SessionStore", () => {
     expect(stored.detail).toContain("characters omitted");
   });
 
+  it("stores complete compact trace detail for the expandable view", () => {
+    const store = createInMemoryStore();
+    const longDetail = "x".repeat(TRACE_DETAIL_PREVIEW_MAX_CHARS + 25);
+    store.upsertIndexedSession(sampleSession(), messages, [], [{
+      ...traceEvents[0],
+      eventType: "codex.context.compaction",
+      detail: longDetail,
+    }]);
+
+    const [stored] = store.getTraceEvents("codex:abc");
+    expect(stored.detail).toBe(longDetail);
+  });
+
   it("limits trace events to the visible message timestamp window", () => {
     const store = createInMemoryStore();
     store.upsertIndexedSession(sampleSession(), messages, [], traceEvents);

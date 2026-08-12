@@ -132,7 +132,7 @@ function loadWrittenSession(
 }
 
 describe("writeMigratedSession", () => {
-  it("emits native Codex subagent activity linked to a reserved child thread", async () => {
+  it("emits native Codex subagent activity without model-visible synthetic tool history", async () => {
     const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "migration-writer-subagent-activity-"));
     try {
       const session = {
@@ -159,16 +159,18 @@ describe("writeMigratedSession", () => {
         now: NOW,
       });
       const rows = readRows(result.filePath);
-      const spawn = rows.find((row) => row.type === "response_item" && row.payload?.name === "spawn_agent");
       const activity = rows.find((row) => row.type === "event_msg" && row.payload?.type === "sub_agent_activity");
+      const syntheticToolRows = rows.filter((row) => row.type === "response_item"
+        && (row.payload?.type === "function_call" || row.payload?.type === "function_call_output"));
 
       expect(result.sessionId).toBe(SESSION_ID);
-      expect(JSON.parse(spawn?.payload.arguments)).toMatchObject({ task_name: "child", message: "Research child" });
+      expect(syntheticToolRows).toHaveLength(0);
       expect(activity?.payload).toMatchObject({
         agent_thread_id: CHILD_SESSION_ID,
         agent_path: "/root/migrated_child",
         kind: "started",
       });
+      expect(activity?.payload.event_id).toMatch(/^[0-9a-f-]{36}$/);
     } finally {
       fs.rmSync(homeDir, { recursive: true, force: true });
     }
@@ -229,7 +231,8 @@ describe("writeMigratedSession", () => {
       expect(messageRows.map((row) => row.payload.role)).toEqual(["user", "assistant", "user", "assistant"]);
       expect(messageRows[1].payload.content[0].text).toContain("过程更新 1\n\n过程更新 2");
       expect(messageRows[1].payload.content[0].text).toContain("过程更新 260");
-      expect(messageRows.every((row) => /^msg_[0-9a-f-]{36}$/.test(row.payload.id))).toBe(true);
+      expect(messageRows.every((row) => /^[0-9a-f-]{36}$/.test(row.payload.id) && !row.payload.id.includes("_"))).toBe(true);
+      expect(new Set(messageRows.map((row) => row.payload.id)).size).toBe(messageRows.length);
       expect(messageRows.filter((row) => row.payload.role === "assistant").every((row) => row.payload.phase === "final_answer")).toBe(true);
       expect(rows.filter((row) => row.payload?.type === "task_started")).toHaveLength(2);
     } finally {
