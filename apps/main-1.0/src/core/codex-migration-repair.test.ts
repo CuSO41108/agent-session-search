@@ -13,7 +13,10 @@ describe("repairLegacyAgentRecallCodexRollouts", () => {
     try {
       const v1Path = writeLegacyRollout(homeDir, ".codex", "v1", "agent-recall", true);
       const v2Path = writeLegacyRollout(homeDir, ".codex", "v2", "agent-recall-v2", true);
-      const tcodexPath = writeLegacyRollout(homeDir, ".tcodex", "tcodex", "agent-recall-v2", false);
+      const tcodexPath = writeLegacyRollout(homeDir, ".tcodex", "tcodex", "agent-recall-v2", false, "legacy-nondeterministic");
+      const partialPath = writeLegacyRollout(homeDir, ".codex", "partial", "agent-recall", true, "repaired");
+      const missingMessageIdPath = writeLegacyRollout(homeDir, ".codex", "missing-id", "agent-recall", true, "missing");
+      const currentWriterPath = writeLegacyRollout(homeDir, ".codex", "current", "agent-recall", true, "current");
       const nativePath = path.join(homeDir, ".codex", "sessions", "native.jsonl");
       const nativeContent = `${JSON.stringify({
         type: "session_meta",
@@ -21,22 +24,36 @@ describe("repairLegacyAgentRecallCodexRollouts", () => {
       })}\n${JSON.stringify({ type: "response_item", payload: { type: "message", id: "msg_native" } })}\n`;
       fs.writeFileSync(nativePath, nativeContent);
       const originalSize = fs.statSync(v1Path).size;
+      const originalMissingMessageIdSize = fs.statSync(missingMessageIdPath).size;
 
       const result = await repairLegacyAgentRecallCodexRollouts(homeDir);
 
-      expect(result).toEqual({ scannedFiles: 4, repairedFiles: 3, repairedItemIds: 7, failedFiles: 0 });
-      for (const filePath of [v1Path, v2Path]) {
+      expect(result).toEqual({ scannedFiles: 7, repairedFiles: 5, repairedItemIds: 13, failedFiles: 0 });
+      for (const filePath of [v1Path, v2Path, partialPath]) {
         const repaired = fs.readFileSync(filePath, "utf8");
         expect(repaired).toContain(`"id":"msg-${legacyMessageUuid()}"`);
+      }
+      for (const filePath of [v1Path, v2Path, partialPath, missingMessageIdPath]) {
+        const repaired = fs.readFileSync(filePath, "utf8");
         expect(repaired).toContain(`"id":"fc-${"a".repeat(64)}"`);
         expect(repaired).toContain(`"id":"fco-${"b".repeat(64)}"`);
         expect(repaired).toContain(`"id":"msg_${"f".repeat(8)}-ffff-4fff-8fff-${"f".repeat(12)}"`);
         expect(repaired).toContain("content keeps msg_ text unchanged");
+        expect(repaired).toContain('"cli_version":"repair-v1"');
       }
+      const repairedMissingMessageId = fs.readFileSync(missingMessageIdPath, "utf8");
+      expect(repairedMissingMessageId).toContain('"timestamp":"2026-08-10","payload":{"type":"message","id":"0"');
+      expect(() => repairedMissingMessageId.trim().split("\n").forEach((line) => JSON.parse(line))).not.toThrow();
       const repairedTcodex = fs.readFileSync(tcodexPath, "utf8");
       expect(repairedTcodex).toContain(`"id":"msg-${legacyMessageUuid()}"`);
+      expect(repairedTcodex).toContain(`"id":"msg-${deterministicUuid(`${SESSION_ID}:turn:0:message:1`)}"`);
       expect(repairedTcodex).toContain(`"id":"msg_${"f".repeat(8)}-ffff-4fff-8fff-${"f".repeat(12)}"`);
+      expect(repairedTcodex).toContain('"cli_version":"repair-v1"');
+      const currentWriter = fs.readFileSync(currentWriterPath, "utf8");
+      expect(currentWriter).toContain(`"id":"${currentMessageUuid()}"`);
+      expect(currentWriter).toContain('"cli_version":"repair-v1"');
       expect(fs.statSync(v1Path).size).toBe(originalSize);
+      expect(fs.statSync(missingMessageIdPath).size).toBe(originalMissingMessageIdSize);
       expect(fs.readFileSync(nativePath, "utf8")).toBe(nativeContent);
       expect(await repairLegacyAgentRecallCodexRollouts(homeDir)).toMatchObject({ repairedFiles: 0, repairedItemIds: 0 });
     } finally {
@@ -45,7 +62,14 @@ describe("repairLegacyAgentRecallCodexRollouts", () => {
   });
 });
 
-function writeLegacyRollout(homeDir: string, root: string, name: string, originator: string, includeVsCodeEvents: boolean): string {
+function writeLegacyRollout(
+  homeDir: string,
+  root: string,
+  name: string,
+  originator: string,
+  includeVsCodeEvents: boolean,
+  messageId: "legacy" | "legacy-nondeterministic" | "repaired" | "missing" | "current" = "legacy",
+): string {
   const filePath = path.join(homeDir, root, "sessions", `${name}.jsonl`);
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
   const callId = `call_migrated_${"c".repeat(24)}`;
@@ -54,8 +78,35 @@ function writeLegacyRollout(homeDir: string, root: string, name: string, origina
     ...(includeVsCodeEvents
       ? [{ type: "event_msg", payload: { type: "task_started", turn_id: deterministicUuid(`${SESSION_ID}:turn:0`) } }]
       : []),
-    { type: "response_item", payload: { type: "message", id: `msg_${legacyMessageUuid()}`, role: "user", content: [{ type: "input_text", text: "content keeps msg_ text unchanged" }] } },
-    ...(includeVsCodeEvents
+    {
+      type: "response_item",
+      timestamp: "2026-08-10T06:22:27.000Z",
+      payload: {
+        type: "message",
+        ...(messageId === "missing"
+          ? {}
+          : {
+              id: messageId === "current"
+                ? currentMessageUuid()
+                : `${messageId === "repaired" ? "msg-" : "msg_"}${legacyMessageUuid()}`,
+            }),
+        role: "user",
+        content: [{ type: "input_text", text: "content keeps msg_ text unchanged" }],
+      },
+    },
+    ...(messageId === "legacy-nondeterministic"
+      ? [{
+          type: "response_item",
+          timestamp: "2026-08-10T06:23:27.000Z",
+          payload: {
+            type: "message",
+            id: `msg_${deterministicUuid(`${SESSION_ID}:turn:0:message:1`)}`,
+            role: "user",
+            content: [{ type: "input_text", text: "same turn second user message" }],
+          },
+        }]
+      : []),
+    ...(includeVsCodeEvents && messageId !== "current"
       ? [
           { type: "response_item", payload: { type: "function_call", id: `fc_${"a".repeat(64)}`, name: "spawn_agent", namespace: "collaboration", call_id: callId } },
           { type: "event_msg", payload: { type: "sub_agent_activity", event_id: callId, agent_thread_id: "20000000-0000-4000-8000-000000000002" } },
@@ -71,6 +122,10 @@ function writeLegacyRollout(homeDir: string, root: string, name: string, origina
 
 function legacyMessageUuid(): string {
   return deterministicUuid(`${SESSION_ID}:turn:0:message:0`);
+}
+
+function currentMessageUuid(): string {
+  return deterministicUuid(`response-item:${SESSION_ID}:turn:0:message:0`);
 }
 
 function deterministicUuid(seed: string): string {

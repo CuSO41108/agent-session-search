@@ -6,9 +6,15 @@ import * as path from "node:path";
 const AGENT_RECALL_ORIGINATORS = new Set(["agent-recall", "agent-recall-v2"]);
 const FIRST_LINE_LIMIT = 256 * 1024;
 const FIRST_LINE_CHUNK_SIZE = 16 * 1024;
+const FILE_SCAN_CHUNK_SIZE = 64 * 1024;
+const CURRENT_WRITER_PROBE_LIMIT = FIRST_LINE_LIMIT + FIRST_LINE_CHUNK_SIZE;
+const REPAIRED_CLI_VERSION = "repair-v1";
 const LEGACY_MESSAGE_ID = /^msg_[0-9a-f-]{36}$/i;
+const REPAIRED_MESSAGE_ID = /^msg-[0-9a-f-]{36}$/i;
 const LEGACY_FUNCTION_CALL_ID = /^fc_[0-9a-f]{64}$/i;
 const LEGACY_FUNCTION_OUTPUT_ID = /^fco_[0-9a-f]{64}$/i;
+const REPAIRED_FUNCTION_CALL_ID = /^fc-[0-9a-f]{64}$/i;
+const REPAIRED_FUNCTION_OUTPUT_ID = /^fco-[0-9a-f]{64}$/i;
 const MIGRATED_CALL_ID = /^call_migrated_[0-9a-f]{24}$/i;
 
 export interface CodexMigrationRepairResult {
@@ -78,29 +84,126 @@ async function repairLegacyRolloutFile(filePath: string): Promise<number> {
   const sessionId = stringField(firstPayload, "id");
   if (!sessionId) return 0;
 
-  const content = await fs.promises.readFile(filePath);
-  const offsets = legacyItemIdUnderscoreOffsets(content, sessionId, Boolean(firstPayload?.source));
-  if (offsets.length === 0) return 0;
-
   const handle = await fs.promises.open(filePath, "r+");
   let repaired = 0;
   try {
+    const probe = await readFilePrefix(handle, CURRENT_WRITER_PROBE_LIMIT);
+    const currentFirstRow = firstJsonlRow(probe);
+    const currentFirstPayload = record(currentFirstRow?.payload);
+    if (
+      currentFirstRow?.type !== "session_meta"
+      || !AGENT_RECALL_ORIGINATORS.has(stringField(currentFirstPayload, "originator"))
+      || stringField(currentFirstPayload, "cli_version") !== "migration"
+      || stringField(currentFirstPayload, "id") !== sessionId
+    ) {
+      return 0;
+    }
+    const probeMarkerOffset = cliVersionValueOffset(probe, 0);
+    if (probeMarkerOffset === null) return 0;
+
+    // The current writer never emits the legacy synthetic function rows. Its
+    // deterministic first message ID is enough to mark the whole atomic file
+    // without reading a potentially huge first message or the remaining turns.
+    const currentFirstMessageId = deterministicCodexUuid(`response-item:${sessionId}:turn:0:message:0`);
+    if (probe.includes(Buffer.from(`"id":${JSON.stringify(currentFirstMessageId)}`))) {
+      await writeRepairMarker(handle, probeMarkerOffset);
+      await handle.sync();
+      return 0;
+    }
+
+    // Scan from the same file descriptor used for the edits. A rollout can be
+    // replaced between discovery and repair; keeping discovery and positional
+    // writes on one descriptor prevents patching an unrelated file.
+    const scan = await scanLegacyItemIds(handle, sessionId);
+    if (!scan) return 0;
+
     // Keep every edit byte-for-byte the same length. Codex may already have the
     // rollout open for append, so replacing the file or shifting offsets could
     // detach subsequent turns from the path that the App resumes.
-    const current = Buffer.allocUnsafe(1);
-    const replacement = Buffer.from("-");
-    for (const offset of offsets) {
-      const read = await handle.read(current, 0, 1, offset);
-      if (read.bytesRead !== 1 || current[0] !== 0x5f) continue;
-      await handle.write(replacement, 0, 1, offset);
+    for (const rewrite of scan.messageRewrites) {
+      const currentPrefix = await readBufferAt(handle, rewrite.original.length, rewrite.offset);
+      if (currentPrefix.equals(rewrite.replacement)) continue;
+      if (!currentPrefix.equals(rewrite.original)) {
+        throw new Error("Legacy Codex rollout changed during repair.");
+      }
+      await writeBufferAt(handle, rewrite.replacement, rewrite.offset);
       repaired += 1;
     }
+    const current = Buffer.allocUnsafe(1);
+    const replacement = Buffer.from("-");
+    for (const offset of scan.offsets) {
+      const read = await handle.read(current, 0, 1, offset);
+      if (read.bytesRead !== 1) throw new Error("Legacy Codex rollout changed during repair.");
+      if (current[0] === 0x5f) {
+        await handle.write(replacement, 0, 1, offset);
+        repaired += 1;
+      } else if (current[0] !== 0x2d) {
+        throw new Error("Legacy Codex rollout changed during repair.");
+      }
+    }
     if (repaired > 0) await handle.sync();
+    if (scan.complete) {
+      await writeRepairMarker(handle, scan.cliVersionOffset);
+      await handle.sync();
+    }
   } finally {
     await handle.close();
   }
   return repaired;
+}
+
+async function readFilePrefix(handle: fs.promises.FileHandle, limit: number): Promise<Buffer> {
+  const buffer = Buffer.allocUnsafe(limit);
+  let bytesRead = 0;
+  while (bytesRead < buffer.length) {
+    const read = await handle.read(
+      buffer,
+      bytesRead,
+      Math.min(FIRST_LINE_CHUNK_SIZE, buffer.length - bytesRead),
+      bytesRead,
+    );
+    if (read.bytesRead === 0) break;
+    bytesRead += read.bytesRead;
+  }
+  return buffer.subarray(0, bytesRead);
+}
+
+function firstJsonlRow(content: Buffer): Record<string, unknown> | null {
+  const newline = content.indexOf(0x0a);
+  if (newline < 0 || newline > FIRST_LINE_LIMIT) return null;
+  try {
+    return record(JSON.parse(content.subarray(0, newline).toString("utf8").trim()));
+  } catch {
+    return null;
+  }
+}
+
+async function writeRepairMarker(handle: fs.promises.FileHandle, offset: number): Promise<void> {
+  const current = await readBufferAt(handle, REPAIRED_CLI_VERSION.length, offset);
+  const value = current.toString("utf8");
+  if (value === REPAIRED_CLI_VERSION) return;
+  if (value !== "migration") throw new Error("Legacy Codex rollout changed during repair.");
+  await writeBufferAt(handle, Buffer.from(REPAIRED_CLI_VERSION), offset);
+}
+
+async function readBufferAt(handle: fs.promises.FileHandle, length: number, offset: number): Promise<Buffer> {
+  const buffer = Buffer.allocUnsafe(length);
+  let readBytes = 0;
+  while (readBytes < buffer.length) {
+    const read = await handle.read(buffer, readBytes, buffer.length - readBytes, offset + readBytes);
+    if (read.bytesRead === 0) throw new Error("Legacy Codex rollout changed during repair.");
+    readBytes += read.bytesRead;
+  }
+  return buffer;
+}
+
+async function writeBufferAt(handle: fs.promises.FileHandle, buffer: Buffer, offset: number): Promise<void> {
+  let writtenBytes = 0;
+  while (writtenBytes < buffer.length) {
+    const write = await handle.write(buffer, writtenBytes, buffer.length - writtenBytes, offset + writtenBytes);
+    if (write.bytesWritten === 0) throw new Error("Legacy Codex rollout could not be repaired.");
+    writtenBytes += write.bytesWritten;
+  }
 }
 
 async function readFirstJsonlRow(filePath: string): Promise<Record<string, unknown> | null> {
@@ -128,73 +231,218 @@ async function readFirstJsonlRow(filePath: string): Promise<Record<string, unkno
   }
 }
 
-function legacyItemIdUnderscoreOffsets(content: Buffer, sessionId: string, hasVsCodeEvents: boolean): number[] {
+interface LegacyItemIdScan {
+  offsets: number[];
+  messageRewrites: MessagePrefixRewrite[];
+  cliVersionOffset: number;
+  complete: boolean;
+}
+
+interface MessagePrefixRewrite {
+  offset: number;
+  original: Buffer;
+  replacement: Buffer;
+}
+
+async function scanLegacyItemIds(
+  handle: fs.promises.FileHandle,
+  sessionId: string,
+): Promise<LegacyItemIdScan | null> {
   const offsets: number[] = [];
-  let lineStart = 0;
-  let migrationEnded = false;
-  let turnIndex = hasVsCodeEvents ? -1 : 0;
+  const messageRewrites: MessagePrefixRewrite[] = [];
+  let cliVersionOffset: number | null = null;
+  let complete = true;
+  let firstLine = true;
+  let hasVsCodeEvents = false;
+  let turnIndex = 0;
   let messageIndex = 0;
 
-  while (lineStart < content.length) {
-    const newline = content.indexOf(0x0a, lineStart);
-    const lineEnd = newline < 0 ? content.length : newline;
-    const line = content.subarray(lineStart, lineEnd);
+  await visitJsonlLines(handle, (line, lineStart) => {
     let row: Record<string, unknown> | null = null;
     try {
       row = record(JSON.parse(line.toString("utf8")));
     } catch {
-      migrationEnded = true;
+      complete = false;
+      return true;
     }
 
     const payload = record(row?.payload);
-    if (!migrationEnded && row?.type === "event_msg" && payload?.type === "task_started") {
+    if (firstLine) {
+      firstLine = false;
+      if (
+        row?.type !== "session_meta"
+        || !AGENT_RECALL_ORIGINATORS.has(stringField(payload, "originator"))
+        || stringField(payload, "cli_version") !== "migration"
+        || stringField(payload, "id") !== sessionId
+      ) {
+        complete = false;
+        return true;
+      }
+      cliVersionOffset = cliVersionValueOffset(line, lineStart);
+      if (cliVersionOffset === null) {
+        complete = false;
+        return true;
+      }
+      hasVsCodeEvents = Boolean(payload?.source);
+      turnIndex = hasVsCodeEvents ? -1 : 0;
+      return false;
+    }
+
+    if (row?.type === "event_msg" && payload?.type === "task_started") {
       const nextTurnIndex = turnIndex + 1;
-      if (stringField(payload, "turn_id") === deterministicCodexUuid(`${sessionId}:turn:${nextTurnIndex}`)) {
+      if (hasVsCodeEvents && stringField(payload, "turn_id") === deterministicCodexUuid(`${sessionId}:turn:${nextTurnIndex}`)) {
         turnIndex = nextTurnIndex;
-      } else if (turnIndex >= 0) {
-        migrationEnded = true;
-      }
-    }
-
-    if (!migrationEnded && row?.type === "response_item" && payload?.type === "message") {
-      if (!hasVsCodeEvents && messageIndex > 0 && payload.role === "user") turnIndex += 1;
-      const id = stringField(payload, "id");
-      const expectedId = `msg_${deterministicCodexUuid(`${sessionId}:turn:${Math.max(0, turnIndex)}:message:${messageIndex}`)}`;
-      if (id === expectedId && LEGACY_MESSAGE_ID.test(id)) {
-        const offset = idUnderscoreOffset(line, lineStart, id);
-        if (offset !== null) offsets.push(offset);
-        messageIndex += 1;
       } else {
-        migrationEnded = true;
+        return true;
       }
+      return false;
     }
 
-    if (!migrationEnded && row?.type === "response_item" && payload?.type === "function_call") {
+    if (row?.type === "event_msg") return false;
+    if (row?.type !== "response_item") return true;
+
+    if (payload?.type === "message") {
+      const id = stringField(payload, "id");
+      if (LEGACY_MESSAGE_ID.test(id) || REPAIRED_MESSAGE_ID.test(id)) {
+        // Terminal Codex rollouts have no task_started rows. Recover the
+        // monotonic turn index from the writer's deterministic IDs instead of
+        // assuming every user message starts a turn.
+        const firstCandidate = Math.max(0, turnIndex);
+        const lastCandidate = hasVsCodeEvents ? firstCandidate : messageIndex;
+        let matchedTurnIndex = -1;
+        for (let candidate = firstCandidate; candidate <= lastCandidate; candidate += 1) {
+          const migratedUuid = deterministicCodexUuid(`${sessionId}:turn:${candidate}:message:${messageIndex}`);
+          if (id === `msg_${migratedUuid}` || id === `msg-${migratedUuid}`) {
+            matchedTurnIndex = candidate;
+            break;
+          }
+        }
+        if (matchedTurnIndex < 0) return true;
+        turnIndex = matchedTurnIndex;
+        if (LEGACY_MESSAGE_ID.test(id)) {
+          const offset = idUnderscoreOffset(line, lineStart, id);
+          if (offset !== null) offsets.push(offset);
+        }
+      } else if (!id) {
+        const rewrite = missingMessageIdRewrite(line, lineStart, stringField(row, "timestamp"), messageIndex);
+        if (!rewrite) throw new Error("Unsupported legacy Codex message layout.");
+        messageRewrites.push(rewrite);
+      } else if (id !== repairedMessageId(messageIndex)) {
+        return true;
+      }
+      messageIndex += 1;
+      return false;
+    }
+
+    if (payload?.type === "function_call") {
       const id = stringField(payload, "id");
       if (
-        payload.name === "spawn_agent"
-        && payload.namespace === "collaboration"
-        && LEGACY_FUNCTION_CALL_ID.test(id)
-        && MIGRATED_CALL_ID.test(stringField(payload, "call_id"))
-      ) {
+        payload.name !== "spawn_agent"
+        || payload.namespace !== "collaboration"
+        || !MIGRATED_CALL_ID.test(stringField(payload, "call_id"))
+      ) return true;
+      if (LEGACY_FUNCTION_CALL_ID.test(id)) {
         const offset = idUnderscoreOffset(line, lineStart, id);
         if (offset !== null) offsets.push(offset);
-      }
+      } else if (id && !REPAIRED_FUNCTION_CALL_ID.test(id)) return true;
+      return false;
     }
 
-    if (!migrationEnded && row?.type === "response_item" && payload?.type === "function_call_output") {
+    if (payload?.type === "function_call_output") {
       const id = stringField(payload, "id");
-      if (LEGACY_FUNCTION_OUTPUT_ID.test(id) && MIGRATED_CALL_ID.test(stringField(payload, "call_id"))) {
+      if (!MIGRATED_CALL_ID.test(stringField(payload, "call_id"))) return true;
+      if (LEGACY_FUNCTION_OUTPUT_ID.test(id)) {
         const offset = idUnderscoreOffset(line, lineStart, id);
         if (offset !== null) offsets.push(offset);
-      }
+      } else if (id && !REPAIRED_FUNCTION_OUTPUT_ID.test(id)) return true;
+      return false;
     }
 
-    if (newline < 0) break;
-    lineStart = newline + 1;
+    return true;
+  });
+
+  if (firstLine || cliVersionOffset === null) return null;
+  return { offsets, messageRewrites, cliVersionOffset, complete };
+}
+
+function missingMessageIdRewrite(
+  line: Buffer,
+  lineStart: number,
+  timestamp: string,
+  messageIndex: number,
+): MessagePrefixRewrite | null {
+  const payloadPrefix = Buffer.from('"payload":{"type":"message",');
+  const payloadOffset = line.indexOf(payloadPrefix);
+  if (payloadOffset < 0 || !line.subarray(0, payloadOffset).includes(Buffer.from('"timestamp":'))) return null;
+  const original = Buffer.from(line.subarray(0, payloadOffset + payloadPrefix.length));
+  const itemId = repairedMessageId(messageIndex);
+  // These older rows have no spare field for an ID. Keep the required
+  // timestamp string (normally retaining its date), use the freed precision
+  // for a short per-file ID, and pad the prefix so every later byte stays put.
+  const availableTimestampLength = Buffer.byteLength(timestamp) - Buffer.byteLength(itemId) - 8;
+  if (availableTimestampLength < 0) return null;
+  const retainedTimestamp = availableTimestampLength >= 10 && /^\d{4}-\d{2}-\d{2}/.test(timestamp)
+    ? timestamp.slice(0, 10)
+    : availableTimestampLength >= 4 && /^\d{4}/.test(timestamp)
+      ? timestamp.slice(0, 4)
+      : "";
+  const replacementText = Buffer.from(
+    `{"type":"response_item","timestamp":${JSON.stringify(retainedTimestamp)},"payload":{"type":"message","id":"${itemId}",`,
+  );
+  if (replacementText.length > original.length) return null;
+  const replacement = Buffer.alloc(original.length, 0x20);
+  replacementText.copy(replacement);
+  return { offset: lineStart, original, replacement };
+}
+
+function repairedMessageId(messageIndex: number): string {
+  return messageIndex.toString(36);
+}
+
+async function visitJsonlLines(
+  handle: fs.promises.FileHandle,
+  visit: (line: Buffer, lineStart: number) => boolean,
+): Promise<void> {
+  const size = (await handle.stat()).size;
+  let position = 0;
+  let lineStart = 0;
+  let fragments: Buffer[] = [];
+
+  while (position < size) {
+    const buffer = Buffer.allocUnsafe(Math.min(FILE_SCAN_CHUNK_SIZE, size - position));
+    const { bytesRead } = await handle.read(buffer, 0, buffer.length, position);
+    if (bytesRead === 0) break;
+    const chunk = buffer.subarray(0, bytesRead);
+    let cursor = 0;
+    while (cursor < chunk.length) {
+      const newline = chunk.indexOf(0x0a, cursor);
+      if (newline < 0) {
+        fragments.push(chunk.subarray(cursor));
+        break;
+      }
+      fragments.push(chunk.subarray(cursor, newline));
+      const line = fragments.length === 1 ? fragments[0] : Buffer.concat(fragments);
+      if (visit(line, lineStart)) return;
+      fragments = [];
+      cursor = newline + 1;
+      lineStart = position + cursor;
+    }
+    position += bytesRead;
   }
 
-  return offsets;
+  if (fragments.length > 0) {
+    const line = fragments.length === 1 ? fragments[0] : Buffer.concat(fragments);
+    visit(line, lineStart);
+  }
+}
+
+function cliVersionValueOffset(lineOrPrefix: Buffer, lineStart: number): number | null {
+  const newline = lineOrPrefix.indexOf(0x0a);
+  const firstLine = newline < 0 ? lineOrPrefix : lineOrPrefix.subarray(0, newline);
+  const prefix = Buffer.from('"cli_version":"');
+  const token = Buffer.from('"cli_version":"migration"');
+  const tokenOffset = firstLine.indexOf(token);
+  return tokenOffset < 0 ? null : lineStart + tokenOffset + prefix.length;
 }
 
 function idUnderscoreOffset(line: Buffer, lineStart: number, id: string): number | null {
