@@ -229,6 +229,25 @@ describe("MCP query functions", () => {
     expect(second?.messages[19].content).toBe("msg-59");
   });
 
+  it("keeps MCP paging consistent while hiding cached collaboration notifications", () => {
+    const { db } = seedStore();
+    db.prepare("UPDATE messages SET content = ? WHERE session_key = 'codex:multi' AND message_index = 0")
+      .run("<subagent_notification source=\"worker\">done</subagent_notification>");
+    db.prepare("UPDATE messages SET content = ? WHERE session_key = 'codex:multi' AND message_index = 2")
+      .run("<task-notification>done</task-notification>\nreal prompt");
+
+    const first = getSession(db, { sessionKey: "codex:multi", maxMessages: 40 });
+    expect(first?.totalMessages).toBe(59);
+    expect(first?.returned).toBe(40);
+    expect(first?.nextOffset).toBe(40);
+    expect(first?.messages[1].content).toBe("real prompt");
+
+    const second = getSession(db, { sessionKey: "codex:multi", maxMessages: 40, offset: first!.nextOffset });
+    expect(second?.returned).toBe(19);
+    expect(second?.nextOffset).toBeNull();
+    expect(second?.messages[18].content).toBe("msg-59");
+  });
+
   it("lists projects and tags", () => {
     const { db } = seedStore();
     expect(listProjects(db).map((p) => p.project).sort()).toEqual(["/multi", "/other", "/repo"]);

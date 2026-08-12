@@ -42,6 +42,20 @@ function clamp(value, fallback, max) {
   return Math.min(Math.floor(n), max);
 }
 
+export function cleanUserMessageContent(text) {
+  const source = String(text ?? "");
+  const wrappedQuery = /<system_notification\b/iu.test(source)
+    ? source.match(/<user_query>\s*([\s\S]*?)\s*<\/user_query>/iu)?.[1]
+    : undefined;
+  const cleaned = (wrappedQuery ?? source)
+    .replace(/<(?:subagent_notification|task-notification)\b[^>]*>[\s\S]*?<\/(?:subagent_notification|task-notification)>\s*/giu, "")
+    .trim();
+  if (/^Perform any necessary follow-up actions in response to the subagent completion above\.\s*If no follow-up work is needed, no further action is required\./iu.test(cleaned)) {
+    return "";
+  }
+  return cleaned;
+}
+
 // Quote each term so user input cannot break FTS5 MATCH syntax; terms AND together.
 function ftsMatchExpr(query) {
   const terms = query
@@ -120,20 +134,48 @@ export function getSession(db, { sessionKey, maxMessages = 40, offset = 0 } = {}
   if (!row) return null;
   const cap = clamp(maxMessages, 40, MAX_MESSAGES);
   const start = Number.isFinite(offset) && offset > 0 ? Math.floor(offset) : 0;
-  const totalRow = db.prepare("SELECT COUNT(*) AS n FROM messages WHERE session_key = ?").get(sessionKey);
-  const totalMessages = totalRow?.n ?? 0;
-  const messages = db
-    .prepare("SELECT role, content FROM messages WHERE session_key = ? ORDER BY message_index LIMIT ? OFFSET ?")
-    .all(sessionKey, cap, start);
-  const nextOffset = start + messages.length < totalMessages ? start + messages.length : null;
+  const hasInjectedNoise = Boolean(db.prepare(`
+    SELECT 1
+    FROM messages
+    WHERE session_key = ? AND role = 'user'
+      AND (
+        instr(lower(content), '<subagent_notification') > 0
+        OR instr(lower(content), '<task-notification') > 0
+        OR instr(lower(content), '<system_notification') > 0
+        OR lower(ltrim(content)) LIKE
+          'perform any necessary follow-up actions in response to the subagent completion above.%'
+      )
+    LIMIT 1
+  `).get(sessionKey));
+  let totalMessages;
+  let page;
+  if (hasInjectedNoise) {
+    const messages = db
+      .prepare("SELECT role, content FROM messages WHERE session_key = ? ORDER BY message_index")
+      .all(sessionKey)
+      .map((message) => ({
+        role: message.role,
+        content: message.role === "user" ? cleanUserMessageContent(message.content) : message.content,
+      }))
+      .filter((message) => message.role !== "user" || message.content);
+    totalMessages = messages.length;
+    page = messages.slice(start, start + cap);
+  } else {
+    const totalRow = db.prepare("SELECT COUNT(*) AS n FROM messages WHERE session_key = ?").get(sessionKey);
+    totalMessages = totalRow?.n ?? 0;
+    page = db
+      .prepare("SELECT role, content FROM messages WHERE session_key = ? ORDER BY message_index LIMIT ? OFFSET ?")
+      .all(sessionKey, cap, start);
+  }
+  const nextOffset = start + page.length < totalMessages ? start + page.length : null;
   return {
     ...toResult(row),
     totalMessages,
     offset: start,
-    returned: messages.length,
+    returned: page.length,
     // Non-null when the session has more messages; pass it back as `offset` to continue.
     nextOffset,
-    messages: messages.map((m) => ({ role: m.role, content: m.content })),
+    messages: page,
   };
 }
 
