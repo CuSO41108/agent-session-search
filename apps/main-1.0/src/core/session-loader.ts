@@ -7,6 +7,7 @@ import { scanCompleteJsonl, scanCompleteJsonlAsync } from "./codex-jsonl-stream"
 import {
   CodexRolloutAccumulator,
   dedupeCodexTraceEvents,
+  extractCodexExecToolNames,
   formatCodexToolDetail,
   sanitizeCodexTraceValue,
 } from "./session-loaders/codex-rollout";
@@ -476,7 +477,12 @@ function extractCodexResponseTrace(
           : "tool";
     const rawName = stringField(payload, "name") || fallbackName;
     const name = namespace ? `${namespace}.${rawName}` : rawName;
-    const summary = firstStringField(args, ["command", "cmd", "query", "path", "file_path", "url"]);
+    const nestedTools = payloadType === "custom_tool_call" && rawName === "exec"
+      ? extractCodexExecToolNames(args)
+      : [];
+    const summary = nestedTools.length > 0
+      ? nestedTools.map((tool) => tool.replaceAll("__", ".")).join(", ")
+      : firstStringField(args, ["command", "cmd", "query", "path", "file_path", "url"]);
     const eventType =
       payloadType === "function_call" ? "codex.function_call"
         : payloadType === "custom_tool_call" ? "codex.custom_tool"
@@ -498,7 +504,10 @@ function extractCodexResponseTrace(
         eventType,
         status: normalizedStatus,
         sourceTurnId,
-        attributes: { input: safeInput },
+        attributes: {
+          input: safeInput,
+          ...(nestedTools.length > 0 ? { nestedTools } : {}),
+        },
       },
     ];
   }

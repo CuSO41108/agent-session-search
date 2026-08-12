@@ -151,6 +151,100 @@ describe("TurnAccordion span payloads", () => {
     vi.restoreAllMocks();
   });
 
+  it("shows parsed nested tools for Codex exec spans and falls back to the stable tool name", async () => {
+    const turn: SessionTurnSummary = {
+      id: "turn-exec",
+      turnIndex: 0,
+      sourceMessageIndex: 0,
+      sourceTurnId: "turn-exec",
+      synthetic: false,
+      status: "completed",
+      startedAt: "2026-08-12T04:00:00Z",
+      endedAt: "2026-08-12T04:00:01Z",
+      userPreview: "inspect tools",
+      assistantPreview: "",
+      inputTokens: 0,
+      outputTokens: 0,
+      cachedInputTokens: 0,
+      reasoningOutputTokens: 0,
+      totalTokens: 0,
+      errorCount: 0,
+      toolNames: ["exec"],
+      messageCount: 0,
+      spanCount: 2,
+    };
+    const detail: SessionTurnDetail = {
+      ...turn,
+      messages: [],
+      spans: [
+        {
+          id: "span-parsed",
+          parentSpanId: null,
+          spanIndex: 0,
+          kind: "tool",
+          name: "exec",
+          status: "completed",
+          startedAt: turn.startedAt,
+          endedAt: turn.endedAt,
+          callId: "call-parsed",
+          input: null,
+          output: null,
+          error: null,
+          attributes: {
+            title: "exec · exec_command, web.run",
+            nestedTools: ["exec_command", "web__run"],
+          },
+        },
+        {
+          id: "span-legacy",
+          parentSpanId: null,
+          spanIndex: 1,
+          kind: "tool",
+          name: "exec",
+          status: "completed",
+          startedAt: turn.startedAt,
+          endedAt: turn.endedAt,
+          callId: "call-legacy",
+          input: null,
+          output: null,
+          error: null,
+          attributes: {
+            title: "exec · raw script summary",
+          },
+        },
+      ],
+    };
+
+    await act(async () => {
+      root.render(
+        createElement(TurnAccordion, {
+          sessionKey: "codex:exec-display",
+          turns: [turn],
+          loading: false,
+          matchedTurnId: null,
+          matchedMessageIndex: null,
+          showTools: true,
+          query: "",
+          language: "en",
+          onLoadTurn: async () => detail,
+        }),
+      );
+    });
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".turn-card-summary")?.click();
+    });
+
+    await vi.waitFor(() => {
+      expect(container.querySelectorAll(".msg-tool-summary strong")).toHaveLength(2);
+    });
+    const displayedNames = [...container.querySelectorAll(".msg-tool-summary strong")]
+      .map((element) => element.textContent);
+    expect(displayedNames).toHaveLength(2);
+    expect(displayedNames).toEqual(expect.arrayContaining(["exec · exec_command, web.run", "exec"]));
+    expect(turn.toolNames).toEqual(["exec"]);
+  });
+
   it("renders a bounded preview before expanding a large span output", async () => {
     const compactOutput =
       `compact-payload:\n${"readable compact output ".repeat(500)}`;

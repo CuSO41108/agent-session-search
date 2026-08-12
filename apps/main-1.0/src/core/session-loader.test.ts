@@ -1592,10 +1592,20 @@ describe("Codex session loading", () => {
     });
   });
 
-  it("extracts Codex custom tool calls and outputs without rewriting freeform input", () => {
+  it("extracts nested tools from Codex exec calls without rewriting freeform input", () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "session-search-"));
     const filePath = path.join(dir, "rollout.jsonl");
-    const input = "{\"query\":\"select * from sessions\"}";
+    const input = [
+      'const decoy = "tools.fake({})";',
+      "// tools.ignored({});",
+      "object.tools.alsoIgnored({});",
+      'const first = await tools.exec_command({ cmd: "pwd" });',
+      "const results = await Promise.all([",
+      '  tools.web__run({ search_query: [{ q: "Codex tools" }] }),',
+      '  tools["mcp__memory__search"]({ query: "session" }),',
+      '  tools.exec_command({ cmd: "git status" }),',
+      "]);",
+    ].join("\n");
     fs.writeFileSync(
       filePath,
       [
@@ -1633,11 +1643,16 @@ describe("Codex session loading", () => {
       index: 0,
       kind: "tool_result",
       source: "codex",
-      title: "exec",
+      title: "exec · exec_command, web.run, mcp.memory.search",
       timestamp: "2026-06-01T10:02:00Z",
       callId: "custom-1",
       eventType: "codex.custom_tool",
       status: "completed",
+      attributes: {
+        input,
+        nestedTools: ["exec_command", "web__run", "mcp__memory__search"],
+        output: "query completed",
+      },
     });
     expect(loaded?.traceEvents?.[0].detail).toContain(input);
     expect(loaded?.traceEvents?.[0].detail).toContain("query completed");
