@@ -29,7 +29,9 @@ import {
   type CodexModelProbeResult,
 } from "../../core/codex-profile";
 import type { AppSettings, AppSettingsUpdate } from "../../core/platform";
+import { providerConfigDirectoryExists } from "../../core/provider-config-path";
 import { requestSummaryCompletion } from "../../core/session-summarizer";
+import { buildCodexExecEndpoint } from "../../core/summary-endpoint";
 import type {
   ClaudeModelProbeRequest,
   CodexModelProbeRequest,
@@ -57,6 +59,7 @@ export interface CodexChatProxyPort {
 }
 
 export interface ProviderServiceOperations {
+  providerConfigDirectoryExists: typeof providerConfigDirectoryExists;
   loadCodexProfileDefaults: typeof loadCodexProfileDefaults;
   loadClaudeApiConfigDefaults: typeof loadClaudeApiConfigDefaults;
   loadClaudeConfigSnapshot: typeof loadClaudeConfigSnapshot;
@@ -108,6 +111,7 @@ function summaryConnectionApiFormat(
 }
 
 const defaultOperations: ProviderServiceOperations = {
+  providerConfigDirectoryExists,
   loadCodexProfileDefaults,
   loadClaudeApiConfigDefaults,
   loadClaudeConfigSnapshot,
@@ -134,23 +138,42 @@ export class ProviderService {
   async hydrateSettings(settings = this.dependencies.getSettings()): Promise<AppSettings> {
     const savedCodex = this.getSavedCodexConfigPatch();
     const savedClaude = this.getSavedClaudeConfigPatch();
+    const [codexConfigDir, claudeConfigDir] = await Promise.all([
+      this.validSavedConfigDirectory(
+        "apiConfig.customConfigDir",
+        savedCodex.customConfigDir !== undefined ? savedCodex.customConfigDir : settings.apiConfig.customConfigDir,
+        ".codex",
+      ),
+      this.validSavedConfigDirectory(
+        "claudeApiConfig.customConfigDir",
+        savedClaude.customConfigDir !== undefined ? savedClaude.customConfigDir : settings.claudeApiConfig.customConfigDir,
+        ".claude",
+      ),
+    ]);
+    const currentSettings = {
+      ...settings,
+      apiConfig: { ...settings.apiConfig, customConfigDir: codexConfigDir },
+      claudeApiConfig: { ...settings.claudeApiConfig, customConfigDir: claudeConfigDir },
+    };
     const summaryApiConfigMode = this.resolveSummaryApiConfigMode(settings);
     const [codexDefaults, claudeDefaults] = await Promise.all([
-      this.operations.loadCodexProfileDefaults(savedCodex.customConfigDir || settings.apiConfig.customConfigDir || undefined),
-      this.operations.loadClaudeApiConfigDefaults(savedClaude.customConfigDir || settings.claudeApiConfig.customConfigDir || undefined),
+      this.operations.loadCodexProfileDefaults(codexConfigDir || undefined),
+      this.operations.loadClaudeApiConfigDefaults(claudeConfigDir || undefined),
     ]);
     return this.addStoredKeys({
-      ...settings,
+      ...currentSettings,
       summaryApiConfigMode,
       apiConfig: mergeApiConfigWithProfileDefaults(
-        settings.apiConfig,
+        currentSettings.apiConfig,
         savedCodex,
         codexDefaults,
+        true,
       ),
       claudeApiConfig: mergeClaudeApiConfigWithProfileDefaults(
-        settings.claudeApiConfig,
+        currentSettings.claudeApiConfig,
         savedClaude,
         claudeDefaults,
+        true,
       ),
       summaryApiConfig: mergeApiConfigWithProfileDefaults(
         settings.summaryApiConfig,
@@ -295,9 +318,26 @@ export class ProviderService {
   async testSummaryProviderConnection(
     input: SummaryProviderConnectionRequest,
   ): Promise<SummaryProviderConnectionResult> {
+    const startedAt = Date.now();
+    if (input.source === "codex") {
+      const settings = this.dependencies.getSettings();
+      await this.operations.requestSummaryCompletion(
+        buildCodexExecEndpoint({
+          ...settings,
+          summaryCodexModel: input.model.trim(),
+          summaryCodexConfigDir: input.configDir ?? settings.summaryCodexConfigDir,
+        }),
+        [{ role: "user", content: "Reply with exactly OK." }],
+        AbortSignal.timeout(30_000),
+      );
+      return {
+        elapsedMs: Math.max(0, Date.now() - startedAt),
+        credentialSource: "Codex CLI",
+      };
+    }
+
     const credential = await this.resolveSummaryConnectionCredential(input);
     if (!credential.apiKey) throw new Error("API key is required to test the summary Provider.");
-    const startedAt = Date.now();
     await this.operations.requestSummaryCompletion(
       {
         baseUrl: input.baseUrl.trim().replace(/\/+$/, ""),
@@ -541,6 +581,17 @@ export class ProviderService {
       return settings.summaryApiConfigMode === "custom" ? "custom" : "inherit_codex";
     }
     return this.hasSavedSummaryConfig(settings) ? "custom" : "inherit_codex";
+  }
+
+  private async validSavedConfigDirectory(
+    settingPath: string,
+    configuredPath: string | undefined,
+    defaultDirectoryName: ".codex" | ".claude",
+  ): Promise<string> {
+    const value = configuredPath?.trim() ?? "";
+    if (!value || await this.operations.providerConfigDirectoryExists(value, defaultDirectoryName)) return value;
+    this.dependencies.settings.set(settingPath, "");
+    return "";
   }
 
   private hasSavedSummaryConfig(settings: AppSettings): boolean {
