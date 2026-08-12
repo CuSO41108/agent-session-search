@@ -432,7 +432,9 @@ export class SessionsStore {
           event.kind,
           event.source,
           event.title,
-          truncateTraceDetail(event.detail),
+          event.eventType === "codex.context.compaction"
+            ? event.detail
+            : truncateTraceDetail(event.detail),
           event.timestamp,
           event.callId ?? null,
           event.eventType ?? null,

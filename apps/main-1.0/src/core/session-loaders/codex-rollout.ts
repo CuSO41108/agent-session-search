@@ -157,6 +157,62 @@ export function sanitizeCodexTraceValue(value: unknown): unknown {
   return sanitizedCodexTraceValue(value, false);
 }
 
+const COMPACTION_BINARY_FIELDS = new Set([
+  "audio_url",
+  "b64_json",
+  "data",
+  "file_data",
+  "image_url",
+  "screenshot",
+]);
+const COMPACTION_BINARY_CHILD_FIELDS = new Set([
+  "b64",
+  "b64_json",
+  "base64",
+  "data",
+  "file_data",
+  "src",
+  "url",
+]);
+const COMPACTION_UNKNOWN_BINARY_MIN_CHARS = 64 * 1_024;
+const COMPACTION_MARKER_EARLY_TOLERANCE_MS = 1_000;
+const COMPACTION_MARKER_LATE_TOLERANCE_MS = 30_000;
+const COMPACTION_MISSING_TURN_MATCH_WINDOW_MS = 1_000;
+
+function sanitizeCompactionJson(value: unknown, key = "", binaryContext = false): unknown {
+  const normalizedKey = key.toLocaleLowerCase();
+  const insideBinaryField = binaryContext || COMPACTION_BINARY_FIELDS.has(normalizedKey);
+  if (key.toLocaleLowerCase().includes("encrypted")) {
+    if (value === null || value === undefined || value === "") return value;
+    if (typeof value === "boolean" || typeof value === "number") return value;
+    return "[encrypted content omitted]";
+  }
+  if (typeof value === "string") {
+    const looksLikeDataUrl = value.slice(0, 5).toLocaleLowerCase() === "data:";
+    const looksLikeEncodedBinary = value.length > 1_024 && /^[a-z0-9+/_=\r\n-]+$/iu.test(value);
+    const unknownFieldBinaryFallback = value.length >= COMPACTION_UNKNOWN_BINARY_MIN_CHARS;
+    if (looksLikeDataUrl || (looksLikeEncodedBinary && (insideBinaryField || unknownFieldBinaryFallback))) {
+      return `[binary omitted: ${value.length} characters]`;
+    }
+    return value;
+  }
+  if (Array.isArray(value)) {
+    return value.map((item) => sanitizeCompactionJson(item, key, insideBinaryField));
+  }
+  const object = record(value);
+  if (!object) return value;
+  return Object.fromEntries(
+    Object.entries(object).map(([nestedKey, nestedValue]) => [
+      nestedKey,
+      sanitizeCompactionJson(
+        nestedValue,
+        nestedKey,
+        insideBinaryField && COMPACTION_BINARY_CHILD_FIELDS.has(nestedKey.toLocaleLowerCase()),
+      ),
+    ]),
+  );
+}
+
 function detailSection(label: string, value: unknown): string {
   if (value === null || value === undefined || value === "") return "";
   const text = typeof value === "string" ? value : JSON.stringify(sanitizeCodexTraceValue(value), null, 2);
@@ -528,6 +584,59 @@ function richResponseTrace(
   return null;
 }
 
+function compactionCheckpointTrace(
+  row: Record<string, unknown>,
+  payload: Record<string, unknown>,
+  sourceTurnId: string | null,
+): TraceEventDraft {
+  const replacementHistory = Array.isArray(payload.replacement_history)
+    ? payload.replacement_history
+    : null;
+  const itemTypes: Record<string, number> = {};
+  let encryptedSummary = false;
+  for (const value of replacementHistory ?? []) {
+    const item = record(value);
+    const type = stringValue(item?.type) || "unknown";
+    const normalizedType = normalizeItemType(type);
+    const encryptedContent = item?.encrypted_content ?? item?.encryptedContent;
+    itemTypes[type] = (itemTypes[type] ?? 0) + 1;
+    if (
+      (normalizedType === "compaction"
+        || normalizedType === "compactionsummary"
+        || normalizedType === "contextcompaction")
+      && typeof encryptedContent === "string"
+      && encryptedContent.length > 0
+    ) {
+      encryptedSummary = true;
+    }
+  }
+  const sanitizedPayload = sanitizeCompactionJson(payload);
+  const detail = truncateTraceDetail(
+    `payload:\n${JSON.stringify(sanitizedPayload, null, 2)}`,
+    512 * 1_024,
+  );
+
+  return {
+    kind: "event",
+    source: "codex",
+    title: "Context compacted",
+    detail,
+    timestamp: stringValue(row.timestamp),
+    callId: null,
+    eventType: "codex.context.compaction",
+    status: "completed",
+    sourceTurnId,
+    attributes: {
+      codex: { rawType: "compacted" },
+      compaction: {
+        itemCount: replacementHistory?.length ?? 0,
+        itemTypes,
+        opaqueCompaction: encryptedSummary,
+      },
+    },
+  };
+}
+
 function richEventTrace(
   row: Record<string, unknown>,
   payload: Record<string, unknown>,
@@ -827,14 +936,93 @@ export function dedupeCodexTraceEvents(events: TraceEventDraft[]): SessionTraceE
     };
     for (const key of keys) semanticIndexes.set(key, existingIndex);
   }
+  const compactionMarkerTypes = new Set([
+    "compaction",
+    "context_compaction",
+    "contextcompaction",
+    "context_compacted",
+  ]);
+  const checkpointIndexes = normalized.flatMap((event, index) => (
+    event.eventType === "codex.context.compaction"
+      && stringValue(codexAttributes(event)?.rawType) === "compacted"
+      ? [index]
+      : []
+  ));
+  const markerIndexes = normalized.flatMap((event, index) => {
+    if (event.eventType !== "codex.context.compaction" || event.detail.trim()) return [];
+    return compactionMarkerTypes.has(stringValue(codexAttributes(event)?.rawType)) ? [index] : [];
+  });
+  const markerCandidates = new Map<number, number[]>();
+  for (const markerIndex of markerIndexes) {
+    const marker = normalized[markerIndex];
+    const markerTime = Date.parse(marker.timestamp);
+    const candidates: Array<{ checkpointIndex: number; exactTurn: boolean; distance: number }> = [];
+    for (const checkpointIndex of checkpointIndexes) {
+      const checkpoint = normalized[checkpointIndex];
+      const exactTurn = Boolean(
+        marker.sourceTurnId
+        && checkpoint.sourceTurnId
+        && marker.sourceTurnId === checkpoint.sourceTurnId,
+      );
+      if (marker.sourceTurnId && checkpoint.sourceTurnId && !exactTurn) continue;
+      const checkpointTime = Date.parse(checkpoint.timestamp);
+      const timesUsable = Number.isFinite(markerTime) && Number.isFinite(checkpointTime);
+      let distance = Number.POSITIVE_INFINITY;
+      if (timesUsable) {
+        const markerDelay = markerTime - checkpointTime;
+        if (
+          exactTurn
+          && (markerDelay < -COMPACTION_MARKER_EARLY_TOLERANCE_MS
+            || markerDelay > COMPACTION_MARKER_LATE_TOLERANCE_MS)
+        ) continue;
+        if (!exactTurn && Math.abs(markerDelay) > COMPACTION_MISSING_TURN_MATCH_WINDOW_MS) continue;
+        distance = Math.abs(markerDelay);
+      } else if (!exactTurn) continue;
+      candidates.push({ checkpointIndex, exactTurn, distance });
+    }
+    candidates.sort((left, right) =>
+      Number(right.exactTurn) - Number(left.exactTurn)
+      || left.distance - right.distance
+      || left.checkpointIndex - right.checkpointIndex,
+    );
+    markerCandidates.set(markerIndex, candidates.map((candidate) => candidate.checkpointIndex));
+  }
+  const markerByCheckpoint = new Map<number, number>();
+  const assignMarker = (markerIndex: number, visitedCheckpoints: Set<number>): boolean => {
+    for (const checkpointIndex of markerCandidates.get(markerIndex) ?? []) {
+      if (visitedCheckpoints.has(checkpointIndex)) continue;
+      visitedCheckpoints.add(checkpointIndex);
+      const previousMarker = markerByCheckpoint.get(checkpointIndex);
+      if (previousMarker === undefined || assignMarker(previousMarker, visitedCheckpoints)) {
+        markerByCheckpoint.set(checkpointIndex, markerIndex);
+        return true;
+      }
+    }
+    return false;
+  };
+  markerIndexes
+    .sort((left, right) => {
+      const leftTime = Date.parse(normalized[left].timestamp);
+      const rightTime = Date.parse(normalized[right].timestamp);
+      if (Number.isFinite(leftTime) && Number.isFinite(rightTime) && leftTime !== rightTime) {
+        return leftTime - rightTime;
+      }
+      if (Number.isFinite(leftTime) !== Number.isFinite(rightTime)) return Number.isFinite(leftTime) ? -1 : 1;
+      return left - right;
+    })
+    .forEach((markerIndex) => assignMarker(markerIndex, new Set()));
+  const duplicateCompactionMarkers = new Set(markerByCheckpoint.values());
+  const withoutDuplicateCompactionMarkers = normalized.filter(
+    (_event, index) => !duplicateCompactionMarkers.has(index),
+  );
   const reasoningSignature = (event: TraceEventDraft) =>
     `${event.sourceTurnId || ""}:${event.detail.normalize("NFKC").trim().replace(/\s+/gu, " ")}`;
   const completedReasoning = new Set(
-    normalized
+    withoutDuplicateCompactionMarkers
       .filter((event) => event.eventType === "codex.reasoning_summary" && isCompletedItem(event))
       .map(reasoningSignature),
   );
-  return normalized
+  return withoutDuplicateCompactionMarkers
     .filter((event) =>
       event.eventType !== "codex.reasoning_summary"
       || isCompletedItem(event)
@@ -962,6 +1150,13 @@ export class CodexRolloutAccumulator {
     const uniqueActiveTurnId = this.activeTurnIds.size === 1
       ? this.activeTurnIds.values().next().value as string
       : null;
+    if (row.type === "compacted") {
+      const sourceTurnId = this.resolveAttributionTurnId(null, uniqueActiveTurnId);
+      return emptyResult({
+        sourceTurnId,
+        traceEvents: [compactionCheckpointTrace(row, payload, sourceTurnId)],
+      });
+    }
     if (row.type === "turn_context") {
       const sourceTurnId = stringValue(payload.turn_id) || uniqueActiveTurnId;
       const settings = contextAttributes(payload);

@@ -10,6 +10,12 @@ export interface SessionTracePresentation {
   visibility: SessionTraceVisibility;
 }
 
+export interface TraceCompactionSummary {
+  itemCount: number;
+  itemTypes: Array<{ type: string; count: number }>;
+  opaqueCompaction: boolean;
+}
+
 export function normalizeSessionTraceStatus(value: unknown): SessionTraceStatus | null {
   if (value === "success" || value === "completed") return "completed";
   if (value === "failure" || value === "failed") return "failed";
@@ -116,4 +122,27 @@ export function traceDurationLabel(attributes: Record<string, unknown> | undefin
   const minutes = Math.floor(value / 60_000);
   const seconds = Math.round((value % 60_000) / 1_000);
   return seconds > 0 ? `${minutes}m ${seconds}s` : `${minutes}m`;
+}
+
+export function traceCompactionSummary(
+  attributes: Record<string, unknown> | undefined,
+): TraceCompactionSummary | null {
+  const value = attributes?.compaction;
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const compaction = value as Record<string, unknown>;
+  const itemCount = compaction.itemCount;
+  if (typeof itemCount !== "number" || !Number.isInteger(itemCount) || itemCount < 0) return null;
+  const rawItemTypes = compaction.itemTypes;
+  const itemTypes = rawItemTypes && typeof rawItemTypes === "object" && !Array.isArray(rawItemTypes)
+    ? Object.entries(rawItemTypes).flatMap(([type, count]) => (
+        typeof count === "number" && Number.isInteger(count) && count > 0
+          ? [{ type, count }]
+          : []
+      ))
+    : [];
+  return {
+    itemCount,
+    itemTypes,
+    opaqueCompaction: compaction.opaqueCompaction === true,
+  };
 }

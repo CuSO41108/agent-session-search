@@ -40,6 +40,300 @@ describe("Codex session loading", () => {
     expect(new Date(loaded?.messages[0].timestamp ?? "").toISOString()).toBe("2026-08-08T16:47:00.000Z");
   });
 
+  it("shows a readable sanitized copy of the original compacted payload", () => {
+    const longReadableText = `retained-start-${"x".repeat(TRACE_DETAIL_PREVIEW_MAX_CHARS)}-retained-end`;
+    const nestedImageDataUrl = `data:image/png;base64,${"A".repeat(1_100)}`;
+    const nestedImageBareBase64 = "E".repeat(1_100);
+    const arrayBase64 = "B".repeat(1_100);
+    const unknownFieldBase64 = "C".repeat(1_100);
+    const base64Url = `${"D".repeat(1_100)}-_`;
+    const loaded = loadCodexSessionRows("/tmp/codex-compacted.jsonl", [
+      {
+        type: "session_meta",
+        timestamp: "2026-08-04T08:00:00.000Z",
+        payload: { id: "codex-compacted", cwd: "/repo", history_mode: "paginated" },
+      },
+      {
+        type: "event_msg",
+        timestamp: "2026-08-04T08:00:01.000Z",
+        payload: { type: "task_started", turn_id: "turn-compact" },
+      },
+      {
+        type: "compacted",
+        timestamp: "2026-08-04T08:00:02.000Z",
+        payload: {
+          message: "Readable handoff summary",
+          replacement_history: [
+            {
+              type: "message",
+              role: "user",
+              content: [
+                { type: "input_text", text: `Readable retained user request\n${longReadableText}` },
+                { type: "input_image", image_url: "data:image/png;base64,must-not-index-image", detail: "high" },
+                {
+                  type: "input_image",
+                  image_url: { url: nestedImageDataUrl },
+                  data: [arrayBase64],
+                  file_data: unknownFieldBase64,
+                },
+                { type: "input_image", image_url: { url: nestedImageBareBase64 } },
+                { type: "input_file", data: base64Url },
+              ],
+              internal_chat_message_metadata_passthrough: { turn_id: "retained-turn" },
+            },
+            {
+              type: "function_call",
+              name: "read_file",
+              arguments: "{\"path\":\"README.md\"}",
+              call_id: "call-retained",
+            },
+            {
+              type: "compaction",
+              id: "encrypted-compaction",
+              encrypted_content: "must-not-index-encrypted-summary",
+            },
+          ],
+          window_number: 2,
+          first_window_id: "window-first",
+          previous_window_id: "window-previous",
+          window_id: "window-current",
+        },
+      },
+      {
+        type: "world_state",
+        timestamp: "2026-08-04T08:00:02.100Z",
+        payload: { full: true, state: { private: "must-not-index-world-state" } },
+      },
+      {
+        type: "event_msg",
+        timestamp: "2026-08-04T08:00:03.000Z",
+        payload: {
+          type: "item_completed",
+          turn_id: "turn-compact",
+          completed_at_ms: Date.parse("2026-08-04T08:00:03.000Z"),
+          item: { type: "ContextCompaction", id: "compact-item" },
+        },
+      },
+    ]);
+
+    const compactions = loaded?.traceEvents?.filter(
+      (event) => event.eventType === "codex.context.compaction",
+    ) ?? [];
+    expect(compactions).toHaveLength(1);
+    expect(compactions[0].detail).toContain("payload:");
+    expect(compactions[0].detail).toContain("Readable handoff summary");
+    expect(compactions[0].detail).toContain('"replacement_history"');
+    expect(compactions[0].detail).toContain('"role": "user"');
+    expect(compactions[0].detail).toContain("Readable retained user request");
+    expect(compactions[0].detail).toContain(longReadableText);
+    expect(compactions[0].detail.length).toBeGreaterThan(TRACE_DETAIL_PREVIEW_MAX_CHARS);
+    expect(compactions[0].detail).not.toContain("Indexed preview truncated");
+    expect(compactions[0].detail).toContain('"type": "function_call"');
+    expect(compactions[0].detail).toContain('"name": "read_file"');
+    expect(compactions[0].detail).toContain('"window_number": 2');
+    expect(compactions[0].detail).toContain('"first_window_id": "window-first"');
+    expect(compactions[0].detail).toContain('"previous_window_id": "window-previous"');
+    expect(compactions[0].detail).toContain('"window_id": "window-current"');
+    expect(compactions[0].detail).toContain('"image_url": "[binary omitted:');
+    expect(compactions[0].detail).toContain('"url": "[binary omitted: 1100 characters]"');
+    expect(compactions[0].detail).toContain('"encrypted_content": "[encrypted content omitted]"');
+    expect(compactions[0].detail).not.toContain(nestedImageDataUrl);
+    expect(compactions[0].detail).not.toContain(nestedImageBareBase64);
+    expect(compactions[0].detail).not.toContain(arrayBase64);
+    expect(compactions[0].detail).not.toContain(unknownFieldBase64);
+    expect(compactions[0].detail).not.toContain(base64Url);
+    expect(compactions[0].attributes?.compaction).toEqual({
+      itemCount: 3,
+      itemTypes: { message: 1, function_call: 1, compaction: 1 },
+      opaqueCompaction: true,
+    });
+    const serializedTrace = JSON.stringify(loaded?.traceEvents);
+    expect(serializedTrace).not.toContain("must-not-index-encrypted-summary");
+    expect(serializedTrace).not.toContain("must-not-index-image");
+    expect(serializedTrace).not.toContain(nestedImageDataUrl);
+    expect(serializedTrace).not.toContain(nestedImageBareBase64);
+    expect(serializedTrace).not.toContain(arrayBase64);
+    expect(serializedTrace).not.toContain(unknownFieldBase64);
+    expect(serializedTrace).not.toContain(base64Url);
+    expect(serializedTrace).not.toContain("must-not-index-world-state");
+  });
+
+  it("caps oversized compacted details after sanitization", () => {
+    const readable = `oversized-start ${"readable compact content ".repeat(30_000)} oversized-end`;
+    const loaded = loadCodexSessionRows("/tmp/codex-oversized-compacted.jsonl", [
+      {
+        type: "session_meta",
+        timestamp: "2026-08-04T08:00:00.000Z",
+        payload: { id: "codex-oversized-compacted", cwd: "/repo" },
+      },
+      {
+        type: "compacted",
+        timestamp: "2026-08-04T08:00:01.000Z",
+        payload: { replacement_history: [{ type: "message", content: readable }] },
+      },
+    ]);
+
+    const detail = loaded?.traceEvents?.find(
+      (event) => event.eventType === "codex.context.compaction",
+    )?.detail ?? "";
+    expect(detail.length).toBeLessThanOrEqual(512 * 1_024);
+    expect(detail).toContain("oversized-start");
+    expect(detail).toContain("[Indexed preview truncated:");
+    expect(detail).not.toContain("oversized-end");
+  });
+
+  it("preserves long encoded-looking text outside binary fields", () => {
+    const readableSlug = "feature-branch-name-".repeat(80);
+    const nestedReadableSlug = "nested-feature-branch-name-".repeat(70);
+    const loaded = loadCodexSessionRows("/tmp/codex-readable-compact-string.jsonl", [
+      {
+        type: "session_meta",
+        timestamp: "2026-08-04T08:00:00.000Z",
+        payload: { id: "codex-readable-compact-string", cwd: "/repo" },
+      },
+      {
+        type: "compacted",
+        timestamp: "2026-08-04T08:00:01.000Z",
+        payload: {
+          replacement_history: [{
+            type: "message",
+            diagnostic_label: readableSlug,
+            data: { diagnostic_label: nestedReadableSlug },
+            file_data: "A".repeat(1_100),
+            unknown_binary: "B".repeat(64 * 1_024),
+          }],
+        },
+      },
+    ]);
+
+    const detail = loaded?.traceEvents?.find(
+      (event) => event.eventType === "codex.context.compaction",
+    )?.detail ?? "";
+    expect(detail).toContain(readableSlug);
+    expect(detail).toContain(nestedReadableSlug);
+    expect(detail).toContain('"file_data": "[binary omitted: 1100 characters]"');
+    expect(detail).toContain('"unknown_binary": "[binary omitted: 65536 characters]"');
+  });
+
+  it("deduplicates matching compact markers without depending on record order or exact turn attribution", () => {
+    const meta = {
+      type: "session_meta",
+      timestamp: "2026-08-04T08:00:00.000Z",
+      payload: { id: "codex-compact-dedupe", cwd: "/repo" },
+    };
+    const started = {
+      type: "event_msg",
+      timestamp: "2026-08-04T08:00:00.100Z",
+      payload: { type: "task_started", turn_id: "turn-compact" },
+    };
+    const checkpoint = (timestamp: string) => ({
+      type: "compacted",
+      timestamp,
+      payload: { replacement_history: [] },
+    });
+    const responseMarker = (type: "compaction" | "context_compaction", timestamp: string) => ({
+      type: "response_item",
+      timestamp,
+      payload: {
+        type,
+        internal_chat_message_metadata_passthrough: { turn_id: "turn-compact" },
+      },
+    });
+    const eventMarker = (timestamp: string) => ({
+      type: "event_msg",
+      timestamp,
+      payload: { type: "context_compacted", turn_id: "turn-compact" },
+    });
+    const compactions = (rows: unknown[]) => loadCodexSessionRows(
+      "/tmp/codex-compact-dedupe.jsonl",
+      rows,
+    )?.traceEvents?.filter((event) => event.eventType === "codex.context.compaction") ?? [];
+
+    expect(compactions([meta, started, checkpoint("2026-08-04T08:00:01.000Z"), responseMarker("compaction", "2026-08-04T08:00:01.050Z")])).toHaveLength(1);
+    expect(compactions([meta, started, checkpoint("2026-08-04T08:00:01.000Z"), responseMarker("context_compaction", "2026-08-04T08:00:01.050Z")])).toHaveLength(1);
+    expect(compactions([meta, started, eventMarker("2026-08-04T08:00:01.000Z"), checkpoint("2026-08-04T08:00:01.050Z")])).toHaveLength(1);
+    expect(compactions([meta, checkpoint("2026-08-04T08:00:01.000Z"), started, eventMarker("2026-08-04T08:00:01.050Z")])).toHaveLength(1);
+    expect(compactions([meta, started, checkpoint("2026-08-04T08:00:01.000Z"), eventMarker("2026-08-04T08:00:03.000Z")])).toHaveLength(1);
+    expect(compactions([
+      meta,
+      started,
+      checkpoint("2026-08-04T08:00:01.000Z"),
+      eventMarker("2026-08-04T08:00:01.700Z"),
+      checkpoint("2026-08-04T08:00:01.900Z"),
+      eventMarker("2026-08-04T08:00:02.800Z"),
+    ])).toHaveLength(2);
+    expect(compactions([
+      meta,
+      started,
+      checkpoint("2026-08-04T08:00:01.000Z"),
+      {
+        type: "event_msg",
+        timestamp: "2026-08-04T08:00:01.025Z",
+        payload: { type: "task_started", turn_id: "turn-other" },
+      },
+      {
+        type: "event_msg",
+        timestamp: "2026-08-04T08:00:01.050Z",
+        payload: { type: "context_compacted", turn_id: "turn-other" },
+      },
+    ])).toHaveLength(2);
+    expect(compactions([
+      meta,
+      started,
+      checkpoint("2026-08-04T08:00:01.000Z"),
+      eventMarker("2026-08-04T09:00:01.000Z"),
+    ])).toHaveLength(2);
+    expect(compactions([
+      meta,
+      started,
+      eventMarker("2026-08-04T08:00:01.000Z"),
+      checkpoint("2026-08-04T08:10:01.000Z"),
+    ])).toHaveLength(2);
+    expect(compactions([
+      meta,
+      started,
+      checkpoint("2026-08-04T08:00:01.000Z"),
+      eventMarker("not-a-timestamp"),
+    ])).toHaveLength(1);
+    expect(compactions([
+      meta,
+      started,
+      checkpoint("not-a-timestamp"),
+      eventMarker("2026-08-04T08:00:01.000Z"),
+    ])).toHaveLength(1);
+  });
+
+  it("preserves encrypted metadata primitives and recognizes normalized compaction types", () => {
+    const loaded = loadCodexSessionRows("/tmp/codex-encrypted-metadata.jsonl", [
+      {
+        type: "session_meta",
+        timestamp: "2026-08-04T08:00:00.000Z",
+        payload: { id: "codex-encrypted-metadata", cwd: "/repo" },
+      },
+      {
+        type: "compacted",
+        timestamp: "2026-08-04T08:00:01.000Z",
+        payload: {
+          replacement_history: [{
+            type: "ContextCompaction",
+            encrypted_content: "must-not-index-encrypted-content",
+            is_encrypted: false,
+            encrypted_bytes: 512,
+          }],
+        },
+      },
+    ]);
+
+    const compaction = loaded?.traceEvents?.find(
+      (event) => event.eventType === "codex.context.compaction",
+    );
+    expect(compaction?.detail).toContain('"encrypted_content": "[encrypted content omitted]"');
+    expect(compaction?.detail).toContain('"is_encrypted": false');
+    expect(compaction?.detail).toContain('"encrypted_bytes": 512');
+    expect(compaction?.detail).not.toContain("must-not-index-encrypted-content");
+    expect(compaction?.attributes?.compaction).toMatchObject({ opaqueCompaction: true });
+  });
+
   it("decodes structured collaboration function outputs", () => {
     const loaded = loadCodexSessionRows("/tmp/codex-list-agents.jsonl", [
       {
