@@ -314,6 +314,17 @@ function TurnMessageBlock({
   );
 }
 
+function spanDisplayName(span: SessionTraceSpan): string {
+  const nestedTools = span.attributes.nestedTools;
+  const title = span.attributes.title;
+  return Array.isArray(nestedTools)
+    && nestedTools.length > 0
+    && typeof title === "string"
+    && title.trim()
+    ? title.trim()
+    : span.name;
+}
+
 function TurnSpanBlock({
   span,
   language,
@@ -334,7 +345,7 @@ function TurnSpanBlock({
           <SpanIcon size={agentRelated ? 13 : 11} />
         </span>
         <span className="msg-head">
-          <strong>{span.name}</strong>
+          <strong>{spanDisplayName(span)}</strong>
           <span className="msg-tool-status">
             {spanStatusSymbol(span.status)} {spanStatusLabel(span.status, language)}
           </span>

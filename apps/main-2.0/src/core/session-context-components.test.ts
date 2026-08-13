@@ -111,6 +111,10 @@ describe("session context components", () => {
           name: "exec",
           call_id: "call_1",
           status: "completed",
+          input: [
+            'const result = await tools.exec_command({ cmd: "pwd" });',
+            'const search = await tools.web__run({ search_query: [{ q: "Codex" }] });',
+          ].join("\n"),
         },
       },
       {
@@ -148,9 +152,43 @@ describe("session context components", () => {
       "tool_inventory",
     ]);
     const tools = components.find((item) => item.kind === "tool_inventory");
-    expect(tools?.items).toEqual(["exec", "mem0/search_memories", "wait"]);
-    expect(tools?.sourceHint).toBe("response_item/event_msg tool calls");
+    expect(tools?.items).toEqual(["exec", "exec_command", "mem0/search_memories", "wait", "web.run"]);
+    expect(tools?.sourceHint).toBe("response_item/event_msg/item_completed tool calls");
     expect(tools?.note).toMatch(/tool call 反推/);
+  });
+
+  it("infers nested exec tools from a completed paginated DynamicToolCall", async () => {
+    const root = temporaryDirectory();
+    const filePath = path.join(root, "rollout-completed-exec.jsonl");
+    writeJsonLines(filePath, [
+      {
+        type: "session_meta",
+        payload: { base_instructions: "You are Codex.", history_mode: "paginated" },
+      },
+      {
+        type: "item_completed",
+        payload: {
+          item: {
+            DynamicToolCall: {
+              id: "exec-1",
+              namespace: "workspace",
+              tool: "exec",
+              arguments: [
+                'await tools.exec_command({ cmd: "pwd" });',
+                'await tools.web__run({ search_query: [{ q: "Codex" }] });',
+              ].join("\n"),
+              status: "completed",
+              success: true,
+            },
+          },
+        },
+      },
+    ]);
+
+    const components = await extractCodexContextComponents(filePath);
+    const tools = components.find((item) => item.kind === "tool_inventory");
+    expect(tools?.items).toEqual(["exec", "exec_command", "web.run"]);
+    expect(tools?.sourceHint).toBe("response_item/event_msg/item_completed tool calls");
   });
 
   it("still collects later Codex tool calls after developer text budget is full", async () => {

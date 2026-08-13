@@ -1592,10 +1592,20 @@ describe("Codex session loading", () => {
     });
   });
 
-  it("extracts Codex custom tool calls and outputs without rewriting freeform input", () => {
+  it("extracts nested tools from Codex exec calls without rewriting freeform input", () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "session-search-"));
     const filePath = path.join(dir, "rollout.jsonl");
-    const input = "{\"query\":\"select * from sessions\"}";
+    const input = [
+      'const decoy = "tools.fake({})";',
+      "// tools.ignored({});",
+      "object.tools.alsoIgnored({});",
+      'const first = await tools.exec_command({ cmd: "pwd" });',
+      "const results = await Promise.all([",
+      '  tools.web__run({ search_query: [{ q: "Codex tools" }] }),',
+      '  tools["mcp__memory__search"]({ query: "session" }),',
+      '  tools.exec_command({ cmd: "git status" }),',
+      "]);",
+    ].join("\n");
     fs.writeFileSync(
       filePath,
       [
@@ -1633,16 +1643,73 @@ describe("Codex session loading", () => {
       index: 0,
       kind: "tool_result",
       source: "codex",
-      title: "exec",
+      title: "exec · exec_command, web.run, mcp.memory.search",
       timestamp: "2026-06-01T10:02:00Z",
       callId: "custom-1",
       eventType: "codex.custom_tool",
       status: "completed",
+      attributes: {
+        input,
+        nestedTools: ["exec_command", "web__run", "mcp__memory__search"],
+        output: "query completed",
+      },
     });
     expect(loaded?.traceEvents?.[0].detail).toContain(input);
     expect(loaded?.traceEvents?.[0].detail).toContain("query completed");
 
     fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("keeps nested exec tools when a paginated DynamicToolCall completes", () => {
+    const input = [
+      'await tools.exec_command({ cmd: "pwd" });',
+      'await tools.web__run({ search_query: [{ q: "Codex" }] });',
+    ].join("\n");
+    const loaded = loadCodexSessionRows("/tmp/codex-completed-exec.jsonl", [
+      {
+        type: "session_meta",
+        timestamp: "2026-08-12T08:00:00Z",
+        payload: { id: "codex-completed-exec", cwd: "/repo", history_mode: "paginated" },
+      },
+      {
+        type: "response_item",
+        timestamp: "2026-08-12T08:00:01Z",
+        payload: {
+          type: "custom_tool_call",
+          name: "exec",
+          call_id: "exec-1",
+          input,
+        },
+      },
+      {
+        type: "event_msg",
+        timestamp: "2026-08-12T08:00:02Z",
+        payload: {
+          type: "item_completed",
+          turn_id: "turn-1",
+          item: {
+            type: "DynamicToolCall",
+            id: "exec-1",
+            namespace: "workspace",
+            tool: "exec",
+            arguments: input,
+            status: "completed",
+            success: true,
+          },
+        },
+      },
+    ]);
+
+    expect(loaded?.traceEvents).toHaveLength(1);
+    expect(loaded?.traceEvents?.[0]).toMatchObject({
+      kind: "tool_result",
+      title: "workspace.exec · exec_command, web.run",
+      callId: "exec-1",
+      eventType: "codex.dynamic_tool",
+      attributes: {
+        nestedTools: ["exec_command", "web__run"],
+      },
+    });
   });
 
   it("preserves Codex tool identity and timing across intermediate call events", () => {

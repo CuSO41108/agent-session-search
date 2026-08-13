@@ -157,6 +157,117 @@ export function sanitizeCodexTraceValue(value: unknown): unknown {
   return sanitizedCodexTraceValue(value, false);
 }
 
+function isJavascriptIdentifierCharacter(value: string | undefined): boolean {
+  return value !== undefined && /[a-z0-9_$]/iu.test(value);
+}
+
+function skipJavascriptQuotedText(input: string, start: number): number {
+  const quote = input[start];
+  let index = start + 1;
+  while (index < input.length) {
+    if (input[index] === "\\") {
+      index += 2;
+      continue;
+    }
+    if (input[index] === quote) return index + 1;
+    index += 1;
+  }
+  return input.length;
+}
+
+function skipJavascriptComment(input: string, start: number): number | null {
+  if (input[start] !== "/") return null;
+  if (input[start + 1] === "/") {
+    const end = input.indexOf("\n", start + 2);
+    return end === -1 ? input.length : end + 1;
+  }
+  if (input[start + 1] === "*") {
+    const end = input.indexOf("*/", start + 2);
+    return end === -1 ? input.length : end + 2;
+  }
+  return null;
+}
+
+function skipJavascriptWhitespace(input: string, start: number): number {
+  let index = start;
+  while (/\s/u.test(input[index] || "")) index += 1;
+  return index;
+}
+
+function codexExecToolNameAt(input: string, start: number): { name: string; end: number } | null {
+  if (input.slice(start, start + 5) !== "tools") return null;
+  let previousIndex = start - 1;
+  while (/\s/u.test(input[previousIndex] || "")) previousIndex -= 1;
+  if (
+    isJavascriptIdentifierCharacter(input[start - 1])
+    || input[previousIndex] === "."
+    || isJavascriptIdentifierCharacter(input[start + 5])
+  ) {
+    return null;
+  }
+
+  let index = skipJavascriptWhitespace(input, start + 5);
+  let bracketAccess = false;
+  if (input.slice(index, index + 2) === "?.") index += 2;
+  else if (input[index] === ".") index += 1;
+  else if (input[index] === "[") {
+    bracketAccess = true;
+    index += 1;
+  } else return null;
+
+  index = skipJavascriptWhitespace(input, index);
+  let name = "";
+  if (bracketAccess) {
+    const quote = input[index];
+    if (quote !== "\"" && quote !== "'") return null;
+    const propertyEnd = skipJavascriptQuotedText(input, index);
+    name = input.slice(index + 1, propertyEnd - 1);
+    if (!/^[a-z_$][a-z0-9_$]*$/iu.test(name)) return null;
+    index = skipJavascriptWhitespace(input, propertyEnd);
+    if (input[index] !== "]") return null;
+    index = skipJavascriptWhitespace(input, index + 1);
+  } else {
+    const nameStart = index;
+    while (isJavascriptIdentifierCharacter(input[index])) index += 1;
+    name = input.slice(nameStart, index);
+    if (!/^[a-z_$][a-z0-9_$]*$/iu.test(name)) return null;
+    index = skipJavascriptWhitespace(input, index);
+  }
+
+  if (input.slice(index, index + 2) === "?.") index = skipJavascriptWhitespace(input, index + 2);
+  return input[index] === "(" ? { name, end: index + 1 } : null;
+}
+
+export function extractCodexExecToolNames(input: unknown): string[] {
+  if (typeof input !== "string") return [];
+  const names: string[] = [];
+  const seen = new Set<string>();
+  let index = 0;
+  while (index < input.length) {
+    const character = input[index];
+    if (character === "\"" || character === "'" || character === "`") {
+      index = skipJavascriptQuotedText(input, index);
+      continue;
+    }
+    const commentEnd = skipJavascriptComment(input, index);
+    if (commentEnd !== null) {
+      index = commentEnd;
+      continue;
+    }
+    const tool = codexExecToolNameAt(input, index);
+    if (tool) {
+      if (!seen.has(tool.name)) {
+        seen.add(tool.name);
+        names.push(tool.name);
+      }
+      index = tool.end;
+      continue;
+    }
+    index += 1;
+  }
+  return names;
+}
+
 const COMPACTION_BINARY_FIELDS = new Set([
   "audio_url",
   "b64_json",
@@ -293,10 +404,14 @@ function itemToolTrace(
   } else if (type === "dynamictoolcall") {
     const namespace = stringValue(item.namespace);
     const tool = stringValue(item.tool) || "dynamic tool";
-    title = namespace ? `${namespace}.${tool}` : tool;
+    const nestedTools = tool === "exec" ? extractCodexExecToolNames(item.arguments) : [];
+    const nestedToolSummary = nestedTools.map((name) => name.replaceAll("__", ".")).join(", ");
+    const qualifiedTool = namespace ? `${namespace}.${tool}` : tool;
+    title = nestedToolSummary ? `${qualifiedTool} · ${nestedToolSummary}` : qualifiedTool;
     eventType = "codex.dynamic_tool";
     input = item.arguments;
     output = item.error || item.content_items || { success: item.success };
+    if (nestedTools.length > 0) attributes.nestedTools = nestedTools;
     if (item.success === false) status = "failed";
   } else if (type === "mcptoolcall") {
     title = [stringValue(item.server), stringValue(item.tool)].filter(Boolean).join(".") || "MCP tool";
