@@ -3422,7 +3422,7 @@ describe("WorkBuddy session loading", () => {
           type: "function_call",
           name: "Read",
           callId: "call-2",
-          arguments: { path: "/repo/workbuddy/README.md" },
+          arguments: { path: "/repo/workbuddy/README.md", file_path: "/wrong-priority.md" },
           providerData: {
             messageId: "provider-tool-1",
             rawUsage: {

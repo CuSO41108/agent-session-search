@@ -78,7 +78,7 @@ describe("WorkBuddy session loading", () => {
         type: "function_call",
         name: "Read",
         callId: "call-1",
-        arguments: JSON.stringify({ path: "data.csv" }),
+        arguments: JSON.stringify({ path: "data.csv", file_path: "wrong-priority.csv" }),
         providerData: {
           messageId: "billing-1",
           rawUsage: {
@@ -322,12 +322,12 @@ describe("WorkBuddy session loading", () => {
         kind: "tool_call",
         source: "workbuddy",
         title: "Read · data.csv",
-        detail: '{\n  "path": "data.csv"\n}',
+        detail: '{\n  "path": "data.csv",\n  "file_path": "wrong-priority.csv"\n}',
         timestamp: "2026-05-28T20:26:42.100Z",
         callId: "call-1",
         eventType: "workbuddy.function_call",
         status: "running",
-        attributes: { input: { path: "data.csv" } },
+        attributes: { input: { path: "data.csv", file_path: "wrong-priority.csv" } },
       },
       {
         index: 1,

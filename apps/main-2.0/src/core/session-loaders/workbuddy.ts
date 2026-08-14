@@ -175,7 +175,7 @@ function extractWorkBuddyTraceEvents(rows: unknown[]): SessionTraceEvent[] {
       events.push({
         kind: "tool_call",
         source: "workbuddy",
-        title: titleWithSummary(name, firstStringField(input, ["command", "cmd", "file_path", "path", "query", "url"])),
+        title: titleWithSummary(name, firstStringField(input, ["command", "cmd", "path", "file_path", "query", "url"])),
         detail: stringifyDetail(input),
         timestamp,
         callId,
