@@ -299,13 +299,15 @@ export class NativeAutomationService {
       engine: new WorkflowEngine({
         store: workflowRepository,
         createId: () => `workflow_run_${randomUUID()}`,
+        defaultWorkDir: () => this.hubInstance.getWorkDir(),
         executors: createWorkflowNodeExecutors({
           agentInvoker: {
-            invoke: async ({ agentId, prompt, outputs, onEvent, signal }) => {
+            invoke: async ({ agentId, prompt, outputs, workDir, onEvent, signal }) => {
               const outputContract = outputs.map((field) => `- ${field.key}: ${field.description}`).join("\n");
               const response = await this.configuredAgentExecutor.runOneShot({
                 configuredAgentId: agentId,
                 prompt: `${prompt}\n\n## Response format\nReturn only one JSON object. Use exactly these top-level fields:\n${outputContract}`,
+                workDir,
               }, onEvent, signal);
               return parseWorkflowAgentOutputs(response.output);
             },

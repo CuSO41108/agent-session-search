@@ -63,6 +63,7 @@ function engine(store: MemoryStore, execute: WorkflowNodeExecutor, ids = ["run-1
     store,
     executors: { agent: execute, review: execute, script: execute },
     createId: () => ids.shift() ?? "run-next",
+    defaultWorkDir: () => "/global-project",
     now: (() => { let value = 10; return () => value++; })(),
   });
 }
@@ -226,6 +227,22 @@ describe("WorkflowEngine", () => {
     expect(calls.filter((id) => id === "root")).toHaveLength(1);
     expect(calls.filter((id) => id === "middle")).toHaveLength(2);
     expect(calls.filter((id) => id === "final")).toHaveLength(1);
+  });
+
+  test("passes the Workflow directory to node execution and falls back to the global directory", async () => {
+    const store = new MemoryStore();
+    const seen: string[] = [];
+    const runtime = engine(store, executor(async ({ workDir }) => {
+      seen.push(workDir ?? "missing");
+      return { value: "done" };
+    }));
+
+    const selected = await runtime.start({ ...definition([agent("answer")]), workDir: "/workflow-project" }, {});
+    await waitForRun(store, selected.id, "completed");
+    const fallback = await runtime.start({ ...definition([agent("answer")]), workDir: null }, {});
+    await waitForRun(store, fallback.id, "completed");
+
+    expect(seen).toEqual(["/workflow-project", "/global-project"]);
   });
 
   test("pauses an active node, records lifecycle events, and resumes it in the background", async () => {

@@ -24,6 +24,7 @@ export interface WorkflowExecutionInput<N extends WorkflowNode = WorkflowNode> {
   run: WorkflowRun;
   node: N;
   resolvedInputs: Record<string, unknown>;
+  workDir?: string;
   signal: AbortSignal;
 }
 
@@ -36,6 +37,7 @@ export interface WorkflowEngineOptions {
   store: WorkflowEngineStore;
   executors: Partial<Record<Exclude<WorkflowNode["kind"], "approval">, WorkflowNodeExecutor>>;
   createId: () => string;
+  defaultWorkDir?: () => string;
   now?: () => number;
 }
 
@@ -51,6 +53,7 @@ export class WorkflowEngine {
   private readonly store: WorkflowEngineStore;
   private readonly executors: WorkflowEngineOptions["executors"];
   private readonly createId: () => string;
+  private readonly defaultWorkDir: () => string;
   private readonly now: () => number;
   private readonly controllers = new Map<string, AbortController>();
 
@@ -58,7 +61,12 @@ export class WorkflowEngine {
     this.store = options.store;
     this.executors = options.executors;
     this.createId = options.createId;
+    this.defaultWorkDir = options.defaultWorkDir ?? (() => process.cwd());
     this.now = options.now ?? Date.now;
+  }
+
+  private workDir(definition: WorkflowDefinition): string {
+    return definition.workDir || this.defaultWorkDir();
   }
 
   async start(definition: WorkflowDefinition, inputs: Record<string, unknown>): Promise<WorkflowRun> {
@@ -290,7 +298,13 @@ export class WorkflowEngine {
 
         const results = await Promise.all(executable.map(async (item) => {
           try {
-            const outputs = await item.executor.execute({ run: cloneRun(run), node: item.node, resolvedInputs: item.resolvedInputs, signal: controller.signal });
+            const outputs = await item.executor.execute({
+              run: cloneRun(run),
+              node: item.node,
+              resolvedInputs: item.resolvedInputs,
+              workDir: this.workDir(run.definition),
+              signal: controller.signal,
+            });
             return { item, outputs } as const;
           } catch (error) {
             return { item, error } as const;

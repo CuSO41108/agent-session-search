@@ -88,6 +88,8 @@ export interface WorkflowDefinition {
   id: string;
   name: string;
   description: string;
+  /** Optional Workflow-specific directory; null explicitly falls back to the global default. */
+  workDir?: string | null;
   isTemplate?: boolean;
   inputs: WorkflowInputDefinition[];
   nodes: WorkflowNode[];
