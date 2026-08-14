@@ -9,6 +9,13 @@ import type {
 } from "./types";
 import { sessionSourceDescriptor } from "./session-sources";
 
+interface WorkBuddyConversationLine {
+  timestamp?: number;
+  type?: string;
+  role?: "user" | "assistant" | string;
+  content?: unknown;
+}
+
 export type ParsedLine = Omit<SessionMessage, "index"> | null;
 
 export interface FormatAdapter {
@@ -182,6 +189,25 @@ export const codebuddyAdapter: FormatAdapter = {
   },
 };
 
+export const workbuddyAdapter: FormatAdapter = {
+  format: "workbuddy",
+  parseLine(raw) {
+    if (!raw || typeof raw !== "object") return null;
+    const line = raw as WorkBuddyConversationLine;
+    if (line.type !== "message" || !line.role || !line.content) return null;
+    if (line.role !== "user" && line.role !== "assistant") return null;
+
+    const parsed = extractContentBlocks(line.content);
+    if (!parsed.text) return null;
+    return {
+      role: line.role,
+      content: parsed.text,
+      timestamp: typeof line.timestamp === "number" ? new Date(line.timestamp).toISOString() : "",
+      ...(parsed.attachments ? { attachments: parsed.attachments } : {}),
+    };
+  },
+};
+
 function roleFromRaw(raw: unknown): "user" | "assistant" | null {
   if (!raw || typeof raw !== "object") return null;
   const record = raw as Record<string, unknown>;
@@ -333,6 +359,7 @@ export function getAdapter(sourceOrFormat: SessionSource | SessionFormat): Forma
     return sourceOrFormat === "claude" ? claudeAdapter : codexAdapter;
   }
   if (sourceOrFormat === "codebuddy") return codebuddyAdapter;
+  if (sourceOrFormat === "workbuddy") return workbuddyAdapter;
   if (sourceOrFormat === "codewiz") return codeWizAdapter;
   if (sourceOrFormat === "openclaw") return openClawAdapter;
   if (sourceOrFormat === "hermes") return hermesAdapter;
@@ -345,6 +372,7 @@ export function getAdapter(sourceOrFormat: SessionSource | SessionFormat): Forma
   const format = getFormatForSource(sourceOrFormat);
   if (format === "claude") return claudeAdapter;
   if (format === "codebuddy") return codebuddyAdapter;
+  if (format === "workbuddy") return workbuddyAdapter;
   if (format === "codewiz") return codeWizAdapter;
   if (format === "openclaw") return openClawAdapter;
   if (format === "hermes") return hermesAdapter;

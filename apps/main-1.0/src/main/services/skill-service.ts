@@ -186,6 +186,7 @@ export class SkillService {
       includeTclaude: settings.includeTclaude,
       includeTcodex: settings.includeTcodex,
       includeCodeBuddyCli: settings.includeCodeBuddyCli,
+      includeWorkBuddy: settings.includeWorkBuddy,
       includeCodeWizCli: settings.includeCodeWizCli,
       includeOpenClaw: settings.includeOpenClaw,
       includeHermes: settings.includeHermes,

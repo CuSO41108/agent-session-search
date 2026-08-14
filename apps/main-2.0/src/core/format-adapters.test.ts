@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { codexAdapter } from "./format-adapters";
+import { codexAdapter, getAdapter, getFormatForSource, workbuddyAdapter } from "./format-adapters";
 
 describe("Codex format adapter", () => {
   it("strips subagent notifications from user messages", () => {
@@ -63,5 +63,22 @@ describe("Codex format adapter", () => {
         },
       }),
     ).toBeNull();
+  });
+});
+
+describe("WorkBuddy format adapter", () => {
+  it("parses WorkBuddy messages without applying CodeBuddy's launch-message filter", () => {
+    expect(getFormatForSource("workbuddy-cli")).toBe("workbuddy");
+    expect(getAdapter("workbuddy-cli")).toBe(workbuddyAdapter);
+    expect(workbuddyAdapter.parseLine({
+      type: "message",
+      role: "user",
+      content: [{ type: "input_text", text: "code" }],
+      timestamp: 1_780_000_000_000,
+    })).toEqual({
+      role: "user",
+      content: "code",
+      timestamp: "2026-05-28T20:26:40.000Z",
+    });
   });
 });

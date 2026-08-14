@@ -27,6 +27,7 @@ const LIVE_SESSION_KEY_SQL = `
     when sessions.source = 'tclaude-cli' then 'tclaude:' || sessions.raw_id
     when sessions.source = 'tcodex-cli' then 'tcodex:' || sessions.raw_id
     when sessions.source = 'codebuddy-cli' then 'codebuddy:' || sessions.raw_id
+    when sessions.source = 'workbuddy-cli' then 'workbuddy:' || sessions.raw_id
     when sessions.source = 'codewiz-cli' then 'codewiz:' || sessions.raw_id
     when sessions.source = 'trae' then 'trae:' || sessions.raw_id
     when sessions.source = 'qoder' then 'qoder:' || sessions.raw_id

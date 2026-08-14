@@ -5,6 +5,7 @@ import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
 import { StringDecoder } from "node:string_decoder";
 import { scanCompleteJsonlAsync } from "./codex-jsonl-stream";
+import { isWorkBuddySessionFile } from "./session-loaders/workbuddy-paths";
 
 const require = createRequire(import.meta.url);
 const { DatabaseSync } = require("node:sqlite") as {
@@ -23,6 +24,7 @@ export type SkillUsageSourceKind =
   | "claude-session"
   | "codex-session"
   | "codebuddy-session"
+  | "workbuddy-session"
   | "cursor-session"
   | "openclaw-session"
   | "qoder-session"
@@ -37,6 +39,7 @@ export type SkillUsageProvider =
   | "tclaude"
   | "tcodex"
   | "codebuddy"
+  | "workbuddy"
   | "cursor"
   | "openclaw"
   | "qoder"
@@ -99,6 +102,7 @@ export interface SkillUsageOptions {
   includeTclaude?: boolean;
   includeTcodex?: boolean;
   includeCodeBuddyCli?: boolean;
+  includeWorkBuddy?: boolean;
   includeCodeWizCli?: boolean;
   includeOpenClaw?: boolean;
   includeHermes?: boolean;
@@ -182,6 +186,11 @@ export function listSkillUsageSources(options: SkillUsageOptions = {}): SkillUsa
   if (options.includeCodeBuddyCli !== false) {
     addJsonlSources(sources, path.join(homeDir, ".codebuddy", "projects"), "codex", "codebuddy", "codebuddy-session");
   }
+  if (options.includeWorkBuddy !== false) {
+    const projectsDir = path.join(homeDir, ".workbuddy", "projects");
+    addJsonlSources(sources, projectsDir, "codex", "workbuddy", "workbuddy-session", undefined, (filePath) =>
+      isWorkBuddySessionFile(projectsDir, filePath));
+  }
   if (options.includeCursorAgent !== false) addCursorSources(sources, path.join(homeDir, ".cursor", "projects"));
   if (options.includeOpenClaw !== false) {
     addOpenClawSources(sources, path.join(homeDir, ".openclaw", "agents"));
@@ -239,6 +248,11 @@ export async function listSkillUsageSourcesAsync(options: SkillUsageOptions = {}
   }
   if (options.includeCodeBuddyCli !== false) {
     await addJsonlSourcesAsync(sources, path.join(homeDir, ".codebuddy", "projects"), "codex", "codebuddy", "codebuddy-session");
+  }
+  if (options.includeWorkBuddy !== false) {
+    const projectsDir = path.join(homeDir, ".workbuddy", "projects");
+    await addJsonlSourcesAsync(sources, projectsDir, "codex", "workbuddy", "workbuddy-session", undefined, (filePath) =>
+      isWorkBuddySessionFile(projectsDir, filePath));
   }
   if (options.includeCursorAgent !== false) await addCursorSourcesAsync(sources, path.join(homeDir, ".cursor", "projects"));
   if (options.includeOpenClaw !== false) {
@@ -493,9 +507,11 @@ function parseSessionUsageRecord(
     ? codexToolCalls(parsed)
     : source.kind === "codebuddy-session"
       ? codeBuddyToolCalls(parsed)
-      : source.kind === "openclaw-session"
-        ? openClawToolCalls(parsed)
-        : assistantToolCalls(parsed);
+      : source.kind === "workbuddy-session"
+        ? workBuddyToolCalls(parsed)
+        : source.kind === "openclaw-session"
+          ? openClawToolCalls(parsed)
+          : assistantToolCalls(parsed);
   const defaultOwner = source.provider === "claude" || source.provider === "tclaude"
     ? "claude"
     : source.provider === "codex" || source.provider === "tcodex"
@@ -588,6 +604,11 @@ function codeBuddyToolCalls(row: Record<string, unknown>): StructuredToolCall[] 
     return [{ name: row.name, input: row.input ?? row.arguments }];
   }
   return assistantToolCalls(row);
+}
+
+function workBuddyToolCalls(row: Record<string, unknown>): StructuredToolCall[] {
+  if (row.type !== "function_call" || typeof row.name !== "string") return [];
+  return [{ name: row.name, input: row.arguments }];
 }
 
 function assistantToolCalls(row: Record<string, unknown>): StructuredToolCall[] {
@@ -820,10 +841,12 @@ function addJsonlSources(
   provider: SkillUsageProvider,
   kind: SkillUsageSourceKind,
   requiredPathPart?: string,
+  acceptFile?: (filePath: string) => boolean,
 ): void {
   for (const filePath of walkJsonlFiles(dir)) {
     const normalized = filePath.replace(/\\/g, "/");
     if (requiredPathPart && !normalized.includes(requiredPathPart)) continue;
+    if (acceptFile && !acceptFile(filePath)) continue;
     const stat = safeStat(filePath);
     if (stat) sources.push({ agent, provider, kind, path: filePath, ...stat });
   }
@@ -836,10 +859,12 @@ async function addJsonlSourcesAsync(
   provider: SkillUsageProvider,
   kind: SkillUsageSourceKind,
   requiredPathPart?: string,
+  acceptFile?: (filePath: string) => boolean,
 ): Promise<void> {
   for await (const filePath of walkJsonlFilesAsync(dir)) {
     const normalized = filePath.replace(/\\/g, "/");
     if (requiredPathPart && !normalized.includes(requiredPathPart)) continue;
+    if (acceptFile && !acceptFile(filePath)) continue;
     const stat = await safeStatAsync(filePath);
     if (stat) sources.push({ agent, provider, kind, path: filePath, ...stat });
   }

@@ -148,7 +148,9 @@ function classifyTarget(
   if (request.inactiveBefore !== undefined && target.lastActivityAt >= request.inactiveBefore) {
     return issueFor(target.sessionKey, "recent", "Session is not older than the selected cutoff.");
   }
-  if (target.source === "pi-cli") return issueFor(target.sessionKey, "read-only", "Pi session source files are read-only.");
+  if (target.source === "pi-cli" || target.source === "workbuddy-cli") {
+    return issueFor(target.sessionKey, "read-only", `${sessionSourceDescriptor(target.source).label} session source files are read-only.`);
+  }
   if (SHARED_DATABASE_SOURCES.has(target.source)) return issueFor(target.sessionKey, "shared-database", "This source stores multiple sessions in a shared database.");
   if (target.source === "cursor-agent" && /(^|[\\/])state\.vscdb$/iu.test(target.filePath) && target.sourceAvailable) {
     return issueFor(target.sessionKey, "shared-database", "This Cursor session is stored in a shared database.");

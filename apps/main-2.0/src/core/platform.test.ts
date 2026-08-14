@@ -1,7 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { defaultSettings, mergeAppSettings } from "./platform";
 
-describe("summary settings", () => {
+describe("app settings", () => {
+  it("keeps WorkBuddy indexing opt-in while accepting an explicit enable", () => {
+    expect(defaultSettings.includeWorkBuddy).toBe(false);
+    expect(mergeAppSettings(defaultSettings, { includeWorkBuddy: true }).includeWorkBuddy).toBe(true);
+  });
+
   it("starts every summary source on the machine's own config directory", () => {
     expect(defaultSettings.summarySource).toBe("codex");
     expect(defaultSettings.summaryCodexConfigDir).toBe("");

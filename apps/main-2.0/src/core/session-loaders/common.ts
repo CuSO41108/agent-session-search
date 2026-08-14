@@ -21,6 +21,7 @@ export interface SessionLoadOptions {
   includeTclaude?: boolean;
   includeTcodex?: boolean;
   includeCodeBuddyCli?: boolean;
+  includeWorkBuddy?: boolean;
   includeCodeWizCli?: boolean;
   includeOpenClaw?: boolean;
   includeHermes?: boolean;
@@ -294,6 +295,7 @@ export function createIndexedSession(input: {
     | "tclaude"
     | "tcodex"
     | "codebuddy"
+    | "workbuddy"
     | "codewiz"
     | "openclaw"
     | "hermes"

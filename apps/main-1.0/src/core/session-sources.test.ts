@@ -17,6 +17,7 @@ const ALL_SOURCES = [
   "tclaude-cli",
   "tcodex-cli",
   "codebuddy-cli",
+  "workbuddy-cli",
   "codewiz-cli",
   "openclaw",
   "hermes",
@@ -51,6 +52,7 @@ describe("session source capability registry", () => {
       "includeTclaude",
       "includeTcodex",
       "includeCodeBuddyCli",
+      "includeWorkBuddy",
       "includeCodeWizCli",
       "includeOpenClaw",
       "includeHermes",
@@ -75,6 +77,21 @@ describe("session source capability registry", () => {
       liveFamily: "zcode",
       capabilities: { live: true, resume: false, migrate: false, sessionSync: false, openApp: false },
     });
+    expect(sessionSourceDescriptor("workbuddy-cli")).toMatchObject({
+      label: "WorkBuddy",
+      format: "workbuddy",
+      family: "workbuddy",
+      uiFamily: "other",
+      optionalSetting: "includeWorkBuddy",
+      pendingKey: "workbuddy",
+      remoteCollectorOptional: false,
+      liveFamily: null,
+      migrationAgent: null,
+      resumeTarget: null,
+      remoteFamily: null,
+      nativeAppFamily: null,
+      capabilities: { live: false, resume: false, migrate: false, sessionSync: false, openApp: false },
+    });
     expect(sessionSourceDescriptor("pi-cli")).toMatchObject({
       label: "Pi",
       format: "pi",
@@ -95,6 +112,7 @@ describe("session source capability registry", () => {
     expect(remoteSessionAgentForSource("pi-cli")).toBe("pi");
     expect(remoteSessionAgentForSource("hermes")).toBe("hermes");
     expect(remoteSessionAgentForSource("zcode-cli")).toBeNull();
+    expect(remoteSessionAgentForSource("workbuddy-cli")).toBeNull();
     expect(OPTIONAL_SESSION_SOURCE_DESCRIPTORS.filter(({ remoteCollectorOptional }) => remoteCollectorOptional).map(({ id }) => id)).toEqual([
       "tclaude-cli",
       "tcodex-cli",

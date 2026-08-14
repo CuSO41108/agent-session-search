@@ -32,6 +32,7 @@ const V1_SETTINGS_KEYS = [
   "includeTclaude",
   "includeTcodex",
   "includeCodeBuddyCli",
+  "includeWorkBuddy",
   "includeCodeWizCli",
   "includeOpenClaw",
   "includeHermes",
@@ -65,7 +66,7 @@ const V1_SETTINGS_KEYS = [
 
 const SESSION_SOURCES = new Set<SessionSource>([
   "claude-cli", "claude-app", "codex-cli", "codex-app", "tclaude-cli", "tcodex-cli",
-  "codebuddy-cli", "codewiz-cli", "openclaw", "hermes", "opencode-cli", "zcode-cli",
+  "codebuddy-cli", "workbuddy-cli", "codewiz-cli", "openclaw", "hermes", "opencode-cli", "zcode-cli",
   "cursor-agent", "trae", "qoder", "pi-cli",
 ]);
 

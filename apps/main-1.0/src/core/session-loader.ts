@@ -47,6 +47,7 @@ const CODEX_INLINE_IMAGE_MARKER = Buffer.from('"image_url":"data:image/');
 const TCLAUDE_DIR = ".tclaude";
 const TCODEX_DIR = ".tcodex";
 const CODEBUDDY_DIR = ".codebuddy";
+const WORKBUDDY_DIR = ".workbuddy";
 const CODEWIZ_SHARE_DIR = path.join(".local", "share", "codewiz");
 const QODER_DIR = ".qoder";
 const PI_SESSIONS_DIR = path.join(".pi", "agent", "sessions");
@@ -58,6 +59,7 @@ export interface SessionLoadOptions {
   includeTclaude?: boolean;
   includeTcodex?: boolean;
   includeCodeBuddyCli?: boolean;
+  includeWorkBuddy?: boolean;
   includeCodeWizCli?: boolean;
   includeOpenClaw?: boolean;
   includeHermes?: boolean;
@@ -803,7 +805,64 @@ function dedupeTraceEvents(events: TraceEventDraft[]): SessionTraceEvent[] {
 function extractTraceEvents(rows: unknown[], format: SessionFormat): SessionTraceEvent[] {
   if (format === "claude") return dedupeTraceEvents(extractClaudeTraceEvents(rows));
   if (format === "codex") return dedupeCodexTraceEvents(extractCodexTraceEvents(rows));
+  if (format === "workbuddy") return extractWorkBuddyTraceEvents(rows);
   return [];
+}
+
+function extractWorkBuddyTraceEvents(rows: unknown[]): SessionTraceEvent[] {
+  const events: TraceEventDraft[] = [];
+  const callNames = new Map<string, string>();
+  for (const row of rows) {
+    if (!isRecord(row)) continue;
+    const rowType = stringField(row, "type");
+    const timestamp = timestampString(unknownField(row, "timestamp"));
+    const callId = stringField(row, "callId");
+    if (rowType === "function_call") {
+      const input = parseMaybeJson(unknownField(row, "arguments"));
+      const name = stringField(row, "name");
+      if (!name || !callId) continue;
+      callNames.set(callId, name);
+      const summary = firstStringField(input, ["command", "cmd", "path", "file_path", "query", "url"]);
+      events.push({
+        kind: "tool_call",
+        source: "workbuddy",
+        title: titleWithSummary(name, summary),
+        detail: stringifyDetail(input),
+        timestamp,
+        callId,
+        eventType: "workbuddy.function_call",
+        status: "running",
+        attributes: { input },
+      });
+      continue;
+    }
+    if (rowType !== "function_call_result" || !callId) continue;
+
+    const parsedOutput = parseMaybeJson(unknownField(row, "output"));
+    const output = workBuddyTraceText(parsedOutput) || parsedOutput;
+    const rowStatus = stringField(row, "status");
+    const failed = unknownField(row, "isError") === true || rowStatus === "failed" || rowStatus === "error";
+    const name = stringField(row, "name") || callNames.get(callId);
+    if (!name) continue;
+    events.push({
+      kind: "tool_result",
+      source: "workbuddy",
+      title: `${name} result`,
+      detail: stringifyDetail(output),
+      timestamp,
+      callId,
+      eventType: "workbuddy.function_call_result",
+      status: failed ? "failed" : "completed",
+      attributes: { output: parsedOutput },
+    });
+  }
+  return dedupeTraceEvents(events);
+}
+
+function workBuddyTraceText(value: unknown): string {
+  if (Array.isArray(value)) return value.map(workBuddyTraceText).filter(Boolean).join("\n");
+  if (!isRecord(value)) return "";
+  return stringField(value, "text");
 }
 
 function addTokenUsage(total: TokenUsage, next: TokenUsage): void {
@@ -1133,6 +1192,95 @@ function firstDetailNumber(value: unknown, key: string): number {
   return numberField(value, key);
 }
 
+function firstNonZeroNumber(...values: number[]): number {
+  return values.find((value) => value > 0) ?? 0;
+}
+
+function optionalNumberField(value: unknown, key: string): number | null {
+  if (!isRecord(value)) return null;
+  const field = value[key];
+  return typeof field === "number" && Number.isFinite(field) ? field : null;
+}
+
+function firstPresentNumber(...values: Array<number | null>): number {
+  return values.find((value): value is number => value !== null) ?? 0;
+}
+
+function maxNumberField(value: unknown, keys: string[]): number {
+  if (!isRecord(value)) return 0;
+  return Math.max(0, ...keys.map((key) => numberField(value, key)));
+}
+
+function maxDetailNumber(value: unknown, keys: string[]): number {
+  const details = Array.isArray(value) ? value : [value];
+  return Math.max(0, ...details.map((detail) => maxNumberField(detail, keys)));
+}
+
+// WorkBuddy repeats one usage snapshot across the records emitted for a model
+// response. Its input total includes cache reads but excludes cache writes;
+// split the read bucket out and keep cache creation as an additional bucket.
+function readWorkBuddyUsage(row: Record<string, unknown>): TokenUsage | null {
+  const providerData = objectField(row, "providerData");
+  const usage = objectField(providerData, "usage");
+  const rawUsage = objectField(providerData, "rawUsage");
+  const messageUsage = objectField(objectField(row, "message"), "usage");
+  const inputTotal = firstPresentNumber(
+    optionalNumberField(usage, "inputTokens"),
+    optionalNumberField(messageUsage, "input_tokens"),
+    optionalNumberField(rawUsage, "prompt_tokens"),
+  );
+  const output = firstPresentNumber(
+    optionalNumberField(usage, "outputTokens"),
+    optionalNumberField(messageUsage, "output_tokens"),
+    optionalNumberField(rawUsage, "completion_tokens"),
+  );
+  const cacheRead = firstNonZeroNumber(
+    numberField(rawUsage, "prompt_cache_hit_tokens"),
+    numberField(messageUsage, "cache_read_input_tokens"),
+    numberField(rawUsage, "cache_read_input_tokens"),
+    numberField(usage, "cacheReadInputTokens"),
+    maxDetailNumber(unknownField(rawUsage, "prompt_tokens_details"), ["cached_tokens"]),
+    maxDetailNumber(unknownField(usage, "inputTokensDetails"), ["cached_tokens"]),
+  );
+  const cacheCreation = Math.max(
+    numberField(rawUsage, "cache_creation_input_tokens"),
+    numberField(rawUsage, "prompt_cache_write_tokens"),
+  );
+  const reasoning = firstNonZeroNumber(
+    numberField(rawUsage, "completion_thinking_tokens"),
+    numberField(objectField(rawUsage, "completion_tokens_details"), "reasoning_tokens"),
+  );
+  if (inputTotal === 0 && output === 0 && cacheRead === 0 && cacheCreation === 0 && reasoning === 0) return null;
+  return createTokenUsage(
+    Math.max(0, inputTotal - cacheRead),
+    Math.max(0, output),
+    cacheRead,
+    reasoning,
+    cacheCreation,
+  );
+}
+
+function extractWorkBuddyTokenEvents(rows: unknown[]): TokenUsageEvent[] {
+  const entries = new Map<string, TokenUsageEvent>();
+  rows.forEach((row) => {
+    if (!isRecord(row)) return;
+    const providerData = objectField(row, "providerData");
+    const usage = readWorkBuddyUsage(row);
+    if (!usage) return;
+
+    const key = stringField(providerData, "messageId")
+      || stringField(row, "id")
+      || stringField(row, "callId");
+    if (!key) return;
+    putTokenEvent(entries, {
+      ...usage,
+      timestamp: parseTimestampMs(row.timestamp),
+      dedupeKey: key.startsWith("workbuddy:") ? key : `workbuddy:${key}`,
+    });
+  });
+  return [...entries.values()];
+}
+
 function firstClaudeGitBranch(rows: unknown[]): string | null {
   for (const row of rows) {
     if (!row || typeof row !== "object" || !("gitBranch" in row)) continue;
@@ -1185,7 +1333,7 @@ function readGitBranchAt(gitPath: string): string | null {
 }
 
 function createIndexedSession(input: {
-  keyPrefix: "claude" | "codex" | "tclaude" | "tcodex" | "codebuddy" | "codewiz" | "openclaw" | "hermes" | "opencode" | "zcode" | "cursor" | "trae" | "qoder" | "pi";
+  keyPrefix: "claude" | "codex" | "tclaude" | "tcodex" | "codebuddy" | "workbuddy" | "codewiz" | "openclaw" | "hermes" | "opencode" | "zcode" | "cursor" | "trae" | "qoder" | "pi";
   rawId: string;
   source: SessionSource;
   projectPath: string;
@@ -1241,7 +1389,7 @@ function firstCodeBuddySessionMeta(rows: unknown[], fallbackRawId: string): { ra
   return { rawId, projectPath, timestamp };
 }
 
-// Claude and CodeBuddy write their AI-generated session title as a dedicated
+// Claude, CodeBuddy, and WorkBuddy write their AI-generated session title as a dedicated
 // `ai-title` row. The row is metadata and is not exposed as a visible message.
 function firstAiTitle(rows: unknown[]): string {
   for (const row of rows) {
@@ -2203,6 +2351,126 @@ export function* loadCodeBuddyCliSessionsIterator(
     const stat = safeStat(filePath);
     if (shouldSkipFile(options, filePath, stat)) continue;
     const loaded = loadCodeBuddyCliSessionFile(filePath, stat);
+    if (loaded) yield loaded;
+  }
+}
+
+interface WorkBuddySessionIdentity {
+  rawId: string;
+  isSubagent: boolean;
+  parentSessionId: string | null;
+}
+
+function workBuddySessionIdentity(projectsDir: string, filePath: string): WorkBuddySessionIdentity | null {
+  const relativePath = path.relative(projectsDir, filePath);
+  if (!relativePath || relativePath.startsWith(`..${path.sep}`) || path.isAbsolute(relativePath)) return null;
+  const segments = relativePath.split(path.sep);
+  const stem = path.basename(filePath, ".jsonl");
+  if (!stem || stem === "." || stem === ".." || path.extname(filePath) !== ".jsonl") return null;
+  if (segments.length === 2) {
+    return /^[A-Za-z0-9_-]+$/u.test(stem) ? { rawId: stem, isSubagent: false, parentSessionId: null } : null;
+  }
+  if (segments.length !== 4 || segments[2] !== "subagents") return null;
+
+  const parentSessionId = segments[1];
+  if (!/^[A-Za-z0-9_-]+$/u.test(parentSessionId)) return null;
+  return {
+    rawId: `${parentSessionId}:subagent:${stem}`,
+    isSubagent: true,
+    parentSessionId,
+  };
+}
+
+function workBuddyProjectsDirForFile(filePath: string): string | null {
+  let current = path.dirname(path.resolve(filePath));
+  while (true) {
+    if (path.basename(current) === "projects" && path.basename(path.dirname(current)) === WORKBUDDY_DIR) return current;
+    const parent = path.dirname(current);
+    if (parent === current) return null;
+    current = parent;
+  }
+}
+
+function firstWorkBuddySessionMeta(rows: unknown[]): { projectPath: string; timestamp: number } {
+  let projectPath = "";
+  let timestamp = 0;
+  for (const row of rows) {
+    if (!isRecord(row)) continue;
+    if (!projectPath) projectPath = stringField(row, "cwd");
+    const rowTimestamp = parseTimestampMs(row.timestamp);
+    if (rowTimestamp && (!timestamp || rowTimestamp < timestamp)) timestamp = rowTimestamp;
+  }
+  return { projectPath, timestamp };
+}
+
+function loadWorkBuddyCliSessionRowsWithIdentity(
+  filePath: string,
+  rows: unknown[],
+  stat: VirtualSessionFileStat,
+  identity: WorkBuddySessionIdentity,
+): LoadedSession | null {
+  if (rows.length === 0) return null;
+
+  const meta = firstWorkBuddySessionMeta(rows);
+  const messages = extractMessages(rows, "workbuddy");
+  const tokenEvents = extractWorkBuddyTokenEvents(rows);
+  const traceEvents = extractTraceEvents(rows, "workbuddy");
+  if (messages.length === 0 && traceEvents.length === 0) return null;
+
+  const question = firstQuestion(messages);
+  return {
+    session: createIndexedSession({
+      keyPrefix: "workbuddy",
+      rawId: identity.rawId,
+      source: "workbuddy-cli",
+      projectPath: meta.projectPath,
+      filePath,
+      originalTitle: firstAiTitle(rows) || cleanTitle(question) || "Untitled Session",
+      firstQuestion: cleanTitle(question),
+      timestamp: meta.timestamp,
+      tokenUsage: tokenUsageFromEvents(tokenEvents),
+      stat,
+      isSubagent: identity.isSubagent,
+      parentSessionId: identity.parentSessionId,
+    }),
+    messages,
+    tokenEvents,
+    traceEvents,
+  };
+}
+
+export function loadWorkBuddyCliSessionRows(
+  filePath: string,
+  rows: unknown[],
+  stat: VirtualSessionFileStat,
+): LoadedSession | null {
+  const projectsDir = workBuddyProjectsDirForFile(filePath);
+  if (!projectsDir) return null;
+  const identity = workBuddySessionIdentity(projectsDir, filePath);
+  return identity ? loadWorkBuddyCliSessionRowsWithIdentity(filePath, rows, stat, identity) : null;
+}
+
+export function loadWorkBuddyCliSessionFile(filePath: string, stat = safeStat(filePath)): LoadedSession | null {
+  return loadWorkBuddyCliSessionRows(filePath, readJsonl(filePath), stat);
+}
+
+export function loadWorkBuddyCliSessions(workBuddyDir = path.join(os.homedir(), WORKBUDDY_DIR)): LoadedSession[] {
+  return [...loadWorkBuddyCliSessionsIterator(workBuddyDir)];
+}
+
+export function* loadWorkBuddyCliSessionsIterator(
+  workBuddyDir = path.join(os.homedir(), WORKBUDDY_DIR),
+  options: SessionLoadOptions = {},
+): Generator<LoadedSession> {
+  const projectsDir = path.join(workBuddyDir, "projects");
+  if (!fs.existsSync(projectsDir)) return;
+
+  for (const filePath of walkJsonlFiles(projectsDir)) {
+    const identity = workBuddySessionIdentity(projectsDir, filePath);
+    if (!identity) continue;
+    const stat = safeStat(filePath);
+    if (shouldSkipFile(options, filePath, stat)) continue;
+    const loaded = loadWorkBuddyCliSessionRowsWithIdentity(filePath, readJsonl(filePath), stat, identity);
     if (loaded) yield loaded;
   }
 }
@@ -3545,6 +3813,7 @@ export function* loadDefaultSessionsIterator(options: SessionLoadOptions = {}): 
   if (options.includeTclaude) yield* loadClaudeCliSessionsIterator(path.join(homeDir, TCLAUDE_DIR), "tclaude-cli", options);
   if (options.includeTcodex) yield* loadCodexSessionsIterator(path.join(homeDir, TCODEX_DIR), "tcodex-cli", options);
   if (options.includeCodeBuddyCli) yield* loadCodeBuddyCliSessionsIterator(path.join(homeDir, CODEBUDDY_DIR), options);
+  if (options.includeWorkBuddy) yield* loadWorkBuddyCliSessionsIterator(path.join(homeDir, WORKBUDDY_DIR), options);
 }
 
 export async function* loadDefaultSessionsAsyncIterator(options: SessionLoadOptions = {}): AsyncGenerator<LoadedSession> {
@@ -3575,4 +3844,5 @@ export async function* loadDefaultSessionsAsyncIterator(options: SessionLoadOpti
   if (options.includeTclaude) yield* loadClaudeCliSessionsIterator(path.join(homeDir, TCLAUDE_DIR), "tclaude-cli", options);
   if (options.includeTcodex) yield* loadCodexSessionsAsyncIterator(path.join(homeDir, TCODEX_DIR), "tcodex-cli", options);
   if (options.includeCodeBuddyCli) yield* loadCodeBuddyCliSessionsIterator(path.join(homeDir, CODEBUDDY_DIR), options);
+  if (options.includeWorkBuddy) yield* loadWorkBuddyCliSessionsIterator(path.join(homeDir, WORKBUDDY_DIR), options);
 }

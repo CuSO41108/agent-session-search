@@ -515,6 +515,32 @@ describe("SessionStore PostgreSQL facade", () => {
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
+  it("keeps WorkBuddy source files and indexed records when direct deletion is attempted", async () => {
+    const store = createStore();
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "session-search-delete-workbuddy-"));
+    const filePath = path.join(dir, "workbuddy-session.jsonl");
+    fs.writeFileSync(filePath, "{}\n", "utf8");
+    await store.upsertIndexedSession(
+      indexedSession({
+        sessionKey: "workbuddy:session-a",
+        rawId: "session-a",
+        source: "workbuddy-cli",
+        filePath,
+      }),
+      messages,
+    );
+
+    try {
+      await expect(store.deleteSession("workbuddy:session-a")).rejects.toThrow(
+        "WorkBuddy session source files are read-only.",
+      );
+      expect(fs.existsSync(filePath)).toBe(true);
+      await expect(store.getSession("workbuddy:session-a")).resolves.not.toBeNull();
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("keeps Session search results paged while filtering subagents in SQL", async () => {
     const store = createStore();
     await store.upsertIndexedSession(indexedSession(), messages);

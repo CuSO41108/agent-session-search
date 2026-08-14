@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { canMigrateSession, migrationTargetsForSession } from "./session-ui";
+import { defaultSettings } from "../../core/platform";
+import { canMigrateSession, migrationTargetsForSession, sourceFilters } from "./session-ui";
 
 const settings = { includeTclaude: false, includeTcodex: false };
 
@@ -23,5 +24,15 @@ describe("migrationTargetsForSession", () => {
   it("keeps local and WSL target behavior", () => {
     expect(migrationTargetsForSession({ source: "claude-cli", environmentId: "local", environmentKind: "local" }, settings)).toEqual(["claude", "codex", "codebuddy", "codewiz", "cursor"]);
     expect(migrationTargetsForSession({ source: "codex-cli", environmentId: "wsl-1", environmentKind: "wsl" }, settings)).toEqual(["claude", "codex"]);
+  });
+});
+
+describe("sourceFilters", () => {
+  it("shows WorkBuddy only when its optional source is enabled", () => {
+    expect(sourceFilters(defaultSettings)).not.toContainEqual({ label: "WorkBuddy", value: "workbuddy-cli" });
+    expect(sourceFilters({ ...defaultSettings, includeWorkBuddy: true })).toContainEqual({
+      label: "WorkBuddy",
+      value: "workbuddy-cli",
+    });
   });
 });

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { canMigrateSession, migrationTargetsForSession, usageCacheRate } from "./session-ui";
+import { defaultSettings } from "../../core/platform";
+import { canMigrateSession, migrationTargetsForSession, sourceFilters, usageCacheRate } from "./session-ui";
 
 const settings = { includeTclaude: false, includeTcodex: false };
 
@@ -33,5 +34,15 @@ describe("usageCacheRate", () => {
       cachedInputTokens: 300,
       cacheCreationInputTokens: 2_000,
     })).toBe(10.7);
+  });
+});
+
+describe("sourceFilters", () => {
+  it("shows WorkBuddy only when its setting is enabled", () => {
+    expect(sourceFilters(defaultSettings)).not.toContainEqual({ label: "WorkBuddy", value: "workbuddy-cli" });
+    expect(sourceFilters({ ...defaultSettings, includeWorkBuddy: true })).toContainEqual({
+      label: "WorkBuddy",
+      value: "workbuddy-cli",
+    });
   });
 });

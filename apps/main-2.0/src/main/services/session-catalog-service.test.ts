@@ -119,6 +119,22 @@ describe("SessionCatalogService deletion policy", () => {
     expect(store.deleteSession).not.toHaveBeenCalled();
   });
 
+  it("rejects WorkBuddy deletion before the source file deletion path", async () => {
+    const { service, store } = createService(session({
+      sessionKey: "workbuddy:local",
+      source: "workbuddy-cli",
+      environmentId: "local",
+      environmentKind: "local",
+      filePath: "/fixtures/workbuddy-session.jsonl",
+    }));
+
+    await expect(service.delete("workbuddy:local")).rejects.toThrow("WorkBuddy session source files are read-only.");
+
+    expect(store.deleteSessionRecord).not.toHaveBeenCalled();
+    expect(store.deleteSession).not.toHaveBeenCalled();
+    expect(store.getSessionDeletionTargets).not.toHaveBeenCalled();
+  });
+
   it("refreshes live sessions in the main process before deleting a local session", async () => {
     const current = session({
       sessionKey: "codex:live",

@@ -1764,6 +1764,32 @@ describe("SessionStore", () => {
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
+  it("rejects WorkBuddy source deletion while record-only source pruning keeps the file", () => {
+    const store = createInMemoryStore();
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "session-search-delete-workbuddy-"));
+    const filePath = path.join(dir, "workbuddy-session.jsonl");
+    fs.writeFileSync(filePath, "{}\n", "utf8");
+    store.upsertIndexedSession(
+      sampleSession({
+        sessionKey: "workbuddy:abc",
+        rawId: "abc",
+        source: "workbuddy-cli",
+        filePath,
+      }),
+      messages,
+    );
+
+    expect(() => store.deleteSession("workbuddy:abc")).toThrow("WorkBuddy session source files are read-only.");
+    expect(fs.existsSync(filePath)).toBe(true);
+    expect(store.getSession("workbuddy:abc")).not.toBeNull();
+
+    store.deleteSessionsBySource(["workbuddy-cli"]);
+
+    expect(store.getSession("workbuddy:abc")).toBeNull();
+    expect(fs.existsSync(filePath)).toBe(true);
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
   it("does not search tag names from the text search box, but supports explicit tag filtering", () => {
     const store = createInMemoryStore();
     store.upsertIndexedSession(sampleSession(), messages);

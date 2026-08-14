@@ -26,6 +26,8 @@ import {
   loadZcodeSessions,
 } from "./session-loaders/alternative-sources";
 export * from "./session-loaders/alternative-sources";
+import { loadWorkBuddySessionsIterator } from "./session-loaders/workbuddy";
+export * from "./session-loaders/workbuddy";
 import {
   createIndexedSession,
   createTokenUsage,
@@ -84,6 +86,7 @@ const CODEX_INLINE_IMAGE_MARKER = Buffer.from('"image_url":"data:image/');
 const TCLAUDE_DIR = ".tclaude";
 const TCODEX_DIR = ".tcodex";
 const CODEBUDDY_DIR = ".codebuddy";
+const WORKBUDDY_DIR = ".workbuddy";
 
 interface CodexSessionMeta {
   id: string;
@@ -1763,6 +1766,7 @@ export function* loadDefaultSessionsIterator(options: SessionLoadOptions = {}): 
   if (options.includeTclaude) yield* loadClaudeCliSessionsIterator(path.join(homeDir, TCLAUDE_DIR), "tclaude-cli", options);
   if (options.includeTcodex) yield* loadCodexSessionsIterator(path.join(homeDir, TCODEX_DIR), "tcodex-cli", options);
   if (options.includeCodeBuddyCli) yield* loadCodeBuddyCliSessionsIterator(path.join(homeDir, CODEBUDDY_DIR), options);
+  if (options.includeWorkBuddy) yield* loadWorkBuddySessionsIterator(path.join(homeDir, WORKBUDDY_DIR), options);
 }
 
 export async function* loadDefaultSessionsAsyncIterator(options: SessionLoadOptions = {}): AsyncGenerator<LoadedSession> {
@@ -1791,4 +1795,5 @@ export async function* loadDefaultSessionsAsyncIterator(options: SessionLoadOpti
   if (options.includeTclaude) yield* loadClaudeCliSessionsIterator(path.join(homeDir, TCLAUDE_DIR), "tclaude-cli", options);
   if (options.includeTcodex) yield* loadCodexSessionsAsyncIterator(path.join(homeDir, TCODEX_DIR), "tcodex-cli", options);
   if (options.includeCodeBuddyCli) yield* loadCodeBuddyCliSessionsIterator(path.join(homeDir, CODEBUDDY_DIR), options);
+  if (options.includeWorkBuddy) yield* loadWorkBuddySessionsIterator(path.join(homeDir, WORKBUDDY_DIR), options);
 }

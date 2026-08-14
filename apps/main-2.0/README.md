@@ -38,7 +38,7 @@ agent-recall-v2
 
 ## 核心能力
 
-- **统一搜索会话**：索引 Claude Code、Codex 以及可选的 CodeBuddy、CodeWiz、Cursor Agent、Qoder、Trae、WSL、SSH 等来源，支持关键词、标签、收藏、隐藏、时间范围和来源筛选，收藏的会话会优先展示。
+- **统一搜索会话**：索引 Claude Code、Codex 以及可选的 CodeBuddy、WorkBuddy、CodeWiz、Cursor Agent、Qoder、Trae、WSL、SSH 等来源，支持关键词、标签、收藏、隐藏、时间范围和来源筛选，收藏的会话会优先展示。
 - **查看完整上下文**：在详情页查看消息、工具调用、Markdown、代码块、附件和 AI 摘要，并可导出 Markdown 或常见模型请求 JSON。
 - **继续和迁移会话**：从搜索结果快速启动原 Agent，也可在支持的本地 Agent 之间迁移会话。
 - **跨设备恢复**：可使用自己的 Supabase 项目同步会话快照，在另一台设备搜索、查看并恢复会话。
@@ -53,10 +53,12 @@ agent-recall-v2
 | 类型 | 来源 |
 | --- | --- |
 | 默认来源 | Claude Code CLI、Claude Desktop app、Codex CLI、Codex Desktop |
-| 可选本地来源 | CodeBuddy、CodeWiz、TClaude、TCodex、OpenClaw、Hermes、OpenCode、ZCode、Cursor Agent、Trae、Qoder |
+| 可选本地来源 | CodeBuddy、WorkBuddy、CodeWiz、TClaude、TCodex、OpenClaw、Hermes、OpenCode、ZCode、Cursor Agent、Trae、Qoder |
 | 扩展环境 | Windows WSL、SSH 远程环境 |
 
 不同来源的可用能力略有差异；应用会在界面中按来源展示可用的查看、恢复、迁移和统计操作。
+
+WorkBuddy 首版是只读本地来源，可搜索、查看和导出会话中的消息、工具轨迹、标题及用量信息；暂不支持实时跟踪、Resume、迁移、同步或从 AgentRecall 打开 WorkBuddy。
 
 ## 远程同步
 

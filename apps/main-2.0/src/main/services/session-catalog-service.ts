@@ -190,8 +190,8 @@ export class SessionCatalogService {
 
   async delete(sessionKey: string): Promise<boolean> {
     const session = await this.dependencies.store.getSession(sessionKey);
-    if (session?.source === "pi-cli") {
-      throw new Error("Pi session source files are read-only.");
+    if (session?.source === "pi-cli" || session?.source === "workbuddy-cli") {
+      throw new Error(`${session.source === "pi-cli" ? "Pi" : "WorkBuddy"} session source files are read-only.`);
     }
     if (session && !canDeleteSessionLocally(session)) {
       throw new Error("Cannot delete sessions stored on SSH remote environments.");

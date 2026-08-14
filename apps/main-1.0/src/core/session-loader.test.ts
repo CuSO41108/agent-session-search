@@ -8,11 +8,13 @@ import {
   loadCodeBuddyCliSessionFile,
   loadCodeBuddyCliSessionRows,
   loadCodeBuddyCliSessions,
+  loadWorkBuddyCliSessions,
   loadCodexSessionFile,
   loadCodexSessionRows,
   loadCodexSessionsIterator,
   loadCodexSessions,
   loadDefaultSessions,
+  loadWorkBuddyCliSessionFile,
   parseCodexSessionMetaLine,
 } from "./session-loader";
 import { TRACE_DETAIL_PREVIEW_MAX_CHARS } from "./trace-detail";
@@ -3341,6 +3343,253 @@ describe("CodeBuddy session loading", () => {
     expect(loaded[0].session.originalTitle).toBe("Switch the active model");
 
     fs.rmSync(codeBuddyDir, { recursive: true, force: true });
+  });
+});
+
+describe("WorkBuddy session loading", () => {
+  it("keeps WorkBuddy opt-in and indexes messages, traces, usage, and subagents", () => {
+    const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "session-search-workbuddy-"));
+    const workBuddyDir = path.join(homeDir, ".workbuddy");
+    const projectDir = path.join(workBuddyDir, "projects", "stored-project");
+    const parentId = "11111111-1111-4111-8111-111111111111";
+    const mainPath = path.join(projectDir, `${parentId}.jsonl`);
+    const subagentPath = path.join(projectDir, parentId, "subagents", "2025.01.01.jsonl");
+    const invalidMainPath = path.join(projectDir, "invalid.main.jsonl");
+    const invalidParentPath = path.join(projectDir, "invalid.parent", "subagents", "child.jsonl");
+    const ignoredPath = path.join(projectDir, parentId, "tool-results", "not-a-session.jsonl");
+    fs.mkdirSync(path.dirname(subagentPath), { recursive: true });
+    fs.mkdirSync(path.dirname(ignoredPath), { recursive: true });
+    fs.writeFileSync(
+      mainPath,
+      [
+        JSON.stringify({ type: "ai-title", aiTitle: "WorkBuddy implementation", sessionId: "wrong-row-id" }),
+        JSON.stringify({
+          id: "user-1",
+          timestamp: 1_780_000_000_000,
+          type: "message",
+          role: "user",
+          content: [{ type: "input_text", text: "code" }],
+          cwd: "/repo/workbuddy",
+          sessionId: "wrong-row-id",
+        }),
+        JSON.stringify({
+          id: "assistant-1",
+          timestamp: 1_780_000_001_000,
+          type: "message",
+          role: "assistant",
+          content: [{ type: "output_text", text: "I will inspect it." }],
+          providerData: {
+            messageId: "provider-assistant-1",
+            usage: { inputTokens: 32_221, outputTokens: 4 },
+            rawUsage: { prompt_cache_hit_tokens: 32_000 },
+          },
+        }),
+        JSON.stringify({
+          id: "assistant-duplicate",
+          timestamp: 1_780_000_001_100,
+          type: "message",
+          role: "assistant",
+          content: [],
+          providerData: {
+            messageId: "provider-assistant-1",
+            usage: { inputTokens: 32_221, outputTokens: 4 },
+            rawUsage: { prompt_cache_hit_tokens: 32_000 },
+          },
+        }),
+        JSON.stringify({
+          id: "shared-response-1",
+          timestamp: 1_780_000_002_000,
+          type: "function_call",
+          name: "Bash",
+          callId: "call-1",
+          arguments: "{\"command\":\"pwd\"}",
+          providerData: {
+            messageId: "provider-tool-1",
+            rawUsage: {
+              prompt_tokens: 1_000,
+              completion_tokens: 100,
+              cache_read_input_tokens: 200,
+              cache_creation_input_tokens: 100,
+              prompt_cache_write_tokens: 80,
+              completion_thinking_tokens: 20,
+              completion_tokens_details: { reasoning_tokens: 20 },
+            },
+          },
+        }),
+        JSON.stringify({
+          id: "shared-response-1",
+          timestamp: 1_780_000_002_100,
+          type: "function_call",
+          name: "Read",
+          callId: "call-2",
+          arguments: { path: "/repo/workbuddy/README.md" },
+          providerData: {
+            messageId: "provider-tool-1",
+            rawUsage: {
+              prompt_tokens: 1_000,
+              completion_tokens: 100,
+              cache_read_input_tokens: 200,
+              cache_creation_input_tokens: 100,
+              prompt_cache_write_tokens: 80,
+              completion_thinking_tokens: 20,
+              completion_tokens_details: { reasoning_tokens: 20 },
+            },
+          },
+        }),
+        JSON.stringify({
+          id: "reasoning-1",
+          timestamp: 1_780_000_002_200,
+          type: "reasoning",
+          providerData: {
+            messageId: "provider-tool-1",
+            rawUsage: {
+              prompt_tokens: 1_000,
+              completion_tokens: 100,
+              cache_read_input_tokens: 200,
+              cache_creation_input_tokens: 100,
+              prompt_cache_write_tokens: 80,
+              completion_thinking_tokens: 20,
+              completion_tokens_details: { reasoning_tokens: 20 },
+            },
+          },
+        }),
+        JSON.stringify({
+          id: "shared-response-1",
+          timestamp: 1_780_000_002_300,
+          type: "function_call",
+          name: "IgnoredWithoutCallId",
+          arguments: { path: "/private/ignored" },
+        }),
+        JSON.stringify({
+          id: "reasoning-message-usage",
+          timestamp: 1_780_000_002_400,
+          type: "reasoning",
+          providerData: { messageId: "provider-message-usage" },
+          message: {
+            usage: { input_tokens: 50, output_tokens: 5, cache_read_input_tokens: 10 },
+          },
+        }),
+        JSON.stringify({
+          id: "result-1",
+          timestamp: 1_780_000_003_000,
+          type: "function_call_result",
+          callId: "call-1",
+          output: { type: "text", text: "/repo/workbuddy" },
+        }),
+        JSON.stringify({
+          id: "result-2",
+          timestamp: 1_780_000_003_100,
+          type: "function_call_result",
+          name: "Read",
+          callId: "call-2",
+          output: [
+            { type: "text", text: "line one" },
+            { type: "output_text", text: "line two" },
+          ],
+        }),
+        JSON.stringify({
+          id: "shared-response-1",
+          timestamp: 1_780_000_003_200,
+          type: "function_call_result",
+          name: "IgnoredWithoutCallId",
+          output: { type: "text", text: "ignored" },
+        }),
+      ].join("\n"),
+    );
+    fs.writeFileSync(
+      subagentPath,
+      JSON.stringify({
+        id: "sub-user",
+        timestamp: 1_780_000_004_000,
+        type: "message",
+        role: "user",
+        content: "research the schema",
+        cwd: "/repo/workbuddy",
+      }),
+    );
+    fs.writeFileSync(ignoredPath, JSON.stringify({ type: "message", role: "user", content: "ignore me" }));
+    fs.writeFileSync(invalidMainPath, JSON.stringify({ type: "message", role: "user", content: "ignore me too" }));
+    fs.mkdirSync(path.dirname(invalidParentPath), { recursive: true });
+    fs.writeFileSync(invalidParentPath, JSON.stringify({ type: "message", role: "user", content: "ignore me three" }));
+
+    expect(loadDefaultSessions({ homeDir })).toHaveLength(0);
+    expect(loadWorkBuddyCliSessionFile(ignoredPath)).toBeNull();
+    expect(loadWorkBuddyCliSessionFile(invalidMainPath)).toBeNull();
+    expect(loadWorkBuddyCliSessionFile(invalidParentPath)).toBeNull();
+    const loaded = loadDefaultSessions({ homeDir, includeWorkBuddy: true });
+    expect(loadWorkBuddyCliSessions(workBuddyDir)).toHaveLength(2);
+    expect(loaded).toHaveLength(2);
+
+    const main = loaded.find((session) => session.session.rawId === parentId);
+    expect(main?.session).toMatchObject({
+      sessionKey: `workbuddy:${parentId}`,
+      source: "workbuddy-cli",
+      projectPath: "/repo/workbuddy",
+      originalTitle: "WorkBuddy implementation",
+      firstQuestion: "code",
+      timestamp: 1_780_000_000_000,
+      isSubagent: false,
+      parentSessionId: null,
+      tokenUsage: {
+        inputTokens: 1_061,
+        outputTokens: 109,
+        cachedInputTokens: 32_210,
+        cacheCreationInputTokens: 100,
+        reasoningOutputTokens: 20,
+        totalTokens: 33_500,
+      },
+    });
+    expect(main?.messages.map((message) => message.content)).toEqual(["code", "I will inspect it."]);
+    expect(main?.tokenEvents?.map((event) => event.dedupeKey).sort()).toEqual([
+      "workbuddy:provider-assistant-1",
+      "workbuddy:provider-message-usage",
+      "workbuddy:provider-tool-1",
+    ]);
+    expect(main?.traceEvents).toMatchObject([
+      {
+        kind: "tool_call",
+        source: "workbuddy",
+        title: "Bash · pwd",
+        callId: "call-1",
+        status: "running",
+      },
+      {
+        kind: "tool_call",
+        source: "workbuddy",
+        title: "Read · /repo/workbuddy/README.md",
+        callId: "call-2",
+        status: "running",
+      },
+      {
+        kind: "tool_result",
+        source: "workbuddy",
+        title: "Bash result",
+        callId: "call-1",
+        status: "completed",
+      },
+      {
+        kind: "tool_result",
+        source: "workbuddy",
+        title: "Read result",
+        callId: "call-2",
+        status: "completed",
+      },
+    ]);
+    expect(main?.traceEvents?.[1].detail).toContain("/repo/workbuddy");
+    expect(main?.traceEvents?.[2].detail).toBe("/repo/workbuddy");
+    expect(main?.traceEvents?.[3].detail).toBe("line one\nline two");
+
+    const subagent = loaded.find((session) => session.session.isSubagent);
+    expect(subagent?.session).toMatchObject({
+      sessionKey: `workbuddy:${parentId}:subagent:2025.01.01`,
+      rawId: `${parentId}:subagent:2025.01.01`,
+      source: "workbuddy-cli",
+      isSubagent: true,
+      parentSessionId: parentId,
+    });
+    expect(subagent?.messages.map((message) => message.content)).toEqual(["research the schema"]);
+
+    fs.rmSync(homeDir, { recursive: true, force: true });
   });
 });
 

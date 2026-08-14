@@ -175,6 +175,28 @@ describe("skill usage", () => {
     expect(usageForSkill(snapshot, "unowned")).toBeNull();
   }));
 
+  it("gates WorkBuddy skill usage and scans only supported session layouts", () => withTempHome((homeDir) => {
+    const projectsDir = path.join(homeDir, ".workbuddy", "projects");
+    writeJsonl(path.join(projectsDir, "repo", "session.jsonl"), [
+      { type: "function_call", name: "Read", timestamp: 1_780_000_001_100, arguments: { path: "/tmp/.codex/skills/workbuddy-review/SKILL.md" } },
+    ]);
+    writeJsonl(path.join(projectsDir, "repo", "session", "subagents", "2025.01.01.jsonl"), [
+      { type: "function_call", name: "Read", timestamp: 1_780_000_001_200, arguments: { path: "/tmp/.claude/skills/workbuddy-subagent/SKILL.md" } },
+    ]);
+    writeJsonl(path.join(projectsDir, "repo", "session", "tool-results", "ignored.jsonl"), [
+      { type: "function_call", name: "Read", timestamp: 1_780_000_001_300, arguments: { path: "/tmp/.codex/skills/ignored/SKILL.md" } },
+    ]);
+
+    expect(listSkillUsageSources({ homeDir, codexSessionsDir: null, includeWorkBuddy: false }))
+      .not.toEqual(expect.arrayContaining([expect.objectContaining({ kind: "workbuddy-session" })]));
+    const sources = listSkillUsageSources({ homeDir, codexSessionsDir: null, includeWorkBuddy: true });
+    expect(sources.filter((source) => source.kind === "workbuddy-session")).toHaveLength(2);
+    const snapshot = loadSkillUsage({ homeDir, codexSessionsDir: null, includeWorkBuddy: true });
+    expect(usageForSkill(snapshot, "workbuddy-review", "codex")?.count).toBe(1);
+    expect(usageForSkill(snapshot, "workbuddy-subagent", "claude")?.count).toBe(1);
+    expect(usageForSkill(snapshot, "ignored")).toBeNull();
+  }));
+
   it("discovers proven Cursor and OpenClaw structured tool calls", () => withTempHome((homeDir) => {
     writeJsonl(path.join(homeDir, ".cursor", "projects", "repo", "agent-transcripts", "session.jsonl"), [
       assistantToolUse("Read", { path: "/tmp/.codex/skills/cursor-review/SKILL.md" }),
