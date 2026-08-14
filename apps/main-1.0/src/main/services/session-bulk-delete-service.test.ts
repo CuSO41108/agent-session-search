@@ -69,6 +69,21 @@ describe("SessionBulkDeleteService", () => {
     expect(preview.skipped).toEqual([]);
   });
 
+  it("treats WorkBuddy source files as read-only", async () => {
+    const store = createStore([target("workbuddy:session", { source: "workbuddy-cli", sourceAvailable: true })]);
+    const service = new SessionBulkDeleteService(store);
+    const request = {
+      sessionKeys: ["workbuddy:session"],
+      liveSessionKeys: [],
+    };
+    expect(service.preview(request)).toMatchObject({
+      deletableCount: 0,
+      skipped: [{ sessionKey: "workbuddy:session", reason: "read-only", message: "WorkBuddy session source files are read-only." }],
+    });
+    await expect(service.delete(request)).resolves.toMatchObject({ deletedSessionKeys: [], failed: [] });
+    expect(store.deleteSessionRecords).not.toHaveBeenCalled();
+  });
+
   it("previews and deletes an entire descendant tree as one unit", async () => {
     const targets = [
       target("parent"),

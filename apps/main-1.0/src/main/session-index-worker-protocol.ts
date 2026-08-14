@@ -8,6 +8,7 @@ export type SessionIndexWorkerLoadOptions = Pick<
   | "includeTclaude"
   | "includeTcodex"
   | "includeCodeBuddyCli"
+  | "includeWorkBuddy"
   | "includeCodeWizCli"
   | "includeOpenClaw"
   | "includeHermes"

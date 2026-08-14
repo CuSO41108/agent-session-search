@@ -171,6 +171,7 @@ describe("SkillService local skills and usage", () => {
     });
     expect(harness.store.upsertSkillUsageSource).toHaveBeenCalledOnce();
     expect(harness.store.pruneSkillUsageSources).toHaveBeenCalledWith(["/tmp/a.jsonl", "/tmp/b.jsonl"]);
+    expect(harness.operations.listSkillUsageSources).toHaveBeenCalledWith(expect.objectContaining({ includeWorkBuddy: false }));
   });
 
   it("coalesces overlapping usage refreshes into one filesystem scan", async () => {

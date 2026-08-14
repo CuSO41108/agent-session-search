@@ -80,6 +80,7 @@ export interface AppSettings {
   includeTclaude: boolean;
   includeTcodex: boolean;
   includeCodeBuddyCli: boolean;
+  includeWorkBuddy: boolean;
   includeCodeWizCli: boolean;
   includeOpenClaw: boolean;
   includeHermes: boolean;
@@ -150,6 +151,7 @@ export const defaultSettings: AppSettings = {
   includeTclaude: false,
   includeTcodex: false,
   includeCodeBuddyCli: false,
+  includeWorkBuddy: false,
   includeCodeWizCli: false,
   includeOpenClaw: false,
   includeHermes: false,

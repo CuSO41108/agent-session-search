@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { claudeAdapter, codebuddyAdapter, codexAdapter, cleanTitle, cursorAdapter, extractCursorUserQuery, getAdapter, getFormatForSource, isMeaningfulUserMessage } from "./format-adapters";
+import { claudeAdapter, codebuddyAdapter, codexAdapter, cleanTitle, cursorAdapter, extractCursorUserQuery, getAdapter, getFormatForSource, isMeaningfulUserMessage, workbuddyAdapter } from "./format-adapters";
 import { decodeCursorWorkspaceSlug, parseCursorTranscriptPath } from "./session-loader";
 import * as path from "node:path";
 
@@ -140,6 +140,24 @@ describe("format adapters", () => {
       role: "assistant",
       content: "我来处理",
       timestamp: new Date(1_780_321_303_135).toISOString(),
+    });
+  });
+
+  it("uses an independent WorkBuddy adapter without CodeBuddy's root-message filter", () => {
+    expect(getFormatForSource("workbuddy-cli")).toBe("workbuddy");
+    expect(getAdapter("workbuddy-cli")).toBe(workbuddyAdapter);
+    expect(workbuddyAdapter.parseLine({
+      type: "message",
+      role: "user",
+      timestamp: 1_780_321_278_404,
+      content: [
+        { type: "input_text", text: "code" },
+        { type: "output_text", text: "keep this too" },
+      ],
+    })).toEqual({
+      role: "user",
+      content: "code\nkeep this too",
+      timestamp: new Date(1_780_321_278_404).toISOString(),
     });
   });
 

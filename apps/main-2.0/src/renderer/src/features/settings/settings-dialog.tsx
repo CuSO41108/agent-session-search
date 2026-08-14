@@ -645,6 +645,21 @@ export function SettingsDialog({
                 </label>
                 <label className="settings-field settings-toggle">
                   <div className="settings-field-text">
+                    <span className="settings-field-title">Include WorkBuddy</span>
+                    <span className="settings-field-sub">
+                      {l("Indexes sessions under ~/.workbuddy/projects in read-only mode.", "以只读方式索引 ~/.workbuddy/projects 中的会话。")}
+                    </span>
+                  </div>
+                  <input
+                    type="checkbox"
+                    className="switch"
+                    checked={Boolean(settings?.includeWorkBuddy)}
+                    disabled={!settings}
+                    onChange={(event) => onSettingsChange({ includeWorkBuddy: event.currentTarget.checked })}
+                  />
+                </label>
+                <label className="settings-field settings-toggle">
+                  <div className="settings-field-text">
                     <span className="settings-field-title">Include OpenClaw</span>
                     <span className="settings-field-sub">{l("Indexes local OpenClaw session files.", "索引本地 OpenClaw 会话文件。")}</span>
                   </div>

@@ -8,17 +8,19 @@ AgentRecall 集中管理 Claude Code、Codex 等 AI Coding Agent 的历史会话
 
 ## 1. AgentRecall 能做什么
 
-AgentRecall 默认只启用 Claude Code 和 Codex。CodeBuddy、CodeWiz、TClaude、TCodex、OpenClaw、Hermes、OpenCode、ZCode、Cursor Agent、Trae、Qoder 都需要在 **设置 → 可选来源** 中手动开启。
+AgentRecall 默认只启用 Claude Code 和 Codex。CodeBuddy、WorkBuddy、CodeWiz、TClaude、TCodex、OpenClaw、Hermes、OpenCode、ZCode、Cursor Agent、Trae、Qoder 都需要在 **设置 → 可选来源** 中手动开启。
 
 | 类型 | 包含的来源 |
 | --- | --- |
 | 默认来源 | Claude Code CLI、Claude Desktop、Codex CLI、Codex Desktop |
-| 可选来源 | CodeBuddy、CodeWiz、TClaude、TCodex、OpenClaw、Hermes、OpenCode、ZCode、Cursor Agent、Trae、Qoder |
+| 可选来源 | CodeBuddy、WorkBuddy、CodeWiz、TClaude、TCodex、OpenClaw、Hermes、OpenCode、ZCode、Cursor Agent、Trae、Qoder |
 | 扩展环境 | SSH 远程环境、Windows WSL |
 
 打开应用后，已有会话会出现在主界面。左侧按环境、项目、来源、收藏和隐藏状态浏览，顶部用于搜索和打开各项功能。
 
 各来源支持的功能不完全相同。打开会话后，界面只会提供当前可用的 Resume、迁移、同步、删除和导出操作。某项操作没有显示，通常表示当前来源或环境不支持。
+
+WorkBuddy 首版是只读本地来源，可搜索、查看和导出会话中的消息、工具轨迹、标题及用量信息；暂不支持实时跟踪、Resume、迁移、同步或从 AgentRecall 打开 WorkBuddy。
 
 ## 2. 安装与首次使用
 

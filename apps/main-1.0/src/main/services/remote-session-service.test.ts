@@ -538,13 +538,16 @@ describe("RemoteSessionService cloud orchestration", () => {
     );
   });
 
-  it("rejects ZCode uploads before building a portable remote session", async () => {
+  it.each([
+    { label: "ZCode", sessionKey: "zcode:session-1", source: "zcode-cli" as const },
+    { label: "WorkBuddy", sessionKey: "workbuddy:session-1", source: "workbuddy-cli" as const },
+  ])("rejects $label uploads before building a portable remote session", async ({ label, sessionKey, source }) => {
     const harness = createHarness({
       settings: configuredSettings(),
-      sessions: [localSession({ sessionKey: "zcode:session-1", rawId: "session-1", source: "zcode-cli" })],
+      sessions: [localSession({ sessionKey, rawId: "session-1", source })],
     });
 
-    await expect(harness.service.upload("zcode:session-1")).rejects.toThrow("ZCode sessions cannot be saved remotely yet.");
+    await expect(harness.service.upload(sessionKey)).rejects.toThrow(`${label} sessions cannot be saved remotely yet.`);
     expect(harness.ensureSessionDetails).not.toHaveBeenCalled();
     expect(harness.buildUpload).not.toHaveBeenCalled();
     expect(harness.client.uploadSession).not.toHaveBeenCalled();

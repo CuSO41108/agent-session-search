@@ -4,6 +4,7 @@ export type OptionalSessionSourceSetting =
   | "includeTclaude"
   | "includeTcodex"
   | "includeCodeBuddyCli"
+  | "includeWorkBuddy"
   | "includeCodeWizCli"
   | "includeOpenClaw"
   | "includeHermes"
@@ -20,6 +21,7 @@ export type SessionSourceFamily =
   | "tclaude"
   | "tcodex"
   | "codebuddy"
+  | "workbuddy"
   | "codewiz"
   | "openclaw"
   | "hermes"
@@ -103,6 +105,12 @@ export const SESSION_SOURCE_REGISTRY = {
     id: "codebuddy-cli", label: "CodeBuddy CLI", format: "codebuddy", family: "codebuddy", uiFamily: "codebuddy", statsGroup: null,
     optionalSetting: "includeCodeBuddyCli", pendingKey: "codebuddy", remoteCollectorOptional: true, liveFamily: "codebuddy", migrationAgent: "codebuddy",
     resumeTarget: "codebuddy", remoteFamily: "codebuddy", nativeAppFamily: "codebuddy", capabilities: fullCapabilities(),
+  },
+  "workbuddy-cli": {
+    id: "workbuddy-cli", label: "WorkBuddy", format: "workbuddy", family: "workbuddy", uiFamily: "other", statsGroup: null,
+    optionalSetting: "includeWorkBuddy", pendingKey: "workbuddy", remoteCollectorOptional: false, liveFamily: null, migrationAgent: null,
+    resumeTarget: null, remoteFamily: null, nativeAppFamily: null,
+    capabilities: { live: false, resume: false, migrate: false, sessionSync: false, openApp: false },
   },
   "codewiz-cli": {
     id: "codewiz-cli", label: "CodeWiz", format: "codewiz", family: "codewiz", uiFamily: "codewiz", statsGroup: null,

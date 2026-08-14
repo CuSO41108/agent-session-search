@@ -50,6 +50,7 @@ const LIVE_SESSION_KEY_SQL = `
     WHEN source = 'tclaude-cli' THEN 'tclaude:' || raw_id
     WHEN source = 'tcodex-cli' THEN 'tcodex:' || raw_id
     WHEN source = 'codebuddy-cli' THEN 'codebuddy:' || raw_id
+    WHEN source = 'workbuddy-cli' THEN 'workbuddy:' || raw_id
     WHEN source = 'codewiz-cli' THEN 'codewiz:' || raw_id
     WHEN source = 'openclaw' THEN 'openclaw:' || raw_id
     WHEN source = 'hermes' THEN 'hermes:' || raw_id
@@ -707,8 +708,8 @@ export class SessionsStore {
     const targets = this.getSessionDeletionTargets([sessionKey]);
     const row = targets.find((target) => target.sessionKey === sessionKey);
     if (!row) return false;
-    if (row.source === "pi-cli") {
-      throw new Error("Pi session source files are read-only.");
+    if (row.source === "pi-cli" || row.source === "workbuddy-cli") {
+      throw new Error(`${sessionSourceDescriptor(row.source).label} session source files are read-only.`);
     }
     if (row.source === "zcode-cli") {
       const idsByFilePath = new Map<string, string[]>();

@@ -13,6 +13,11 @@ describe("session environment", () => {
       environmentId: "local",
       source: "pi-cli",
     })).toBe(false);
+    expect(canDeleteSessionLocally({
+      environmentKind: "local",
+      environmentId: "local",
+      source: "workbuddy-cli",
+    })).toBe(false);
   });
 
   it("identifies shared multi-session source databases", () => {

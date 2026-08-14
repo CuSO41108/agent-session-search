@@ -105,6 +105,7 @@ describe("platform application resolution", () => {
     expect(defaultSettings.includeTclaude).toBe(false);
     expect(defaultSettings.includeTcodex).toBe(false);
     expect(defaultSettings.includeCodeBuddyCli).toBe(false);
+    expect(defaultSettings.includeWorkBuddy).toBe(false);
     expect(defaultSettings.includeCodeWizCli).toBe(false);
     expect(defaultSettings.includeOpenClaw).toBe(false);
     expect(defaultSettings.includeHermes).toBe(false);
@@ -120,6 +121,7 @@ describe("platform application resolution", () => {
     const persisted = {
       includeCodeWizCli: true,
       includeCodeBuddyCli: true,
+      includeWorkBuddy: true,
       includeTrae: true,
       autoCheckUpdates: false,
       defaultTerminal: "iTerm" as const,

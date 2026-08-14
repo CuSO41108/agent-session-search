@@ -235,7 +235,9 @@ export class SessionStore {
     const targets = await this.sessions.getSessionDeletionTargets([sessionKey]);
     const target = targets.find((item) => item.sessionKey === sessionKey);
     if (!target) return false;
-    if (target.source === "pi-cli") throw new Error("Pi session source files are read-only.");
+    if (target.source === "pi-cli" || target.source === "workbuddy-cli") {
+      throw new Error(`${target.source === "pi-cli" ? "Pi" : "WorkBuddy"} session source files are read-only.`);
+    }
     if (target.source === "zcode-cli") {
       const idsByFilePath = new Map<string, string[]>();
       if (target.sourceAvailable) {
