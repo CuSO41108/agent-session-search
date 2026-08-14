@@ -63,6 +63,43 @@ describe("restoreRemotePortableSession", () => {
     });
   });
 
+  it("restores a remote portable session without a project path", async () => {
+    const write = vi.fn(async (_target, session: PortableSession) => ({
+      sessionId: "target-session",
+      filePath: "/target/session.jsonl",
+      projectPath: session.projectPath,
+    }));
+    const projectPathExists = vi.fn(async () => true);
+    const projectPathIsDirectory = vi.fn(async () => true);
+    const launch = vi.fn();
+
+    await restoreRemotePortableSession({
+      remoteId: "remote-pathless",
+      portable: PORTABLE,
+      target: "codex",
+      localProjectPath: "   ",
+      deps: {
+        inspectCli: vi.fn(),
+        prepare: async (session) => ({ session, strategy: "complete" }),
+        write,
+        record: vi.fn(),
+        refreshIndex: vi.fn(),
+        launch,
+        resumeCommand: (_target, sessionId, projectPath) => `${projectPath}:${sessionId}`,
+        fallbackResumeCommand: () => "codex resume target-session",
+        idFactory: () => "migration-id",
+        now: () => 123,
+        projectPathExists,
+        projectPathIsDirectory,
+      },
+    });
+
+    expect(projectPathExists).not.toHaveBeenCalled();
+    expect(projectPathIsDirectory).not.toHaveBeenCalled();
+    expect(write).toHaveBeenCalledWith("codex", expect.objectContaining({ projectPath: "" }));
+    expect(launch).toHaveBeenCalledWith("codex", "target-session", "");
+  });
+
   it("rejects a missing local project path before writing", async () => {
     const write = vi.fn();
     await expect(

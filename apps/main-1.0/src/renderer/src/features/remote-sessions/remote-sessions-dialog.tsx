@@ -257,7 +257,7 @@ export function RemoteSessionsDialog({
     }
   }
 
-  async function confirmRestore(): Promise<void> {
+  async function confirmRestore(withoutProjectPath: boolean): Promise<void> {
     if (!restoreRequest) return;
     const { remote, destination } = restoreRequest;
     setRestoringId(remote.id);
@@ -267,8 +267,8 @@ export function RemoteSessionsDialog({
       if (destination === "source") {
         result = await window.sessionSearch.restoreRemoteSessionToSourceEnvironment(remote.id, restoreTarget);
       } else {
-        let projectPath = localProjectPath.trim();
-        if (!projectPath) {
+        let projectPath = withoutProjectPath ? "" : localProjectPath.trim();
+        if (!withoutProjectPath && !projectPath) {
           const selected = await window.sessionSearch.chooseLocalProjectDirectory();
           if (!selected) return;
           projectPath = selected;
@@ -512,7 +512,7 @@ export function RemoteSessionsDialog({
             restoring={restoringId === restoreRequest.remote.id}
             onTargetChange={setRestoreTarget}
             onChooseProject={() => void chooseProject()}
-            onConfirm={() => void confirmRestore()}
+            onConfirm={(withoutProjectPath) => void confirmRestore(withoutProjectPath)}
             onCancel={() => setRestoreRequest(null)}
           />
          ) : null}
@@ -669,10 +669,13 @@ function RemoteRestoreDialog({
   restoring: boolean;
   onTargetChange: (target: MigrationAgent) => void;
   onChooseProject: () => void;
-  onConfirm: () => void;
+  onConfirm: (withoutProjectPath: boolean) => void;
   onCancel: () => void;
 }): ReactElement {
   const l = (en: string, zh: string) => localize(language, en, zh);
+  const [withoutProjectPath, setWithoutProjectPath] = useState(
+    () => request.destination === "local" && !request.remote.projectPath.trim(),
+  );
   return (
     <div className="dialog-backdrop" onMouseDown={onCancel}>
       <div className="command-dialog remote-restore-dialog" onMouseDown={(event) => event.stopPropagation()}>
@@ -714,6 +717,11 @@ function RemoteRestoreDialog({
                 <Server size={15} />
                 <span>{request.remote.sourceEnvironmentLabel}</span>
               </div>
+            ) : withoutProjectPath ? (
+              <div className="remote-restore-destination">
+                <FolderOpen size={15} />
+                <span>{l("No project path", "无项目路径")}</span>
+              </div>
             ) : (
               <button type="button" className="remote-restore-destination remote-project-picker" onClick={onChooseProject} disabled={restoring}>
                 <FolderOpen size={15} />
@@ -721,10 +729,29 @@ function RemoteRestoreDialog({
               </button>
             )}
           </div>
+          {request.destination === "local" ? (
+            <button
+              type="button"
+              className="migration-project-option"
+              role="switch"
+              aria-checked={withoutProjectPath}
+              disabled={restoring}
+              onClick={() => setWithoutProjectPath((selected) => !selected)}
+            >
+              <span className="migration-project-copy">
+                <strong>{l("Restore without a project path", "恢复为无项目路径会话")}</strong>
+                <small>{l(
+                  "The restored session will not be associated with a local project directory.",
+                  "恢复后的会话不会关联本地项目目录。",
+                )}</small>
+              </span>
+              <span className="migration-project-switch" aria-hidden="true"><span /></span>
+            </button>
+          ) : null}
         </div>
         <div className="dialog-actions">
           <button type="button" onClick={onCancel}>{restoring ? l("Continue in background", "转到后台") : l("Cancel", "取消")}</button>
-          <button type="button" className="primary-action" onClick={onConfirm} disabled={restoring}>
+          <button type="button" className="primary-action" onClick={() => onConfirm(withoutProjectPath)} disabled={restoring}>
             {restoring ? l("Restoring...", "正在恢复...") : l("Restore", "恢复")}
           </button>
         </div>

@@ -4,7 +4,7 @@ import { defineIpcRequest } from "./contract";
 const noInput = z.tuple([]);
 const identifier = z.string().trim().min(1).max(512);
 const sessionKey = z.string().min(1).max(32_768).refine((value) => !value.includes("\0"), "Session key must not contain NUL.");
-const projectPath = z.string().min(1).max(32_768).refine((value) => !value.includes("\0"), "Project path must not contain NUL.");
+const projectPath = z.string().max(32_768).refine((value) => !value.includes("\0"), "Project path must not contain NUL.");
 const migrationAgent = z.enum(["claude", "codex", "codebuddy", "codewiz", "cursor"]);
 const identifierList = z.array(identifier).max(500);
 const optionalQuery = z

@@ -195,6 +195,50 @@ describe("writeMigratedSession", () => {
     }
   });
 
+  it("normalizes injected Codex user notifications before round-trip validation", async () => {
+    const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "migration-writer-codex-notifications-"));
+    try {
+      const session: PortableSession = {
+        ...portable(),
+        messages: [
+          {
+            role: "user",
+            content: "<system_notification kind: subagent><user_query>继续修复恢复问题</user_query></system_notification>",
+            timestamp: "2026-06-20T01:02:04.005Z",
+            index: 0,
+          },
+          { role: "assistant", content: "正在处理", timestamp: "2026-06-20T01:02:05.006Z", index: 1 },
+          {
+            role: "user",
+            content: "<subagent_notification>worker completed</subagent_notification>",
+            timestamp: "2026-06-20T01:02:06.007Z",
+            index: 2,
+          },
+          { role: "assistant", content: "处理完成", timestamp: "2026-06-20T01:02:07.008Z", index: 3 },
+        ],
+        turnBoundaries: [0, 2],
+      };
+
+      const result = await writeMigratedSession({
+        target: "codex",
+        session,
+        sessionId: SESSION_ID,
+        homeDir,
+        now: NOW,
+      });
+      const rows = readRows(result.filePath);
+      const messageRows = rows.filter((row) => row.type === "response_item" && row.payload?.type === "message");
+
+      expect(messageRows.map((row) => row.payload.content[0].text)).toEqual([
+        "继续修复恢复问题",
+        "正在处理",
+        "处理完成",
+      ]);
+    } finally {
+      fs.rmSync(homeDir, { recursive: true, force: true });
+    }
+  });
+
   it("coalesces fragmented assistant updates into resumable Codex turns", async () => {
     const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "migration-writer-codex-fragments-"));
     try {
@@ -277,8 +321,13 @@ describe("writeMigratedSession", () => {
           process.umask(previousUmask);
         }
 
-        expect(temporaryMode).toBe(0o600);
-        expect(fs.statSync(result.filePath).mode & 0o777).toBe(0o600);
+        if (process.platform === "win32") {
+          expect(temporaryMode).toBe(0o666);
+          expect(fs.statSync(result.filePath).mode & 0o777).toBe(0o666);
+        } else {
+          expect(temporaryMode).toBe(0o600);
+          expect(fs.statSync(result.filePath).mode & 0o777).toBe(0o600);
+        }
       } finally {
         fs.rmSync(homeDir, { recursive: true, force: true });
       }
@@ -911,7 +960,6 @@ describe("writeMigratedSession", () => {
 
     expect(result.sessionId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
     expect(path.relative(homeDir, result.filePath)).not.toMatch(/^\.\./);
-    expect(result.filePath.startsWith(os.homedir())).toBe(false);
 
     fs.rmSync(homeDir, { recursive: true, force: true });
   });

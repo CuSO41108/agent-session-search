@@ -147,6 +147,17 @@ describe("Remote sessions IPC", () => {
     } satisfies SessionMigrationProgress);
   });
 
+  it("accepts an empty project path for a pathless restore", async () => {
+    const { ipc, handlers } = createMainRegistrar();
+    const service = createService();
+    registerRemoteSessionsIpc(ipc, service);
+    const event = { sender: { send: vi.fn() } } as unknown as IpcMainInvokeEvent;
+
+    await handlers.get(REMOTE_SESSIONS_IPC.restore.channel)?.(event, "remote-1", "codex", "");
+
+    expect(service.restore).toHaveBeenCalledWith("remote-1", "codex", "", expect.any(Function));
+  });
+
   it("rejects malformed or oversized input before calling the service", () => {
     const { ipc, handlers } = createMainRegistrar();
     const service = createService();

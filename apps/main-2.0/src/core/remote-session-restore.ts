@@ -58,7 +58,8 @@ export async function restoreRemotePortableSession({
   completeTokenLimit = MIGRATION_TOKEN_LIMIT,
   deps,
 }: RestoreRemoteSessionOptions): Promise<SessionMigrationResult> {
-  await validateRestoreRequest(portable, target, localProjectPath, deps);
+  const restoredProjectPath = localProjectPath.trim();
+  await validateRestoreRequest(portable, target, restoredProjectPath, deps);
 
   notifyProgress(deps.onProgress, {
     sessionKey: remoteId,
@@ -70,7 +71,7 @@ export async function restoreRemotePortableSession({
 
   const localPortable: PortableSession = {
     ...portable,
-    projectPath: localProjectPath,
+    projectPath: restoredProjectPath,
     turnBoundaries: portable.turnBoundaries ?? portable.messages.reduce<number[]>(
       (boundaries, message, index) => {
         if (index === 0 || message.role === "user") boundaries.push(index);
@@ -176,7 +177,7 @@ export async function restoreRemotePortableSession({
         ...(target === "codex"
           ? withoutSubagentSystemNotifications(subagent, hasDirectChildren)
           : subagent),
-        projectPath: localProjectPath,
+        projectPath: restoredProjectPath,
         isSubagent: true,
         parentSessionId: targetParentId,
       });
@@ -264,14 +265,13 @@ async function validateRestoreRequest(
   if (!RESTORE_TARGETS.includes(target)) {
     throw new Error(`Migration target ${target} is not supported.`);
   }
-  if (!localProjectPath.trim()) {
-    throw new Error("Choose a local project path before restoring.");
-  }
-  if (!(await deps.projectPathExists(localProjectPath))) {
-    throw new Error(`Local project path does not exist: ${localProjectPath}`);
-  }
-  if (!(await deps.projectPathIsDirectory(localProjectPath))) {
-    throw new Error(`Local project path is not a directory: ${localProjectPath}`);
+  if (localProjectPath) {
+    if (!(await deps.projectPathExists(localProjectPath))) {
+      throw new Error(`Local project path does not exist: ${localProjectPath}`);
+    }
+    if (!(await deps.projectPathIsDirectory(localProjectPath))) {
+      throw new Error(`Local project path is not a directory: ${localProjectPath}`);
+    }
   }
   if (!portable.messages.some((message) => message.role === "user" || message.role === "assistant")) {
     throw new Error("Remote session has no readable user/assistant messages to restore.");

@@ -3,7 +3,12 @@ import * as fs from "node:fs";
 import { createRequire } from "node:module";
 import * as os from "node:os";
 import * as path from "node:path";
-import { cleanTitle, extractCursorUserQuery } from "./format-adapters";
+import {
+  cleanTitle,
+  extractCursorUserQuery,
+  isMeaningfulUserMessage,
+  stripCodexInjectedNoise,
+} from "./format-adapters";
 import {
   encodeCursorWorkspaceSlug,
   loadClaudeCliSessionRows,
@@ -658,14 +663,30 @@ function timestampMs(value: string): number {
 function normalizeCodexSession(session: PortableSession): PortableSession {
   timestampMs(session.startedAt);
   let previousTimestamp = session.startedAt;
-  const messages = session.messages.map((message) => {
-    if (Number.isFinite(new Date(message.timestamp).getTime())) {
-      previousTimestamp = message.timestamp;
-      return message;
-    }
-    return { ...message, timestamp: previousTimestamp };
+  const sourceBoundaries = codexTurnBoundaries(session);
+  const retained = session.messages.flatMap((message, sourceIndex) => {
+    const timestamp = Number.isFinite(new Date(message.timestamp).getTime())
+      ? message.timestamp
+      : previousTimestamp;
+    previousTimestamp = timestamp;
+    const content = message.role === "user"
+      ? stripCodexInjectedNoise(message.content)
+      : message.content;
+    if (message.role === "user" && !isMeaningfulUserMessage(content)) return [];
+    return [{ message: { ...message, content, timestamp }, sourceIndex }];
   });
-  const timestampNormalized = { ...session, messages };
+  const retainedBoundaries = sourceBoundaries
+    .map((boundary, boundaryIndex) => {
+      const nextBoundary = sourceBoundaries[boundaryIndex + 1] ?? Number.POSITIVE_INFINITY;
+      return retained.findIndex((entry) => entry.sourceIndex >= boundary && entry.sourceIndex < nextBoundary);
+    })
+    .filter((boundary, index, boundaries) => boundary >= 0 && boundaries.indexOf(boundary) === index);
+  const messages = retained.map(({ message }, index) => ({ ...message, index }));
+  const timestampNormalized: PortableSession = {
+    ...session,
+    messages,
+    ...(retainedBoundaries.length > 0 ? { turnBoundaries: retainedBoundaries } : { turnBoundaries: undefined }),
+  };
   const boundaries = codexTurnBoundaries(timestampNormalized);
   const normalizedMessages: PortableSession["messages"] = [];
   const normalizedBoundaries: number[] = [];
