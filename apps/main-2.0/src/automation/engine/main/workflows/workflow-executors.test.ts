@@ -39,11 +39,12 @@ describe("workflow node executors", () => {
     const agentInvoker: WorkflowAgentInvoker = { invoke };
     const executors = createWorkflowNodeExecutors({ agentInvoker });
 
-    await expect(executors.agent.execute({ run: run(), node: agentNode, resolvedInputs: { source: "facts" }, signal: new AbortController().signal })).resolves.toEqual({ summary: "Grounded summary" });
+    await expect(executors.agent.execute({ run: run(), node: agentNode, resolvedInputs: { source: "facts" }, workDir: "/workflow-project", signal: new AbortController().signal })).resolves.toEqual({ summary: "Grounded summary" });
     expect(invoke).toHaveBeenCalledWith(expect.objectContaining({
       agentId: "configured-agent",
       prompt: expect.stringContaining("# Expected outputs"),
       outputs: agentNode.outputs,
+      workDir: "/workflow-project",
     }));
   });
 
@@ -98,13 +99,14 @@ describe("workflow node executors", () => {
     const scriptRunner: WorkflowScriptRunner = { run: runScript };
     const executors = createWorkflowNodeExecutors({ agentInvoker: { invoke: async () => ({}) }, scriptAuthorizer, scriptRunner });
 
-    await expect(executors.script.execute({ run: run(), node: scriptNode, resolvedInputs: { values: [1, 2, 3] }, signal: new AbortController().signal })).resolves.toEqual({ count: 3 });
+    await expect(executors.script.execute({ run: run(), node: scriptNode, resolvedInputs: { values: [1, 2, 3] }, workDir: "/workflow-project", signal: new AbortController().signal })).resolves.toEqual({ count: 3 });
     expect(authorize).toHaveBeenCalledWith(expect.objectContaining({ runId: "run", node: scriptNode, permissions: scriptNode.permissions }));
     expect(runScript).toHaveBeenCalledWith(expect.objectContaining({
       runtime: "python",
       source: scriptNode.source,
       stdin: '{"values":[1,2,3]}',
       timeoutSeconds: 15,
+      workDir: "/workflow-project",
     }));
   });
 

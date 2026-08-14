@@ -18,6 +18,7 @@ export interface WorkflowAgentInvoker {
     agentId: string;
     prompt: string;
     outputs: WorkflowOutputField[];
+    workDir?: string;
     onEvent?: (event: WorkflowAgentEvent) => void;
     signal: AbortSignal;
   }): Promise<Record<string, unknown>>;
@@ -41,6 +42,7 @@ export interface WorkflowScriptRunner {
     stdin: string;
     timeoutSeconds: number;
     permissions: WorkflowScriptPermission[];
+    workDir?: string;
     signal: AbortSignal;
   }): Promise<{ stdout: string; stderr: string }>;
   cancel?(runId: string, nodeId: string): Promise<void>;
@@ -62,7 +64,7 @@ function createAgentExecutor<N extends WorkflowAgentNode | WorkflowReviewNode>(
   onStream?: (event: WorkflowRunStreamEvent) => void,
 ): WorkflowNodeExecutor<N> {
   return {
-    async execute({ run, node, resolvedInputs, signal }) {
+    async execute({ run, node, resolvedInputs, workDir, signal }) {
       let hasStreamedText = false;
       let paragraphBreakPending = false;
       onStream?.({ runId: run.id, nodeId: node.id, type: "started", timestamp: Date.now() });
@@ -77,6 +79,7 @@ function createAgentExecutor<N extends WorkflowAgentNode | WorkflowReviewNode>(
           revisionFeedback: run.nodeRuns[node.id]?.revisionFeedback,
         }),
         outputs: structuredClone(node.outputs),
+        workDir,
         onEvent: (event) => {
           if (event.type === "tool_call") {
             if (hasStreamedText) paragraphBreakPending = true;
@@ -121,7 +124,7 @@ function createScriptExecutor(
   scriptAuthorizer: WorkflowScriptAuthorizer | undefined,
 ): WorkflowNodeExecutor<WorkflowScriptNode> {
   return {
-    async execute({ run, node, resolvedInputs, signal }) {
+    async execute({ run, node, resolvedInputs, workDir, signal }) {
       if (!scriptRunner) throw new Error("Script execution is unavailable.");
       if (needsAuthorization(node.permissions)) {
         if (!scriptAuthorizer) throw new Error("Script permission approval is unavailable.");
@@ -136,6 +139,7 @@ function createScriptExecutor(
         stdin: JSON.stringify(resolvedInputs),
         timeoutSeconds: node.timeoutSeconds,
         permissions: node.permissions,
+        workDir,
         signal,
       });
       return parseScriptOutput(result.stdout);

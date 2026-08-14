@@ -86,6 +86,22 @@ describe("PostgresWorkflowCoreRepository", () => {
     await database.close();
   });
 
+  test("persists a Workflow-specific directory and an explicit clear as null", async () => {
+    const database = new PostgresDatabase(new PGliteTestPool(), { migrationLock: false, migrations: POSTGRES_MIGRATIONS });
+    await database.initialize();
+    const repository = new PostgresWorkflowCoreRepository(database);
+    const selected = { ...definition(), workDir: "/workflow-project" };
+    await repository.saveDefinition(selected);
+    await expect(repository.getDefinition(selected.id)).resolves.toEqual(selected);
+
+    const cleared = { ...selected, workDir: null };
+    await repository.saveDefinition(cleared);
+    await expect(repository.getDefinition(cleared.id)).resolves.toEqual(cleared);
+    await expect(database.query<{ definition: unknown }>("select definition from agent_recall.workflows where id = $1", [cleared.id]))
+      .resolves.toMatchObject({ rows: [{ definition: expect.objectContaining({ workDir: null }) }] });
+    await database.close();
+  });
+
   test("marks interrupted runs and active nodes failed on startup", async () => {
     const database = new PostgresDatabase(new PGliteTestPool(), { migrationLock: false, migrations: POSTGRES_MIGRATIONS });
     await database.initialize();

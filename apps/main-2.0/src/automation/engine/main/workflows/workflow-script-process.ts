@@ -20,14 +20,14 @@ function commandFor(runtime: Parameters<WorkflowScriptRunner["run"]>[0]["runtime
 export class WorkflowScriptProcessRunner implements WorkflowScriptRunner {
   private readonly children = new Map<string, ChildProcessWithoutNullStreams>();
 
-  constructor(private readonly workDir: () => string) {}
+  constructor(private readonly defaultWorkDir: () => string = () => process.cwd()) {}
 
   run(input: Parameters<WorkflowScriptRunner["run"]>[0]): Promise<{ stdout: string; stderr: string }> {
     const launch = commandFor(input.runtime, input.source);
     const key = `${input.runId}:${input.nodeId}`;
     return new Promise((resolve, reject) => {
       const child = spawn(launch.command, launch.args, {
-        cwd: this.workDir(),
+        cwd: input.workDir ?? this.defaultWorkDir(),
         env: launch.env ?? process.env,
         stdio: ["pipe", "pipe", "pipe"],
         windowsHide: true,

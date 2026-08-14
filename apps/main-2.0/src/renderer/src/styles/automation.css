@@ -1232,6 +1232,8 @@
 .workflow-core-inspector-content { display: grid; gap: 14px; padding: 16px; }
 .workflow-core-inspector-content.is-run { gap: 0; padding: 14px 14px 8px; }
 .workflow-core-inspector-title { display: flex; min-height: 28px; align-items: center; justify-content: space-between; gap: 10px; padding: 0 34px 9px 0; border-bottom: 1px solid var(--border-subtle); font-size: 12px; font-weight: 650; text-transform: capitalize; }
+.workflow-core-workspace-actions { display: inline-flex; align-items: center; gap: 4px; }
+.workflow-core-workspace-actions .control-btn { min-height: 24px; padding: 0 7px; font-size: 10px; }
 .workflow-core-run-head { display: flex; min-height: 42px; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 2px 34px 10px 0; }
 .workflow-core-run-head > span { display: grid; min-width: 0; gap: 4px; }
 .workflow-core-run-head > span strong { overflow: hidden; color: var(--text); font-size: 12px; font-weight: 680; text-overflow: ellipsis; white-space: nowrap; }

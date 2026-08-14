@@ -8,6 +8,9 @@ import type { WorkflowAgentNode, WorkflowDefinition, WorkflowRun } from "../../.
 const api = vi.hoisted(() => ({
   getWorkflowCore: vi.fn(),
   onWorkflowRunStream: vi.fn(() => () => undefined),
+  pickDirectory: vi.fn(),
+  chooseWorkDir: vi.fn(),
+  saveWorkflowDefinition: vi.fn(),
 }));
 
 vi.mock("../../../../automation/engine/renderer/src/app/services/agent-recall-service", () => ({
@@ -207,5 +210,59 @@ describe("WorkflowFeaturePage live output", () => {
     const deleteButton = [...container.querySelectorAll<HTMLButtonElement>(".workflow-core-context-menu button")]
       .find((button) => button.textContent?.includes("删除"));
     expect(deleteButton?.disabled).toBe(true);
+  });
+
+  it("persists a selected directory for an existing Workflow, ignores cancel, and clears back to global default", async () => {
+    const snapshot = runningWorkflow();
+    api.getWorkflowCore.mockResolvedValue({ definitions: [snapshot.definition], runs: [snapshot.run] });
+    api.pickDirectory.mockResolvedValue(undefined);
+    api.saveWorkflowDefinition.mockImplementation(async (definition: WorkflowDefinition) => definition);
+    await act(async () => {
+      root.render(<WorkflowFeaturePage language="zh" globalReviewEnabled runtimeReviewEnabled />);
+      await Promise.resolve();
+    });
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>("[aria-label='Workflow properties']")?.click();
+      await Promise.resolve();
+    });
+
+    const choose = container.querySelector<HTMLButtonElement>(".workflow-core-workspace-actions .control-btn");
+    if (!choose) throw new Error("Workflow directory chooser was not rendered");
+    await act(async () => { choose.click(); await Promise.resolve(); });
+    expect(api.pickDirectory).toHaveBeenCalledWith("/workspace/project");
+    expect(container.querySelector<HTMLElement>(".workflow-core-workspace-summary")?.textContent).toContain("/workspace/project");
+
+    api.pickDirectory.mockResolvedValue("/workflow/project");
+    await act(async () => { choose.click(); await Promise.resolve(); });
+    expect(api.saveWorkflowDefinition).toHaveBeenCalledWith(expect.objectContaining({ id: snapshot.definition.id, workDir: "/workflow/project" }));
+    expect(container.querySelector<HTMLElement>(".workflow-core-workspace-summary")?.textContent).toContain("/workflow/project");
+
+    const clear = container.querySelector<HTMLButtonElement>("[aria-label='娓呴櫎 Workflow 鐩綍']");
+    if (!clear) throw new Error("Workflow directory clear action was not rendered");
+    await act(async () => { clear.click(); await Promise.resolve(); });
+    expect(api.saveWorkflowDefinition).toHaveBeenLastCalledWith(expect.objectContaining({ id: snapshot.definition.id, workDir: null }));
+    expect(container.querySelector<HTMLElement>(".workflow-core-workspace-summary")?.textContent).toContain("/workspace/project");
+    expect(api.chooseWorkDir).not.toHaveBeenCalled();
+  });
+
+  it("keeps new Workflow directory selection on the global default path", async () => {
+    const snapshot = runningWorkflow();
+    api.getWorkflowCore.mockResolvedValue({ definitions: [snapshot.definition], runs: [snapshot.run] });
+    api.chooseWorkDir.mockResolvedValue({ workDir: "/global/next" });
+    await act(async () => {
+      root.render(<WorkflowFeaturePage language="zh" globalReviewEnabled runtimeReviewEnabled />);
+      await Promise.resolve();
+    });
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>("[aria-label='New Workflow']")?.click();
+      container.querySelector<HTMLButtonElement>("[aria-label='Workflow properties']")?.click();
+      await Promise.resolve();
+    });
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".workflow-core-workspace-actions .control-btn")?.click();
+      await Promise.resolve();
+    });
+    expect(api.chooseWorkDir).toHaveBeenCalledTimes(1);
+    expect(api.pickDirectory).not.toHaveBeenCalled();
   });
 });
