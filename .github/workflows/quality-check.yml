@@ -9,12 +9,48 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: quality-check-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
 jobs:
+  preflight:
+    name: Plan and repository checks
+    runs-on: ubuntu-latest
+    env:
+      BASE_SHA: ${{ github.event.pull_request.base.sha }}
+      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+    outputs:
+      matrix: ${{ steps.scope.outputs.matrix }}
+      verify: ${{ steps.scope.outputs.verify }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+
+      - name: Plan affected application checks
+        id: scope
+        run: node .github/scripts/quality-check-scope.mjs --base "$BASE_SHA" --head "$HEAD_SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Validate release note
+        run: node scripts/release-notes.mjs check-range "$BASE_SHA" "$HEAD_SHA"
+
+      - name: Test repository tooling
+        run: npm run test:repo
+
   verify:
+    name: Verify ${{ matrix.label }} (${{ matrix.os }})
+    needs: preflight
+    if: needs.preflight.outputs.verify == 'true'
     strategy:
       fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+      matrix: ${{ fromJSON(needs.preflight.outputs.matrix) }}
     runs-on: ${{ matrix.os }}
     env:
       ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
@@ -26,34 +62,47 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-        with:
-          fetch-depth: 0
 
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: |
-            package-lock.json
-            apps/main-1.0/package-lock.json
-            apps/main-2.0/package-lock.json
+          cache-dependency-path: ${{ matrix.directory }}/package-lock.json
 
-      - name: Install dependencies
-        run: |
-          npm ci
-          npm run setup
+      - name: Install application dependencies
+        run: npm run setup:${{ matrix.app }}
 
-      - name: Validate release note
-        run: node scripts/release-notes.mjs check-range "origin/${{ github.base_ref }}" HEAD
-
-      - name: Test complete application suites
+      - name: Test complete application suite
         if: runner.os == 'Linux'
-        run: npm test
+        run: npm --prefix "${{ matrix.directory }}" test
 
       - name: Test platform-specific scripts
         if: runner.os != 'Linux'
-        run: npm run test:scripts
+        run: npm --prefix "${{ matrix.directory }}" run test:scripts
 
-      - name: Build and smoke-test packaged applications
-        run: npm run package:smoke:all
+      - name: Typecheck and smoke-test packaged application
+        run: |
+          npm --prefix "${{ matrix.directory }}" run typecheck
+          node "${{ matrix.directory }}/scripts/package-smoke.mjs"
+
+  quality-gate:
+    name: Quality gate
+    needs: [preflight, verify]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every check to pass
+        env:
+          SHOULD_VERIFY: ${{ needs.preflight.outputs.verify }}
+          PREFLIGHT_RESULT: ${{ needs.preflight.result }}
+          VERIFY_RESULT: ${{ needs.verify.result }}
+        run: |
+          case "$PREFLIGHT_RESULT:$SHOULD_VERIFY:$VERIFY_RESULT" in
+            success:true:success|success:false:skipped)
+              ;;
+            *)
+              echo "Quality checks did not complete successfully." >&2
+              exit 1
+              ;;
+          esac

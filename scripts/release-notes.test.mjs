@@ -143,18 +143,25 @@ test("workflows require branch notes and publish accumulated changes every day o
   const qualityWorkflow = await readFile(".github/workflows/quality-check.yml", "utf8");
   const releaseWorkflow = await readFile(".github/workflows/release.yml", "utf8");
   assert.match(qualityWorkflow, /pull_request:/);
-  assert.match(qualityWorkflow, /- name: Validate release note\s+run: node scripts\/release-notes\.mjs check-range/);
-  assert.match(qualityWorkflow, /os:\s*\[ubuntu-latest, macos-latest, windows-latest\]/);
-  assert.match(qualityWorkflow, /npm run setup/);
+  assert.match(qualityWorkflow, /concurrency:[\s\S]*cancel-in-progress:\s*true/);
+  assert.match(qualityWorkflow, /run: node scripts\/release-notes\.mjs check-range/);
+  assert.match(qualityWorkflow, /quality-check-scope\.mjs --base "\$BASE_SHA" --head "\$HEAD_SHA" >> "\$GITHUB_OUTPUT"/);
+  assert.match(qualityWorkflow, /run: npm run test:repo/);
+  assert.match(qualityWorkflow, /matrix:\s*\$\{\{ fromJSON\(needs\.preflight\.outputs\.matrix\) \}\}/);
+  assert.match(qualityWorkflow, /if: needs\.preflight\.outputs\.verify == 'true'/);
+  assert.match(qualityWorkflow, /npm run setup:\$\{\{ matrix\.app \}\}/);
   assert.match(qualityWorkflow, /ELECTRON_SKIP_BINARY_DOWNLOAD:\s*["']1["']/);
   assert.match(qualityWorkflow, /npm_config_cache:\s*\$\{\{ github\.workspace \}\}\/\.ci-npm-cache/);
   assert.match(qualityWorkflow, /AGENT_RECALL_TEST_NPM_CACHE:\s*\$\{\{ github\.workspace \}\}\/\.ci-npm-cache/);
-  assert.match(qualityWorkflow, /- name: Test complete application suites\s+if: runner\.os == 'Linux'\s+run: npm test/);
-  assert.match(qualityWorkflow, /- name: Test platform-specific scripts\s+if: runner\.os != 'Linux'\s+run: npm run test:scripts/);
-  assert.doesNotMatch(qualityWorkflow, /- name: Typecheck\r?\n/u);
-  assert.doesNotMatch(qualityWorkflow, /- name: Build\r?\n/u);
-  assert.match(qualityWorkflow, /- name: Build and smoke-test packaged applications/);
-  assert.match(qualityWorkflow, /run: npm run package:smoke:all/);
+  assert.match(qualityWorkflow, /if: runner\.os == 'Linux'\s+run: npm --prefix "\$\{\{ matrix\.directory \}\}" test/);
+  assert.match(qualityWorkflow, /if: runner\.os != 'Linux'\s+run: npm --prefix "\$\{\{ matrix\.directory \}\}" run test:scripts/);
+  assert.match(qualityWorkflow, /npm --prefix "\$\{\{ matrix\.directory \}\}" run typecheck\s+node "\$\{\{ matrix\.directory \}\}\/scripts\/package-smoke\.mjs"/);
+  assert.equal(qualityWorkflow.match(/run typecheck/gu)?.length, 1);
+  assert.doesNotMatch(qualityWorkflow, /run build(?:\r?\n|$)/u);
+  assert.match(qualityWorkflow, /cache-dependency-path: \$\{\{ matrix\.directory \}\}\/package-lock\.json/);
+  assert.doesNotMatch(qualityWorkflow, /npm run package:smoke:all/);
+  assert.match(qualityWorkflow, /name: Quality gate[\s\S]*needs: \[preflight, verify\][\s\S]*if: \$\{\{ always\(\) \}\}/);
+  assert.match(qualityWorkflow, /success:true:success\|success:false:skipped/);
   assert.match(releaseWorkflow, /schedule:[\s\S]*cron:\s*["']0 2 \* \* \*["']/);
   assert.match(releaseWorkflow, /workflow_dispatch:/);
   assert.doesNotMatch(releaseWorkflow, /^\s{2}push:/m);
@@ -710,5 +717,71 @@ test("OpenViking runtime fingerprint ignores only release version rewrites", asy
     assert.notEqual((await loadInputs()).inputFingerprint, original.inputFingerprint);
   } finally {
     await rm(directory, { recursive: true, force: true });
+  }
+});
+
+function runQualityCheckScope(paths) {
+  const result = spawnSync(
+    process.execPath,
+    [".github/scripts/quality-check-scope.mjs", "--paths", ...paths],
+    { encoding: "utf8" },
+  );
+  assert.equal(result.status, 0, result.stderr);
+  const outputs = Object.fromEntries(
+    result.stdout.trim().split(/\r?\n/u).map((line) => {
+      const separator = line.indexOf("=");
+      return [line.slice(0, separator), line.slice(separator + 1)];
+    }),
+  );
+  return {
+    verify: outputs.verify,
+    matrix: JSON.parse(outputs.matrix),
+  };
+}
+
+test("quality checks route application changes without dropping platform coverage", () => {
+  const v2 = runQualityCheckScope([
+    ".release-notes/fix-v2-update.md",
+    "apps/main-2.0/bin/update-client.cjs",
+  ]);
+  assert.equal(v2.verify, "true");
+  assert.deepEqual(v2.matrix.include, [
+    { app: "v2", label: "V2", directory: "apps/main-2.0", os: "ubuntu-latest" },
+    { app: "v2", label: "V2", directory: "apps/main-2.0", os: "macos-latest" },
+    { app: "v2", label: "V2", directory: "apps/main-2.0", os: "windows-latest" },
+  ]);
+
+  const v1 = runQualityCheckScope(["apps\\main-1.0\\src\\main\\index.ts"]);
+  assert.equal(v1.verify, "true");
+  assert.equal(v1.matrix.include.length, 3);
+  assert.ok(v1.matrix.include.every(({ app }) => app === "v1"));
+});
+
+test("quality checks keep infrastructure-only changes on the repository fast path", () => {
+  const repository = runQualityCheckScope([
+    ".github/workflows/release.yml",
+    ".github/openviking-runtime-inputs.json",
+    ".release-notes/runtime-reuse.md",
+    "README.md",
+    "assets/logo.png",
+    "apps/main-1.0/docs/README.en.md",
+    "scripts/release-notes.test.mjs",
+    "docs/v2/guide.md",
+  ]);
+  assert.equal(repository.verify, "false");
+  assert.deepEqual(repository.matrix.include, [
+    { app: "repository", label: "Repository", directory: "", os: "ubuntu-latest" },
+  ]);
+});
+
+test("quality checks fail closed for routing and shared build inputs", () => {
+  for (const file of [
+    ".github/scripts/quality-check-scope.mjs",
+    "scripts/setup-app.mjs",
+  ]) {
+    const plan = runQualityCheckScope([file]);
+    assert.equal(plan.verify, "true", file);
+    assert.equal(plan.matrix.include.length, 6, file);
+    assert.deepEqual([...new Set(plan.matrix.include.map(({ app }) => app))], ["v1", "v2"]);
   }
 });
