@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile as execFileCallback } from "node:child_process";
-import { copyFile, mkdtemp, mkdir, readdir, rm, writeFile } from "node:fs/promises";
+import { copyFile, mkdtemp, mkdir, readdir, rm, symlink, unlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { createRequire } from "node:module";
@@ -20,32 +20,59 @@ async function createFixture() {
   return packagePath;
 }
 
+async function installRuntimeFixture(packagePath, platform = "win32", arch = "x64") {
+  const platformPackageName = platform === "win32" ? "windows-x64" : `${platform}-${arch}`;
+  const packageName = `@embedded-postgres/${platformPackageName}`;
+  const runtimeRoot = path.join(packagePath, "node_modules", "@embedded-postgres", platformPackageName);
+  const executableSuffix = platform === "win32" ? ".exe" : "";
+  await mkdir(path.join(runtimeRoot, "dist"), { recursive: true });
+  await mkdir(path.join(runtimeRoot, "native", "bin"), { recursive: true });
+  await writeFile(
+    path.join(runtimeRoot, "package.json"),
+    `${JSON.stringify({ name: packageName, version: "18.4.0-beta.17", exports: "./dist/index.js" })}\n`,
+  );
+  await writeFile(path.join(runtimeRoot, "dist", "index.js"), "export {};\n");
+  await Promise.all(
+    ["initdb", "pg_ctl", "postgres"].map((name) =>
+      writeFile(
+        path.join(runtimeRoot, "native", "bin", `${name}${executableSuffix}`),
+        "fixture\n",
+        { mode: 0o755 },
+      ),
+    ),
+  );
+  return packageName;
+}
+
 test("accepts a complete platform PostgreSQL runtime", async () => {
   const packagePath = await createFixture();
-  const runtimeRoot = path.join(packagePath, "node_modules", "@embedded-postgres", "windows-x64");
   try {
-    await mkdir(path.join(runtimeRoot, "dist"), { recursive: true });
-    await mkdir(path.join(runtimeRoot, "native", "bin"), { recursive: true });
-    await writeFile(
-      path.join(runtimeRoot, "package.json"),
-      `${JSON.stringify({
-        name: "@embedded-postgres/windows-x64",
-        version: "18.4.0-beta.17",
-        exports: "./dist/index.js",
-      })}\n`,
-    );
-    await writeFile(path.join(runtimeRoot, "dist", "index.js"), "export {};\n");
-    await Promise.all(
-      ["initdb.exe", "pg_ctl.exe", "postgres.exe"].map((name) =>
-        writeFile(path.join(runtimeRoot, "native", "bin", name), "fixture\n", { mode: 0o755 }),
-      ),
-    );
+    await installRuntimeFixture(packagePath);
 
     assert.equal(
       assertEmbeddedPostgresRuntime({ packagePath, platform: "win32", arch: "x64" }).packageName,
       "@embedded-postgres/windows-x64",
     );
   } finally {
+    await rm(packagePath, { recursive: true, force: true });
+  }
+});
+
+test("accepts a self-contained runtime through a canonicalized package path", async () => {
+  const packagePath = await createFixture();
+  const aliasPath = `${packagePath}-alias`;
+  try {
+    const packageName = await installRuntimeFixture(packagePath, process.platform, process.arch);
+    await symlink(packagePath, aliasPath, process.platform === "win32" ? "junction" : "dir");
+    assert.equal(
+      assertEmbeddedPostgresRuntime({
+        packagePath: aliasPath,
+        requireSelfContained: true,
+      }).packageName,
+      packageName,
+    );
+  } finally {
+    await unlink(aliasPath).catch(() => undefined);
     await rm(packagePath, { recursive: true, force: true });
   }
 });

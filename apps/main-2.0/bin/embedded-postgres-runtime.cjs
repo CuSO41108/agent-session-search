@@ -60,8 +60,8 @@ function assertEmbeddedPostgresRuntime(options = {}) {
   }
 
   if (options.requireSelfContained) {
-    const nodeModulesRoot = path.join(packagePath, "node_modules");
-    const relativeEntry = path.relative(nodeModulesRoot, entryPath);
+    const nodeModulesRoot = fs.realpathSync(path.join(packagePath, "node_modules"));
+    const relativeEntry = path.relative(nodeModulesRoot, fs.realpathSync(entryPath));
     if (
       relativeEntry === ".."
       || relativeEntry.startsWith(`..${path.sep}`)
