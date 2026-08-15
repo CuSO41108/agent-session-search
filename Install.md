@@ -177,7 +177,7 @@ v2 在会话管理之外增加了 Runtime、Agent、Chat、Workflow、Eval、MCP
 先确认 Node.js 22.13+ 和 npm 可用，然后安装最新的 v2 Release：
 
 ```bash
-npm install -g https://github.com/zszz3/AgentRecall/releases/download/v2-latest/agent-recall-v2.tgz
+npm install -g https://github.com/zszz3/AgentRecall/releases/download/v2-latest/agent-recall-v2.tgz --registry=https://registry.npmjs.org/
 agent-recall-v2
 ```
 
@@ -187,11 +187,9 @@ agent-recall-v2
 
 应用会自动准备内置 PostgreSQL 数据服务，不需要另外安装数据库。首次启动时如果需要使用目录记忆，应用会按当前版本下载对应的 OpenViking 运行时。
 
-国内网络访问 npm 较慢时，同样可以只为本次安装使用镜像：
+V2 的内置 PostgreSQL 需要从 npm 下载当前系统对应的运行组件，因此安装命令会明确使用 npm 官方源。部分镜像缺少这些平台包，却仍可能让 npm 把安装报告为成功；请勿把上面的 `--registry` 替换为 npm 镜像。
 
-```bash
-npm install -g https://github.com/zszz3/AgentRecall/releases/download/v2-latest/agent-recall-v2.tgz --registry=https://registry.npmmirror.com
-```
+`--registry` 只影响依赖下载，不会加速 GitHub Release 安装包。GitHub 连接超时时，可先通过浏览器或已配置的 HTTP(S) 代理下载 `agent-recall-v2.tgz`，再使用上面的 npm 官方源从本地文件安装。
 
 Electron 运行时下载慢时，在安装前设置镜像：
 

@@ -21,4 +21,8 @@ test("V2 Electron troubleshooting uses the supported release and runtime checks"
     installGuide,
     /\[macOS Electron 安装故障排除指南\]\(docs\/troubleshooting-electron-installation\.md\)/,
   );
+  const v2InstallGuide = installGuide.slice(installGuide.indexOf("## 安装并使用 v2"));
+  assert.match(v2InstallGuide, /--registry=https:\/\/registry\.npmjs\.org\//);
+  assert.doesNotMatch(v2InstallGuide, /--registry=https:\/\/registry\.npmmirror\.com/);
+  assert.match(guide, /--registry=https:\/\/registry\.npmjs\.org\//);
 });

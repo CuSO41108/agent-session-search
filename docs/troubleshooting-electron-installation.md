@@ -28,10 +28,10 @@ dyld: Library not loaded: @rpath/Electron Framework.framework/Electron Framework
 # 1. 卸载
 npm uninstall -g agent-recall-v2
 
-# 2. 重新安装；镜像只用于加速 Electron 下载
+# 2. 重新安装；镜像只用于加速 Electron 下载，npm 依赖仍使用官方源
 export ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/
 npm install -g https://github.com/zszz3/AgentRecall/releases/download/v2-latest/agent-recall-v2.tgz \
-  --registry=https://registry.npmmirror.com
+  --registry=https://registry.npmjs.org/
 
 # 3. 实际启动；确认应用窗口或菜单栏图标出现
 agent-recall-v2
