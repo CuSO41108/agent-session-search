@@ -3,6 +3,7 @@
 
 const fs = require("node:fs/promises");
 const path = require("node:path");
+const { assertEmbeddedPostgresRuntime } = require("./embedded-postgres-runtime.cjs");
 const {
   acquireUpdateLock,
   clearInstallStatus,
@@ -52,7 +53,11 @@ async function applyStagedUpdate(staged, options = {}) {
   await fs.rm(staged.backupPath, { recursive: true, force: true });
   try {
     try {
-      await copyDirectory(staged.livePackagePath, staged.backupPath, { recursive: true, force: true });
+      await copyDirectory(staged.livePackagePath, staged.backupPath, {
+        recursive: true,
+        force: true,
+        verbatimSymlinks: true,
+      });
       backedUp = true;
     } catch (error) {
       if (error?.code !== "ENOENT") throw error;
@@ -70,8 +75,20 @@ async function applyStagedUpdate(staged, options = {}) {
         },
       });
     }
+    assertEmbeddedPostgresRuntime({
+      packagePath: staged.stagedPackagePath,
+      requireSelfContained: true,
+    });
     await fs.mkdir(staged.livePackagePath, { recursive: true });
-    await copyDirectory(staged.stagedPackagePath, staged.livePackagePath, { recursive: true, force: true });
+    await copyDirectory(staged.stagedPackagePath, staged.livePackagePath, {
+      recursive: true,
+      force: true,
+      verbatimSymlinks: true,
+    });
+    assertEmbeddedPostgresRuntime({
+      packagePath: staged.livePackagePath,
+      requireSelfContained: true,
+    });
     await writeJsonAtomic(staged.statusPath, {
       status: "installed",
       version: staged.version,
@@ -83,7 +100,11 @@ async function applyStagedUpdate(staged, options = {}) {
   } catch (error) {
     if (backedUp) {
       await fs.mkdir(staged.livePackagePath, { recursive: true }).catch(() => undefined);
-      await copyDirectory(staged.backupPath, staged.livePackagePath, { recursive: true, force: true }).catch((rollbackError) => {
+      await copyDirectory(staged.backupPath, staged.livePackagePath, {
+        recursive: true,
+        force: true,
+        verbatimSymlinks: true,
+      }).catch((rollbackError) => {
         throw new Error(`${error instanceof Error ? error.message : String(error)}; rollback failed: ${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}`);
       });
       await writeJsonAtomic(staged.statusPath, {

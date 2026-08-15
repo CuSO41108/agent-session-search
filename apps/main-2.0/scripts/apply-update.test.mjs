@@ -1,12 +1,38 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createRequire } from "node:module";
-import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, readlink, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
 const require = createRequire(import.meta.url);
 const { applyStagedUpdate, relaunchInstalledApp } = require("../bin/apply-update.cjs");
+
+async function installPlatformRuntimeFixture(packagePath) {
+  const platformPackageName = process.platform === "win32"
+    ? "windows-x64"
+    : `${process.platform}-${process.arch}`;
+  const runtimeRoot = path.join(packagePath, "node_modules", "@embedded-postgres", platformPackageName);
+  const executableSuffix = process.platform === "win32" ? ".exe" : "";
+  await mkdir(path.join(runtimeRoot, "dist"), { recursive: true });
+  await mkdir(path.join(runtimeRoot, "native", "bin"), { recursive: true });
+  await writeFile(
+    path.join(runtimeRoot, "package.json"),
+    JSON.stringify({
+      name: `@embedded-postgres/${platformPackageName}`,
+      version: "18.4.0-beta.17",
+      exports: "./dist/index.js",
+    }),
+  );
+  await writeFile(path.join(runtimeRoot, "dist", "index.js"), "export {};\n");
+  await Promise.all(["initdb", "pg_ctl", "postgres"].map((name) =>
+    writeFile(
+      path.join(runtimeRoot, "native", "bin", `${name}${executableSuffix}`),
+      "fixture\n",
+      { mode: 0o755 },
+    ),
+  ));
+}
 
 test("swaps a validated staged package into place and removes the backup", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "agent-recall-apply-stage-"));
@@ -20,6 +46,7 @@ test("swaps a validated staged package into place and removes the backup", async
     await mkdir(stagedPackagePath, { recursive: true });
     await writeFile(path.join(livePackagePath, "marker.txt"), "old", "utf8");
     await writeFile(path.join(stagedPackagePath, "marker.txt"), "new", "utf8");
+    await installPlatformRuntimeFixture(stagedPackagePath);
 
     await applyStagedUpdate({
       version: "0.2.0",
@@ -39,6 +66,56 @@ test("swaps a validated staged package into place and removes the backup", async
   }
 });
 
+test("preserves relative PostgreSQL library links after removing the stage", {
+  skip: process.platform === "win32",
+}, async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "agent-recall-apply-symlink-"));
+  try {
+    const livePackagePath = path.join(directory, "agent-recall-v2");
+    const stageRoot = path.join(directory, "stage");
+    const stagedPackagePath = path.join(stageRoot, "node_modules", "agent-recall-v2");
+    const backupPath = path.join(directory, "backup");
+    const statusPath = path.join(directory, "status.json");
+    const platformPackageName = `${process.platform}-${process.arch}`;
+    const stagedLibraryRoot = path.join(
+      stagedPackagePath,
+      "node_modules",
+      "@embedded-postgres",
+      platformPackageName,
+      "native",
+      "lib",
+    );
+    await mkdir(livePackagePath, { recursive: true });
+    await installPlatformRuntimeFixture(stagedPackagePath);
+    await mkdir(stagedLibraryRoot, { recursive: true });
+    await writeFile(path.join(stagedLibraryRoot, "libfixture-real.so"), "fixture\n");
+    await symlink("libfixture-real.so", path.join(stagedLibraryRoot, "libfixture.so"));
+
+    await applyStagedUpdate({
+      version: "0.2.0",
+      stageRoot,
+      stagedPackagePath,
+      livePackagePath,
+      backupPath,
+      statusPath,
+    });
+
+    const liveLink = path.join(
+      livePackagePath,
+      "node_modules",
+      "@embedded-postgres",
+      platformPackageName,
+      "native",
+      "lib",
+      "libfixture.so",
+    );
+    assert.equal(await readlink(liveLink), "libfixture-real.so");
+    assert.equal(await readFile(liveLink, "utf8"), "fixture\n");
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("keeps the live package available while a staged promotion fails", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "agent-recall-apply-stage-failure-"));
   try {
@@ -51,6 +128,7 @@ test("keeps the live package available while a staged promotion fails", async ()
     await mkdir(stagedPackagePath, { recursive: true });
     await writeFile(path.join(livePackagePath, "marker.txt"), "old", "utf8");
     await writeFile(path.join(stagedPackagePath, "marker.txt"), "new", "utf8");
+    await installPlatformRuntimeFixture(stagedPackagePath);
     let promotionAttempted = false;
 
     await assert.rejects(applyStagedUpdate({
@@ -73,6 +151,35 @@ test("keeps the live package available while a staged promotion fails", async ()
     }), /simulated interrupted promotion/);
 
     assert.equal(promotionAttempted, true);
+    assert.equal(await readFile(path.join(livePackagePath, "marker.txt"), "utf8"), "old");
+    assert.equal(JSON.parse(await readFile(statusPath, "utf8")).status, "error");
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("restores the live package when staged PostgreSQL validation fails", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "agent-recall-apply-runtime-failure-"));
+  try {
+    const livePackagePath = path.join(directory, "agent-recall-v2");
+    const stageRoot = path.join(directory, "stage");
+    const stagedPackagePath = path.join(stageRoot, "node_modules", "agent-recall-v2");
+    const backupPath = path.join(directory, "backup");
+    const statusPath = path.join(directory, "status.json");
+    await mkdir(livePackagePath, { recursive: true });
+    await mkdir(stagedPackagePath, { recursive: true });
+    await writeFile(path.join(livePackagePath, "marker.txt"), "old", "utf8");
+    await writeFile(path.join(stagedPackagePath, "marker.txt"), "new", "utf8");
+
+    await assert.rejects(applyStagedUpdate({
+      version: "0.2.0",
+      stageRoot,
+      stagedPackagePath,
+      livePackagePath,
+      backupPath,
+      statusPath,
+    }), /AgentRecall V2 安装不完整/);
+
     assert.equal(await readFile(path.join(livePackagePath, "marker.txt"), "utf8"), "old");
     assert.equal(JSON.parse(await readFile(statusPath, "utf8")).status, "error");
   } finally {

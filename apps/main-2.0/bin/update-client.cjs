@@ -8,6 +8,7 @@ const fsp = require("node:fs/promises");
 const os = require("node:os");
 const path = require("node:path");
 const { promisify } = require("node:util");
+const { assertEmbeddedPostgresRuntime } = require("./embedded-postgres-runtime.cjs");
 const { materializeStagedPackageDependencies } = require("./staged-package-dependencies.cjs");
 
 const execFileAsync = promisify(execFile);
@@ -702,6 +703,10 @@ async function stageUpdate(manifest, options = {}) {
       stageRoot,
       packagePath: stagedPackagePath,
     });
+    assertEmbeddedPostgresRuntime({
+      packagePath: stagedPackagePath,
+      requireSelfContained: true,
+    });
     options.onProgress?.(updateProgress(parsed.version, "validating", {
       message: "正在检查应用和 Electron 运行时…",
     }));
@@ -799,6 +804,7 @@ async function installUpdate(manifest, options = {}) {
       const detail = formatUpdateError(error);
       throw new Error(`npm 安装失败：${detail}`);
     }
+    assertEmbeddedPostgresRuntime({ packagePath });
     await (options.ensureElectronImpl || ensureInstalledElectron)({
       npmCommand,
       nodePath: options.nodePath,

@@ -27,6 +27,7 @@ const environment = {
   ELECTRON_SKIP_BINARY_DOWNLOAD: "1",
   npm_config_cache: process.env.AGENT_RECALL_TEST_NPM_CACHE || path.join(tempRoot, "npm-cache"),
   npm_config_prefix: prefix,
+  npm_config_registry: "https://registry.npmjs.org/",
 };
 let workflowMcpProcess = null;
 let localPostgres = null;

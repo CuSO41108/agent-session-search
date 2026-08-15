@@ -14,6 +14,7 @@ test("keeps V1 and V2 as independent app packages", () => {
   assert.equal(v1.name, "agent-recall");
   assert.equal(v2.name, "agent-recall-v2");
   assert.notEqual(v1.productName, v2.productName);
+  assert.equal(v2.scripts.postinstall, "node bin/embedded-postgres-runtime.cjs");
 });
 
 test("exposes explicit root commands for both apps", () => {

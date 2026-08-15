@@ -29,7 +29,36 @@ async function electronFixtureExec(command, args, options) {
   return { stdout: "v42.3.0\n", stderr: "" };
 }
 
-async function installStagedPackageFixture(stageRoot, packageName, version) {
+function platformRuntimePackageName() {
+  return process.platform === "win32" ? "windows-x64" : `${process.platform}-${process.arch}`;
+}
+
+async function installPlatformRuntimeFixture(nodeModulesRoot) {
+  const platformPackageName = platformRuntimePackageName();
+  const platformPackage = path.join(nodeModulesRoot, "@embedded-postgres", platformPackageName);
+  const executableSuffix = process.platform === "win32" ? ".exe" : "";
+  await mkdir(path.join(platformPackage, "dist"), { recursive: true });
+  await mkdir(path.join(platformPackage, "native", "bin"), { recursive: true });
+  await writeFile(
+    path.join(platformPackage, "package.json"),
+    JSON.stringify({
+      name: `@embedded-postgres/${platformPackageName}`,
+      version: "18.4.0-beta.17",
+      exports: "./dist/index.js",
+    }),
+    "utf8",
+  );
+  await writeFile(path.join(platformPackage, "dist", "index.js"), "export {};\n", "utf8");
+  await Promise.all(["initdb", "pg_ctl", "postgres"].map((name) =>
+    writeFile(
+      path.join(platformPackage, "native", "bin", `${name}${executableSuffix}`),
+      "fixture\n",
+      { mode: 0o755 },
+    ),
+  ));
+}
+
+async function installStagedPackageFixture(stageRoot, packageName, version, options = {}) {
   const installed = path.join(stageRoot, "node_modules", packageName);
   await mkdir(path.join(installed, "out", "main"), { recursive: true });
   await mkdir(path.join(installed, "bin"), { recursive: true });
@@ -42,6 +71,8 @@ async function installStagedPackageFixture(stageRoot, packageName, version) {
     JSON.stringify({ version: "42.3.0" }),
     "utf8",
   );
+  if (options.includeRuntime === false) return;
+  await installPlatformRuntimeFixture(path.join(stageRoot, "node_modules"));
 }
 
 const require = createRequire(import.meta.url);
@@ -386,12 +417,49 @@ test("terminal launcher continues with a validated Electron runtime after repair
   assert.match(launcherSource, /继续启动应用/);
 });
 
-test("terminal launcher restores embedded PostgreSQL links before starting Electron", () => {
+test("terminal launcher validates embedded PostgreSQL before starting Electron", () => {
   assert.match(launcherSource, /restoreEmbeddedPostgresNativeLinks/);
   assert.match(
     launcherSource,
-    /await restoreEmbeddedPostgresNativeLinks\(path\.join\(packagePath, "node_modules"\)\);\s*try \{\s*await ensureElectronRuntimeForLaunch/,
+    /await restoreEmbeddedPostgresNativeLinks\(path\.join\(packagePath, "node_modules"\)\);\s*assertEmbeddedPostgresRuntime\(\{ packagePath \}\);\s*try \{\s*await ensureElectronRuntimeForLaunch/,
   );
+});
+
+test("rejects an update missing its platform PostgreSQL runtime before promotion", async () => {
+  const bytes = Buffer.from("runtime-missing update package");
+  const value = manifest();
+  value.package.sha256 = createHash("sha256").update(bytes).digest("hex");
+  const directory = await temporaryDirectory("agent-recall-update-postgres-runtime-");
+  const stageRoot = path.join(directory, "stage");
+  const packagePath = path.join(directory, "live", "agent-recall-v2");
+  const statusPath = path.join(directory, "status.json");
+  await mkdir(packagePath, { recursive: true });
+  await writeFile(path.join(packagePath, "marker.txt"), "live package\n");
+
+  await assert.rejects(
+    stageUpdate(value, {
+      fetchImpl: async () => new Response(bytes, { status: 200 }),
+      stageRoot,
+      packagePath,
+      statusPath,
+      execFileImpl: async (_command, _args, options) => {
+        await installStagedPackageFixture(
+          options.env.AGENT_RECALL_STAGE_ROOT,
+          "agent-recall-v2",
+          value.version,
+          { includeRuntime: false },
+        );
+        return { stdout: "", stderr: "" };
+      },
+      ensureElectronImpl: async () => {
+        assert.fail("Electron validation must not run after PostgreSQL runtime validation fails.");
+      },
+    }),
+    /AgentRecall V2 安装不完整/,
+  );
+
+  assert.equal(await readFile(path.join(packagePath, "marker.txt"), "utf8"), "live package\n");
+  assert.equal(JSON.parse(await readFile(statusPath, "utf8")).status, "error");
 });
 
 test("terminal launcher does not prompt again for a skipped update version", () => {
@@ -807,6 +875,13 @@ test("installs through the public registry and records a completed status", asyn
     packagePath,
     execFileImpl: async (command, args, options) => {
       invocation = { command, args, options };
+      await rm(packagePath, { recursive: true, force: true });
+      await mkdir(packagePath, { recursive: true });
+      await writeFile(
+        path.join(packagePath, "package.json"),
+        JSON.stringify({ dependencies: { "embedded-postgres": "18.4.0-beta.17" } }),
+      );
+      await installPlatformRuntimeFixture(path.join(packagePath, "node_modules"));
       return { stdout: "", stderr: "" };
     },
     nodePath: "/stable/node",
@@ -847,8 +922,10 @@ test("restores the previous global package when post-install validation fails", 
       await writeFile(path.join(packagePath, "marker.txt"), "new package", "utf8");
       return { stdout: "", stderr: "" };
     },
-    ensureElectronImpl: async () => { throw new Error("runtime validation failed"); },
-  }), /runtime validation failed/);
+    ensureElectronImpl: async () => {
+      assert.fail("Electron validation must not run when PostgreSQL validation fails.");
+    },
+  }), /AgentRecall V2 安装不完整/);
 
   assert.equal(await readFile(path.join(packagePath, "marker.txt"), "utf8"), "old package");
   assert.equal(JSON.parse(await readFile(statusPath, "utf8")).status, "error");
