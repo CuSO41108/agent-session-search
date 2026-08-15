@@ -497,6 +497,35 @@ test("follows GitHub pagination until it finds the newest V2 release", async () 
   ]);
 });
 
+test("falls back to the rolling V2 manifest when the release API fails", async () => {
+  const value = manifest("0.10.0");
+  const requests = [];
+  const cacheDirectory = await temporaryDirectory("agent-session-update-stable-fallback-");
+  const fetchImpl = async (url) => {
+    requests.push(String(url));
+    if (String(url).includes("api.github.com")) {
+      return new Response(JSON.stringify({ message: "API rate limit exceeded" }), { status: 403 });
+    }
+    return new Response(JSON.stringify(value), { status: 200 });
+  };
+
+  const result = await checkForUpdate({
+    currentVersion: "0.1.0",
+    cachePath: path.join(cacheDirectory, "update-check.json"),
+    fetchImpl,
+    force: true,
+    now: 123,
+  });
+
+  assert.equal(result.updateAvailable, true);
+  assert.equal(result.manifest.version, "0.10.0");
+  assert.equal(result.error, null);
+  assert.deepEqual(requests, [
+    "https://api.github.com/repos/zszz3/AgentRecall/releases?per_page=100",
+    "https://github.com/zszz3/AgentRecall/releases/download/v2-latest/update-v2.json",
+  ]);
+});
+
 test("falls back to published Git refs when the release API is rate limited", async () => {
   const value = manifest("0.10.0");
   const requests = [];
@@ -506,6 +535,7 @@ test("falls back to published Git refs when the release API is rate limited", as
     if (String(url).includes("api.github.com")) {
       return new Response(JSON.stringify({ message: "API rate limit exceeded" }), { status: 403 });
     }
+    if (String(url).includes("/v2-latest/")) return new Response("", { status: 404 });
     if (String(url).includes("info/refs?service=git-upload-pack")) {
       return new Response(
         [
@@ -535,10 +565,35 @@ test("falls back to published Git refs when the release API is rate limited", as
   assert.equal(result.error, null);
   assert.deepEqual(requests, [
     "https://api.github.com/repos/zszz3/AgentRecall/releases?per_page=100",
+    "https://github.com/zszz3/AgentRecall/releases/download/v2-latest/update-v2.json",
     "https://github.com/zszz3/AgentRecall.git/info/refs?service=git-upload-pack",
     "https://github.com/zszz3/AgentRecall/releases/download/v2-0.11.0/update-v2.json",
     "https://github.com/zszz3/AgentRecall/releases/download/v2-0.10.0/update-v2.json",
   ]);
+});
+
+test("keeps the original release error when every V2 manifest fallback is missing", async () => {
+  const cacheDirectory = await temporaryDirectory("agent-session-update-missing-fallback-");
+  const fetchImpl = async (url) => {
+    if (String(url).includes("api.github.com")) {
+      return new Response(JSON.stringify({ message: "API rate limit exceeded" }), { status: 403 });
+    }
+    if (String(url).includes("info/refs?service=git-upload-pack")) {
+      return new Response(`${"a".repeat(40)} refs/tags/v2-0.11.0\n`, { status: 200 });
+    }
+    return new Response("", { status: 404 });
+  };
+
+  const result = await checkForUpdate({
+    currentVersion: "0.10.0",
+    cachePath: path.join(cacheDirectory, "update-check.json"),
+    fetchImpl,
+    force: true,
+    now: 123,
+  });
+
+  assert.equal(result.updateAvailable, false);
+  assert.equal(result.error, "GitHub release check failed (403).");
 });
 
 test("keeps a cached V2 manifest when the release API is unavailable", async () => {

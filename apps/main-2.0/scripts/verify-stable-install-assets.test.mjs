@@ -7,7 +7,7 @@ import { after, test } from "node:test";
 import { gzipSync } from "node:zlib";
 
 import { verifyStableInstallAssets } from "./verify-stable-install-assets.mjs";
-import { LATEST_PACKAGE_NAME } from "./create-release-assets.mjs";
+import { LATEST_PACKAGE_NAME, UPDATE_MANIFEST_NAME } from "./create-release-assets.mjs";
 
 const temporaryDirectories = new Set();
 
@@ -53,9 +53,12 @@ async function writeStableRelease({ version, tarball, checksumTarget = LATEST_PA
   const stableDirectory = await makeTemporaryDirectory("agent-recall-v2-stable-");
   const releaseDirectory = await makeTemporaryDirectory("agent-recall-v2-release-");
   const sha256 = checksumOverride ?? createHash("sha256").update(tarball).digest("hex");
+  const updateManifest = `${JSON.stringify({ schemaVersion: 1, version, tag: `v2-${version}` })}\n`;
   await writeFile(path.join(stableDirectory, LATEST_PACKAGE_NAME), tarball);
   await writeFile(path.join(stableDirectory, `${LATEST_PACKAGE_NAME}.sha256`), `${sha256}  ${checksumTarget}\n`, "utf8");
+  await writeFile(path.join(stableDirectory, UPDATE_MANIFEST_NAME), updateManifest, "utf8");
   await writeFile(path.join(releaseDirectory, `agent-recall-v2-${version}.tgz`), tarball);
+  await writeFile(path.join(releaseDirectory, UPDATE_MANIFEST_NAME), updateManifest, "utf8");
   return { stableDirectory, releaseDirectory };
 }
 
@@ -92,6 +95,23 @@ test("rejects a stable release whose checksum asset is stale", async () => {
   await assert.rejects(
     verifyStableInstallAssets({ stableDirectory, releaseDirectory, version: "0.3.0" }),
     /does not match agent-recall-v2\.tgz/,
+  );
+});
+
+test("rejects a stable update manifest that differs from the versioned release", async () => {
+  const { stableDirectory, releaseDirectory } = await writeStableRelease({
+    version: "0.3.0",
+    tarball: packageTarball({ version: "0.3.0" }),
+  });
+  await writeFile(
+    path.join(stableDirectory, UPDATE_MANIFEST_NAME),
+    `${JSON.stringify({ schemaVersion: 1, version: "0.2.9", tag: "v2-0.2.9" })}\n`,
+    "utf8",
+  );
+
+  await assert.rejects(
+    verifyStableInstallAssets({ stableDirectory, releaseDirectory, version: "0.3.0" }),
+    /update-v2\.json on the stable install release does not match the versioned release/,
   );
 });
 

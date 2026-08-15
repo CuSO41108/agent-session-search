@@ -24,6 +24,7 @@ const RELEASE_REFS_URL = `https://github.com/${GITHUB_REPOSITORY}.git/info/refs?
 const STABLE_INSTALL_TAG = "v2-latest";
 const LATEST_PACKAGE_URL = `${LATEST_RELEASE_URL}/download/${STABLE_INSTALL_TAG}/agent-recall-v2.tgz`;
 const UPDATE_ASSET_NAME = "update-v2.json";
+const LATEST_UPDATE_MANIFEST_URL = `${LATEST_RELEASE_URL}/download/${STABLE_INSTALL_TAG}/${UPDATE_ASSET_NAME}`;
 const UPDATE_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 const UPDATE_REQUEST_TIMEOUT_MS = 5_000;
 const DEFAULT_NPM_REGISTRY = "https://registry.npmjs.org/";
@@ -290,30 +291,39 @@ async function checkForUpdate(options = {}) {
       releaseTag = release.tag_name;
     } catch (releaseError) {
       try {
-        const refsResponse = await fetchWithTimeout(fetchImpl, RELEASE_REFS_URL, {
-          headers: { Accept: "application/x-git-upload-pack-advertisement", "User-Agent": "agent-recall-v2-updater" },
+        manifestResponse = await fetchWithTimeout(fetchImpl, LATEST_UPDATE_MANIFEST_URL, {
+          headers: { "User-Agent": "agent-recall-v2-updater" },
         }, options.timeoutMs ?? UPDATE_REQUEST_TIMEOUT_MS);
-        if (!refsResponse.ok) throw new Error(`GitHub release refs check failed (${refsResponse.status}).`);
-        const advertisement = await refsResponse.text();
-        const tags = [...new Set([...advertisement.matchAll(/refs\/tags\/(v2-\d+\.\d+\.\d+)(?=\^\{\}|[\u0000\n]|$)/g)]
-          .map((match) => match[1]))]
-          .sort((left, right) => compareVersions(right.replace(/^v2-/, ""), left.replace(/^v2-/, "")));
-        if (tags.length === 0) throw new Error("GitHub release refs do not contain a V2 release.");
-        for (const tag of tags.slice(0, 10)) {
-          const manifestUrl = `https://github.com/${GITHUB_REPOSITORY}/releases/download/${tag}/${UPDATE_ASSET_NAME}`;
-          const response = await fetchWithTimeout(fetchImpl, manifestUrl, {
-            headers: { "User-Agent": "agent-recall-v2-updater" },
-          }, options.timeoutMs ?? UPDATE_REQUEST_TIMEOUT_MS);
-          if (response.status === 404) continue;
-          if (!response.ok) throw new Error(`Direct update manifest download failed (${response.status}).`);
-          releaseTag = tag;
-          manifestResponse = response;
-          break;
-        }
-        if (!manifestResponse) throw new Error("GitHub release refs do not point to a published V2 manifest.");
+        if (!manifestResponse.ok) throw new Error(`Stable update manifest download failed (${manifestResponse.status}).`);
         releaseListEtag = null;
       } catch {
-        throw releaseError;
+        manifestResponse = null;
+        try {
+          const refsResponse = await fetchWithTimeout(fetchImpl, RELEASE_REFS_URL, {
+            headers: { Accept: "application/x-git-upload-pack-advertisement", "User-Agent": "agent-recall-v2-updater" },
+          }, options.timeoutMs ?? UPDATE_REQUEST_TIMEOUT_MS);
+          if (!refsResponse.ok) throw new Error(`GitHub release refs check failed (${refsResponse.status}).`);
+          const advertisement = await refsResponse.text();
+          const tags = [...new Set([...advertisement.matchAll(/refs\/tags\/(v2-\d+\.\d+\.\d+)(?=\^\{\}|[\u0000\n]|$)/g)]
+            .map((match) => match[1]))]
+            .sort((left, right) => compareVersions(right.replace(/^v2-/, ""), left.replace(/^v2-/, "")));
+          if (tags.length === 0) throw new Error("GitHub release refs do not contain a V2 release.");
+          for (const tag of tags.slice(0, 10)) {
+            const manifestUrl = `https://github.com/${GITHUB_REPOSITORY}/releases/download/${tag}/${UPDATE_ASSET_NAME}`;
+            const response = await fetchWithTimeout(fetchImpl, manifestUrl, {
+              headers: { "User-Agent": "agent-recall-v2-updater" },
+            }, options.timeoutMs ?? UPDATE_REQUEST_TIMEOUT_MS);
+            if (response.status === 404) continue;
+            if (!response.ok) throw new Error(`Direct update manifest download failed (${response.status}).`);
+            releaseTag = tag;
+            manifestResponse = response;
+            break;
+          }
+          if (!manifestResponse) throw new Error("GitHub release refs do not point to a published V2 manifest.");
+          releaseListEtag = null;
+        } catch {
+          throw releaseError;
+        }
       }
     }
     const manifest = parseUpdateManifest(await manifestResponse.json());

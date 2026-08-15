@@ -13,7 +13,7 @@ import { fileURLToPath } from "node:url";
 import { createGunzip } from "node:zlib";
 import { Readable } from "node:stream";
 
-import { LATEST_PACKAGE_NAME } from "./create-release-assets.mjs";
+import { LATEST_PACKAGE_NAME, UPDATE_MANIFEST_NAME } from "./create-release-assets.mjs";
 
 const LATEST_CHECKSUM_NAME = `${LATEST_PACKAGE_NAME}.sha256`;
 
@@ -32,6 +32,12 @@ export async function verifyStableInstallAssets({ stableDirectory, releaseDirect
   const declared = await readChecksum(stableDirectory, LATEST_CHECKSUM_NAME, LATEST_PACKAGE_NAME);
   if (declared !== sha256) {
     throw new Error(`${LATEST_CHECKSUM_NAME} does not match ${LATEST_PACKAGE_NAME}.`);
+  }
+
+  const stableManifest = await readAsset(stableDirectory, UPDATE_MANIFEST_NAME);
+  const releaseManifest = await readAsset(releaseDirectory, UPDATE_MANIFEST_NAME);
+  if (!stableManifest.equals(releaseManifest)) {
+    throw new Error(`${UPDATE_MANIFEST_NAME} on the stable install release does not match the versioned release.`);
   }
 
   // The tarball's own package.json version decides where the app looks for its
