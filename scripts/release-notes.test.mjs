@@ -144,27 +144,24 @@ test("workflows require branch notes and publish accumulated changes every day o
   const releaseWorkflow = await readFile(".github/workflows/release.yml", "utf8");
   assert.match(qualityWorkflow, /pull_request:/);
   assert.match(qualityWorkflow, /concurrency:[\s\S]*cancel-in-progress:\s*true/);
-  assert.match(qualityWorkflow, /- name: Validate release note[\s\S]*?run: node scripts\/release-notes\.mjs check-range/);
-  assert.match(qualityWorkflow, /^\s{2}preflight:\s*$/mu);
-  assert.match(qualityWorkflow, /- name: Test repository tooling\s+run: npm run test:repo/);
+  assert.match(qualityWorkflow, /run: node scripts\/release-notes\.mjs check-range/);
+  assert.match(qualityWorkflow, /quality-check-scope\.mjs --base "\$BASE_SHA" --head "\$HEAD_SHA" >> "\$GITHUB_OUTPUT"/);
+  assert.match(qualityWorkflow, /run: npm run test:repo/);
   assert.match(qualityWorkflow, /matrix:\s*\$\{\{ fromJSON\(needs\.preflight\.outputs\.matrix\) \}\}/);
-  assert.match(qualityWorkflow, /if: needs\.preflight\.outputs\.v1 == 'true' \|\| needs\.preflight\.outputs\.v2 == 'true'/);
+  assert.match(qualityWorkflow, /if: needs\.preflight\.outputs\.verify == 'true'/);
   assert.match(qualityWorkflow, /npm run setup:\$\{\{ matrix\.app \}\}/);
   assert.match(qualityWorkflow, /ELECTRON_SKIP_BINARY_DOWNLOAD:\s*["']1["']/);
   assert.match(qualityWorkflow, /npm_config_cache:\s*\$\{\{ github\.workspace \}\}\/\.ci-npm-cache/);
   assert.match(qualityWorkflow, /AGENT_RECALL_TEST_NPM_CACHE:\s*\$\{\{ github\.workspace \}\}\/\.ci-npm-cache/);
-  assert.match(qualityWorkflow, /- name: Test complete application suite\s+if: matrix\.app != 'repository' && runner\.os == 'Linux'/);
-  assert.match(qualityWorkflow, /- name: Test platform-specific scripts\s+if: matrix\.app != 'repository' && runner\.os != 'Linux'/);
-  assert.doesNotMatch(qualityWorkflow, /- name: Typecheck\r?\n/u);
-  assert.doesNotMatch(qualityWorkflow, /- name: Build\r?\n/u);
-  assert.match(qualityWorkflow, /- name: Typecheck and smoke-test packaged application/);
-  assert.match(qualityWorkflow, /node "\$\{\{ matrix\.directory \}\}\/scripts\/package-smoke\.mjs"/);
+  assert.match(qualityWorkflow, /if: runner\.os == 'Linux'\s+run: npm --prefix "\$\{\{ matrix\.directory \}\}" test/);
+  assert.match(qualityWorkflow, /if: runner\.os != 'Linux'\s+run: npm --prefix "\$\{\{ matrix\.directory \}\}" run test:scripts/);
+  assert.match(qualityWorkflow, /npm --prefix "\$\{\{ matrix\.directory \}\}" run typecheck\s+node "\$\{\{ matrix\.directory \}\}\/scripts\/package-smoke\.mjs"/);
+  assert.equal(qualityWorkflow.match(/run typecheck/gu)?.length, 1);
+  assert.doesNotMatch(qualityWorkflow, /run build(?:\r?\n|$)/u);
   assert.match(qualityWorkflow, /cache-dependency-path: \$\{\{ matrix\.directory \}\}\/package-lock\.json/);
   assert.doesNotMatch(qualityWorkflow, /npm run package:smoke:all/);
-  assert.match(qualityWorkflow, /^\s{2}quality-gate:\s*$/mu);
-  assert.match(qualityWorkflow, /needs: \[preflight, verify\][\s\S]*if: \$\{\{ always\(\) \}\}/);
-  assert.match(qualityWorkflow, /test "\$VERIFY_RESULT" = "skipped"/);
-  assert.match(qualityWorkflow, /Invalid application scope/);
+  assert.match(qualityWorkflow, /name: Quality gate[\s\S]*needs: \[preflight, verify\][\s\S]*if: \$\{\{ always\(\) \}\}/);
+  assert.match(qualityWorkflow, /success:true:success\|success:false:skipped/);
   assert.match(releaseWorkflow, /schedule:[\s\S]*cron:\s*["']0 2 \* \* \*["']/);
   assert.match(releaseWorkflow, /workflow_dispatch:/);
   assert.doesNotMatch(releaseWorkflow, /^\s{2}push:/m);
@@ -737,8 +734,7 @@ function runQualityCheckScope(paths) {
     }),
   );
   return {
-    v1: outputs.v1,
-    v2: outputs.v2,
+    verify: outputs.verify,
     matrix: JSON.parse(outputs.matrix),
   };
 }
@@ -748,27 +744,17 @@ test("quality checks route application changes without dropping platform coverag
     ".release-notes/fix-v2-update.md",
     "apps/main-2.0/bin/update-client.cjs",
   ]);
-  assert.equal(v2.v1, "false");
-  assert.equal(v2.v2, "true");
-  assert.deepEqual(v2.matrix.include.map(({ app, os }) => [app, os]), [
-    ["v2", "ubuntu-latest"],
-    ["v2", "macos-latest"],
-    ["v2", "windows-latest"],
+  assert.equal(v2.verify, "true");
+  assert.deepEqual(v2.matrix.include, [
+    { app: "v2", label: "V2", directory: "apps/main-2.0", os: "ubuntu-latest" },
+    { app: "v2", label: "V2", directory: "apps/main-2.0", os: "macos-latest" },
+    { app: "v2", label: "V2", directory: "apps/main-2.0", os: "windows-latest" },
   ]);
 
   const v1 = runQualityCheckScope(["apps\\main-1.0\\src\\main\\index.ts"]);
-  assert.equal(v1.v1, "true");
-  assert.equal(v1.v2, "false");
-  assert.deepEqual(v1.matrix.include.map(({ app, os }) => [app, os]), [
-    ["v1", "ubuntu-latest"],
-    ["v1", "macos-latest"],
-    ["v1", "windows-latest"],
-  ]);
-
-  const both = runQualityCheckScope(["scripts/setup-app.mjs"]);
-  assert.equal(both.v1, "true");
-  assert.equal(both.v2, "true");
-  assert.equal(both.matrix.include.length, 6);
+  assert.equal(v1.verify, "true");
+  assert.equal(v1.matrix.include.length, 3);
+  assert.ok(v1.matrix.include.every(({ app }) => app === "v1"));
 });
 
 test("quality checks keep infrastructure-only changes on the repository fast path", () => {
@@ -776,27 +762,26 @@ test("quality checks keep infrastructure-only changes on the repository fast pat
     ".github/workflows/release.yml",
     ".github/openviking-runtime-inputs.json",
     ".release-notes/runtime-reuse.md",
+    "README.md",
+    "assets/logo.png",
+    "apps/main-1.0/docs/README.en.md",
     "scripts/release-notes.test.mjs",
     "docs/v2/guide.md",
   ]);
-  assert.equal(repository.v1, "false");
-  assert.equal(repository.v2, "false");
+  assert.equal(repository.verify, "false");
   assert.deepEqual(repository.matrix.include, [
     { app: "repository", label: "Repository", directory: "", os: "ubuntu-latest" },
   ]);
 });
 
-test("quality checks fail closed for their own routing and unknown shared paths", () => {
+test("quality checks fail closed for routing and shared build inputs", () => {
   for (const file of [
-    ".github/workflows/quality-check.yml",
     ".github/scripts/quality-check-scope.mjs",
-    ".github/actions/package/action.yml",
-    "assets/new-build-input.bin",
-    "new-shared-build-input.json",
+    "scripts/setup-app.mjs",
   ]) {
     const plan = runQualityCheckScope([file]);
-    assert.equal(plan.v1, "true", file);
-    assert.equal(plan.v2, "true", file);
+    assert.equal(plan.verify, "true", file);
     assert.equal(plan.matrix.include.length, 6, file);
+    assert.deepEqual([...new Set(plan.matrix.include.map(({ app }) => app))], ["v1", "v2"]);
   }
 });

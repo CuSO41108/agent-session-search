@@ -17,10 +17,12 @@ jobs:
   preflight:
     name: Plan and repository checks
     runs-on: ubuntu-latest
+    env:
+      BASE_SHA: ${{ github.event.pull_request.base.sha }}
+      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
     outputs:
       matrix: ${{ steps.scope.outputs.matrix }}
-      v1: ${{ steps.scope.outputs.v1 }}
-      v2: ${{ steps.scope.outputs.v2 }}
+      verify: ${{ steps.scope.outputs.verify }}
     steps:
       - name: Check out repository
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -34,15 +36,9 @@ jobs:
 
       - name: Plan affected application checks
         id: scope
-        env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: node .github/scripts/quality-check-scope.mjs --base "$BASE_SHA" --head "$HEAD_SHA" >> "$GITHUB_OUTPUT"
 
       - name: Validate release note
-        env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: node scripts/release-notes.mjs check-range "$BASE_SHA" "$HEAD_SHA"
 
       - name: Test repository tooling
@@ -51,7 +47,7 @@ jobs:
   verify:
     name: Verify ${{ matrix.label }} (${{ matrix.os }})
     needs: preflight
-    if: needs.preflight.outputs.v1 == 'true' || needs.preflight.outputs.v2 == 'true'
+    if: needs.preflight.outputs.verify == 'true'
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.preflight.outputs.matrix) }}
@@ -64,15 +60,10 @@ jobs:
       npm_config_prefer_offline: "true"
       AGENT_RECALL_TEST_NPM_CACHE: ${{ github.workspace }}/.ci-npm-cache
     steps:
-      - name: Summarize application scope
-        run: echo "Checking ${{ matrix.label }} on ${{ matrix.os }}."
-
       - name: Check out repository
-        if: matrix.app != 'repository'
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       - name: Set up Node.js
-        if: matrix.app != 'repository'
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
@@ -80,19 +71,17 @@ jobs:
           cache-dependency-path: ${{ matrix.directory }}/package-lock.json
 
       - name: Install application dependencies
-        if: matrix.app != 'repository'
         run: npm run setup:${{ matrix.app }}
 
       - name: Test complete application suite
-        if: matrix.app != 'repository' && runner.os == 'Linux'
+        if: runner.os == 'Linux'
         run: npm --prefix "${{ matrix.directory }}" test
 
       - name: Test platform-specific scripts
-        if: matrix.app != 'repository' && runner.os != 'Linux'
+        if: runner.os != 'Linux'
         run: npm --prefix "${{ matrix.directory }}" run test:scripts
 
       - name: Typecheck and smoke-test packaged application
-        if: matrix.app != 'repository'
         run: |
           npm --prefix "${{ matrix.directory }}" run typecheck
           node "${{ matrix.directory }}/scripts/package-smoke.mjs"
@@ -105,21 +94,15 @@ jobs:
     steps:
       - name: Require every check to pass
         env:
-          CHECK_V1: ${{ needs.preflight.outputs.v1 }}
-          CHECK_V2: ${{ needs.preflight.outputs.v2 }}
+          SHOULD_VERIFY: ${{ needs.preflight.outputs.verify }}
           PREFLIGHT_RESULT: ${{ needs.preflight.result }}
           VERIFY_RESULT: ${{ needs.verify.result }}
         run: |
-          test "$PREFLIGHT_RESULT" = "success"
-          case "$CHECK_V1:$CHECK_V2" in
-            true:true|true:false|false:true)
-              test "$VERIFY_RESULT" = "success"
-              ;;
-            false:false)
-              test "$VERIFY_RESULT" = "skipped"
+          case "$PREFLIGHT_RESULT:$SHOULD_VERIFY:$VERIFY_RESULT" in
+            success:true:success|success:false:skipped)
               ;;
             *)
-              echo "Invalid application scope: $CHECK_V1:$CHECK_V2" >&2
+              echo "Quality checks did not complete successfully." >&2
               exit 1
               ;;
           esac
