@@ -126,6 +126,43 @@ async function clearInstallStatus(options = {}) {
   await fsp.rm(options.statusPath || installStatusPath(options.homeDir), { force: true });
 }
 
+function isUpdateRecoverySibling(candidatePath, packagePath, prefix) {
+  if (typeof candidatePath !== "string" || !candidatePath) return false;
+  const resolvedPackagePath = path.resolve(packagePath);
+  const resolvedCandidatePath = path.resolve(candidatePath);
+  return path.dirname(resolvedCandidatePath) === path.dirname(resolvedPackagePath)
+    && path.basename(resolvedCandidatePath).startsWith(prefix);
+}
+
+async function recoverInterruptedUpdate(options = {}) {
+  const statusPath = options.statusPath || installStatusPath(options.homeDir);
+  const status = await readJson(statusPath);
+  const recovery = status?.status === "installing" ? status.recovery : null;
+  const livePackagePath = path.resolve(options.packagePath || packageRoot());
+  if (
+    !recovery
+    || path.resolve(String(recovery.livePackagePath || "")) !== livePackagePath
+    || !isUpdateRecoverySibling(recovery.backupPath, livePackagePath, ".agent-recall-backup-")
+    || !fs.existsSync(recovery.backupPath)
+  ) {
+    return false;
+  }
+
+  await fsp.mkdir(livePackagePath, { recursive: true });
+  await fsp.cp(recovery.backupPath, livePackagePath, { recursive: true, force: true });
+  await writeJsonAtomic(statusPath, {
+    status: "error",
+    version: status.version,
+    updatedAt: Date.now(),
+    error: "自动更新意外中断，已恢复到更新前的版本。",
+  });
+  await fsp.rm(recovery.backupPath, { recursive: true, force: true });
+  if (isUpdateRecoverySibling(recovery.stageRoot, livePackagePath, ".agent-recall-stage-")) {
+    await fsp.rm(recovery.stageRoot, { recursive: true, force: true });
+  }
+  return true;
+}
+
 async function acquireUpdateLock(options = {}) {
   const filePath = options.lockPath || updateLockPath(options.homeDir);
   await fsp.mkdir(path.dirname(filePath), { recursive: true });
@@ -1321,6 +1358,7 @@ module.exports = {
   parseUpdateManifest,
   readUpdatePreference,
   readInstallStatus,
+  recoverInterruptedUpdate,
   releaseUrl,
   skipUpdateVersion,
   snoozeUpdatePrompt,

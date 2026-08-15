@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createRequire } from "node:module";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -34,6 +34,47 @@ test("swaps a validated staged package into place and removes the backup", async
     assert.equal(await readFile(path.join(livePackagePath, "marker.txt"), "utf8"), "new");
     assert.equal(JSON.parse(await readFile(statusPath, "utf8")).status, "installed");
     await assert.rejects(readFile(path.join(backupPath, "marker.txt"), "utf8"), /ENOENT/);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("keeps the live package available while a staged promotion fails", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "agent-recall-apply-stage-failure-"));
+  try {
+    const livePackagePath = path.join(directory, "agent-recall-v2");
+    const stageRoot = path.join(directory, "stage");
+    const stagedPackagePath = path.join(stageRoot, "node_modules", "agent-recall-v2");
+    const backupPath = path.join(directory, ".agent-recall-backup-test");
+    const statusPath = path.join(directory, "status.json");
+    await mkdir(livePackagePath, { recursive: true });
+    await mkdir(stagedPackagePath, { recursive: true });
+    await writeFile(path.join(livePackagePath, "marker.txt"), "old", "utf8");
+    await writeFile(path.join(stagedPackagePath, "marker.txt"), "new", "utf8");
+    let promotionAttempted = false;
+
+    await assert.rejects(applyStagedUpdate({
+      version: "0.2.0",
+      stageRoot,
+      archivePath: path.join(stageRoot, "agent-recall.tgz"),
+      stagedPackagePath,
+      livePackagePath,
+      backupPath,
+      statusPath,
+    }, {
+      copyDirectoryImpl: async (source, destination, options) => {
+        if (source === stagedPackagePath) {
+          promotionAttempted = true;
+          assert.equal(await readFile(path.join(livePackagePath, "marker.txt"), "utf8"), "old");
+          throw new Error("simulated interrupted promotion");
+        }
+        return cp(source, destination, options);
+      },
+    }), /simulated interrupted promotion/);
+
+    assert.equal(promotionAttempted, true);
+    assert.equal(await readFile(path.join(livePackagePath, "marker.txt"), "utf8"), "old");
+    assert.equal(JSON.parse(await readFile(statusPath, "utf8")).status, "error");
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
