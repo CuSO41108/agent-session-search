@@ -6,34 +6,30 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: publish-release
   cancel-in-progress: false
 
+env:
+  OPENVIKING_RUNTIME_VERSION: 0.4.11-r4
+
 jobs:
-  openviking-runtime:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - runner: macos-15
-            platform: darwin
-            arch: arm64
-            python_url: https://github.com/astral-sh/python-build-standalone/releases/download/20260510/cpython-3.12.13%2B20260510-aarch64-apple-darwin-install_only_stripped.tar.gz
-            python_sha256: 55bc1a5edbc8ac4da0081f4f5731ed2d1ed10c57cb37a820b2a0dbc7cad742e9
-          - runner: macos-15-intel
-            platform: darwin
-            arch: x64
-            python_url: https://github.com/astral-sh/python-build-standalone/releases/download/20260510/cpython-3.12.13%2B20260510-x86_64-apple-darwin-install_only_stripped.tar.gz
-            python_sha256: 6bab7fa97d4f2ddba86da0e05acff66c53b5edaca1df8edcf00ddca785a9c59b
-          - runner: windows-2025
-            platform: win32
-            arch: x64
-            python_url: https://github.com/astral-sh/python-build-standalone/releases/download/20260510/cpython-3.12.13%2B20260510-x86_64-pc-windows-msvc-install_only_stripped.tar.gz
-            python_sha256: 24168aff2e7d93784c6a436124c4ebb79b076a4e289bde4902c08333507b71d0
-    runs-on: ${{ matrix.runner }}
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      v2_publish: ${{ steps.pending.outputs.v2_publish }}
+      latest_v2_tag: ${{ steps.pending.outputs.latest_v2_tag }}
+      v2_base_tag: ${{ steps.pending.outputs.v2_base_tag }}
+      v2_stable_repair: ${{ steps.stable.outputs.v2_stable_repair }}
+      runtime_reuse: ${{ steps.runtime.outputs.runtime_reuse }}
+      runtime_source_tag: ${{ steps.runtime.outputs.runtime_source_tag }}
+      runtime_fingerprint: ${{ steps.inputs.outputs.runtime_fingerprint }}
+      runtime_matrix: ${{ steps.inputs.outputs.runtime_matrix }}
+      runtime_node_version: ${{ steps.inputs.outputs.runtime_node_version }}
+      runtime_rust_toolchain: ${{ steps.inputs.outputs.runtime_rust_toolchain }}
+      runtime_sidecar_name: ${{ steps.inputs.outputs.runtime_sidecar_name }}
     steps:
       - name: Check out repository
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -44,6 +40,24 @@ jobs:
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
+
+      - name: Describe OpenViking runtime inputs
+        id: inputs
+        shell: bash
+        run: |
+          description="$(node .github/scripts/probe-openviking-runtime-release.mjs \
+            --describe \
+            --config .github/openviking-runtime-inputs.json)"
+          configured_version="$(jq -r '.runtimeVersion' <<< "$description")"
+          if [ "$configured_version" != "$OPENVIKING_RUNTIME_VERSION" ]; then
+            echo "Workflow OpenViking runtime version does not match its input config." >&2
+            exit 1
+          fi
+          echo "runtime_fingerprint=$(jq -r '.inputFingerprint' <<< "$description")" >> "$GITHUB_OUTPUT"
+          echo "runtime_matrix=$(jq -c '.matrix' <<< "$description")" >> "$GITHUB_OUTPUT"
+          echo "runtime_node_version=$(jq -r '.nodeVersion' <<< "$description")" >> "$GITHUB_OUTPUT"
+          echo "runtime_rust_toolchain=$(jq -r '.rustToolchain' <<< "$description")" >> "$GITHUB_OUTPUT"
+          echo "runtime_sidecar_name=$(jq -r '.sidecarName' <<< "$description")" >> "$GITHUB_OUTPUT"
 
       - name: Detect pending V2 release
         id: pending
@@ -64,11 +78,9 @@ jobs:
               break
             fi
           done < <(printf '%s\n' "$published_tags_output")
-          if [ -z "$latest_v2_tag" ]; then
-            latest_v2_tag="$V2_BOOTSTRAP_TAG"
-          fi
-          git rev-parse "$latest_v2_tag" >/dev/null 2>&1 || {
-            echo "Published V2 release tag $latest_v2_tag does not exist in the checkout." >&2
+          v2_base_tag="${latest_v2_tag:-$V2_BOOTSTRAP_TAG}"
+          git rev-parse "$v2_base_tag" >/dev/null 2>&1 || {
+            echo "V2 release base tag $v2_base_tag does not exist in the checkout." >&2
             exit 1
           }
           v2_publish=false
@@ -79,23 +91,129 @@ jobs:
               v2_publish=true
               break
             fi
-          done < <(git diff --name-only --diff-filter=A "$latest_v2_tag" "$RELEASE_SHA" -- .release-notes | grep -Ev '/README\.md$' || true)
-          echo "publish=$v2_publish" >> "$GITHUB_OUTPUT"
+          done < <(git diff --name-only --diff-filter=A "$v2_base_tag" "$RELEASE_SHA" -- .release-notes | grep -Ev '/README\.md$' || true)
+          echo "v2_publish=$v2_publish" >> "$GITHUB_OUTPUT"
+          echo "latest_v2_tag=$latest_v2_tag" >> "$GITHUB_OUTPUT"
+          echo "v2_base_tag=$v2_base_tag" >> "$GITHUB_OUTPUT"
+
+      - name: Detect stale V2 stable install release
+        id: stable
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          LATEST_V2_TAG: ${{ steps.pending.outputs.latest_v2_tag }}
+          V2_LATEST_TAG: v2-latest
+        run: |
+          repair=false
+          if [ -n "$LATEST_V2_TAG" ]; then
+            probe_root="$(mktemp -d)"
+            trap 'rm -rf "$probe_root"' EXIT
+            source_release_json="$probe_root/source-release.json"
+            stable_release_json="$probe_root/stable-release.json"
+            stable_error="$probe_root/stable-error.txt"
+            gh api "repos/${GITHUB_REPOSITORY}/releases/tags/$LATEST_V2_TAG" > "$source_release_json"
+            source_commit_sha="$(git rev-parse "${LATEST_V2_TAG}^{commit}")"
+
+            stable_args=()
+            if gh api "repos/${GITHUB_REPOSITORY}/releases/tags/$V2_LATEST_TAG" \
+                > "$stable_release_json" 2> "$stable_error"; then
+              stable_args+=(--stable-release-json "$stable_release_json")
+              if stable_commit_sha="$(git rev-parse -q --verify "refs/tags/${V2_LATEST_TAG}^{commit}")"; then
+                stable_args+=(--stable-commit-sha "$stable_commit_sha")
+              fi
+            elif ! grep -Eq 'HTTP 404|Not Found' "$stable_error"; then
+              cat "$stable_error" >&2
+              exit 1
+            fi
+
+            repair="$(node .github/scripts/probe-v2-stable-release.mjs \
+              --source-release-json "$source_release_json" \
+              --source-commit-sha "$source_commit_sha" \
+              "${stable_args[@]}")"
+          fi
+          echo "v2_stable_repair=$repair" >> "$GITHUB_OUTPUT"
+
+      - name: Probe published OpenViking runtime assets
+        id: runtime
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          LATEST_V2_TAG: ${{ steps.pending.outputs.latest_v2_tag }}
+          RUNTIME_SIDECAR_NAME: ${{ steps.inputs.outputs.runtime_sidecar_name }}
+          V2_PUBLISH: ${{ steps.pending.outputs.v2_publish }}
+        run: |
+          runtime_reuse=false
+          runtime_source_tag=""
+          if [ "$V2_PUBLISH" = "true" ] && [ -n "$LATEST_V2_TAG" ]; then
+            probe_root="$(mktemp -d)"
+            trap 'rm -rf "$probe_root"' EXIT
+            release_json="$probe_root/release.json"
+            small_assets="$probe_root/small-assets"
+            mkdir -p "$small_assets"
+            gh api "repos/${GITHUB_REPOSITORY}/releases/tags/$LATEST_V2_TAG" > "$release_json"
+            download_status=0
+            gh release download "$LATEST_V2_TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --dir "$small_assets" \
+              --pattern "$RUNTIME_SIDECAR_NAME" \
+              --pattern "openviking-runtime-${OPENVIKING_RUNTIME_VERSION}-darwin-arm64.tar.gz.json" \
+              --pattern "openviking-runtime-${OPENVIKING_RUNTIME_VERSION}-darwin-x64.tar.gz.json" \
+              --pattern "openviking-runtime-${OPENVIKING_RUNTIME_VERSION}-win32-x64.tar.gz.json" || download_status="$?"
+            probe_error="$probe_root/probe-error.txt"
+            if probed_tag="$(node .github/scripts/probe-openviking-runtime-release.mjs \
+                --config .github/openviking-runtime-inputs.json \
+                --release-json "$release_json" \
+                --small-assets-dir "$small_assets" \
+                --tag "$LATEST_V2_TAG" 2>"$probe_error")"; then
+              runtime_reuse=true
+              runtime_source_tag="$probed_tag"
+              echo "Reusing OpenViking runtime assets from $runtime_source_tag."
+            else
+              probe_status="$?"
+              if [ "$probe_status" = "2" ]; then
+                cat "$probe_error"
+                if [ "$download_status" != "0" ]; then
+                  echo "::notice::Published runtime metadata could not be downloaded completely."
+                fi
+                echo "::notice::Published runtime assets are not reusable; rebuilding all platforms."
+              else
+                cat "$probe_error" >&2
+                exit "$probe_status"
+              fi
+            fi
+          fi
+          echo "runtime_reuse=$runtime_reuse" >> "$GITHUB_OUTPUT"
+          echo "runtime_source_tag=$runtime_source_tag" >> "$GITHUB_OUTPUT"
+
+  openviking-runtime:
+    needs: plan
+    if: needs.plan.outputs.v2_publish == 'true' && needs.plan.outputs.runtime_reuse != 'true'
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.runtime_matrix) }}
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: ${{ needs.plan.outputs.runtime_node_version }}
 
       - name: Install runtime build dependencies
-        if: steps.pending.outputs.publish == 'true'
-        run: npm run setup:v2
+        run: npm ci --prefix apps/main-2.0 --ignore-scripts
 
       - name: Prepare isolated Rust toolchain
-        if: steps.pending.outputs.publish == 'true'
         shell: bash
         env:
           RUSTUP_HOME: ${{ runner.temp }}/openviking-rustup
           CARGO_HOME: ${{ runner.temp }}/openviking-cargo
-        run: rustup default stable
+        run: rustup default "${{ needs.plan.outputs.runtime_rust_toolchain }}"
 
       - name: Build isolated OpenViking runtime
-        if: steps.pending.outputs.publish == 'true'
         shell: bash
         env:
           BUILD_HOME: ${{ runner.temp }}/openviking-build-home
@@ -106,7 +224,7 @@ jobs:
           PYTHON_SHA256: ${{ matrix.python_sha256 }}
         run: |
           node apps/main-2.0/scripts/build-openviking-runtime.mjs \
-            --version 0.4.11-r4 \
+            --version "$OPENVIKING_RUNTIME_VERSION" \
             --platform "${{ matrix.platform }}" \
             --arch "${{ matrix.arch }}" \
             --build-home "$BUILD_HOME" \
@@ -115,16 +233,34 @@ jobs:
             --python-sha256 "$PYTHON_SHA256"
 
       - name: Upload OpenViking runtime artifact
-        if: steps.pending.outputs.publish == 'true'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: openviking-runtime-${{ matrix.platform }}-${{ matrix.arch }}
           path: ${{ runner.temp }}/openviking-release/openviking-runtime-*
           if-no-files-found: error
+          overwrite: true
 
   release:
-    needs: openviking-runtime
+    needs: [plan, openviking-runtime]
+    if: >-
+      always() &&
+      !cancelled() &&
+      needs.plan.result == 'success' &&
+      (
+        needs.openviking-runtime.result == 'success' ||
+        (
+          needs.openviking-runtime.result == 'skipped' &&
+          (
+            needs.plan.outputs.v2_publish == 'false' ||
+            needs.plan.outputs.runtime_reuse == 'true'
+          )
+        )
+      )
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      v2_tag: ${{ steps.v2_version.outputs.tag }}
     steps:
       - name: Check out repository
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -307,17 +443,77 @@ jobs:
               --output "$GITHUB_WORKSPACE/release/v2"
           fi
 
-      - name: Download OpenViking runtime artifacts
-        if: steps.pending.outputs.v2_publish == 'true' && steps.v2_version.outputs.release_required == 'true'
+      - name: Download reused OpenViking runtime artifacts
+        if: steps.pending.outputs.v2_publish == 'true' && steps.v2_version.outputs.release_required == 'true' && needs.plan.outputs.runtime_reuse == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUNTIME_SIDECAR_NAME: ${{ needs.plan.outputs.runtime_sidecar_name }}
+          RUNTIME_SOURCE_TAG: ${{ needs.plan.outputs.runtime_source_tag }}
+        run: |
+          gh release download "$RUNTIME_SOURCE_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --dir release/v2 \
+            --pattern "$RUNTIME_SIDECAR_NAME" \
+            --pattern "openviking-runtime-${OPENVIKING_RUNTIME_VERSION}-darwin-arm64.tar.gz" \
+            --pattern "openviking-runtime-${OPENVIKING_RUNTIME_VERSION}-darwin-arm64.tar.gz.json" \
+            --pattern "openviking-runtime-${OPENVIKING_RUNTIME_VERSION}-darwin-x64.tar.gz" \
+            --pattern "openviking-runtime-${OPENVIKING_RUNTIME_VERSION}-darwin-x64.tar.gz.json" \
+            --pattern "openviking-runtime-${OPENVIKING_RUNTIME_VERSION}-win32-x64.tar.gz" \
+            --pattern "openviking-runtime-${OPENVIKING_RUNTIME_VERSION}-win32-x64.tar.gz.json"
+
+      - name: Reverify reused OpenViking runtime source
+        if: steps.pending.outputs.v2_publish == 'true' && steps.v2_version.outputs.release_required == 'true' && needs.plan.outputs.runtime_reuse == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUNTIME_SOURCE_TAG: ${{ needs.plan.outputs.runtime_source_tag }}
+        run: |
+          source_release_json="$RUNNER_TEMP/openviking-source-release.json"
+          gh api "repos/${GITHUB_REPOSITORY}/releases/tags/$RUNTIME_SOURCE_TAG" > "$source_release_json"
+          verified_tag="$(node .github/scripts/probe-openviking-runtime-release.mjs \
+            --config .github/openviking-runtime-inputs.json \
+            --release-json "$source_release_json" \
+            --small-assets-dir release/v2 \
+            --tag "$RUNTIME_SOURCE_TAG")"
+          if [ "$verified_tag" != "$RUNTIME_SOURCE_TAG" ]; then
+            echo "Reused OpenViking runtime source changed after planning." >&2
+            exit 1
+          fi
+
+      - name: Download freshly built OpenViking runtime artifacts
+        if: steps.pending.outputs.v2_publish == 'true' && steps.v2_version.outputs.release_required == 'true' && needs.plan.outputs.runtime_reuse != 'true'
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           pattern: openviking-runtime-*
           path: release/v2
           merge-multiple: true
 
+      - name: Write OpenViking runtime input sidecar
+        if: steps.pending.outputs.v2_publish == 'true' && steps.v2_version.outputs.release_required == 'true' && needs.plan.outputs.runtime_reuse != 'true'
+        env:
+          EXPECTED_RUNTIME_FINGERPRINT: ${{ needs.plan.outputs.runtime_fingerprint }}
+          RUNTIME_SIDECAR_NAME: ${{ needs.plan.outputs.runtime_sidecar_name }}
+        run: |
+          actual_fingerprint="$(node .github/scripts/probe-openviking-runtime-release.mjs \
+            --config .github/openviking-runtime-inputs.json \
+            --write-sidecar "release/v2/$RUNTIME_SIDECAR_NAME")"
+          if [ "$actual_fingerprint" != "$EXPECTED_RUNTIME_FINGERPRINT" ]; then
+            echo "OpenViking runtime inputs changed after planning." >&2
+            exit 1
+          fi
+
       - name: Verify OpenViking runtime artifacts
         if: steps.pending.outputs.v2_publish == 'true' && steps.v2_version.outputs.release_required == 'true'
-        run: node apps/main-2.0/scripts/verify-openviking-runtime-assets.mjs release/v2 0.4.11-r4
+        env:
+          EXPECTED_RUNTIME_FINGERPRINT: ${{ needs.plan.outputs.runtime_fingerprint }}
+        run: |
+          node apps/main-2.0/scripts/verify-openviking-runtime-assets.mjs release/v2 "$OPENVIKING_RUNTIME_VERSION"
+          actual_fingerprint="$(node .github/scripts/probe-openviking-runtime-release.mjs \
+            --config .github/openviking-runtime-inputs.json \
+            --verify-local-assets release/v2)"
+          if [ "$actual_fingerprint" != "$EXPECTED_RUNTIME_FINGERPRINT" ]; then
+            echo "OpenViking runtime inputs changed after planning." >&2
+            exit 1
+          fi
 
       - name: Publish V1 GitHub Release
         if: steps.pending.outputs.v1_publish == 'true' && steps.v1_version.outputs.release_required == 'true'
@@ -362,7 +558,9 @@ jobs:
       - name: Publish V2 GitHub Release
         if: steps.pending.outputs.v2_publish == 'true' && steps.v2_version.outputs.release_required == 'true'
         env:
+          EXPECTED_RUNTIME_FINGERPRINT: ${{ needs.plan.outputs.runtime_fingerprint }}
           GH_TOKEN: ${{ github.token }}
+          RUNTIME_SIDECAR_NAME: ${{ needs.plan.outputs.runtime_sidecar_name }}
           V2_TAG: ${{ steps.v2_version.outputs.tag }}
           V2_VERSION: ${{ steps.v2_version.outputs.version }}
           MERGED_SHA: ${{ github.sha }}
@@ -382,7 +580,14 @@ jobs:
           else
             gh release create "$V2_TAG" --draft --verify-tag --title "agent-recall-v2 v${V2_VERSION}" --notes-file release/v2/release-notes-v2.md --latest=false
           fi
-          gh release upload "$V2_TAG" release/v2/*.tgz release/v2/*.sha256 release/v2/update-v2.json release/v2/openviking-runtime-*.tar.gz release/v2/openviking-runtime-*.tar.gz.json --clobber
+          gh release upload "$V2_TAG" \
+            release/v2/*.tgz \
+            release/v2/*.sha256 \
+            release/v2/update-v2.json \
+            release/v2/openviking-runtime-*.tar.gz \
+            release/v2/openviking-runtime-*.tar.gz.json \
+            "release/v2/$RUNTIME_SIDECAR_NAME" \
+            --clobber
           verify_directory="$(mktemp -d)"
           trap 'rm -rf "$verify_directory"' EXIT
           gh release download "$V2_TAG" \
@@ -398,28 +603,110 @@ jobs:
             --version "$V2_VERSION" \
             --repository "$GITHUB_REPOSITORY" \
             --output "$verify_directory"
-          node apps/main-2.0/scripts/verify-openviking-runtime-assets.mjs "$verify_directory" 0.4.11-r4
+          node apps/main-2.0/scripts/verify-openviking-runtime-assets.mjs "$verify_directory" "$OPENVIKING_RUNTIME_VERSION"
+          downloaded_fingerprint="$(node .github/scripts/probe-openviking-runtime-release.mjs \
+            --config .github/openviking-runtime-inputs.json \
+            --verify-local-assets "$verify_directory")"
+          if [ "$downloaded_fingerprint" != "$EXPECTED_RUNTIME_FINGERPRINT" ]; then
+            echo "Downloaded OpenViking runtime sidecar does not match the planned inputs." >&2
+            exit 1
+          fi
           gh release edit "$V2_TAG" --draft=false --latest=false
 
-      # V1's updater hardcodes `releases/latest/download/update.json`, so the
-      # repository-wide "Latest" marker cannot move to V2 without silently breaking
-      # auto-update for every installed V1 client. Keep a rolling `v2-latest`
-      # release instead so V2 has one stable install URL of its own.
-      # Mirror the package, checksum, and update manifest. The updater can read
-      # the small manifest directly when GitHub's release API is slow or blocked;
-      # OpenViking remains on `v2-<version>` using the version baked into the tarball.
-      - name: Refresh V2 stable install release
-        if: steps.pending.outputs.v2_publish == 'true' && steps.v2_version.outputs.release_required == 'true'
+  # V1's updater owns GitHub's repository-wide "Latest" marker. V2 therefore
+  # mirrors its install package through a rolling `v2-latest` release. Keeping
+  # this in a separate job lets a failed pointer refresh be retried after the
+  # immutable versioned V2 release is already public.
+  refresh-v2-stable:
+    needs: [plan, release]
+    if: >-
+      always() &&
+      !cancelled() &&
+      needs.plan.result == 'success' &&
+      needs.release.result == 'success' &&
+      (
+        needs.plan.outputs.v2_publish == 'true' ||
+        needs.plan.outputs.v2_stable_repair == 'true'
+      )
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+
+      - name: Resolve latest published V2 release
+        id: source
         env:
           GH_TOKEN: ${{ github.token }}
-          V2_TAG: ${{ steps.v2_version.outputs.tag }}
-          V2_VERSION: ${{ steps.v2_version.outputs.version }}
+          NEW_V2_TAG: ${{ needs.release.outputs.v2_tag }}
+        run: |
+          v2_tag="$NEW_V2_TAG"
+          if [ -z "$v2_tag" ]; then
+            published_tags_output="$(
+              gh api --paginate "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
+                --jq '.[] | select(.draft == false and .prerelease == false) | .tag_name'
+            )"
+            while IFS= read -r tag; do
+              if [[ "$tag" =~ ^v2-[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+                v2_tag="$tag"
+                break
+              fi
+            done < <(printf '%s\n' "$published_tags_output")
+          fi
+          if ! [[ "$v2_tag" =~ ^v2-[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "No published versioned V2 release is available for the stable install pointer." >&2
+            exit 1
+          fi
+          gh api "repos/${GITHUB_REPOSITORY}/releases/tags/$v2_tag" \
+            --jq 'select(.draft == false and .prerelease == false) | .tag_name' | grep -Fx "$v2_tag" >/dev/null
+          echo "v2_tag=$v2_tag" >> "$GITHUB_OUTPUT"
+          echo "v2_version=${v2_tag#v2-}" >> "$GITHUB_OUTPUT"
+          echo "v2_source_sha=$(git rev-parse "${v2_tag}^{commit}")" >> "$GITHUB_OUTPUT"
+
+      - name: Download and verify V2 stable source assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          V2_TAG: ${{ steps.source.outputs.v2_tag }}
+          V2_VERSION: ${{ steps.source.outputs.v2_version }}
+        run: |
+          mkdir -p release/v2
+          gh release download "$V2_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --dir release/v2 \
+            --pattern "agent-recall-v2-${V2_VERSION}.tgz" \
+            --pattern "agent-recall-v2-${V2_VERSION}.tgz.sha256" \
+            --pattern "agent-recall-v2.tgz" \
+            --pattern "agent-recall-v2.tgz.sha256" \
+            --pattern "update-v2.json"
+          node apps/main-2.0/scripts/create-release-assets.mjs \
+            --validate \
+            --version "$V2_VERSION" \
+            --repository "$GITHUB_REPOSITORY" \
+            --output release/v2
+          node apps/main-2.0/scripts/verify-stable-install-assets.mjs \
+            --stable release/v2 \
+            --release release/v2 \
+            --version "$V2_VERSION"
+
+      - name: Refresh V2 stable install release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          V2_TAG: ${{ steps.source.outputs.v2_tag }}
+          V2_VERSION: ${{ steps.source.outputs.v2_version }}
+          V2_SOURCE_SHA: ${{ steps.source.outputs.v2_source_sha }}
           V2_LATEST_TAG: v2-latest
-          MERGED_SHA: ${{ github.sha }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git tag -f -a "$V2_LATEST_TAG" "$MERGED_SHA" -m "agent-recall-v2 stable install pointer (v${V2_VERSION})"
+          git tag -f -a "$V2_LATEST_TAG" "$V2_SOURCE_SHA" -m "agent-recall-v2 stable install pointer (v${V2_VERSION})"
           git push --force origin "refs/tags/$V2_LATEST_TAG"
 
           notes_file="$RUNNER_TEMP/agent-recall-v2-latest-note.md"
