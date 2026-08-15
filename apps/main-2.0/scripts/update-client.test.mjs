@@ -67,6 +67,7 @@ const {
   launchInstalledApp,
   manualInstallCommand,
   parseUpdateManifest,
+  recoverInterruptedUpdate,
   showNativeUpdateFailure,
   skipUpdateVersion,
   snoozeUpdatePrompt,
@@ -763,6 +764,31 @@ test("waits for an active update lock before launching the application", async (
   const lock = await acquireUpdateLock({ lockPath });
   setTimeout(() => void lock.release(), 20);
   assert.equal(await waitForUpdateCompletion({ lockPath, currentPid: -1, pollMs: 5, timeoutMs: 1_000 }), true);
+});
+
+test("recovers the previous package after an interrupted staged promotion", async () => {
+  const directory = await temporaryDirectory("agent-session-update-recovery-");
+  const packageParent = path.join(directory, "node_modules");
+  const packagePath = path.join(packageParent, "agent-recall-v2");
+  const backupPath = path.join(packageParent, ".agent-recall-backup-test");
+  const stageRoot = path.join(packageParent, ".agent-recall-stage-test");
+  const statusPath = path.join(directory, "status.json");
+  await mkdir(packagePath, { recursive: true });
+  await mkdir(backupPath, { recursive: true });
+  await mkdir(stageRoot, { recursive: true });
+  await writeFile(path.join(packagePath, "marker.txt"), "partial update", "utf8");
+  await writeFile(path.join(backupPath, "marker.txt"), "previous version", "utf8");
+  await writeFile(statusPath, JSON.stringify({
+    status: "installing",
+    version: "0.2.0",
+    recovery: { livePackagePath: packagePath, backupPath, stageRoot },
+  }), "utf8");
+
+  assert.equal(await recoverInterruptedUpdate({ packagePath, statusPath }), true);
+  assert.equal(await readFile(path.join(packagePath, "marker.txt"), "utf8"), "previous version");
+  assert.match(JSON.parse(await readFile(statusPath, "utf8")).error, /已恢复到更新前的版本/);
+  await assert.rejects(readFile(path.join(backupPath, "marker.txt"), "utf8"), { code: "ENOENT" });
+  await assert.rejects(readdir(stageRoot), { code: "ENOENT" });
 });
 
 test("installs through the public registry and records a completed status", async () => {

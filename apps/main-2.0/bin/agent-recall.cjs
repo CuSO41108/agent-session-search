@@ -17,6 +17,7 @@ const {
   formatUpdateNotice,
   isElectronRuntimeReady,
   readUpdatePreference,
+  recoverInterruptedUpdate,
   skipUpdateVersion,
   snoozeUpdatePrompt,
   waitForUpdateCompletion,
@@ -155,6 +156,7 @@ async function main() {
       if (process.stdout.isTTY) process.stdout.write("正在等待自动更新完成...\n");
     },
   });
+  await recoverInterruptedUpdate();
   const packagePath = path.resolve(__dirname, "..");
   await restoreEmbeddedPostgresNativeLinks(path.join(packagePath, "node_modules"));
   try {

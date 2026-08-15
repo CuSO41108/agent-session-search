@@ -12,6 +12,7 @@ const {
   showNativeUpdateFailure,
   stopRunningApp,
   waitForProcessExit,
+  writeJsonAtomic,
 } = require("./update-client.cjs");
 
 function delay(ms) {
@@ -45,38 +46,52 @@ function argumentValue(name) {
 
 let attemptedVersion = null;
 
-async function applyStagedUpdate(staged) {
+async function applyStagedUpdate(staged, options = {}) {
+  const copyDirectory = options.copyDirectoryImpl || fs.cp;
   let backedUp = false;
   await fs.rm(staged.backupPath, { recursive: true, force: true });
   try {
     try {
-      await fs.rename(staged.livePackagePath, staged.backupPath);
+      await copyDirectory(staged.livePackagePath, staged.backupPath, { recursive: true, force: true });
       backedUp = true;
     } catch (error) {
       if (error?.code !== "ENOENT") throw error;
     }
-    try {
-      await fs.rename(staged.stagedPackagePath, staged.livePackagePath);
-    } catch (error) {
-      if (error?.code !== "EXDEV") throw error;
-      await fs.cp(staged.stagedPackagePath, staged.livePackagePath, { recursive: true, force: true });
-      await fs.rm(staged.stagedPackagePath, { recursive: true, force: true });
+    if (backedUp) {
+      await writeJsonAtomic(staged.statusPath, {
+        status: "installing",
+        version: staged.version,
+        updatedAt: Date.now(),
+        error: null,
+        recovery: {
+          livePackagePath: staged.livePackagePath,
+          backupPath: staged.backupPath,
+          stageRoot: staged.stageRoot,
+        },
+      });
     }
-    await fs.mkdir(path.dirname(staged.statusPath), { recursive: true });
-    await fs.writeFile(staged.statusPath, `${JSON.stringify({
+    await fs.mkdir(staged.livePackagePath, { recursive: true });
+    await copyDirectory(staged.stagedPackagePath, staged.livePackagePath, { recursive: true, force: true });
+    await writeJsonAtomic(staged.statusPath, {
       status: "installed",
       version: staged.version,
       updatedAt: Date.now(),
       error: null,
-    }, null, 2)}\n`, "utf8");
+    });
     await fs.rm(staged.backupPath, { recursive: true, force: true });
     await fs.rm(staged.stageRoot, { recursive: true, force: true });
   } catch (error) {
-    await fs.rm(staged.livePackagePath, { recursive: true, force: true }).catch(() => undefined);
     if (backedUp) {
-      await fs.rename(staged.backupPath, staged.livePackagePath).catch((rollbackError) => {
+      await fs.mkdir(staged.livePackagePath, { recursive: true }).catch(() => undefined);
+      await copyDirectory(staged.backupPath, staged.livePackagePath, { recursive: true, force: true }).catch((rollbackError) => {
         throw new Error(`${error instanceof Error ? error.message : String(error)}; rollback failed: ${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}`);
       });
+      await writeJsonAtomic(staged.statusPath, {
+        status: "error",
+        version: staged.version,
+        updatedAt: Date.now(),
+        error: error instanceof Error ? error.message : String(error),
+      }).catch(() => undefined);
     }
     throw error;
   }
