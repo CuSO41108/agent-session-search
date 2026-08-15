@@ -29,7 +29,7 @@ import {
   sourceUiFamily,
 } from "../../session-ui";
 import { readInitialToolEventsVisibility, storeToolEventsVisibility } from "../../tool-events-visibility";
-import { TurnAccordion } from "./turn-accordion";
+import { TurnAccordion, type TurnMessageRoleFilter } from "./turn-accordion";
 import { MessageHead } from "./message-shell";
 import type { SessionFamily } from "../../../../core/session-family";
 import { canDeleteSessionLocally } from "../../../../core/session-environment";
@@ -42,7 +42,7 @@ export type ConversationTimelineItem =
   | { kind: "message"; key: string; timestampMs: number | null; order: number; message: SessionMessage }
   | { kind: "trace"; key: string; timestampMs: number | null; order: number; event: SessionTraceEvent };
 
-export type ConversationRoleFilter = "all" | SessionMessage["role"];
+export type ConversationRoleFilter = TurnMessageRoleFilter;
 
 const CONVERSATION_ROLE_FILTERS: ConversationRoleFilter[] = ["all", "user", "assistant"];
 
@@ -292,6 +292,7 @@ export function DetailPanel({
   const [panelSearchOpen, setPanelSearchOpen] = useState(false);
   const [panelSearchQuery, setPanelSearchQuery] = useState("");
   const [currentMatchIndex, setCurrentMatchIndex] = useState(0);
+  const [turnSearchMatchCount, setTurnSearchMatchCount] = useState(0);
   const panelSearchInputRef = useRef<HTMLInputElement>(null);
 
   const panelSearchTerms = useMemo(
@@ -320,6 +321,9 @@ export function DetailPanel({
     }
     return keys;
   }, [visibleTimelineItems, panelSearchTerms]);
+  const panelSearchMatchCount = turns === null
+    ? panelSearchMatchKeys.length
+    : turnSearchMatchCount;
 
   useEffect(() => {
     if (panelSearchOpen && panelSearchInputRef.current) {
@@ -329,15 +333,20 @@ export function DetailPanel({
   }, [panelSearchOpen]);
 
   useEffect(() => {
-    if (panelSearchMatchKeys.length === 0) {
-      setCurrentMatchIndex(0);
-      return;
-    }
     setCurrentMatchIndex(0);
-    requestAnimationFrame(() => scrollToPanelMatch(0));
-  }, [panelSearchMatchKeys]);
+    if (turns === null && panelSearchMatchKeys.length > 0) {
+      requestAnimationFrame(() => scrollToPanelMatch(0));
+    }
+  }, [panelSearchQuery, roleFilter, showTools, turns]);
+
+  useEffect(() => {
+    setCurrentMatchIndex((current) => panelSearchMatchCount === 0
+      ? 0
+      : Math.min(current, panelSearchMatchCount - 1));
+  }, [panelSearchMatchCount]);
 
   const scrollToPanelMatch = (index: number) => {
+    if (turns !== null) return;
     const el = bodyRef.current;
     if (!el) return;
     const key = panelSearchMatchKeys[index];
@@ -349,15 +358,15 @@ export function DetailPanel({
   };
 
   const nextPanelMatch = () => {
-    if (panelSearchMatchKeys.length === 0) return;
-    const next = (currentMatchIndex + 1) % panelSearchMatchKeys.length;
+    if (panelSearchMatchCount === 0) return;
+    const next = (currentMatchIndex + 1) % panelSearchMatchCount;
     setCurrentMatchIndex(next);
     scrollToPanelMatch(next);
   };
 
   const prevPanelMatch = () => {
-    if (panelSearchMatchKeys.length === 0) return;
-    const prev = (currentMatchIndex - 1 + panelSearchMatchKeys.length) % panelSearchMatchKeys.length;
+    if (panelSearchMatchCount === 0) return;
+    const prev = (currentMatchIndex - 1 + panelSearchMatchCount) % panelSearchMatchCount;
     setCurrentMatchIndex(prev);
     scrollToPanelMatch(prev);
   };
@@ -371,6 +380,10 @@ export function DetailPanel({
   useEffect(() => {
     pendingInitialScrollRef.current = session.sessionKey;
     setRoleFilter("all");
+    setTurnSearchMatchCount(0);
+    setPanelSearchOpen(false);
+    setPanelSearchQuery("");
+    setCurrentMatchIndex(0);
   }, [session.sessionKey]);
 
   useEffect(() => {
@@ -410,7 +423,6 @@ export function DetailPanel({
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
-      if (turns !== null) return;
       const el = bodyRef.current;
       if (!el) return;
       const target = event.target as HTMLElement | null;
@@ -628,20 +640,18 @@ export function DetailPanel({
             ) : null}
           </div>
           <div className="conversation-filters">
-            {turns === null ? (
-              <div className="conversation-role-filter" role="group" aria-label={l("Conversation role filter", "会话角色过滤")}>
-                {CONVERSATION_ROLE_FILTERS.map((filter) => (
-                  <button
-                    key={filter}
-                    className={roleFilter === filter ? "active" : ""}
-                    onClick={() => setRoleFilter(filter)}
-                    aria-pressed={roleFilter === filter}
-                  >
-                    {conversationRoleFilterLabel(filter, language)}
-                  </button>
-                ))}
-              </div>
-            ) : null}
+            <div className="conversation-role-filter" role="group" aria-label={l("Conversation role filter", "会话角色过滤")}>
+              {CONVERSATION_ROLE_FILTERS.map((filter) => (
+                <button
+                  key={filter}
+                  className={roleFilter === filter ? "active" : ""}
+                  onClick={() => setRoleFilter(filter)}
+                  aria-pressed={roleFilter === filter}
+                >
+                  {conversationRoleFilterLabel(filter, language)}
+                </button>
+              ))}
+            </div>
             <button
               type="button"
               className={`conversation-tools-toggle ${showTools ? "active" : ""}`}
@@ -656,6 +666,62 @@ export function DetailPanel({
           </div>
         </div>
         <div className="detail-body" ref={bodyRef}>
+          {panelSearchOpen ? (
+            <div className="panel-search-bar">
+              <Search size={14} />
+              <input
+                ref={panelSearchInputRef}
+                className="panel-search-input"
+                type="text"
+                value={panelSearchQuery}
+                onChange={(event) => {
+                  setPanelSearchQuery(event.target.value);
+                  setCurrentMatchIndex(0);
+                }}
+                onKeyDown={(event) => {
+                  if (event.key === "Escape") {
+                    closePanelSearch();
+                    event.stopPropagation();
+                  } else if (event.key === "Enter") {
+                    event.preventDefault();
+                    if (event.shiftKey) prevPanelMatch();
+                    else nextPanelMatch();
+                  }
+                }}
+                placeholder={l("Find in conversation…", "在会话中查找…")}
+              />
+              {panelSearchQuery ? (
+                <span className="panel-search-count">
+                  {panelSearchMatchCount > 0
+                    ? `${currentMatchIndex + 1}/${panelSearchMatchCount}`
+                    : l("No matches", "无匹配")}
+                </span>
+              ) : null}
+              <button
+                className="panel-search-nav"
+                onClick={prevPanelMatch}
+                disabled={panelSearchMatchCount === 0}
+                title={l("Previous match (Shift+Enter)", "上一个匹配 (Shift+Enter)")}
+              >
+                <ChevronUp size={14} />
+              </button>
+              <button
+                className="panel-search-nav"
+                onClick={nextPanelMatch}
+                disabled={panelSearchMatchCount === 0}
+                title={l("Next match (Enter)", "下一个匹配 (Enter)")}
+              >
+                <ChevronDown size={14} />
+              </button>
+              <button
+                className="panel-search-close"
+                onClick={closePanelSearch}
+                title={l("Close (Esc)", "关闭 (Esc)")}
+              >
+                <X size={14} />
+              </button>
+            </div>
+          ) : null}
           {turns !== null ? (
             <section className="conversation turn-conversation">
               <TurnAccordion
@@ -665,11 +731,15 @@ export function DetailPanel({
                 matchedTurnId={matchedTurnId}
                 matchedMessageIndex={matchedMessageIndex}
                 showTools={showTools}
+                roleFilter={roleFilter}
                 query={query}
+                findQuery={panelSearchOpen ? panelSearchQuery : ""}
+                activeFindMatchIndex={panelSearchOpen && panelSearchQuery ? currentMatchIndex : null}
                 language={language}
                 live={liveState === "open"}
                 onLoadTurn={onLoadTurn}
                 onMigrateTurn={onMigrateTurn}
+                onFindMatchCountChange={setTurnSearchMatchCount}
               />
             </section>
           ) : (
@@ -692,62 +762,6 @@ export function DetailPanel({
             </section>
           ) : null}
           <section className="conversation">
-            {panelSearchOpen ? (
-              <div className="panel-search-bar">
-                <Search size={14} />
-                <input
-                  ref={panelSearchInputRef}
-                  className="panel-search-input"
-                  type="text"
-                  value={panelSearchQuery}
-                  onChange={(event) => {
-                    setPanelSearchQuery(event.target.value);
-                    setCurrentMatchIndex(0);
-                  }}
-                  onKeyDown={(event) => {
-                    if (event.key === "Escape") {
-                      closePanelSearch();
-                      event.stopPropagation();
-                    } else if (event.key === "Enter") {
-                      event.preventDefault();
-                      if (event.shiftKey) prevPanelMatch();
-                      else nextPanelMatch();
-                    }
-                  }}
-                  placeholder={l("Find in conversation…", "在会话中查找…")}
-                />
-                {panelSearchQuery ? (
-                  <span className="panel-search-count">
-                    {panelSearchMatchKeys.length > 0
-                      ? `${currentMatchIndex + 1}/${panelSearchMatchKeys.length}`
-                      : l("No matches", "无匹配")}
-                  </span>
-                ) : null}
-                <button
-                  className="panel-search-nav"
-                  onClick={prevPanelMatch}
-                  disabled={panelSearchMatchKeys.length === 0}
-                  title={l("Previous match (Shift+Enter)", "上一个匹配 (Shift+Enter)")}
-                >
-                  <ChevronUp size={14} />
-                </button>
-                <button
-                  className="panel-search-nav"
-                  onClick={nextPanelMatch}
-                  disabled={panelSearchMatchKeys.length === 0}
-                  title={l("Next match (Enter)", "下一个匹配 (Enter)")}
-                >
-                  <ChevronDown size={14} />
-                </button>
-                <button
-                  className="panel-search-close"
-                  onClick={closePanelSearch}
-                  title={l("Close (Esc)", "关闭 (Esc)")}
-                >
-                  <X size={14} />
-                </button>
-              </div>
-            ) : null}
             {loading ? <div className="loading-state">{l("Loading conversation...", "正在加载会话...")}</div> : null}
             {!loading && messages.length === 0 ? <div className="loading-state">{l("No visible messages indexed for this session.", "这个会话没有可见消息被索引。")}</div> : null}
             {!loading && olderMessageCount > 0 ? (
@@ -862,7 +876,7 @@ function MessageBlock({
                   if ((preview.kind === "image" || preview.kind === "text") && preview.data) {
                     setAttachmentPreview({ name: attachment.fileName, kind: preview.kind, data: preview.data });
                   }
-                });
+                }).catch(() => undefined);
               }}
             >
               <Paperclip size={14} />

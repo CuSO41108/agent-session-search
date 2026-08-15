@@ -215,6 +215,67 @@ describe("PostgreSQL Turn search", () => {
     expect(emptyPage.hasMore).toBe(false);
   });
 
+  it("keeps smart, recent, and oldest sorting behavior distinct", async () => {
+    const dayMs = 24 * 60 * 60 * 1_000;
+    const projectPath = "/projects/sort-modes";
+    const olderTimestamp = new Date(Date.now() - 90 * dayMs).toISOString();
+    const recentTimestamp = new Date(Date.now() - dayMs).toISOString();
+    await repository.upsertIndexedSession(
+      session("codex:sort-exact", "needle", olderTimestamp, { projectPath }),
+      [message("user", "needle", olderTimestamp, 0)],
+    );
+    await repository.upsertIndexedSession(
+      session("codex:sort-recent", "Unrelated current work", recentTimestamp, {
+        projectPath,
+        firstQuestion: "needle pipeline broke after merge",
+      }),
+      [message("user", "a recent message also mentions needle", recentTimestamp, 0)],
+    );
+
+    const oldest = await searchRepository.searchSessionPage({
+      projectPath,
+      sortBy: "created",
+      limit: 10,
+    });
+    expect(oldest.sessions.map((item) => item.sessionKey)).toEqual([
+      "codex:sort-exact",
+      "codex:sort-recent",
+    ]);
+
+    const recent = await searchRepository.searchSessionPage({
+      projectPath,
+      sortBy: "activity",
+      limit: 10,
+    });
+    expect(recent.sessions.map((item) => item.sessionKey)).toEqual([
+      "codex:sort-recent",
+      "codex:sort-exact",
+    ]);
+
+    const recentWithQuery = await searchRepository.searchSessionPage({
+      projectPath,
+      query: "needle",
+      sortBy: "activity",
+      limit: 10,
+      liveSessionKeys: ["codex:sort-recent"],
+    });
+    expect(recentWithQuery.sessions.map((item) => item.sessionKey)).toEqual([
+      "codex:sort-exact",
+      "codex:sort-recent",
+    ]);
+
+    const smart = await searchRepository.searchSessionPage({
+      projectPath,
+      query: "needle",
+      sortBy: "smart",
+      limit: 10,
+    });
+    expect(smart.sessions.map((item) => item.sessionKey)).toEqual([
+      "codex:sort-recent",
+      "codex:sort-exact",
+    ]);
+  });
+
   it("prioritizes exact phrase hits over messages that only contain all terms", async () => {
     await repository.upsertIndexedSession(
       session("codex:phrase", "Exact phrase ranking", "2026-07-24T08:00:00.000Z"),

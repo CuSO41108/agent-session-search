@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { defaultSettings } from "../../core/platform";
-import { canMigrateSession, migrationTargetsForSession, sourceFilters, usageCacheRate } from "./session-ui";
+import {
+  canMigrateSession,
+  environmentBadgeLabel,
+  environmentBadgeTitle,
+  migrationTargetsForSession,
+  sourceFilters,
+  usageCacheRate,
+} from "./session-ui";
 
 const settings = { includeTclaude: false, includeTcodex: false };
 
@@ -34,6 +41,16 @@ describe("usageCacheRate", () => {
       cachedInputTokens: 300,
       cacheCreationInputTokens: 2_000,
     })).toBe(10.7);
+  });
+});
+
+describe("environment badges", () => {
+  it("identifies WSL sessions without presenting them as ordinary local sessions", () => {
+    const session = { environmentKind: "wsl", environmentLabel: "Ubuntu-24.04" } as const;
+
+    expect(environmentBadgeLabel(session, "en")).toBe("WSL · Ubuntu-24.04");
+    expect(environmentBadgeTitle(session, "en")).toBe("Local WSL environment: Ubuntu-24.04");
+    expect(environmentBadgeTitle(session, "zh")).toBe("本地 WSL 环境：Ubuntu-24.04");
   });
 });
 

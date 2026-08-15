@@ -140,19 +140,69 @@ export class PostgresSessionSearchRepository {
     }
 
     const countValues = [...values];
-    const favoriteOrder = options.prioritizeFavorites === false ? "" : "sessions.favorited desc,";
-    const liveOrder = !options.liveStatus && liveKeys.length > 0
+    const sortBy = options.sortBy ?? "smart";
+    let rankingColumns = "";
+    if (sortBy !== "created" && clauses.length > 0) {
+      const smartQuery = clauses.join(" ").toLocaleLowerCase();
+      const exactQuery = bind(smartQuery);
+      const prefixQuery = bind(`${escapeLike(smartQuery)}%`);
+      const containsQuery = bind(`%${escapeLike(smartQuery)}%`);
+      const titleText = "lower(coalesce(nullif(sessions.custom_title, ''), nullif(sessions.original_title, ''), nullif(sessions.first_question, ''), ''))";
+      const relevanceSql = `
+        case
+          when ${titleText} = ${exactQuery} then 1000
+          when ${titleText} like ${prefixQuery} escape '\\' then 700
+          when ${titleText} like ${containsQuery} escape '\\' then 500
+          else 0
+        end
+        + case when lower(sessions.first_question) like ${containsQuery} escape '\\' then 300 else 0 end
+        + case when best_turn.id is not null then 120 else 0 end
+        + case when (
+            lower(sessions.project_path) like ${containsQuery} escape '\\'
+            or lower(sessions.raw_id) like ${containsQuery} escape '\\'
+          ) then 50 else 0 end
+        + case when sessions.favorited then 25 else 0 end
+      `;
+      rankingColumns = `(${relevanceSql}) as relevance_score,`;
+      if (sortBy === "smart") {
+        rankingColumns += `
+          (
+            (${relevanceSql})
+            * (
+              0.08
+              + 0.92 * power(
+                0.5,
+                greatest(
+                  0,
+                  extract(epoch from (current_timestamp - (${SESSION_ACTIVITY_SQL}))) / 86400.0
+                ) / 30.0
+              )
+            )
+            * case when sessions.favorited then 1.2 else 1.0 end
+          ) as smart_score,
+        `;
+      }
+    }
+    const favoriteOrder = options.prioritizeFavorites === false
+      || sortBy === "created"
+      || clauses.length > 0
+      ? ""
+      : "sessions.favorited desc,";
+    const liveOrder = !options.liveStatus && clauses.length === 0 && liveKeys.length > 0
       ? `case when ${LIVE_SESSION_KEY_SQL} in (${liveKeys.map((key) => bind(key)).join(", ")}) then 0 else 1 end,`
       : "";
     const limit = Number.isFinite(options.limit) ? Math.max(0, Math.floor(options.limit as number)) : 200;
     const offset = Number.isFinite(options.offset) ? Math.max(0, Math.floor(options.offset as number)) : 0;
     const limitPlaceholder = bind(limit);
     const offsetPlaceholder = bind(offset);
-    const primarySort =
-      options.sortBy === "created"
-        ? "sessions.started_at desc"
+    const primarySort = sortBy === "created"
+      ? "sessions.started_at asc"
+      : sortBy === "activity"
+        ? clauses.length > 0
+          ? "relevance_score desc, last_activity_at desc"
+          : "last_activity_at desc"
         : clauses.length > 0
-          ? "coalesce(best_turn.match_count, 0) desc, last_activity_at desc"
+          ? "smart_score desc, last_activity_at desc"
           : "last_activity_at desc";
     const bestTurnColumns = clauses.length > 0
       ? `
@@ -181,6 +231,7 @@ export class PostgresSessionSearchRepository {
       `
         select
           ${bestTurnColumns}
+          ${rankingColumns}
           ${SESSION_SELECT_SQL},
           count(*) over () as total_count
         ${filteredSessionsSql}

@@ -403,6 +403,50 @@ describe("RemoteSessionService cloud orchestration", () => {
     );
   });
 
+  it("hydrates every descendant before uploading a tree larger than 200 sessions", async () => {
+    const parent = localSession({
+      sessionKey: "ssh:work:claude:parent",
+      rawId: "parent",
+      environmentId: "ssh-work",
+      environmentKind: "ssh",
+      environmentLabel: "SSH Work",
+      sourceAvailable: true,
+    });
+    const children = Array.from({ length: 205 }, (_, index) =>
+      localSession({
+        sessionKey: `ssh:work:claude:child-${index}`,
+        rawId: `child-${index}`,
+        filePath: `/tmp/child-${index}.jsonl`,
+        environmentId: "ssh-work",
+        environmentKind: "ssh",
+        environmentLabel: "SSH Work",
+        sourceAvailable: true,
+        isSubagent: true,
+        parentSessionId: parent.rawId,
+      }),
+    );
+    const sessions = [parent, ...children];
+    const harness = createHarness({ settings: configuredSettings(), sessions });
+    let activeHydrations = 0;
+    let peakHydrations = 0;
+    harness.ensureSessionDetails.mockImplementation(async () => {
+      activeHydrations += 1;
+      peakHydrations = Math.max(peakHydrations, activeHydrations);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      activeHydrations -= 1;
+    });
+
+    await harness.service.upload(parent.sessionKey);
+
+    expect(harness.ensureSessionDetails).toHaveBeenCalledTimes(sessions.length);
+    expect(new Set(harness.ensureSessionDetails.mock.calls.map(([sessionKey]) => sessionKey))).toEqual(
+      new Set(sessions.map((session) => session.sessionKey)),
+    );
+    expect(peakHydrations).toBe(4);
+    expect(harness.buildUpload).toHaveBeenCalledOnce();
+    expect(harness.client.uploadSession).toHaveBeenCalledOnce();
+  });
+
   it("uploads a cached SSH session when its original file has disappeared", async () => {
     const cached = localSession({
       sessionKey: "ssh:cached",
