@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useReducer, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from "react";
 import type { ReactElement } from "react";
-import { AlertCircle, ArrowRightLeft, BotMessageSquare, ChevronDown, ChevronRight, Clock3, LoaderCircle, RotateCw, Wrench } from "lucide-react";
+import { AlertCircle, ArrowRightLeft, BotMessageSquare, ChevronDown, ChevronRight, Clock3, LoaderCircle, Paperclip, RotateCw, Wrench, X } from "lucide-react";
 
 import { formatMessageTime } from "../../../../core/format-session";
 import { traceCompactionSummary, tracePresentation } from "../../../../core/trace-presentation";
@@ -104,6 +104,10 @@ export type TurnTimelineItem =
       span: SessionTraceSpan;
     };
 
+export type TurnMessageRoleFilter = "all" | "user" | "assistant";
+
+const EMPTY_TURN_DETAILS: Record<string, SessionTurnDetail | undefined> = {};
+
 function timestampMs(timestamp: string | null): number | null {
   if (!timestamp) return null;
   const parsed = Date.parse(timestamp);
@@ -113,7 +117,11 @@ function timestampMs(timestamp: string | null): number | null {
 export function buildTurnTimeline(
   detail: SessionTurnDetail,
   showTools = true,
+  roleFilter: TurnMessageRoleFilter = "all",
 ): TurnTimelineItem[] {
+  const visibleMessages = roleFilter === "all"
+    ? detail.messages
+    : detail.messages.filter((message) => message.role === roleFilter);
   const visibleSpans = showTools
     ? detail.spans
     : detail.spans.filter((span) => {
@@ -123,7 +131,7 @@ export function buildTurnTimeline(
         return tracePresentation({ kind, eventType }).category !== "tool";
       });
   const items: TurnTimelineItem[] = [
-    ...detail.messages.map((message) => ({
+    ...visibleMessages.map((message) => ({
       kind: "message" as const,
       key: `message:${message.messageIndex}`,
       timestampMs: timestampMs(message.timestamp),
@@ -147,6 +155,22 @@ export function buildTurnTimeline(
     if (right.timestampMs !== null) return 1;
     return left.order - right.order;
   });
+}
+
+interface TurnFindMatch {
+  key: string;
+  turnId: string;
+}
+
+function turnTimelineSearchText(item: TurnTimelineItem): string {
+  if (item.kind === "message") return item.message.content;
+  return [
+    item.span.name,
+    item.span.error,
+    item.span.input ? payloadText(item.span.input) : "",
+    item.span.output ? payloadText(item.span.output) : "",
+    JSON.stringify(item.span.attributes),
+  ].filter(Boolean).join(" ");
 }
 
 function durationMs(startedAt: string | null, endedAt: string | null): number | null {
@@ -266,17 +290,24 @@ function TurnSpanPayload({
 }
 
 function TurnMessageBlock({
+  sessionKey,
   message,
   query,
   language,
   target = false,
 }: {
+  sessionKey: string;
   message: SessionTurnMessage;
   query: string;
   language: LanguageMode;
   target?: boolean;
 }): ReactElement {
   const [expanded, setExpanded] = useState(false);
+  const [attachmentPreview, setAttachmentPreview] = useState<{
+    name: string;
+    kind: "image" | "text";
+    data: string;
+  } | null>(null);
   const truncated = message.content.length > MESSAGE_TRUNCATE_LIMIT;
   const content = useMemo(() => {
     if (!truncated || expanded) return message.content;
@@ -304,11 +335,69 @@ function TurnMessageBlock({
       ) : (
         <pre className="msg-body msg-body-plain"><HighlightedSearchText text={content} terms={terms} /></pre>
       )}
+      {(message.attachments?.length ?? 0) > 0 ? (
+        <div className="message-attachments">
+          {message.attachments?.map((attachment) => (
+            <button
+              type="button"
+              key={attachment.id}
+              disabled={attachment.status !== "available"}
+              title={attachment.status === "available"
+                ? attachment.fileName
+                : localize(language, "Attachment unavailable", "附件不可用")}
+              onClick={() => {
+                const previewRequest = attachment.remoteObjectKey && attachment.sha256
+                  ? window.sessionSearch.previewRemoteSessionAttachment(
+                    attachment.remoteObjectKey,
+                    attachment.sha256,
+                    attachment.mimeType,
+                    attachment.previewKind,
+                  )
+                  : window.sessionSearch.previewAttachment(sessionKey, attachment.id);
+                void previewRequest
+                  .then((preview) => {
+                    if ((preview.kind === "image" || preview.kind === "text") && preview.data) {
+                      setAttachmentPreview({
+                        name: attachment.fileName,
+                        kind: preview.kind,
+                        data: preview.data,
+                      });
+                    }
+                  })
+                  .catch(() => undefined);
+              }}
+            >
+              <Paperclip size={14} />
+              <span>{attachment.fileName}</span>
+              {attachment.sizeBytes ? <small>{Math.ceil(attachment.sizeBytes / 1024)} KB</small> : null}
+            </button>
+          ))}
+        </div>
+      ) : null}
       {truncated ? (
         <button className="expand-toggle" aria-expanded={expanded} onClick={() => setExpanded((current) => !current)}>
           {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
           {expanded ? localize(language, "Collapse", "收起") : localize(language, "Show full content", "展开全文")}
         </button>
+      ) : null}
+      {attachmentPreview ? (
+        <div className="attachment-preview-backdrop" onClick={() => setAttachmentPreview(null)}>
+          <div className="attachment-preview-dialog" onClick={(event) => event.stopPropagation()}>
+            <header>
+              <strong>{attachmentPreview.name}</strong>
+              <button
+                type="button"
+                onClick={() => setAttachmentPreview(null)}
+                aria-label={localize(language, "Close", "关闭")}
+              >
+                <X size={16} />
+              </button>
+            </header>
+            {attachmentPreview.kind === "image"
+              ? <img src={attachmentPreview.data} alt={attachmentPreview.name} />
+              : <pre>{attachmentPreview.data}</pre>}
+          </div>
+        </div>
       ) : null}
     </div>
   );
@@ -328,9 +417,11 @@ function spanDisplayName(span: SessionTraceSpan): string {
 function TurnSpanBlock({
   span,
   language,
+  target = false,
 }: {
   span: SessionTraceSpan;
   language: LanguageMode;
+  target?: boolean;
 }): ReactElement {
   const elapsed = durationLabel(durationMs(span.startedAt, span.endedAt));
   const collaboration = collaborationMessageMetadata(span.attributes);
@@ -339,7 +430,7 @@ function TurnSpanBlock({
   const agentRelated = eventType.startsWith("codex.collaboration.") || span.name.startsWith("collaboration.");
   const SpanIcon = agentRelated ? BotMessageSquare : Wrench;
   return (
-    <details className={`msg tool ${span.status}`}>
+    <details className={`msg tool ${span.status} ${target ? "match-target" : ""}`}>
       <summary className="msg-tool-summary">
         <span className="msg-avatar" aria-hidden>
           <SpanIcon size={agentRelated ? 13 : 11} />
@@ -400,35 +491,56 @@ function TurnSpanBlock({
 }
 
 function TurnDetailTimeline({
+  sessionKey,
+  turnId,
   detail,
   showTools,
+  roleFilter,
   query,
   language,
   matchedMessageIndex,
+  activeFindMatchKey,
 }: {
+  sessionKey: string;
+  turnId: string;
   detail: SessionTurnDetail;
   showTools: boolean;
+  roleFilter: TurnMessageRoleFilter;
   query: string;
   language: LanguageMode;
   matchedMessageIndex: number | null;
+  activeFindMatchKey: string | null;
 }): ReactElement {
-  const timeline = useMemo(() => buildTurnTimeline(detail, showTools), [detail, showTools]);
+  const timeline = useMemo(
+    () => buildTurnTimeline(detail, showTools, roleFilter),
+    [detail, roleFilter, showTools],
+  );
   return (
     <div className="turn-timeline">
-      {timeline.map((item) => (
-        <div key={item.key} className={`turn-timeline-item ${item.kind}`} data-timeline-key={item.key}>
-          {item.kind === "message" ? (
-            <TurnMessageBlock
-              message={item.message}
-              query={query}
-              language={language}
-              target={matchedMessageIndex !== null && item.message.sourceMessageIndex === matchedMessageIndex}
-            />
-          ) : (
-            <TurnSpanBlock span={item.span} language={language} />
-          )}
-        </div>
-      ))}
+      {timeline.map((item) => {
+        const findKey = `${turnId}:${item.key}`;
+        const target = activeFindMatchKey === findKey;
+        return (
+          <div
+            key={item.key}
+            className={`turn-timeline-item ${item.kind}`}
+            data-timeline-key={item.key}
+            data-find-key={findKey}
+          >
+            {item.kind === "message" ? (
+              <TurnMessageBlock
+                sessionKey={sessionKey}
+                message={item.message}
+                query={query}
+                language={language}
+                target={target || (matchedMessageIndex !== null && item.message.sourceMessageIndex === matchedMessageIndex)}
+              />
+            ) : (
+              <TurnSpanBlock span={item.span} language={language} target={target} />
+            )}
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -440,11 +552,15 @@ export function TurnAccordion({
   matchedTurnId,
   matchedMessageIndex,
   showTools,
+  roleFilter = "all",
   query,
+  findQuery = "",
+  activeFindMatchIndex = null,
   language,
   live = false,
   onLoadTurn,
   onMigrateTurn,
+  onFindMatchCountChange,
 }: {
   sessionKey: string;
   turns: SessionTurnSummary[];
@@ -452,51 +568,117 @@ export function TurnAccordion({
   matchedTurnId: string | null;
   matchedMessageIndex: number | null;
   showTools: boolean;
+  roleFilter?: TurnMessageRoleFilter;
   query: string;
+  findQuery?: string;
+  activeFindMatchIndex?: number | null;
   language: LanguageMode;
   live?: boolean;
   onLoadTurn: (turnId: string) => Promise<SessionTurnDetail | null>;
   onMigrateTurn?: (turn: SessionTurnSummary) => void;
+  onFindMatchCountChange?: (count: number) => void;
 }): ReactElement {
   const [state, dispatch] = useReducer(turnAccordionReducer, sessionKey, createTurnAccordionState);
   const activeSessionRef = useRef(sessionKey);
-  const inFlightRef = useRef(new Set<string>());
+  const detailsByIdRef = useRef(state.detailsById);
+  const inFlightRef = useRef(new Map<string, Promise<void>>());
   const rootRef = useRef<HTMLDivElement>(null);
   const highlightTerms = useMemo(() => searchHighlightTerms(query), [query]);
+  const findTerms = useMemo(() => searchHighlightTerms(findQuery), [findQuery]);
+  const displayHighlightTerms = findTerms.length > 0 ? findTerms : highlightTerms;
+  const messageQuery = findTerms.length > 0 ? findQuery : query;
   const [migrationMenu, setMigrationMenu] = useState<{
     point: ContextMenuPoint;
     turn: SessionTurnSummary;
   } | null>(null);
+  const stateMatchesSession = state.sessionKey === sessionKey;
+  const currentDetailsById = stateMatchesSession ? state.detailsById : EMPTY_TURN_DETAILS;
 
-  async function loadTurn(turnId: string): Promise<void> {
+  detailsByIdRef.current = currentDetailsById;
+
+  const loadTurn = useCallback(async (turnId: string): Promise<void> => {
     const requestKey = `${sessionKey}:${turnId}`;
-    if (state.detailsById[turnId] || inFlightRef.current.has(requestKey)) return;
-    inFlightRef.current.add(requestKey);
-    dispatch({ type: "load-started", turnId });
-    try {
-      const detail = await onLoadTurn(turnId);
-      if (activeSessionRef.current !== sessionKey) return;
-      if (!detail) throw new Error(localize(language, "Turn detail is unavailable.", "这一轮的详情不可用。"));
-      dispatch({ type: "load-succeeded", turnId, detail });
-    } catch (error) {
-      if (activeSessionRef.current === sessionKey) {
-        dispatch({
-          type: "load-failed",
-          turnId,
-          error: error instanceof Error ? error.message : String(error),
-        });
+    if (detailsByIdRef.current[turnId]) return;
+    const inFlight = inFlightRef.current.get(requestKey);
+    if (inFlight) return inFlight;
+    const request = (async (): Promise<void> => {
+      dispatch({ type: "load-started", turnId });
+      try {
+        const detail = await onLoadTurn(turnId);
+        if (activeSessionRef.current !== sessionKey) return;
+        if (!detail) throw new Error(localize(language, "Turn detail is unavailable.", "这一轮的详情不可用。"));
+        dispatch({ type: "load-succeeded", turnId, detail });
+      } catch (error) {
+        if (activeSessionRef.current === sessionKey) {
+          dispatch({
+            type: "load-failed",
+            turnId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      } finally {
+        inFlightRef.current.delete(requestKey);
       }
-    } finally {
-      inFlightRef.current.delete(requestKey);
-    }
-  }
+    })();
+    inFlightRef.current.set(requestKey, request);
+    return request;
+  }, [language, onLoadTurn, sessionKey]);
 
-  useEffect(() => {
+  const findMatches = useMemo(() => {
+    if (findTerms.length === 0) return [] as TurnFindMatch[];
+    const matches: TurnFindMatch[] = [];
+    for (const turn of turns) {
+      const detail = currentDetailsById[turn.id];
+      if (!detail) continue;
+      for (const item of buildTurnTimeline(detail, showTools, roleFilter)) {
+        const text = turnTimelineSearchText(item).toLocaleLowerCase();
+        if (findTerms.some((term) => text.includes(term))) {
+          matches.push({ key: `${turn.id}:${item.key}`, turnId: turn.id });
+        }
+      }
+    }
+    return matches;
+  }, [currentDetailsById, findTerms, roleFilter, showTools, turns]);
+  const activeFindMatch = activeFindMatchIndex === null
+    ? null
+    : findMatches[activeFindMatchIndex] ?? null;
+
+  useLayoutEffect(() => {
     activeSessionRef.current = sessionKey;
     inFlightRef.current.clear();
     dispatch({ type: "reset", sessionKey });
     setMigrationMenu(null);
   }, [sessionKey]);
+
+  useEffect(() => {
+    if (findTerms.length === 0) return;
+    let cancelled = false;
+    const expectedSessionKey = sessionKey;
+    void (async () => {
+      for (const turn of turns) {
+        if (cancelled || activeSessionRef.current !== expectedSessionKey) return;
+        await loadTurn(turn.id);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [findTerms, loadTurn, sessionKey, turns]);
+
+  useEffect(() => {
+    onFindMatchCountChange?.(findMatches.length);
+  }, [findMatches.length, onFindMatchCountChange]);
+
+  useEffect(() => {
+    if (!activeFindMatch) return;
+    dispatch({ type: "open", turnId: activeFindMatch.turnId });
+    const frame = window.requestAnimationFrame(() => {
+      const target = [...(rootRef.current?.querySelectorAll<HTMLElement>("[data-find-key]") ?? [])]
+        .find((element) => element.dataset.findKey === activeFindMatch.key);
+      target?.scrollIntoView({ behavior: "smooth", block: "center" });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [activeFindMatch]);
 
   useEffect(() => {
     if (!migrationMenu) return;
@@ -522,9 +704,9 @@ export function TurnAccordion({
         ?.scrollIntoView({ behavior: "auto", block: "center" });
     });
     return () => window.cancelAnimationFrame(frame);
-  }, [matchedTurnId, sessionKey, turns]);
+  }, [loadTurn, matchedTurnId, sessionKey, turns]);
 
-  const matchedTurnDetail = matchedTurnId ? state.detailsById[matchedTurnId] : undefined;
+  const matchedTurnDetail = matchedTurnId ? currentDetailsById[matchedTurnId] : undefined;
   useEffect(() => {
     if (!matchedTurnId || matchedMessageIndex === null || !matchedTurnDetail) return;
     const frame = window.requestAnimationFrame(() => {
@@ -538,7 +720,7 @@ export function TurnAccordion({
   }, [matchedMessageIndex, matchedTurnDetail, matchedTurnId]);
 
   function toggleTurn(turnId: string): void {
-    const opening = !state.expandedTurnIds.has(turnId);
+    const opening = !stateMatchesSession || !state.expandedTurnIds.has(turnId);
     dispatch({ type: "toggle", turnId });
     if (opening) void loadTurn(turnId);
   }
@@ -563,16 +745,23 @@ export function TurnAccordion({
   return (
     <div className="turn-list" ref={rootRef}>
       {turns.map((turn) => {
-        const expanded = state.expandedTurnIds.has(turn.id);
-        const detail = state.detailsById[turn.id];
-        const loadingDetail = state.loadingTurnIds.has(turn.id);
-        const error = state.errorsById[turn.id];
+        const expanded = stateMatchesSession && state.expandedTurnIds.has(turn.id);
+        const detail = currentDetailsById[turn.id];
+        const loadingDetail = stateMatchesSession && state.loadingTurnIds.has(turn.id);
+        const error = stateMatchesSession ? state.errorsById[turn.id] : undefined;
         const elapsed = durationLabel(turn.durationMs ?? durationMs(turn.startedAt, turn.endedAt));
         const firstToken = durationLabel(turn.timeToFirstTokenMs ?? null);
         const displayStatus: SessionTurnSummary["status"] =
           turn.status === "running"
             ? live ? "running" : "completed"
             : turn.status;
+        const primaryPreview = roleFilter === "assistant"
+          ? turn.assistantPreview
+          : turn.userPreview || (roleFilter === "all" ? turn.assistantPreview : "");
+        const secondaryPreview = roleFilter === "all" && turn.userPreview && turn.assistantPreview
+          ? turn.assistantPreview
+          : "";
+        const previewText = primaryPreview || localize(language, "No text captured", "没有记录文本");
         return (
           <article
             key={turn.id}
@@ -605,11 +794,11 @@ export function TurnAccordion({
                   {turn.startedAt ? <span>{formatMessageTime(turn.startedAt, language)}</span> : null}
                 </span>
                 <strong>
-                  {highlightTerms.length > 0
-                    ? <HighlightedSearchText text={turn.userPreview || turn.assistantPreview} terms={highlightTerms} />
-                    : turn.userPreview || turn.assistantPreview || localize(language, "No text captured", "没有记录文本")}
+                  {displayHighlightTerms.length > 0
+                    ? <HighlightedSearchText text={previewText} terms={displayHighlightTerms} />
+                    : previewText}
                 </strong>
-                {turn.userPreview && turn.assistantPreview ? <small>{turn.assistantPreview}</small> : null}
+                {secondaryPreview ? <small>{secondaryPreview}</small> : null}
               </span>
               <span className="turn-card-meta">
                 <span className={`turn-status ${displayStatus}`}>{turnStatusLabel(displayStatus, language)}</span>
@@ -652,11 +841,15 @@ export function TurnAccordion({
                   </div>
                 ) : detail ? (
                   <TurnDetailTimeline
+                    sessionKey={sessionKey}
+                    turnId={turn.id}
                     detail={detail}
                     showTools={showTools}
-                    query={query}
+                    roleFilter={roleFilter}
+                    query={messageQuery}
                     language={language}
                     matchedMessageIndex={turn.id === matchedTurnId ? matchedMessageIndex : null}
+                    activeFindMatchKey={activeFindMatch?.key ?? null}
                   />
                 ) : null}
               </div>

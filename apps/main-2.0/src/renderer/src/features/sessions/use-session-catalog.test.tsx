@@ -66,6 +66,54 @@ describe("useSessionCatalog pagination", () => {
     await vi.waitFor(() => expect(searchSessionPage).toHaveBeenCalledWith(expect.objectContaining({ offset: 30 })));
     expect(catalog.currentPage).toBe(2);
   });
+
+  it("reloads the catalog with the selected sort order", async () => {
+    const searchSessionPage = vi.fn(async () => ({
+      sessions: [session("codex:sorted")],
+      totalCount: 100,
+      hasMore: true,
+    }));
+    Object.defineProperty(window, "sessionSearch", {
+      configurable: true,
+      value: { searchSessionPage },
+    });
+
+    let catalog!: ReturnType<typeof useSessionCatalog>;
+    function Harness() {
+      catalog = useSessionCatalog({
+        active: true,
+        liveSessions: emptyLiveSessions,
+        projects: [],
+        environments: [],
+        tags: [],
+      });
+      return null;
+    }
+
+    await act(async () => root.render(createElement(Harness)));
+    await vi.waitFor(() => expect(searchSessionPage).toHaveBeenCalledWith(
+      expect.objectContaining({ sortBy: "smart" }),
+    ));
+
+    await act(async () => catalog.goToPage(3));
+    await vi.waitFor(() => expect(searchSessionPage).toHaveBeenLastCalledWith(
+      expect.objectContaining({ sortBy: "smart", offset: 60 }),
+    ));
+    expect(catalog.currentPage).toBe(3);
+
+    await act(async () => catalog.setSortBy("activity"));
+    await vi.waitFor(() => expect(searchSessionPage).toHaveBeenLastCalledWith(
+      expect.objectContaining({ sortBy: "activity", offset: 0 }),
+    ));
+    expect(catalog.sortBy).toBe("activity");
+    expect(catalog.currentPage).toBe(1);
+
+    await act(async () => catalog.setSortBy("smart"));
+    await vi.waitFor(() => expect(searchSessionPage).toHaveBeenLastCalledWith(
+      expect.objectContaining({ sortBy: "smart", offset: 0 }),
+    ));
+    expect(catalog.currentPage).toBe(1);
+  });
 });
 
 function session(sessionKey: string): SessionSearchResult {

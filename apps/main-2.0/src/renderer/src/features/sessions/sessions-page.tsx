@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import type {
   MouseEvent as ReactMouseEvent,
   ReactElement,
@@ -6,6 +6,8 @@ import type {
   RefObject,
 } from "react";
 import {
+  ArrowRightLeft,
+  Bookmark,
   CalendarDays,
   ChevronDown,
   ChevronLeft,
@@ -17,8 +19,10 @@ import {
   Folder,
   GitBranch,
   Laptop,
+  Layers,
   RefreshCw,
   Server,
+  SlidersHorizontal,
   Sparkles,
   Star,
   Tag,
@@ -34,7 +38,9 @@ import type {
   SessionEnvironment,
   SessionMatchHit,
   SessionSearchResult,
+  SessionSortBy,
 } from "../../../../core/types";
+import type { SavedSearch } from "../../../../core/store/saved-searches";
 import {
   DATE_RANGE_OPTIONS,
   dateRangeLabel,
@@ -49,7 +55,15 @@ import type { SidebarSectionId, SidebarSectionsState } from "../../sidebar-secti
 import type { LanguageMode } from "../../language";
 import { environmentTarget } from "../environments/environment-display";
 import { SearchBox } from "../search/search-box";
-import { SessionRow } from "../search/session-row";
+import { GroupedResults } from "../search/grouped-results";
+import { GROUP_MODES, type GroupMode } from "../search/group-logic";
+import { QueryBuilder } from "../search/query-builder";
+import {
+  countActiveFilters,
+  toSearchOptionsPatch,
+  type QueryBuilderState,
+} from "../search/query-builder-types";
+import { SavedSearchesPanel } from "../search/saved-searches-panel";
 import {
   displayTagName,
   isBranchTag,
@@ -83,6 +97,7 @@ export interface SessionsPageModel {
   projectPath?: string;
   projectEnvironmentId?: string;
   tag?: string;
+  tags: string[];
   sidebarTree: SessionSidebarGroup[];
   collapsedProjectGroups: Set<string>;
   expandedTreeProjects: Set<string>;
@@ -96,6 +111,7 @@ export interface SessionsPageModel {
   liveStatus: LiveStatusFilter;
   customDateRange: Pick<SessionDailyTokenUsage, "dayStart" | "dayEndExclusive"> | null;
   dateRange: DateRangeFilter;
+  sortBy: SessionSortBy;
   aiAssistantOpen: boolean;
   remoteSessionsOpen: boolean;
   selected: SessionSearchResult | null;
@@ -119,11 +135,14 @@ export interface SessionsPageActions {
   toggleProjectTag(project: ProjectSummary, tagName: string): void;
   deleteTag(tagName: string): void;
   setSource(source: SearchOptions["source"]): void;
+  setTag(tag: string | undefined): void;
   setVisibility(visibility: SessionsPageModel["visibility"]): void;
   search(query: string): void;
   setLiveStatus(status: LiveStatusFilter): void;
   clearCustomDateRange(): void;
+  setCustomDateRange(range: Pick<SessionDailyTokenUsage, "dayStart" | "dayEndExclusive">): void;
   setDateRange(range: DateRangeFilter): void;
+  setSortBy(sortBy: SessionSortBy): void;
   openAiAssistant(): void;
   openRemoteSessions(): void;
   selectSession(sessionKey: string): void;
@@ -150,7 +169,73 @@ export function SessionsPage({
   actions: SessionsPageActions;
 }): ReactElement {
   const [hoveredScopeFilter, setHoveredScopeFilter] = useState<string | null>(null);
+  const [queryBuilderOpen, setQueryBuilderOpen] = useState(false);
+  const [savedSearchesOpen, setSavedSearchesOpen] = useState(false);
+  const [savedSearches, setSavedSearches] = useState<SavedSearch[]>([]);
+  const [groupMode, setGroupMode] = useState<GroupMode>("flat");
   const l = (en: string, zh: string): string => model.language === "zh" ? zh : en;
+  const queryBuilderState = useMemo<QueryBuilderState>(() => ({
+    source: model.source === "all" ? undefined : model.source,
+    tag: model.tag,
+    visibility: model.visibility,
+    dateRange: model.customDateRange ? "all" : model.dateRange,
+  }), [model.customDateRange, model.dateRange, model.source, model.tag, model.visibility]);
+  const activeFilterCount = countActiveFilters(queryBuilderState);
+
+  const loadSavedSearches = useCallback(async (): Promise<void> => {
+    try {
+      setSavedSearches(await window.sessionSearch.listSavedSearches());
+    } catch {
+      setSavedSearches([]);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (savedSearchesOpen) void loadSavedSearches();
+  }, [loadSavedSearches, savedSearchesOpen]);
+
+  function applyQueryBuilder(state: QueryBuilderState): void {
+    actions.setSource(state.source ?? "all");
+    actions.setTag(state.tag);
+    actions.setVisibility(state.visibility);
+    actions.setDateRange(state.dateRange);
+    setQueryBuilderOpen(false);
+  }
+
+  function saveCurrentSearch(name: string, state: QueryBuilderState): void {
+    void window.sessionSearch
+      .createSavedSearch(name, { query: model.query, ...toSearchOptionsPatch(state) })
+      .then(loadSavedSearches)
+      .catch(() => undefined);
+  }
+
+  function applySavedSearch(saved: SavedSearch): void {
+    if (saved.options.query !== undefined) actions.search(saved.options.query);
+    actions.setSource(saved.options.source ?? "all");
+    actions.setTag(saved.options.tag);
+    actions.setVisibility(saved.options.visibility ?? "default");
+    if (Number.isFinite(saved.options.dateFrom) && Number.isFinite(saved.options.dateTo)) {
+      actions.setCustomDateRange({
+        dayStart: saved.options.dateFrom as number,
+        dayEndExclusive: (saved.options.dateTo as number) + 1,
+      });
+    } else {
+      actions.setDateRange("all");
+    }
+    void window.sessionSearch.touchSavedSearch(saved.id).catch(() => undefined);
+    setSavedSearchesOpen(false);
+  }
+
+  function deleteSavedSearch(id: number): void {
+    void window.sessionSearch.deleteSavedSearch(id).then(loadSavedSearches).catch(() => undefined);
+  }
+
+  function cycleGroupMode(): void {
+    setGroupMode((current) => {
+      const currentIndex = GROUP_MODES.indexOf(current);
+      return GROUP_MODES[(currentIndex + 1) % GROUP_MODES.length];
+    });
+  }
 
   return (
     <div className="sessions-page" data-page="sessions">
@@ -185,17 +270,55 @@ export function SessionsPage({
 
       <section className="content">
         <header className="toolbar">
-          <SearchBox
-            platform={window.sessionSearch.platform}
-            ref={model.searchRef}
-            placeholder={model.searchPlaceholder}
-            recentLabel={l("Recent searches", "最近搜索")}
-            clearRecentLabel={l("Clear", "清空")}
-            deleteRecentLabel={l("Delete recent search", "删除最近搜索")}
-            submittedValue={model.query}
-            onSearch={actions.search}
-          />
-          <div className="toolbar-filters">
+          <div className="toolbar-primary">
+            <SearchBox
+              platform={window.sessionSearch.platform}
+              ref={model.searchRef}
+              placeholder={model.searchPlaceholder}
+              recentLabel={l("Recent searches", "最近搜索")}
+              clearRecentLabel={l("Clear", "清空")}
+              deleteRecentLabel={l("Delete recent search", "删除最近搜索")}
+              submittedValue={model.query}
+              onSearch={actions.search}
+            />
+            <div className="toolbar-discovery" role="group" aria-label={l("Search tools", "搜索工具")}>
+              <button
+                className={`icon-button toolbar-icon-button ${queryBuilderOpen ? "active" : ""}`}
+                onClick={() => {
+                  setSavedSearchesOpen(false);
+                  setQueryBuilderOpen((value) => !value);
+                }}
+                title={l("Advanced search", "高级搜索")}
+                aria-label={l("Advanced search", "高级搜索")}
+              >
+                <SlidersHorizontal size={15} />
+                {activeFilterCount > 0
+                  ? <span className="toolbar-badge">{activeFilterCount}</span>
+                  : null}
+              </button>
+              <button
+                className={`icon-button toolbar-icon-button ${savedSearchesOpen ? "active" : ""}`}
+                onClick={() => {
+                  setQueryBuilderOpen(false);
+                  setSavedSearchesOpen((value) => !value);
+                }}
+                title={l("Saved searches", "保存的搜索")}
+                aria-label={l("Saved searches", "保存的搜索")}
+              >
+                <Bookmark size={15} />
+              </button>
+              <button
+                className={`icon-button toolbar-icon-button ${groupMode !== "flat" ? "active" : ""}`}
+                onClick={cycleGroupMode}
+                title={l("Group results", "分组展示")}
+                aria-label={l("Group results", "分组展示")}
+              >
+                <Layers size={15} />
+              </button>
+            </div>
+          </div>
+          <div className="toolbar-secondary">
+            <div className="toolbar-filters">
             {model.activeScopeFilters.length ? (
               <div
                 className="scope-filter"
@@ -207,6 +330,7 @@ export function SessionsPage({
                     key={filter.key}
                     className="scope-filter-chip"
                     onClick={filter.onClear}
+                    title={filter.title}
                     onMouseEnter={() => setHoveredScopeFilter(filter.key)}
                     onMouseLeave={() => setHoveredScopeFilter((current) =>
                       current === filter.key ? null : current)}
@@ -255,13 +379,10 @@ export function SessionsPage({
                 <button
                   className="date-filter-custom active"
                   onClick={actions.clearCustomDateRange}
-                  title={l("Clear exact day filter", "清除单日筛选")}
-                  aria-label={l("Clear exact day filter", "清除单日筛选")}
+                  title={l("Clear exact date filter", "清除精确日期筛选")}
+                  aria-label={l("Clear exact date filter", "清除精确日期筛选")}
                 >
-                  <span>{new Intl.DateTimeFormat(
-                    model.language === "zh" ? "zh-CN" : "en-US",
-                    { month: "short", day: "numeric" },
-                  ).format(model.customDateRange.dayStart)}</span>
+                  <span>{exactDateRangeLabel(model.customDateRange, model.language)}</span>
                   <b aria-hidden="true">×</b>
                 </button>
               ) : null}
@@ -279,26 +400,73 @@ export function SessionsPage({
                 </button>
               ))}
             </div>
-          </div>
-          <div className="top-actions">
-            <button
-              className={`icon-button toolbar-icon-button ${model.aiAssistantOpen ? "active" : ""}`}
-              onClick={actions.openAiAssistant}
-              title={l("AI session finder", "AI 找会话")}
-              aria-label={l("AI session finder", "AI 找会话")}
-            >
-              <Sparkles size={15} />
-            </button>
-            <button
-              className={`icon-button toolbar-icon-button ${model.remoteSessionsOpen ? "active" : ""}`}
-              onClick={actions.openRemoteSessions}
-              title={l("Remote sessions", "远程会话")}
-              aria-label={l("Remote sessions", "远程会话")}
-            >
-              <Cloud size={15} />
-            </button>
+            <div className="sort-filter" role="group" aria-label={l("Sort order", "排序方式")}>
+              <ArrowRightLeft size={14} aria-hidden="true" />
+              <button
+                className={model.sortBy === "smart" ? "active" : ""}
+                onClick={() => actions.setSortBy("smart")}
+                title={l("Smart: relevance + recency", "智能：相关性 + 时间")}
+              >
+                {l("Smart", "智能")}
+              </button>
+              <button
+                className={model.sortBy === "activity" ? "active" : ""}
+                onClick={() => actions.setSortBy("activity")}
+                title={l("Most recent first", "最近活跃优先")}
+              >
+                {l("Recent", "最新")}
+              </button>
+              <button
+                className={model.sortBy === "created" ? "active" : ""}
+                onClick={() => actions.setSortBy("created")}
+                title={l("Oldest first", "最早创建优先")}
+              >
+                {l("Oldest", "最早")}
+              </button>
+            </div>
+            </div>
+            <div className="top-actions">
+              <button
+                className={`icon-button toolbar-icon-button ${model.aiAssistantOpen ? "active" : ""}`}
+                onClick={actions.openAiAssistant}
+                title={l("AI session finder", "AI 找会话")}
+                aria-label={l("AI session finder", "AI 找会话")}
+              >
+                <Sparkles size={15} />
+              </button>
+              <button
+                className={`icon-button toolbar-icon-button ${model.remoteSessionsOpen ? "active" : ""}`}
+                onClick={actions.openRemoteSessions}
+                title={l("Remote sessions", "远程会话")}
+                aria-label={l("Remote sessions", "远程会话")}
+              >
+                <Cloud size={15} />
+              </button>
+            </div>
           </div>
         </header>
+
+        {queryBuilderOpen ? (
+          <QueryBuilder
+            initial={queryBuilderState}
+            sourceOptions={model.sourceFilters.filter((option) => option.value !== "all")}
+            tagOptions={model.tags}
+            language={model.language}
+            onApply={applyQueryBuilder}
+            onClose={() => setQueryBuilderOpen(false)}
+            onSaveSearch={saveCurrentSearch}
+          />
+        ) : null}
+
+        {savedSearchesOpen ? (
+          <SavedSearchesPanel
+            savedSearches={savedSearches}
+            language={model.language}
+            onApply={applySavedSearch}
+            onDelete={deleteSavedSearch}
+            onClose={() => setSavedSearchesOpen(false)}
+          />
+        ) : null}
 
         <div className="result-count">
           <div className="bulk-result-actions">
@@ -333,28 +501,27 @@ export function SessionsPage({
         </div>
 
         <div key={model.currentPage} className="results">
-          {model.sessions.map((session) => (
-            <SessionRow
-              key={session.sessionKey}
-              session={session}
-              selected={model.selected?.sessionKey === session.sessionKey}
-              liveState={getLiveSessionState(
-                session,
-                model.liveSessionKeys,
-                model.liveDetectionFailed,
-              )}
-              language={model.language}
-              onOpenMatch={actions.openMatch}
-              onSelect={actions.selectSession}
-              onOpen={actions.openSession}
-              onRename={actions.renameSession}
-              onFavorite={actions.toggleFavorite}
-              onContextMenu={actions.openContextMenu}
-              bulkSelectionActive={model.bulkSelectionActive}
-              bulkSelected={model.bulkSelectedKeys.has(session.sessionKey)}
-              onToggleBulk={actions.toggleBulkSession}
-            />
-          ))}
+          <GroupedResults
+            sessions={model.sessions}
+            groupMode={groupMode}
+            sortBy={model.sortBy}
+            selectedKey={model.selected?.sessionKey ?? null}
+            liveStateFor={(session) => getLiveSessionState(
+              session,
+              model.liveSessionKeys,
+              model.liveDetectionFailed,
+            )}
+            language={model.language}
+            onOpenMatch={actions.openMatch}
+            onSelect={actions.selectSession}
+            onOpen={actions.openSession}
+            onRename={actions.renameSession}
+            onFavorite={actions.toggleFavorite}
+            onContextMenu={actions.openContextMenu}
+            bulkSelectionActive={model.bulkSelectionActive}
+            bulkSelectedKeys={model.bulkSelectedKeys}
+            onToggleBulk={actions.toggleBulkSession}
+          />
           {model.sessions.length === 0
             ? <div className="empty">{l("No sessions found.", "没有找到会话。")}</div>
             : null}
@@ -396,6 +563,24 @@ function paginationItems(currentPage: number, totalPages: number): number[] {
   const startPage = Math.max(1, currentPage - 2);
   const endPage = Math.min(totalPages, currentPage + 2);
   return Array.from({ length: endPage - startPage + 1 }, (_, index) => startPage + index);
+}
+
+function exactDateRangeLabel(
+  range: Pick<SessionDailyTokenUsage, "dayStart" | "dayEndExclusive">,
+  language: LanguageMode,
+): string {
+  const start = new Date(range.dayStart);
+  const end = new Date(Math.max(range.dayStart, range.dayEndExclusive - 1));
+  const locale = language === "zh" ? "zh-CN" : "en-US";
+  const sameDay = start.getFullYear() === end.getFullYear()
+    && start.getMonth() === end.getMonth()
+    && start.getDate() === end.getDate();
+  const formatter = new Intl.DateTimeFormat(locale, {
+    ...(start.getFullYear() === end.getFullYear() ? {} : { year: "numeric" }),
+    month: "short",
+    day: "numeric",
+  });
+  return sameDay ? formatter.format(start) : `${formatter.format(start)} – ${formatter.format(end)}`;
 }
 
 function SessionSidebar({

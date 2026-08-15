@@ -315,6 +315,8 @@ export function App(): ReactElement {
     setDateRange,
     customDateRange,
     setCustomDateRange,
+    sortBy,
+    setSortBy,
     liveStatus,
     setLiveStatus,
     sessionTotalCount,
@@ -482,6 +484,7 @@ export function App(): ReactElement {
     visibility,
     dateRange,
     customDateRange,
+    sortBy,
     liveStatus,
   ]);
 
@@ -610,6 +613,14 @@ export function App(): ReactElement {
         if (navigated) window.requestAnimationFrame(() => searchRef.current?.focus());
       });
     });
+    const offOpenSession = window.sessionSearch.onOpenSession((sessionKey) => {
+      void (async () => {
+        if (!(await navigateToPage("sessions"))) return;
+        setSelectedKey(sessionKey);
+        const session = await window.sessionSearch.getSession(sessionKey);
+        if (session) await openDetail(session);
+      })().catch(reportSessionDetailError);
+    });
     const offOpenSettings = window.sessionSearch.onOpenSettings(() => {
       setSettingsInitialSection("terminal");
       setSettingsOpen(true);
@@ -625,12 +636,13 @@ export function App(): ReactElement {
       active = false;
       offIndex();
       offFocus();
+      offOpenSession();
       offOpenSettings();
       offAppUpdate();
       offAppUpdateProgress();
       offEnvironments();
     };
-  }, [activePage, load, loadSidebarMetadata, loadStats, loadWorkbenchSessions, navigateToPage]);
+  }, [activePage, load, loadSidebarMetadata, loadStats, loadWorkbenchSessions, navigateToPage, openDetail, reportSessionDetailError, setSelectedKey]);
 
   useEffect(() => {
     void window.sessionSearch.getAppUpdateStatus(false).then(setAppUpdateStatus).catch(() => undefined);
@@ -1703,6 +1715,7 @@ export function App(): ReactElement {
                 projectPath,
                 projectEnvironmentId,
                 tag,
+                tags,
                 sidebarTree,
                 collapsedProjectGroups,
                 expandedTreeProjects: collapsedTreeProjects,
@@ -1716,6 +1729,7 @@ export function App(): ReactElement {
                 liveStatus,
                 customDateRange,
                 dateRange,
+                sortBy,
                 aiAssistantOpen,
                 remoteSessionsOpen,
                 selected,
@@ -1756,14 +1770,20 @@ export function App(): ReactElement {
                 },
                 deleteTag: setDeleteTagName,
                 setSource,
+                setTag,
                 setVisibility,
                 search: setQuery,
                 setLiveStatus,
                 clearCustomDateRange: () => setCustomDateRange(null),
+                setCustomDateRange: (nextRange) => {
+                  setDateRange("all");
+                  setCustomDateRange(nextRange);
+                },
                 setDateRange: (nextRange) => {
                   setCustomDateRange(null);
                   setDateRange(nextRange);
                 },
+                setSortBy,
                 openAiAssistant: () => {
                   setSettingsOpen(false);
                   setRemoteSessionsOpen(false);

@@ -606,9 +606,9 @@ function descendantSessions(
   const descendants: SessionSearchResult[] = [];
   const pending = [root.rawId];
   const visited = new Set<string>();
-  while (pending.length > 0 && descendants.length < 200) {
+  while (pending.length > 0) {
     for (const child of childrenByParentId.get(pending.shift()!) ?? []) {
-      if (visited.has(child.sessionKey) || descendants.length >= 200) continue;
+      if (visited.has(child.sessionKey)) continue;
       visited.add(child.sessionKey);
       descendants.push(child);
       pending.push(child.rawId);

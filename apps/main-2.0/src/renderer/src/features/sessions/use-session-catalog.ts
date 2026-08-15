@@ -50,7 +50,7 @@ export function useSessionCatalog({
   const [customDateRange, setCustomDateRange] = useState<
     Pick<SessionDailyTokenUsage, "dayStart" | "dayEndExclusive"> | null
   >(null);
-  const sortBy: SessionSortBy = "smart";
+  const [sortBy, setSortBy] = useState<SessionSortBy>("smart");
   const [liveStatus, setLiveStatus] = useState<LiveStatusFilter>("all");
   const [pagination, setPagination] = useState({
     scopeKey: "",
@@ -227,6 +227,12 @@ export function useSessionCatalog({
   }, []);
 
   useEffect(() => {
+    setPagination((current) => current.scopeKey === searchScopeKey
+      ? current
+      : { scopeKey: searchScopeKey, page: 1 });
+  }, [searchScopeKey]);
+
+  useEffect(() => {
     if (active) void load();
   }, [active, load]);
 
@@ -330,6 +336,8 @@ export function useSessionCatalog({
     setDateRange,
     customDateRange,
     setCustomDateRange,
+    sortBy,
+    setSortBy,
     liveStatus,
     setLiveStatus,
     sessionTotalCount: resultsMatchSearchScope ? sessionTotalCount : 0,

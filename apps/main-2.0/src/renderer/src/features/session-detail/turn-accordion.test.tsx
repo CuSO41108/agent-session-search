@@ -9,6 +9,74 @@ import type {
 } from "../../../../core/types";
 import { TurnAccordion } from "./turn-accordion";
 
+function deferred<T>(): {
+  promise: Promise<T>;
+  resolve: (value: T) => void;
+} {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((next) => {
+    resolve = next;
+  });
+  return { promise, resolve };
+}
+
+function createTurn(
+  id: string,
+  turnIndex: number,
+  userPreview = `user ${id}`,
+  assistantPreview = `assistant ${id}`,
+): SessionTurnSummary {
+  return {
+    id,
+    turnIndex,
+    sourceMessageIndex: turnIndex * 10,
+    sourceTurnId: id,
+    synthetic: false,
+    status: "completed",
+    startedAt: `2026-08-10T10:00:0${turnIndex}.000Z`,
+    endedAt: `2026-08-10T10:00:0${turnIndex + 1}.000Z`,
+    userPreview,
+    assistantPreview,
+    inputTokens: 0,
+    outputTokens: 0,
+    cachedInputTokens: 0,
+    reasoningOutputTokens: 0,
+    totalTokens: 0,
+    errorCount: 0,
+    toolNames: [],
+    messageCount: 2,
+    spanCount: 0,
+  };
+}
+
+function createTurnDetail(
+  turn: SessionTurnSummary,
+  userContent = turn.userPreview,
+  assistantContent = turn.assistantPreview,
+): SessionTurnDetail {
+  const sourceMessageIndex = turn.sourceMessageIndex ?? 0;
+  return {
+    ...turn,
+    messages: [
+      {
+        messageIndex: 0,
+        sourceMessageIndex,
+        role: "user",
+        content: userContent,
+        timestamp: turn.startedAt ?? "",
+      },
+      {
+        messageIndex: 1,
+        sourceMessageIndex: sourceMessageIndex + 1,
+        role: "assistant",
+        content: assistantContent,
+        timestamp: turn.endedAt ?? "",
+      },
+    ],
+    spans: [],
+  };
+}
+
 describe("TurnAccordion search match positioning", () => {
   let container: HTMLDivElement;
   let root: Root;
@@ -383,5 +451,424 @@ describe("TurnAccordion span payloads", () => {
     ).toBe(toolOutput);
 
     expect(toolPayload?.querySelector("button")).toBeNull();
+  });
+});
+
+describe("TurnAccordion message parity", () => {
+  let container: HTMLDivElement;
+  let root: Root;
+  let originalSessionSearch: unknown;
+
+  beforeEach(() => {
+    Reflect.set(globalThis, "IS_REACT_ACT_ENVIRONMENT", true);
+    originalSessionSearch = Reflect.get(window, "sessionSearch");
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+  });
+
+  afterEach(async () => {
+    await act(async () => root.unmount());
+    container.remove();
+    if (originalSessionSearch === undefined) {
+      Reflect.deleteProperty(window, "sessionSearch");
+    } else {
+      Reflect.set(window, "sessionSearch", originalSessionSearch);
+    }
+    vi.restoreAllMocks();
+  });
+
+  it("renders a Turn image attachment and opens its preview", async () => {
+    const turn = createTurn("turn-attachment", 0);
+    const detail = createTurnDetail(turn);
+    detail.messages[0].attachments = [
+      {
+        id: "attachment-1",
+        fileName: "screenshot.png",
+        mimeType: "image/png",
+        sizeBytes: 2_048,
+        previewKind: "image",
+        status: "available",
+      },
+    ];
+    const previewAttachment = vi.fn(async () => ({
+      kind: "image" as const,
+      data: "data:image/png;base64,AAAA",
+    }));
+    Reflect.set(window, "sessionSearch", { previewAttachment });
+
+    await act(async () => {
+      root.render(
+        <TurnAccordion
+          sessionKey="codex:attachment"
+          turns={[turn]}
+          loading={false}
+          matchedTurnId={null}
+          matchedMessageIndex={null}
+          showTools
+          query=""
+          language="en"
+          onLoadTurn={async () => detail}
+        />,
+      );
+    });
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".turn-card-summary")?.click();
+    });
+    await vi.waitFor(() => {
+      expect(container.querySelector<HTMLButtonElement>(".message-attachments button")).not.toBeNull();
+    });
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".message-attachments button")?.click();
+      await Promise.resolve();
+    });
+
+    expect(previewAttachment).toHaveBeenCalledWith("codex:attachment", "attachment-1");
+    const image = container.querySelector<HTMLImageElement>(".attachment-preview-dialog img");
+    expect(image?.src).toBe("data:image/png;base64,AAAA");
+    expect(image?.alt).toBe("screenshot.png");
+  });
+
+  it("handles a rejected attachment preview without an unhandled rejection", async () => {
+    const turn = createTurn("turn-broken-attachment", 0);
+    const detail = createTurnDetail(turn);
+    detail.messages[0].attachments = [
+      {
+        id: "attachment-broken",
+        fileName: "broken.png",
+        mimeType: "image/png",
+        previewKind: "image",
+        status: "available",
+      },
+    ];
+    const previewAttachment = vi.fn(() => Promise.reject(new Error("preview failed")));
+    const unhandledRejection = vi.fn();
+    window.addEventListener("unhandledrejection", unhandledRejection);
+    Reflect.set(window, "sessionSearch", { previewAttachment });
+
+    try {
+      await act(async () => {
+        root.render(
+          <TurnAccordion
+            sessionKey="codex:broken-attachment"
+            turns={[turn]}
+            loading={false}
+            matchedTurnId={null}
+            matchedMessageIndex={null}
+            showTools
+            query=""
+            language="en"
+            onLoadTurn={async () => detail}
+          />,
+        );
+      });
+      await act(async () => {
+        container.querySelector<HTMLButtonElement>(".turn-card-summary")?.click();
+      });
+      await vi.waitFor(() => {
+        expect(container.querySelector<HTMLButtonElement>(".message-attachments button")).not.toBeNull();
+      });
+      await act(async () => {
+        container.querySelector<HTMLButtonElement>(".message-attachments button")?.click();
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      expect(previewAttachment).toHaveBeenCalledOnce();
+      expect(unhandledRejection).not.toHaveBeenCalled();
+      expect(container.querySelector(".attachment-preview-dialog")).toBeNull();
+    } finally {
+      window.removeEventListener("unhandledrejection", unhandledRejection);
+    }
+  });
+
+  it("filters Turn messages by user and assistant role", async () => {
+    const turn = createTurn("turn-role", 0, "visible user", "visible assistant");
+    const detail = createTurnDetail(turn);
+    const onLoadTurn = vi.fn(async () => detail);
+
+    await act(async () => {
+      root.render(
+        <TurnAccordion
+          sessionKey="codex:roles"
+          turns={[turn]}
+          loading={false}
+          matchedTurnId={null}
+          matchedMessageIndex={null}
+          showTools
+          roleFilter="user"
+          query=""
+          language="en"
+          onLoadTurn={onLoadTurn}
+        />,
+      );
+    });
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".turn-card-summary")?.click();
+    });
+    await vi.waitFor(() => {
+      expect(container.querySelectorAll(".msg.user")).toHaveLength(1);
+    });
+    expect(container.querySelector(".msg.assistant")).toBeNull();
+    expect(container.querySelector(".turn-card-summary small")).toBeNull();
+    expect(container.querySelector(".turn-card-summary strong")?.textContent).toContain("visible user");
+
+    await act(async () => {
+      root.render(
+        <TurnAccordion
+          sessionKey="codex:roles"
+          turns={[turn]}
+          loading={false}
+          matchedTurnId={null}
+          matchedMessageIndex={null}
+          showTools
+          roleFilter="assistant"
+          query=""
+          language="en"
+          onLoadTurn={onLoadTurn}
+        />,
+      );
+    });
+
+    expect(container.querySelector(".msg.user")).toBeNull();
+    expect(container.querySelectorAll(".msg.assistant")).toHaveLength(1);
+    expect(container.querySelector(".turn-card-summary strong")?.textContent).toContain("visible assistant");
+  });
+});
+
+describe("TurnAccordion in-conversation find", () => {
+  let container: HTMLDivElement;
+  let root: Root;
+  const scrollIntoView = vi.fn();
+
+  beforeEach(() => {
+    Reflect.set(globalThis, "IS_REACT_ACT_ENVIRONMENT", true);
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+    Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
+      configurable: true,
+      value: scrollIntoView,
+    });
+  });
+
+  afterEach(async () => {
+    await act(async () => root.unmount());
+    container.remove();
+    scrollIntoView.mockReset();
+    vi.restoreAllMocks();
+  });
+
+  it("loads Turn details sequentially and navigates to the active match", async () => {
+    const firstTurn = createTurn("turn-find-1", 0);
+    const secondTurn = createTurn("turn-find-2", 1);
+    const first = deferred<SessionTurnDetail | null>();
+    const second = deferred<SessionTurnDetail | null>();
+    const onLoadTurn = vi.fn((turnId: string) => turnId === firstTurn.id ? first.promise : second.promise);
+    const onFindMatchCountChange = vi.fn();
+
+    await act(async () => {
+      root.render(
+        <TurnAccordion
+          sessionKey="codex:find"
+          turns={[firstTurn, secondTurn]}
+          loading={false}
+          matchedTurnId={null}
+          matchedMessageIndex={null}
+          showTools
+          query=""
+          findQuery="needle"
+          activeFindMatchIndex={0}
+          language="en"
+          onLoadTurn={onLoadTurn}
+          onFindMatchCountChange={onFindMatchCountChange}
+        />,
+      );
+    });
+
+    await vi.waitFor(() => expect(onLoadTurn).toHaveBeenCalledTimes(1));
+    expect(onLoadTurn).toHaveBeenNthCalledWith(1, firstTurn.id);
+
+    await act(async () => {
+      first.resolve(createTurnDetail(firstTurn, "first needle", "not here"));
+      await first.promise;
+    });
+    await vi.waitFor(() => expect(onLoadTurn).toHaveBeenCalledTimes(2));
+    expect(onLoadTurn).toHaveBeenNthCalledWith(2, secondTurn.id);
+
+    await act(async () => {
+      second.resolve(createTurnDetail(secondTurn, "second needle", "also not here"));
+      await second.promise;
+    });
+    await vi.waitFor(() => {
+      expect(onFindMatchCountChange).toHaveBeenLastCalledWith(2);
+    });
+
+    const firstMatch = container.querySelector<HTMLElement>(
+      '[data-find-key="turn-find-1:message:0"]',
+    );
+    expect(firstMatch?.querySelector(".msg")?.classList.contains("match-target")).toBe(true);
+    expect(scrollIntoView.mock.instances).toContain(firstMatch);
+  });
+
+  it("stops queued loads when the find query is cleared", async () => {
+    const firstTurn = createTurn("turn-cancel-1", 0);
+    const secondTurn = createTurn("turn-cancel-2", 1);
+    const first = deferred<SessionTurnDetail | null>();
+    const onLoadTurn = vi.fn(() => first.promise);
+
+    await act(async () => {
+      root.render(
+        <TurnAccordion
+          sessionKey="codex:cancel-find"
+          turns={[firstTurn, secondTurn]}
+          loading={false}
+          matchedTurnId={null}
+          matchedMessageIndex={null}
+          showTools
+          query=""
+          findQuery="needle"
+          language="en"
+          onLoadTurn={onLoadTurn}
+        />,
+      );
+    });
+    await vi.waitFor(() => expect(onLoadTurn).toHaveBeenCalledTimes(1));
+
+    await act(async () => {
+      root.render(
+        <TurnAccordion
+          sessionKey="codex:cancel-find"
+          turns={[firstTurn, secondTurn]}
+          loading={false}
+          matchedTurnId={null}
+          matchedMessageIndex={null}
+          showTools
+          query=""
+          findQuery=""
+          language="en"
+          onLoadTurn={onLoadTurn}
+        />,
+      );
+    });
+    await act(async () => {
+      first.resolve(createTurnDetail(firstTurn, "needle", ""));
+      await first.promise;
+      await Promise.resolve();
+    });
+
+    expect(onLoadTurn).toHaveBeenCalledTimes(1);
+  });
+
+  it("ignores a stale Turn response after switching sessions", async () => {
+    const oldTurn = createTurn("shared-turn", 0, "old preview", "");
+    const newTurn = createTurn("shared-turn", 0, "new preview", "");
+    const oldRequest = deferred<SessionTurnDetail | null>();
+    const oldLoadTurn = vi.fn(() => oldRequest.promise);
+    const newDetail = createTurnDetail(newTurn, "new needle", "new assistant");
+    const newLoadTurn = vi.fn(async () => newDetail);
+
+    await act(async () => {
+      root.render(
+        <TurnAccordion
+          sessionKey="codex:old-session"
+          turns={[oldTurn]}
+          loading={false}
+          matchedTurnId={null}
+          matchedMessageIndex={null}
+          showTools
+          query=""
+          findQuery="needle"
+          activeFindMatchIndex={0}
+          language="en"
+          onLoadTurn={oldLoadTurn}
+        />,
+      );
+    });
+    await vi.waitFor(() => expect(oldLoadTurn).toHaveBeenCalledOnce());
+
+    await act(async () => {
+      root.render(
+        <TurnAccordion
+          sessionKey="codex:new-session"
+          turns={[newTurn]}
+          loading={false}
+          matchedTurnId={null}
+          matchedMessageIndex={null}
+          showTools
+          query=""
+          findQuery="needle"
+          activeFindMatchIndex={0}
+          language="en"
+          onLoadTurn={newLoadTurn}
+        />,
+      );
+    });
+    await vi.waitFor(() => expect(newLoadTurn).toHaveBeenCalledOnce());
+    await vi.waitFor(() => {
+      expect(container.textContent).toContain("new needle");
+    });
+
+    await act(async () => {
+      oldRequest.resolve(createTurnDetail(oldTurn, "old needle", "old assistant"));
+      await oldRequest.promise;
+      await Promise.resolve();
+    });
+
+    expect(container.textContent).toContain("new needle");
+    expect(container.textContent).not.toContain("old needle");
+  });
+
+  it("does not reuse a loaded Turn with the same id after switching sessions", async () => {
+    const oldTurn = createTurn("shared-loaded-turn", 0, "old preview", "");
+    const newTurn = createTurn("shared-loaded-turn", 0, "new preview", "");
+    const oldLoadTurn = vi.fn(async () => createTurnDetail(oldTurn, "old needle", ""));
+    const newLoadTurn = vi.fn(async () => createTurnDetail(newTurn, "new needle", ""));
+
+    await act(async () => {
+      root.render(
+        <TurnAccordion
+          sessionKey="codex:loaded-old-session"
+          turns={[oldTurn]}
+          loading={false}
+          matchedTurnId={null}
+          matchedMessageIndex={null}
+          showTools
+          query=""
+          findQuery="needle"
+          activeFindMatchIndex={0}
+          language="en"
+          onLoadTurn={oldLoadTurn}
+        />,
+      );
+    });
+    await vi.waitFor(() => {
+      expect(container.textContent).toContain("old needle");
+    });
+
+    await act(async () => {
+      root.render(
+        <TurnAccordion
+          sessionKey="codex:loaded-new-session"
+          turns={[newTurn]}
+          loading={false}
+          matchedTurnId={null}
+          matchedMessageIndex={null}
+          showTools
+          query=""
+          findQuery="needle"
+          activeFindMatchIndex={0}
+          language="en"
+          onLoadTurn={newLoadTurn}
+        />,
+      );
+    });
+
+    await vi.waitFor(() => expect(newLoadTurn).toHaveBeenCalledOnce());
+    await vi.waitFor(() => {
+      expect(container.textContent).toContain("new needle");
+    });
+    expect(container.textContent).not.toContain("old needle");
   });
 });
