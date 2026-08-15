@@ -405,9 +405,9 @@ jobs:
       # repository-wide "Latest" marker cannot move to V2 without silently breaking
       # auto-update for every installed V1 client. Keep a rolling `v2-latest`
       # release instead so V2 has one stable install URL of its own.
-      # Only the package and its checksum are mirrored: the OpenViking runtime is
-      # fetched from `v2-<version>` using the version baked into the tarball, and
-      # `update-v2.json` is only ever read from a versioned tag.
+      # Mirror the package, checksum, and update manifest. The updater can read
+      # the small manifest directly when GitHub's release API is slow or blocked;
+      # OpenViking remains on `v2-<version>` using the version baked into the tarball.
       - name: Refresh V2 stable install release
         if: steps.pending.outputs.v2_publish == 'true' && steps.v2_version.outputs.release_required == 'true'
         env:
@@ -439,6 +439,7 @@ jobs:
           gh release upload "$V2_LATEST_TAG" \
             release/v2/agent-recall-v2.tgz \
             release/v2/agent-recall-v2.tgz.sha256 \
+            release/v2/update-v2.json \
             --clobber
 
           verify_directory="$(mktemp -d)"
@@ -446,6 +447,7 @@ jobs:
           gh release download "$V2_LATEST_TAG" \
             --pattern "agent-recall-v2.tgz" \
             --pattern "agent-recall-v2.tgz.sha256" \
+            --pattern "update-v2.json" \
             --dir "$verify_directory"
           node apps/main-2.0/scripts/verify-stable-install-assets.mjs \
             --stable "$verify_directory" \
