@@ -9,20 +9,18 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: quality-check-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
 jobs:
-  verify:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-    runs-on: ${{ matrix.os }}
-    env:
-      ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
-      npm_config_audit: "false"
-      npm_config_cache: ${{ github.workspace }}/.ci-npm-cache
-      npm_config_fund: "false"
-      npm_config_prefer_offline: "true"
-      AGENT_RECALL_TEST_NPM_CACHE: ${{ github.workspace }}/.ci-npm-cache
+  preflight:
+    name: Plan and repository checks
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.scope.outputs.matrix }}
+      v1: ${{ steps.scope.outputs.v1 }}
+      v2: ${{ steps.scope.outputs.v2 }}
     steps:
       - name: Check out repository
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -33,27 +31,95 @@ jobs:
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
-          cache: npm
-          cache-dependency-path: |
-            package-lock.json
-            apps/main-1.0/package-lock.json
-            apps/main-2.0/package-lock.json
 
-      - name: Install dependencies
-        run: |
-          npm ci
-          npm run setup
+      - name: Plan affected application checks
+        id: scope
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: node .github/scripts/quality-check-scope.mjs --base "$BASE_SHA" --head "$HEAD_SHA" >> "$GITHUB_OUTPUT"
 
       - name: Validate release note
-        run: node scripts/release-notes.mjs check-range "origin/${{ github.base_ref }}" HEAD
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: node scripts/release-notes.mjs check-range "$BASE_SHA" "$HEAD_SHA"
 
-      - name: Test complete application suites
-        if: runner.os == 'Linux'
-        run: npm test
+      - name: Test repository tooling
+        run: npm run test:repo
+
+  verify:
+    name: Verify ${{ matrix.label }} (${{ matrix.os }})
+    needs: preflight
+    if: needs.preflight.outputs.v1 == 'true' || needs.preflight.outputs.v2 == 'true'
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.preflight.outputs.matrix) }}
+    runs-on: ${{ matrix.os }}
+    env:
+      ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
+      npm_config_audit: "false"
+      npm_config_cache: ${{ github.workspace }}/.ci-npm-cache
+      npm_config_fund: "false"
+      npm_config_prefer_offline: "true"
+      AGENT_RECALL_TEST_NPM_CACHE: ${{ github.workspace }}/.ci-npm-cache
+    steps:
+      - name: Summarize application scope
+        run: echo "Checking ${{ matrix.label }} on ${{ matrix.os }}."
+
+      - name: Check out repository
+        if: matrix.app != 'repository'
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Set up Node.js
+        if: matrix.app != 'repository'
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: ${{ matrix.directory }}/package-lock.json
+
+      - name: Install application dependencies
+        if: matrix.app != 'repository'
+        run: npm run setup:${{ matrix.app }}
+
+      - name: Test complete application suite
+        if: matrix.app != 'repository' && runner.os == 'Linux'
+        run: npm --prefix "${{ matrix.directory }}" test
 
       - name: Test platform-specific scripts
-        if: runner.os != 'Linux'
-        run: npm run test:scripts
+        if: matrix.app != 'repository' && runner.os != 'Linux'
+        run: npm --prefix "${{ matrix.directory }}" run test:scripts
 
-      - name: Build and smoke-test packaged applications
-        run: npm run package:smoke:all
+      - name: Typecheck and smoke-test packaged application
+        if: matrix.app != 'repository'
+        run: |
+          npm --prefix "${{ matrix.directory }}" run typecheck
+          node "${{ matrix.directory }}/scripts/package-smoke.mjs"
+
+  quality-gate:
+    name: Quality gate
+    needs: [preflight, verify]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every check to pass
+        env:
+          CHECK_V1: ${{ needs.preflight.outputs.v1 }}
+          CHECK_V2: ${{ needs.preflight.outputs.v2 }}
+          PREFLIGHT_RESULT: ${{ needs.preflight.result }}
+          VERIFY_RESULT: ${{ needs.verify.result }}
+        run: |
+          test "$PREFLIGHT_RESULT" = "success"
+          case "$CHECK_V1:$CHECK_V2" in
+            true:true|true:false|false:true)
+              test "$VERIFY_RESULT" = "success"
+              ;;
+            false:false)
+              test "$VERIFY_RESULT" = "skipped"
+              ;;
+            *)
+              echo "Invalid application scope: $CHECK_V1:$CHECK_V2" >&2
+              exit 1
+              ;;
+          esac
