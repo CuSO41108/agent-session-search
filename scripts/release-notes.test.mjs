@@ -52,7 +52,7 @@ test("rejects missing and vague release notes", () => {
 });
 
 test("routes V1 and V2 notes without publishing V2 notes in V1 releases", () => {
-  const v1 = parseReleaseNote("# Stable\n\n## Bug 修复\n\n- Stable fix.\n");
+  const v1 = parseReleaseNote("# Stable\n\n<!-- release-target: v1 -->\n\n## Bug 修复\n\n- Stable fix.\n");
   const v2 = parseReleaseNote("# Preview\n\n<!-- release-target: v2 -->\n\n## Bug 修复\n\n- Preview fix.\n");
   const both = parseReleaseNote("# Shared\n\n<!-- release-target: both -->\n\n## Bug 修复\n\n- Shared fix.\n");
   assert.equal(v1.target, "v1");
@@ -84,10 +84,17 @@ test("renders each product's release notes independently", () => {
 test("repository guidance treats release notes as sanitized product copy", async () => {
   const instructions = await readFile("AGENTS.md", "utf8");
   const templateGuidance = await readFile(".release-notes/README.md", "utf8");
+  const pullRequestTemplate = await readFile(".github/pull_request_template.md", "utf8");
+  const claudeGuidance = await readFile("CLAUDE.md", "utf8");
   assert.match(instructions, /product copy for end users, not engineering change logs/);
   assert.match(instructions, /Remove internal-only changes entirely/);
   assert.match(instructions, /omit identifiers, hosts, paths, table names, credentials/);
+  assert.match(instructions, /Every new note must put exactly one of .*release-target: v1.*release-target: v2.*release-target: both/s);
+  assert.match(instructions, /manually starting the workflow does not force both products to release/);
   assert.match(templateGuidance, /Write this as product copy for users, not as an engineering log/);
+  assert.match(templateGuidance, /Release routing is explicit for every new note/);
+  assert.match(pullRequestTemplate, /release-target: v1.*v2.*both/);
+  assert.match(claudeGuidance, /an explicit `<!-- release-target: v1\|v2\|both -->` marker/);
 });
 
 test("bumps minor for features and patch for fix-only releases", () => {
@@ -118,6 +125,27 @@ test("finds only newly added non-template release notes", () => {
   assert.deepEqual(files, [".release-notes/auto-update.md"]);
 });
 
+test("validates staged notes against staged and unstaged application changes", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "agent-recall-staged-release-note-"));
+  const noteFile = path.join(root, "note.md");
+  await writeFile(noteFile, "# Wrong target\n\n<!-- release-target: v1 -->\n\n## Bug 修复\n\n- Visible fix.\n", "utf8");
+
+  try {
+    assert.throws(
+      () => validateReleaseNoteRange("origin/main", "HEAD", (args) => {
+        if (args[0] === "ls-files") return "";
+        if (args.includes("--diff-filter=A")) return args.includes("--cached") ? `${noteFile}\n` : "";
+        if (args.some((arg) => arg.includes("..."))) return "";
+        if (args.includes("--cached")) return "apps/main-2.0/src/main/staged.ts\n";
+        return "apps/main-2.0/src/main/unstaged.ts\n";
+      }),
+      /target "v1" does not cover changes under apps\/main-2\.0/,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("allows a branch with only GitHub metadata changes to omit product release notes", () => {
   const result = validateReleaseNoteRange("origin/main", "HEAD", (args) => {
     if (args[0] === "ls-files") return "";
@@ -137,6 +165,63 @@ test("still requires a product release note when a branch mixes GitHub metadata 
     }),
     /Expected exactly one added \.release-notes\/\*\.md file/,
   );
+});
+
+test("requires explicit release routing and rejects clear application target mismatches", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "agent-recall-release-target-"));
+  const noteFile = path.join(root, "note.md");
+  let changedFiles = ["apps/main-2.0/src/main/index.ts"];
+  const runGit = (args) => {
+    if (args[0] === "ls-files") return "";
+    if (args.includes("--diff-filter=A")) return `${noteFile}\n`;
+    return `${changedFiles.join("\n")}\n`;
+  };
+
+  try {
+    await writeFile(noteFile, "# Missing target\n\n## Bug 修复\n\n- Visible fix.\n", "utf8");
+    assert.throws(
+      () => validateReleaseNoteRange("origin/main", "HEAD", runGit),
+      /must explicitly declare <!-- release-target: v1\|v2\|both -->/,
+    );
+
+    await writeFile(noteFile, "# Misplaced target\n\n## Bug 修复\n\n- Visible fix.\n\n<!-- release-target: v2 -->\n", "utf8");
+    assert.throws(
+      () => validateReleaseNoteRange("origin/main", "HEAD", runGit),
+      /immediately after its title/,
+    );
+
+    await writeFile(noteFile, "# Wrong target\n\n<!-- release-target: v1 -->\n\n## Bug 修复\n\n- Visible fix.\n", "utf8");
+    changedFiles = ["apps\\main-2.0\\src\\main\\index.ts", "apps/main-1.0/src/main/index.test.ts"];
+    assert.throws(
+      () => validateReleaseNoteRange("origin/main", "HEAD", runGit),
+      /target "v1" does not cover changes under apps\/main-2\.0/,
+    );
+
+    await writeFile(noteFile, "# V2 target\n\n<!-- release-target: v2 -->\n\n## Bug 修复\n\n- Visible fix.\n", "utf8");
+    assert.equal(validateReleaseNoteRange("origin/main", "HEAD", runGit).note.target, "v2");
+
+    await writeFile(noteFile, "# Both targets\n\n<!-- release-target: both -->\n\n## Bug 修复\n\n- Visible fix.\n", "utf8");
+    assert.equal(validateReleaseNoteRange("origin/main", "HEAD", runGit).note.target, "both");
+
+    changedFiles = ["apps/main-1.0/src/main/index.ts"];
+    await writeFile(noteFile, "# Wrong V1 target\n\n<!-- release-target: v2 -->\n\n## Bug 修复\n\n- Visible fix.\n", "utf8");
+    assert.throws(
+      () => validateReleaseNoteRange("origin/main", "HEAD", runGit),
+      /target "v2" does not cover changes under apps\/main-1\.0/,
+    );
+
+    changedFiles = ["apps/main-1.0/src/main/index.ts", "apps/main-2.0/src/main/index.ts"];
+    assert.equal(validateReleaseNoteRange("origin/main", "HEAD", runGit).note.target, "v2");
+
+    changedFiles = ["scripts/shared.mjs"];
+    assert.equal(validateReleaseNoteRange("origin/main", "HEAD", runGit).note.target, "v2");
+
+    changedFiles = ["apps/main-2.0/src/main/index.test.ts", "apps/main-2.0/docs/release.md"];
+    await writeFile(noteFile, "# V1 target\n\n<!-- release-target: v1 -->\n\n## Bug 修复\n\n- Visible fix.\n", "utf8");
+    assert.equal(validateReleaseNoteRange("origin/main", "HEAD", runGit).note.target, "v1");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test("workflows require branch notes and publish accumulated changes every day or on demand", async () => {
