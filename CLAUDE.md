@@ -38,7 +38,7 @@ Notes:
 
 They share concepts but not code. The critical difference: **V1 stores sessions in SQLite with a fully synchronous store API; V2 uses embedded PostgreSQL with a fully async store API.** Per `AGENTS.md`, any session-related change must be inspected in both apps and implemented in both when it applies — but never by copy-paste, because the data layer diverges.
 
-Release channels also diverge: V1 tags `vX.Y.Z` and owns the repo "Latest" marker (V1's updater hardcodes `releases/latest/download/update.json`); V2 tags `v2-X.Y.Z` plus a force-moved `v2-latest` tag that mirrors only the tarball, giving V2 a stable install URL without stealing the Latest marker.
+Release channels also diverge: V1 tags `vX.Y.Z` and owns the repo "Latest" marker (V1's updater hardcodes `releases/latest/download/update.json`); V2 tags `v2-X.Y.Z` plus a force-moved `v2-latest` tag that mirrors the stable install and update assets, giving V2 fixed package and manifest URLs without stealing the Latest marker.
 
 ## Shared architecture (both apps)
 
@@ -96,4 +96,4 @@ Tests do **not** start a real server: `src/core/postgres/test-session-store.ts` 
 
 ## Before opening an MR
 
-Every branch adds **exactly one** `.release-notes/<branch-slug>.md`: one `#` title, an optional `<!-- release-target: v1|v2|both -->` marker (defaults to `v1`), and at least one bullet under `## 新增功能` or `## Bug 修复`. These bullets ship verbatim as end-user product copy — no MRs, branches, CI, file paths, table names, or internal service names, and no vague filler (the checker rejects "优化代码" and friends). Any feature bullet bumps the minor version; fixes-only bumps the patch. Run `npm run release-note:check`.
+Every branch adds **exactly one** `.release-notes/<branch-slug>.md`: one `#` title, an explicit `<!-- release-target: v1|v2|both -->` marker immediately after the title, and at least one bullet under `## 新增功能` or `## Bug 修复`. The marker must cover every application receiving the user-visible outcome; test, documentation, and compatibility-support edits do not by themselves require `both`. File names and titles never select a target. These bullets ship verbatim as end-user product copy — no MRs, branches, CI, file paths, table names, or internal service names, and no vague filler (the checker rejects "优化代码" and friends). Any feature bullet bumps the minor version; fixes-only bumps the patch. Run `npm run release-note:check`.

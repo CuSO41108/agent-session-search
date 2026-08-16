@@ -22,6 +22,8 @@
 - Every independent development branch with user-visible changes must add exactly one user-facing release note before opening an MR.
 - A branch may omit the release note only when every changed file belongs to release infrastructure: `.github/**`, `AGENTS.md`, `.release-notes/README.md`, `scripts/release-notes.mjs`, or `scripts/release-notes.test.mjs`. Mixing any other path into the branch restores the exactly-one requirement.
 - Add the note at `.release-notes/<branch-slug>.md`; keep it updated as the branch changes.
+- Release-note routing is explicit. Every new note must put exactly one of `<!-- release-target: v1 -->`, `<!-- release-target: v2 -->`, or `<!-- release-target: both -->` immediately after its title. Use `both` only when the same user-visible outcome ships in both applications. File names and titles do not select a release target.
+- Verify that the target covers every application receiving the user-visible outcome. Test, documentation, or compatibility-support edits do not by themselves require `both`; changed paths are only a sanity check for clear single-application contradictions. A V2-only note routed to V1 does not trigger a V2 release and can publish misleading V1 notes; `npm run release-note:check` must reject clear target/path mismatches.
 - The note must have one `#` title and at least one bullet under `## 新增功能` or `## Bug 修复`.
 - Release notes are product copy for end users, not engineering change logs. Include only user-visible new capabilities and user-visible bugs that were fixed.
 - Describe the outcome in plain language. Do not mention MRs/PRs, branches, `main`, CI, GitHub Actions, commits, version-bump logic, build or release pipelines, refactors, test counts, internal service names, database details, file paths, or implementation mechanics unless that detail is itself an intentional user-facing feature.
@@ -36,6 +38,8 @@
 - MRs target `main`. Direct feature pushes to `main` are not part of the development workflow.
 - MRs merged into `main` accumulate release notes; they do not publish immediately.
 - The release workflow publishes accumulated notes every day at 10:00 Beijing time (02:00 UTC), and can be triggered manually for an urgent release.
+- V1 and V2 are versioned and published independently. Scheduled and manual runs publish only products with matching pending release notes; manually starting the workflow does not force both products to release.
+- V1 `vX.Y.Z` releases own GitHub's repository-wide `Latest` marker and `releases/latest/download`. V2 uses immutable `v2-X.Y.Z` releases plus the moving `v2-latest` install/update pointer. `v2-latest` is not GitHub's `Latest` release and is refreshed only after a V2 release succeeds or when repairing a stale pointer.
 - A scheduled or manual run with no added release notes since the latest stable tag exits without publishing a release.
 - Follow semantic versioning as `x.y.z`, and be conservative about version bumps.
 - Prefer bumping `z` for routine releases, including Bug fixes and small user-facing functionality additions, removals, or changes.
