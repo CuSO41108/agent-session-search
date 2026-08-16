@@ -3,14 +3,20 @@
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import type { SessionSearchResult } from "../../core/types";
+import type {
+  SessionMigrationProgress,
+  SessionMigrationResult,
+  SessionSearchResult,
+} from "../../core/types";
 
 const harness = vi.hoisted(() => ({
   listener: null as ((sessionKey: string) => void) | null,
+  migrationListener: null as ((progress: SessionMigrationProgress) => void) | null,
   getSession: vi.fn(),
   openLocal: vi.fn(),
   setSelectedKey: vi.fn(),
-  sessionsPage: vi.fn(() => null),
+  sessionsPage: vi.fn((_props: unknown) => null),
+  remoteSessionsDialog: vi.fn((_props: unknown) => null),
   loadCatalog: vi.fn(async () => undefined),
   loadWorkbenchSessions: vi.fn(async () => undefined),
   loadStats: vi.fn(async () => undefined),
@@ -26,6 +32,9 @@ const harness = vi.hoisted(() => ({
 vi.mock("./components/app-navigation", () => ({ AppNavigation: () => null }));
 vi.mock("./features/workbench/workbench-page", () => ({ WorkbenchPage: () => null }));
 vi.mock("./features/sessions/sessions-page", () => ({ SessionsPage: harness.sessionsPage }));
+vi.mock("./features/remote-sessions/remote-sessions-dialog", () => ({
+  RemoteSessionsDialog: harness.remoteSessionsDialog,
+}));
 vi.mock("./features/search/use-main-search-shortcut", () => ({ useMainSearchShortcut: () => undefined }));
 
 vi.mock("./features/sessions/use-session-detail", () => ({
@@ -165,6 +174,25 @@ describe("external session opening", () => {
   let root: Root;
   let container: HTMLDivElement;
 
+  async function finishRemoteRestore(result: SessionMigrationResult): Promise<void> {
+    const sessionsProps = harness.sessionsPage.mock.calls.at(-1)?.[0] as {
+      actions: { openRemoteSessions: () => void };
+    };
+    await act(async () => sessionsProps.actions.openRemoteSessions());
+    const remoteProps = harness.remoteSessionsDialog.mock.calls.at(-1)?.[0] as {
+      onRestored: (result: SessionMigrationResult) => void;
+    };
+    await act(async () => {
+      remoteProps.onRestored(result);
+      harness.migrationListener?.({
+        sessionKey: "codex:restored-session",
+        target: "codex",
+        stage: "launching",
+      });
+      await vi.advanceTimersByTimeAsync(0);
+    });
+  }
+
   beforeAll(async () => {
     Reflect.set(globalThis, "IS_REACT_ACT_ENVIRONMENT", true);
     const sessionSearch = {
@@ -181,7 +209,12 @@ describe("external session opening", () => {
       onAppUpdateStatus: () => vi.fn(),
       onAppUpdateProgress: () => vi.fn(),
       onEnvironmentsUpdated: () => vi.fn(),
-      onMigrationProgress: () => vi.fn(),
+      onMigrationProgress: (listener: (progress: SessionMigrationProgress) => void) => {
+        harness.migrationListener = listener;
+        return () => {
+          if (harness.migrationListener === listener) harness.migrationListener = null;
+        };
+      },
       getIndexStatus: vi.fn(async () => ({ running: false, indexed: 0, skipped: 0, total: 0, lastIndexedAt: null, error: null })),
       getAppUpdateStatus: vi.fn(async () => null),
       getSettings: vi.fn(async () => null),
@@ -228,5 +261,54 @@ describe("external session opening", () => {
     expect(harness.setSelectedKey).toHaveBeenCalledWith(session.sessionKey);
     expect(harness.getSession).toHaveBeenCalledWith(session.sessionKey);
     expect(harness.openLocal).toHaveBeenCalledWith(session);
+  });
+
+  it("finishes a remote restore after a delayed launching progress event", async () => {
+    vi.useFakeTimers();
+    try {
+      await finishRemoteRestore({
+        target: "codex",
+        targetSessionId: "restored-session",
+        targetFilePath: "C:\\Codex\\restored-session.jsonl",
+        strategy: "complete",
+        resumeCommand: "codex resume restored-session",
+        indexed: true,
+        launched: true,
+      });
+
+      expect(container.querySelector(".action-toast.running")).toBeNull();
+      expect(container.querySelector(".action-toast.success")?.textContent).toContain("Codex");
+
+      await act(async () => vi.advanceTimersByTimeAsync(1800));
+      expect(container.querySelector(".action-toast")).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps a remote restore launch failure after delayed progress", async () => {
+    vi.useFakeTimers();
+    try {
+      const warning = "Codex could not be opened.";
+
+      await finishRemoteRestore({
+        target: "codex",
+        targetSessionId: "restored-session",
+        targetFilePath: "C:\\Codex\\restored-session.jsonl",
+        strategy: "complete",
+        resumeCommand: "codex resume restored-session",
+        indexed: true,
+        launched: false,
+        warning,
+      });
+
+      expect(container.querySelector(".action-toast.running")).toBeNull();
+      expect(container.querySelector(".action-toast.error")?.textContent).toContain(warning);
+
+      await act(async () => vi.advanceTimersByTimeAsync(1800));
+      expect(container.querySelector(".action-toast.error")?.textContent).toContain(warning);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
