@@ -840,11 +840,11 @@ export function TurnAccordion({
               <div className="turn-phase-divider inherited">
                 <GitFork size={15} />
                 <span>
-                  <strong>{localize(language, "Context forked from the parent Session", "从父会话 Fork 的上下文")}</strong>
+                  <strong>{localize(language, "Context inherited from the parent Session", "继承自父会话的上下文")}</strong>
                   <small>{localize(
                     language,
-                    `The following ${forkedTurnCount} Turns come from the parent Session snapshot`,
-                    `以下 ${forkedTurnCount} 个 Turn 来自父会话快照`,
+                    `The following ${forkedTurnCount} Turns are conversation context inherited when the subagent was created`,
+                    `以下 ${forkedTurnCount} 个 Turn 为创建子 Agent 时继承的会话上下文`,
                   )}</small>
                 </span>
               </div>
@@ -853,11 +853,11 @@ export function TurnAccordion({
               <div className="turn-phase-divider subagent">
                 <BotMessageSquare size={15} />
                 <span>
-                  <strong>{localize(language, "Subagent execution", "子 Agent 执行")}</strong>
+                  <strong>{localize(language, "Subagent task execution", "子 Agent 任务执行")}</strong>
                   <small>{localize(
                     language,
-                    "Turns from this point onward were produced by the subagent itself",
-                    "从这里开始是子 Agent 自己产生的 Turn",
+                    "The following Turn records were produced by this subagent during independent execution",
+                    "以下 Turn 记录由该子 Agent 独立执行产生",
                   )}</small>
                 </span>
               </div>
