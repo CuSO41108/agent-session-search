@@ -6,7 +6,7 @@ import { AGENT_SKILL_REGISTRY } from "../../../../core/agent-skill-registry";
 import { localize, type LanguageMode } from "../../language";
 
 const TARGET_LABELS: Record<SkillInstallTarget, string> = Object.fromEntries([
-  AGENT_SKILL_REGISTRY
+  ...AGENT_SKILL_REGISTRY
     .filter((entry) => entry.installTarget !== null)
     .map((entry) => [entry.installTarget!, entry.label]),
   ["codex-shared", "Codex shared (~/.agents/skills)"],
