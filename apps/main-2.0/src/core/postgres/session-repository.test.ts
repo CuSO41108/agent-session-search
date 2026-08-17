@@ -254,7 +254,7 @@ describe("PostgresSessionRepository", () => {
           collaboration: {
             direction: "incoming",
             triggerTurn: true,
-            messageType: "message",
+            messageType: "new_task",
           },
         },
       },
@@ -319,12 +319,14 @@ describe("PostgresSessionRepository", () => {
         timeToFirstTokenMs: 200,
         spanCount: 0,
         agentTriggered: true,
+        subagentExecutionStart: true,
       },
       {
         sourceTurnId: "turn-2",
         status: "running",
         spanCount: 0,
         agentTriggered: false,
+        subagentExecutionStart: false,
       },
     ]);
     expect(await turnsRepository.getAllMessages("codex:lifecycle")).toMatchObject([
@@ -341,7 +343,7 @@ describe("PostgresSessionRepository", () => {
       {
         sourceTurnId: "turn-1",
         eventType: "codex.collaboration.message",
-        attributes: { collaboration: { triggerTurn: true } },
+        attributes: { collaboration: { triggerTurn: true, messageType: "new_task" } },
       },
       {
         sourceTurnId: "turn-1",

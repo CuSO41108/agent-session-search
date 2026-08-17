@@ -737,6 +737,7 @@ export function DetailPanel({
                 activeFindMatchIndex={panelSearchOpen && panelSearchQuery ? currentMatchIndex : null}
                 language={language}
                 live={liveState === "open"}
+                isSubagent={session.isSubagent === true}
                 onLoadTurn={onLoadTurn}
                 onMigrateTurn={onMigrateTurn}
                 onFindMatchCountChange={setTurnSearchMatchCount}

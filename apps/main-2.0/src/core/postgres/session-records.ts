@@ -63,6 +63,7 @@ export interface SessionTurnSummaryRow extends Record<string, unknown> {
   source_message_index: number | string | null;
   source_turn_id: string | null;
   agent_triggered: boolean;
+  subagent_execution_start: boolean;
   synthetic: boolean;
   status: SessionTurnStatus;
   started_at: Date | string | null;
@@ -97,6 +98,15 @@ export const SESSION_TURN_SUMMARY_SQL = `
         and trigger_spans.attributes #>> '{eventType}' = 'codex.collaboration.message'
         and trigger_spans.attributes #>> '{collaboration,triggerTurn}' = 'true'
     ) as agent_triggered,
+    exists (
+      select 1
+      from agent_recall.trace_spans new_task_spans
+      where new_task_spans.turn_id = turns.id
+        and new_task_spans.attributes #>> '{eventType}' = 'codex.collaboration.message'
+        and new_task_spans.attributes #>> '{collaboration,direction}' = 'incoming'
+        and new_task_spans.attributes #>> '{collaboration,triggerTurn}' = 'true'
+        and new_task_spans.attributes #>> '{collaboration,messageType}' = 'new_task'
+    ) as subagent_execution_start,
     turns.synthetic,
     turns.status,
     turns.started_at,
@@ -211,6 +221,7 @@ export function sessionTurnSummaryFromRow(row: SessionTurnSummaryRow): SessionTu
     sourceMessageIndex: row.source_message_index === null ? null : numberValue(row.source_message_index),
     sourceTurnId: row.source_turn_id,
     agentTriggered: row.agent_triggered,
+    subagentExecutionStart: row.subagent_execution_start,
     synthetic: row.synthetic,
     status: row.status,
     startedAt: nullableIsoValue(row.started_at),

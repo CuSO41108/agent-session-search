@@ -306,6 +306,72 @@ describe("TurnAccordion subagent labels", () => {
     expect(container.textContent).toContain("第 1 轮");
     expect(container.textContent).not.toContain("Agent 触发");
   });
+
+  it("separates forked parent context from the subagent's own Turns", async () => {
+    const turn = (
+      id: string,
+      turnIndex: number,
+      overrides: Partial<SessionTurnSummary> = {},
+    ) => ({
+      id,
+      turnIndex,
+      sourceMessageIndex: turnIndex < 2 ? turnIndex : null,
+      sourceTurnId: `source-${id}`,
+      agentTriggered: false,
+      synthetic: false,
+      status: "completed" as const,
+      startedAt: `2026-08-12T09:0${turnIndex}:00.000Z`,
+      endedAt: `2026-08-12T09:0${turnIndex}:30.000Z`,
+      userPreview: turnIndex < 2 ? `parent request ${turnIndex + 1}` : "",
+      assistantPreview: turnIndex < 2 ? `parent result ${turnIndex + 1}` : `subagent result ${turnIndex - 1}`,
+      inputTokens: 0,
+      outputTokens: 0,
+      cachedInputTokens: 0,
+      reasoningOutputTokens: 0,
+      totalTokens: 0,
+      errorCount: 0,
+      toolNames: [],
+      messageCount: 1,
+      spanCount: 0,
+      ...overrides,
+    });
+    const turns = [
+      turn("parent-1", 0),
+      turn("parent-2", 1),
+      turn("child-1", 2, {
+        agentTriggered: true,
+        subagentExecutionStart: true,
+      }),
+      turn("child-2", 3),
+    ] satisfies SessionTurnSummary[];
+
+    await act(async () => {
+      root.render(
+        <TurnAccordion
+          sessionKey="codex:subagent-1"
+          turns={turns}
+          loading={false}
+          matchedTurnId={null}
+          matchedMessageIndex={null}
+          showTools
+          query=""
+          language="zh"
+          isSubagent
+          onLoadTurn={async () => null}
+        />,
+      );
+    });
+
+    expect(container.textContent).toContain("从父会话 Fork 的上下文");
+    expect(container.textContent).toContain("以下 2 个 Turn 来自父会话快照");
+    expect(container.textContent).toContain("子 Agent 执行");
+    expect(container.textContent).toContain("从这里开始是子 Agent 自己产生的 Turn");
+    expect(container.textContent).toContain("父会话第 1 轮 · Fork 继承");
+    expect(container.textContent).toContain("子 Agent 第 1 轮 · Agent 触发");
+    expect(container.textContent).toContain("子 Agent 第 2 轮");
+    expect(container.querySelectorAll('[data-turn-origin="inherited"]')).toHaveLength(2);
+    expect(container.querySelectorAll('[data-turn-origin="subagent"]')).toHaveLength(2);
+  });
 });
 
 describe("TurnAccordion span payloads", () => {

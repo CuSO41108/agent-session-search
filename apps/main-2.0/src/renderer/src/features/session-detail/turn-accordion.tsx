@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from "react";
 import type { ReactElement } from "react";
-import { AlertCircle, ArrowRightLeft, BotMessageSquare, ChevronDown, ChevronRight, Clock3, LoaderCircle, Paperclip, RotateCw, Wrench, X } from "lucide-react";
+import { AlertCircle, ArrowRightLeft, BotMessageSquare, ChevronDown, ChevronRight, Clock3, GitFork, LoaderCircle, Paperclip, RotateCw, Wrench, X } from "lucide-react";
 
 import { formatMessageTime } from "../../../../core/format-session";
 import { traceCompactionSummary, tracePresentation } from "../../../../core/trace-presentation";
@@ -201,7 +201,23 @@ function turnTitle(
   language: LanguageMode,
   displayTurnNumber: number,
   agentTriggered: boolean,
+  origin: "inherited" | "subagent" | null,
+  subagentTurnNumber: number | null,
 ): string {
+  if (origin === "inherited") {
+    return localize(
+      language,
+      `Parent Turn ${displayTurnNumber} · Forked context`,
+      `父会话第 ${displayTurnNumber} 轮 · Fork 继承`,
+    );
+  }
+  if (origin === "subagent" && subagentTurnNumber !== null) {
+    return localize(
+      language,
+      `Subagent Turn ${subagentTurnNumber}${agentTriggered ? " · Triggered by an agent" : ""}`,
+      `子 Agent 第 ${subagentTurnNumber} 轮${agentTriggered ? " · Agent 触发" : ""}`,
+    );
+  }
   if (agentTriggered) {
     return localize(
       language,
@@ -570,6 +586,7 @@ export function TurnAccordion({
   activeFindMatchIndex = null,
   language,
   live = false,
+  isSubagent = false,
   onLoadTurn,
   onMigrateTurn,
   onFindMatchCountChange,
@@ -586,6 +603,7 @@ export function TurnAccordion({
   activeFindMatchIndex?: number | null;
   language: LanguageMode;
   live?: boolean;
+  isSubagent?: boolean;
   onLoadTurn: (turnId: string) => Promise<SessionTurnDetail | null>;
   onMigrateTurn?: (turn: SessionTurnSummary) => void;
   onFindMatchCountChange?: (count: number) => void;
@@ -755,16 +773,38 @@ export function TurnAccordion({
   }
 
   let visibleTurnNumber = 0;
-  const turnPresentation = new Map(turns.map((turn) => {
+  let subagentTurnNumber = 0;
+  const exactExecutionStartIndex = isSubagent
+    ? turns.findIndex((turn) => turn.subagentExecutionStart === true)
+    : -1;
+  const fallbackExecutionStartIndex = isSubagent && exactExecutionStartIndex < 0
+    ? turns.findIndex((turn) => turn.agentTriggered === true && turn.sourceMessageIndex === null)
+    : -1;
+  const executionStartIndex = exactExecutionStartIndex >= 0
+    ? exactExecutionStartIndex
+    : fallbackExecutionStartIndex;
+  const forkedTurnCount = executionStartIndex > 0
+    ? turns.slice(0, executionStartIndex).filter((turn) => !turn.synthetic).length
+    : 0;
+  const turnPresentation = new Map(turns.map((turn, index) => {
     const agentTriggered = turn.agentTriggered === true
       && turn.sourceMessageIndex === null;
     if (!turn.synthetic || agentTriggered) visibleTurnNumber += 1;
-    return [turn.id, { agentTriggered, displayTurnNumber: visibleTurnNumber }] as const;
+    const origin = executionStartIndex >= 0
+      ? index < executionStartIndex ? "inherited" as const : "subagent" as const
+      : null;
+    if (origin === "subagent" && (!turn.synthetic || agentTriggered)) subagentTurnNumber += 1;
+    return [turn.id, {
+      agentTriggered,
+      displayTurnNumber: visibleTurnNumber,
+      origin,
+      subagentTurnNumber: origin === "subagent" ? subagentTurnNumber : null,
+    }] as const;
   }));
 
   return (
     <div className="turn-list" ref={rootRef}>
-      {turns.map((turn) => {
+      {turns.map((turn, turnListIndex) => {
         const expanded = stateMatchesSession && state.expandedTurnIds.has(turn.id);
         const detail = currentDetailsById[turn.id];
         const loadingDetail = stateMatchesSession && state.loadingTurnIds.has(turn.id);
@@ -774,6 +814,8 @@ export function TurnAccordion({
         const presentation = turnPresentation.get(turn.id) ?? {
           agentTriggered: false,
           displayTurnNumber: turn.turnIndex + 1,
+          origin: null,
+          subagentTurnNumber: null,
         };
         const displayStatus: SessionTurnSummary["status"] =
           turn.status === "running"
@@ -793,21 +835,48 @@ export function TurnAccordion({
             )
           : localize(language, "No text captured", "没有记录文本"));
         return (
-          <article
-            key={turn.id}
-            className={`turn-card ${displayStatus} ${turn.id === matchedTurnId ? "match-target" : ""}`}
-            data-turn-id={turn.id}
-            onContextMenu={onMigrateTurn && !turn.synthetic && turn.sourceMessageIndex !== null
-              ? (event) => {
-                  event.preventDefault();
-                  event.stopPropagation();
-                  setMigrationMenu({
-                    point: { x: event.clientX, y: event.clientY },
-                    turn,
-                  });
-                }
-              : undefined}
-          >
+          <Fragment key={turn.id}>
+            {turnListIndex === 0 && forkedTurnCount > 0 ? (
+              <div className="turn-phase-divider inherited">
+                <GitFork size={15} />
+                <span>
+                  <strong>{localize(language, "Context forked from the parent Session", "从父会话 Fork 的上下文")}</strong>
+                  <small>{localize(
+                    language,
+                    `The following ${forkedTurnCount} Turns come from the parent Session snapshot`,
+                    `以下 ${forkedTurnCount} 个 Turn 来自父会话快照`,
+                  )}</small>
+                </span>
+              </div>
+            ) : null}
+            {turnListIndex === executionStartIndex ? (
+              <div className="turn-phase-divider subagent">
+                <BotMessageSquare size={15} />
+                <span>
+                  <strong>{localize(language, "Subagent execution", "子 Agent 执行")}</strong>
+                  <small>{localize(
+                    language,
+                    "Turns from this point onward were produced by the subagent itself",
+                    "从这里开始是子 Agent 自己产生的 Turn",
+                  )}</small>
+                </span>
+              </div>
+            ) : null}
+            <article
+              className={`turn-card ${displayStatus} ${presentation.origin ? `turn-origin-${presentation.origin}` : ""} ${turn.id === matchedTurnId ? "match-target" : ""}`}
+              data-turn-id={turn.id}
+              data-turn-origin={presentation.origin ?? undefined}
+              onContextMenu={onMigrateTurn && !turn.synthetic && turn.sourceMessageIndex !== null
+                ? (event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    setMigrationMenu({
+                      point: { x: event.clientX, y: event.clientY },
+                      turn,
+                    });
+                  }
+                : undefined}
+            >
             <button
               className="turn-card-summary"
               type="button"
@@ -825,6 +894,8 @@ export function TurnAccordion({
                     language,
                     presentation.displayTurnNumber,
                     presentation.agentTriggered,
+                    presentation.origin,
+                    presentation.subagentTurnNumber,
                   )}
                   {turn.startedAt ? <span>{formatMessageTime(turn.startedAt, language)}</span> : null}
                 </span>
@@ -889,7 +960,8 @@ export function TurnAccordion({
                 ) : null}
               </div>
             ) : null}
-          </article>
+            </article>
+          </Fragment>
         );
       })}
       {migrationMenu ? (
