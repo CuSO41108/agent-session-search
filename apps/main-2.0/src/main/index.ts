@@ -24,6 +24,7 @@ import { randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
 import { homedir } from "node:os";
 import { loadActiveCodexSummaryEndpointDefaults } from "../core/codex-profile";
+import { mergeCodexDesktopProjects, readCodexDesktopProjects } from "../core/codex-projects";
 import type { CodexRequestFidelity } from "../core/codex-request-export";
 import { indexMigratedSessionFile, syncDefaultSessionsInBatches, type IndexStatus } from "../core/indexer";
 import { createIndexRunCoordinator } from "../core/index-run-coordinator";
@@ -199,6 +200,8 @@ import type {
   MigrationAgent,
   MigrationTarget,
   PortableSession,
+  ProjectQueryOptions,
+  ProjectSummary,
   SearchOptions,
   SessionEnvironment,
   SessionMigrationProgress,
@@ -740,7 +743,7 @@ function visibleSearchOptions(options: SearchOptions = {}): SearchOptions {
 
 function createRulesSyncService(): RulesIpcService {
   const projectDirs = async () =>
-    (await store.listProjects(visibleProjectOptions())).map((project) => project.path);
+    (await listVisibleProjects(visibleProjectOptions())).map((project) => project.path);
   const createClient = () => {
     const settings = getSettings();
     return new SupabaseRulesSyncClient({ url: settings.skillSyncSupabaseUrl, anonKey: settings.skillSyncSupabaseAnonKey });
@@ -863,6 +866,16 @@ function visibleStatsOptions(options: SessionStatsOptions = {}): SessionStatsOpt
 
 function visibleProjectOptions(): { excludeSubagents: boolean } {
   return { excludeSubagents: true };
+}
+
+function codexDesktopHome(): string {
+  return process.env.CODEX_HOME?.trim() || path.join(app.getPath("home"), ".codex");
+}
+
+async function listVisibleProjects(options: ProjectQueryOptions = {}): Promise<ProjectSummary[]> {
+  const indexed = await store.listProjects(options);
+  if (options.environmentId && options.environmentId !== "all" && options.environmentId !== "local") return indexed;
+  return mergeCodexDesktopProjects(indexed, await readCodexDesktopProjects(codexDesktopHome()));
 }
 
 async function pruneDisabledOptionalSources(settings: AppSettings): Promise<void> {
@@ -2387,6 +2400,7 @@ function registerIpc(): void {
   });
   registerSessionCatalogIpc(ipcMain, new SessionCatalogService({
     store,
+    listProjects: listVisibleProjects,
     visibleSearchOptions,
     visibleStatsOptions,
     visibleProjectOptions,
@@ -2558,7 +2572,7 @@ function registerIpc(): void {
           };
         }
         case "list_projects": {
-          const projects = await store.listProjects(visibleProjectOptions());
+          const projects = await listVisibleProjects(visibleProjectOptions());
           return {
             result: projects.map((project) => ({ project: project.path, sessions: project.sessionCount })),
             sessionKeys: [],

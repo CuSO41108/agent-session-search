@@ -29,6 +29,7 @@ import {
   type CodexRequestFidelity,
 } from "../core/codex-request-export";
 import { extractSessionContextComponents } from "../core/session-context-components";
+import { mergeCodexDesktopProjects, readCodexDesktopProjects } from "../core/codex-projects";
 import { indexMigratedSessionFile, type IndexStatus } from "../core/indexer";
 import { createIndexRunCoordinator } from "../core/index-run-coordinator";
 import { createIndexProgressPublisher } from "./index-progress";
@@ -158,6 +159,7 @@ import type {
   MigrationTarget,
   PortableSession,
   ProjectQueryOptions,
+  ProjectSummary,
   SearchOptions,
   SessionEnvironment,
   SessionMigrationProgress,
@@ -402,7 +404,7 @@ function visibleSearchOptions(options: SearchOptions = {}): SearchOptions {
 }
 
 function createRulesSyncService(): RulesIpcService {
-  const projectDirs = () => store.listProjects(visibleProjectOptions()).map((p) => p.path);
+  const projectDirs = () => listVisibleProjects(visibleProjectOptions()).map((p) => p.path);
   const createClient = () => {
     const settings = getSettings();
     return new SupabaseRulesSyncClient({ url: settings.skillSyncSupabaseUrl, anonKey: settings.skillSyncSupabaseAnonKey });
@@ -525,6 +527,16 @@ function visibleStatsOptions(options: SessionStatsOptions = {}): SessionStatsOpt
 
 function visibleProjectOptions(): { excludeSubagents: boolean } {
   return { excludeSubagents: true };
+}
+
+function codexDesktopHome(): string {
+  return process.env.CODEX_HOME?.trim() || path.join(app.getPath("home"), ".codex");
+}
+
+function listVisibleProjects(options: ProjectQueryOptions = {}): ProjectSummary[] {
+  const indexed = store.listProjects(options);
+  if (options.environmentId && options.environmentId !== "all" && options.environmentId !== "local") return indexed;
+  return mergeCodexDesktopProjects(indexed, readCodexDesktopProjects(codexDesktopHome()));
 }
 
 function disabledOptionalSources(settings: AppSettings): SessionSource[] {
@@ -2003,7 +2015,7 @@ function registerIpc(): void {
           };
         }
         case "list_projects": {
-          const projects = store.listProjects(visibleProjectOptions());
+          const projects = listVisibleProjects(visibleProjectOptions());
           return {
             result: projects.map((project) => ({ project: project.path, sessions: project.sessionCount })),
             sessionKeys: [],
@@ -2065,7 +2077,7 @@ function registerIpc(): void {
     store.listTags({ ...options, ...visibleProjectOptions() }),
   );
   ipcMain.handle("projects:list", (_event, options?: ProjectQueryOptions) =>
-    store.listProjects({ ...options, ...visibleProjectOptions() }),
+    listVisibleProjects({ ...options, ...visibleProjectOptions() }),
   );
   ipcMain.handle("tags:by-project", () => store.listTagsByProject(visibleProjectOptions()));
   ipcMain.handle("environments:list", () => store.listEnvironments());
