@@ -202,6 +202,112 @@ describe("TurnAccordion search match positioning", () => {
   });
 });
 
+describe("TurnAccordion subagent labels", () => {
+  let container: HTMLDivElement;
+  let root: Root;
+
+  beforeEach(() => {
+    Reflect.set(globalThis, "IS_REACT_ACT_ENVIRONMENT", true);
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+  });
+
+  afterEach(async () => {
+    await act(async () => root.unmount());
+    container.remove();
+  });
+
+  it("shows lifecycle-backed subagent work as an agent-triggered Turn", async () => {
+    const subagentTurn = {
+      id: "subagent-turn-1",
+      turnIndex: 0,
+      sourceMessageIndex: null,
+      sourceTurnId: "source-turn-1",
+      agentTriggered: true,
+      synthetic: true,
+      status: "aborted",
+      startedAt: "2026-08-12T09:05:00.000Z",
+      endedAt: "2026-08-12T09:13:47.000Z",
+      userPreview: "",
+      assistantPreview: "",
+      inputTokens: 0,
+      outputTokens: 0,
+      cachedInputTokens: 0,
+      reasoningOutputTokens: 0,
+      totalTokens: 0,
+      errorCount: 0,
+      toolNames: [],
+      messageCount: 0,
+      spanCount: 2,
+    } satisfies SessionTurnSummary;
+
+    await act(async () => {
+      root.render(
+        <TurnAccordion
+          sessionKey="codex:subagent-1"
+          turns={[subagentTurn]}
+          loading={false}
+          matchedTurnId={null}
+          matchedMessageIndex={null}
+          showTools
+          query=""
+          language="zh"
+          onLoadTurn={async () => null}
+        />,
+      );
+    });
+
+    expect(container.textContent).toContain("第 1 轮 · Agent 触发");
+    expect(container.textContent).toContain("由 Agent 触发，任务文本未记录");
+    expect(container.textContent).not.toContain("前置轨迹");
+  });
+
+  it("does not infer an Agent trigger from a source Turn id alone", async () => {
+    const lifecycleTurn = {
+      id: "background-turn-1",
+      turnIndex: 0,
+      sourceMessageIndex: null,
+      sourceTurnId: "source-turn-1",
+      agentTriggered: false,
+      synthetic: false,
+      status: "completed",
+      startedAt: "2026-08-12T09:05:00.000Z",
+      endedAt: "2026-08-12T09:06:00.000Z",
+      userPreview: "",
+      assistantPreview: "background work",
+      inputTokens: 0,
+      outputTokens: 0,
+      cachedInputTokens: 0,
+      reasoningOutputTokens: 0,
+      totalTokens: 0,
+      errorCount: 0,
+      toolNames: [],
+      messageCount: 0,
+      spanCount: 0,
+    } satisfies SessionTurnSummary;
+
+    await act(async () => {
+      root.render(
+        <TurnAccordion
+          sessionKey="codex:subagent-1"
+          turns={[lifecycleTurn]}
+          loading={false}
+          matchedTurnId={null}
+          matchedMessageIndex={null}
+          showTools
+          query=""
+          language="zh"
+          onLoadTurn={async () => null}
+        />,
+      );
+    });
+
+    expect(container.textContent).toContain("第 1 轮");
+    expect(container.textContent).not.toContain("Agent 触发");
+  });
+});
+
 describe("TurnAccordion span payloads", () => {
   let container: HTMLDivElement;
   let root: Root;

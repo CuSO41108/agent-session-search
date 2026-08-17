@@ -691,4 +691,98 @@ describe("AgentRecall PostgreSQL schema", () => {
     ]);
     await upgradedDatabase.close();
   });
+
+  it("invalidates existing Codex subagent indexes when Turn boundaries need re-derivation", async () => {
+    const pool = new PGliteTestPool();
+    const legacyDatabase = new PostgresDatabase(pool, {
+      migrationLock: false,
+      migrations: POSTGRES_MIGRATIONS.filter((migration) => migration.version <= 37),
+    });
+    await legacyDatabase.initialize();
+    await legacyDatabase.query(`
+      insert into agent_recall.sessions (
+        session_key, raw_id, source, environment_id, project_path, file_path,
+        original_title, first_question, started_at, file_mtime_ms, file_size,
+        indexed_at, content_indexed_mtime_ms, content_indexed_size,
+        is_subagent, parent_session_id
+      ) values
+        (
+          'codex:parent', 'parent', 'codex-cli', 'local', '/repo', '/parent.jsonl',
+          'Parent', 'Parent', now(), 111, 222, now(), 111, 222, false, null
+        ),
+        (
+          'codex:child', 'child', 'codex-cli', 'local', '/repo', '/child.jsonl',
+          'Child', 'Child', now(), 333, 444, now(), 333, 444, true, 'parent'
+        );
+    `);
+
+    const upgradedDatabase = new PostgresDatabase(pool, {
+      migrationLock: false,
+      migrations: POSTGRES_MIGRATIONS,
+    });
+    await upgradedDatabase.initialize();
+
+    const result = await upgradedDatabase.query<{
+      session_key: string;
+      file_mtime_ms: number | string;
+      content_indexed_mtime_ms: number | string;
+      content_indexed_size: number | string;
+    }>(`
+      select session_key, file_mtime_ms, content_indexed_mtime_ms, content_indexed_size
+      from agent_recall.sessions
+      where session_key in ('codex:parent', 'codex:child')
+      order by session_key
+    `);
+    expect(result.rows.map((row) => ({
+      ...row,
+      file_mtime_ms: Number(row.file_mtime_ms),
+      content_indexed_mtime_ms: Number(row.content_indexed_mtime_ms),
+      content_indexed_size: Number(row.content_indexed_size),
+    }))).toEqual([
+      {
+        session_key: "codex:child",
+        file_mtime_ms: 0,
+        content_indexed_mtime_ms: 0,
+        content_indexed_size: 0,
+      },
+      {
+        session_key: "codex:parent",
+        file_mtime_ms: 111,
+        content_indexed_mtime_ms: 111,
+        content_indexed_size: 222,
+      },
+    ]);
+
+    await upgradedDatabase.query(`
+      update agent_recall.sessions
+      set file_mtime_ms = 555,
+          content_indexed_mtime_ms = 555,
+          content_indexed_size = 666
+      where session_key = 'codex:child'
+    `);
+    const repeatedDatabase = new PostgresDatabase(pool, {
+      migrationLock: false,
+      migrations: POSTGRES_MIGRATIONS,
+    });
+    await repeatedDatabase.initialize();
+    const repeated = await repeatedDatabase.query<{
+      file_mtime_ms: number | string;
+      content_indexed_mtime_ms: number | string;
+      content_indexed_size: number | string;
+    }>(`
+      select file_mtime_ms, content_indexed_mtime_ms, content_indexed_size
+      from agent_recall.sessions
+      where session_key = 'codex:child'
+    `);
+    expect(repeated.rows.map((row) => ({
+      file_mtime_ms: Number(row.file_mtime_ms),
+      content_indexed_mtime_ms: Number(row.content_indexed_mtime_ms),
+      content_indexed_size: Number(row.content_indexed_size),
+    }))).toEqual([{
+      file_mtime_ms: 555,
+      content_indexed_mtime_ms: 555,
+      content_indexed_size: 666,
+    }]);
+    await repeatedDatabase.close();
+  });
 });

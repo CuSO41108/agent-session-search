@@ -196,9 +196,21 @@ function turnStatusLabel(status: SessionTurnSummary["status"], language: Languag
   return localize(language, "Completed", "已完成");
 }
 
-function turnTitle(turn: SessionTurnSummary, language: LanguageMode): string {
-  if (turn.synthetic) return localize(language, "Preamble", "前置轨迹");
-  return localize(language, `Turn ${turn.turnIndex + 1}`, `第 ${turn.turnIndex + 1} 轮`);
+function turnTitle(
+  turn: SessionTurnSummary,
+  language: LanguageMode,
+  displayTurnNumber: number,
+  agentTriggered: boolean,
+): string {
+  if (agentTriggered) {
+    return localize(
+      language,
+      `Turn ${displayTurnNumber} · Triggered by an agent`,
+      `第 ${displayTurnNumber} 轮 · Agent 触发`,
+    );
+  }
+  if (turn.synthetic) return localize(language, "Session setup", "会话准备");
+  return localize(language, `Turn ${displayTurnNumber}`, `第 ${displayTurnNumber} 轮`);
 }
 
 export function TurnMigrationContextMenu({
@@ -742,6 +754,14 @@ export function TurnAccordion({
     );
   }
 
+  let visibleTurnNumber = 0;
+  const turnPresentation = new Map(turns.map((turn) => {
+    const agentTriggered = turn.agentTriggered === true
+      && turn.sourceMessageIndex === null;
+    if (!turn.synthetic || agentTriggered) visibleTurnNumber += 1;
+    return [turn.id, { agentTriggered, displayTurnNumber: visibleTurnNumber }] as const;
+  }));
+
   return (
     <div className="turn-list" ref={rootRef}>
       {turns.map((turn) => {
@@ -751,6 +771,10 @@ export function TurnAccordion({
         const error = stateMatchesSession ? state.errorsById[turn.id] : undefined;
         const elapsed = durationLabel(turn.durationMs ?? durationMs(turn.startedAt, turn.endedAt));
         const firstToken = durationLabel(turn.timeToFirstTokenMs ?? null);
+        const presentation = turnPresentation.get(turn.id) ?? {
+          agentTriggered: false,
+          displayTurnNumber: turn.turnIndex + 1,
+        };
         const displayStatus: SessionTurnSummary["status"] =
           turn.status === "running"
             ? live ? "running" : "completed"
@@ -761,7 +785,13 @@ export function TurnAccordion({
         const secondaryPreview = roleFilter === "all" && turn.userPreview && turn.assistantPreview
           ? turn.assistantPreview
           : "";
-        const previewText = primaryPreview || localize(language, "No text captured", "没有记录文本");
+        const previewText = primaryPreview || (presentation.agentTriggered
+          ? localize(
+              language,
+              "Triggered by an agent; task text was not captured",
+              "由 Agent 触发，任务文本未记录",
+            )
+          : localize(language, "No text captured", "没有记录文本"));
         return (
           <article
             key={turn.id}
@@ -790,7 +820,12 @@ export function TurnAccordion({
               </span>
               <span className="turn-card-copy">
                 <span className="turn-card-eyebrow">
-                  {turnTitle(turn, language)}
+                  {turnTitle(
+                    turn,
+                    language,
+                    presentation.displayTurnNumber,
+                    presentation.agentTriggered,
+                  )}
                   {turn.startedAt ? <span>{formatMessageTime(turn.startedAt, language)}</span> : null}
                 </span>
                 <strong>

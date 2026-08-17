@@ -543,6 +543,110 @@ describe("deriveSessionTimeline", () => {
     expect(timeline.turns[2].messages.map((message) => message.role)).toEqual(["user", "assistant"]);
   });
 
+  it("keeps a final reply on its lifecycle Turn when completed_at loses milliseconds", () => {
+    const loaded = loadCodexSessionRows("/tmp/codex-subagent-completion-precision.jsonl", [
+      {
+        type: "session_meta",
+        timestamp: "2026-08-12T09:05:46.144Z",
+        payload: {
+          id: "child",
+          cwd: "/repo",
+          agent_path: "/root/researcher",
+          thread_source: "subagent",
+          parent_thread_id: "parent",
+          history_mode: "legacy",
+        },
+      },
+      {
+        type: "response_item",
+        timestamp: "2026-08-12T09:05:46.145Z",
+        payload: {
+          type: "message",
+          role: "user",
+          content: [{ type: "input_text", text: "Inherited parent request" }],
+          internal_chat_message_metadata_passthrough: { turn_id: "turn-parent" },
+        },
+      },
+      {
+        type: "event_msg",
+        timestamp: "2026-08-12T09:14:40.627Z",
+        payload: {
+          type: "task_started",
+          turn_id: "turn-subagent-interrupted",
+          started_at: Date.parse("2026-08-12T09:14:40.000Z") / 1_000,
+        },
+      },
+      {
+        type: "event_msg",
+        timestamp: "2026-08-12T09:18:49.523Z",
+        payload: {
+          type: "turn_aborted",
+          turn_id: "turn-subagent-interrupted",
+          completed_at: Date.parse("2026-08-12T09:18:49.000Z") / 1_000,
+          reason: "interrupted",
+        },
+      },
+      {
+        type: "event_msg",
+        timestamp: "2026-08-12T09:18:59.853Z",
+        payload: {
+          type: "task_started",
+          turn_id: "turn-subagent-final",
+          started_at: Date.parse("2026-08-12T09:18:59.000Z") / 1_000,
+        },
+      },
+      {
+        type: "response_item",
+        timestamp: "2026-08-12T09:19:24.198Z",
+        payload: {
+          type: "message",
+          role: "assistant",
+          phase: "final_answer",
+          content: [{ type: "output_text", text: "Research report completed" }],
+          internal_chat_message_metadata_passthrough: { turn_id: "turn-subagent-final" },
+        },
+      },
+      {
+        type: "event_msg",
+        timestamp: "2026-08-12T09:19:24.205Z",
+        payload: {
+          type: "task_complete",
+          turn_id: "turn-subagent-final",
+          completed_at: Date.parse("2026-08-12T09:19:24.000Z") / 1_000,
+          duration_ms: 24_352,
+        },
+      },
+    ]);
+    if (!loaded) throw new Error("expected a loaded subagent session");
+
+    const timeline = deriveSessionTimeline({
+      sessionKey: loaded.session.sessionKey,
+      messages: loaded.messages,
+      traceEvents: loaded.traceEvents ?? [],
+      tokenEvents: loaded.tokenEvents,
+      codexIncrementalState: loaded.codexIncrementalState,
+    });
+
+    expect(timeline.turns).toHaveLength(3);
+    expect(timeline.turns).toMatchObject([
+      {
+        sourceTurnId: "turn-parent",
+        userText: "Inherited parent request",
+        assistantText: "",
+      },
+      {
+        sourceTurnId: "turn-subagent-interrupted",
+        status: "aborted",
+        assistantText: "",
+      },
+      {
+        sourceTurnId: "turn-subagent-final",
+        status: "completed",
+        assistantText: "Research report completed",
+      },
+    ]);
+  });
+
   it("keeps a started Codex Turn running until a lifecycle terminal arrives", () => {
     const timeline = deriveSessionTimeline({
       sessionKey: "codex:active-turn",
@@ -931,6 +1035,117 @@ describe("deriveSessionTimeline", () => {
       synthetic: false,
       userText: "Find the failing test",
     });
+  });
+
+  it("treats lifecycle-backed subagent work as real Turns instead of repeated preambles", () => {
+    const loaded = loadCodexSessionRows("/tmp/codex-subagent-turns.jsonl", [
+      {
+        type: "session_meta",
+        timestamp: "2026-08-12T09:05:00.000Z",
+        payload: {
+          id: "child",
+          cwd: "/repo",
+          agent_path: "/root/researcher",
+          thread_source: "subagent",
+          parent_thread_id: "parent",
+          history_mode: "paginated",
+        },
+      },
+      {
+        type: "inter_agent_communication_metadata",
+        timestamp: "2026-08-12T09:05:00.050Z",
+        payload: { trigger_turn: true },
+      },
+      {
+        type: "response_item",
+        timestamp: "2026-08-12T09:05:00.100Z",
+        payload: {
+          type: "agent_message",
+          author: "/root",
+          recipient: "/root/researcher",
+          content: [{
+            type: "input_text",
+            text: "Message Type: NEW_TASK\nTask name: /root/researcher\nSender: /root\nPayload:\nResearch the issue",
+          }],
+          internal_chat_message_metadata_passthrough: { turn_id: "turn-1" },
+        },
+      },
+      {
+        type: "event_msg",
+        timestamp: "2026-08-12T09:05:00.200Z",
+        payload: { type: "task_started", turn_id: "turn-1" },
+      },
+      {
+        type: "response_item",
+        timestamp: "2026-08-12T09:05:01.000Z",
+        payload: {
+          type: "message",
+          role: "assistant",
+          phase: "commentary",
+          content: [{ type: "output_text", text: "I will inspect the primary sources." }],
+          internal_chat_message_metadata_passthrough: { turn_id: "turn-1" },
+        },
+      },
+      {
+        type: "event_msg",
+        timestamp: "2026-08-12T09:13:47.000Z",
+        payload: { type: "turn_aborted", turn_id: "turn-1", reason: "interrupted" },
+      },
+      {
+        type: "inter_agent_communication_metadata",
+        timestamp: "2026-08-12T09:14:00.050Z",
+        payload: { trigger_turn: true },
+      },
+      {
+        type: "response_item",
+        timestamp: "2026-08-12T09:14:00.100Z",
+        payload: {
+          type: "agent_message",
+          author: "/root",
+          recipient: "/root/researcher",
+          content: [{
+            type: "input_text",
+            text: "Message Type: MESSAGE\nTask name: /root/researcher\nSender: /root\nPayload:\nContinue",
+          }],
+          internal_chat_message_metadata_passthrough: { turn_id: "turn-2" },
+        },
+      },
+      {
+        type: "event_msg",
+        timestamp: "2026-08-12T09:14:00.200Z",
+        payload: { type: "task_started", turn_id: "turn-2" },
+      },
+      {
+        type: "event_msg",
+        timestamp: "2026-08-12T09:18:09.000Z",
+        payload: { type: "turn_aborted", turn_id: "turn-2", reason: "interrupted" },
+      },
+    ]);
+    if (!loaded) throw new Error("expected a loaded subagent session");
+
+    const timeline = deriveSessionTimeline({
+      sessionKey: loaded.session.sessionKey,
+      messages: loaded.messages,
+      traceEvents: loaded.traceEvents ?? [],
+      tokenEvents: loaded.tokenEvents,
+      codexIncrementalState: loaded.codexIncrementalState,
+    });
+
+    expect(timeline.turns).toHaveLength(2);
+    expect(timeline.turns).toMatchObject([
+      {
+        sourceTurnId: "turn-1",
+        synthetic: false,
+        status: "aborted",
+        assistantText: "I will inspect the primary sources.",
+      },
+      {
+        sourceTurnId: "turn-2",
+        synthetic: false,
+        status: "aborted",
+        assistantText: "",
+      },
+    ]);
   });
 
   it("creates a synthetic Turn when a transcript has no user message", () => {

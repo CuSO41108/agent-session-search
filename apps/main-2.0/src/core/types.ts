@@ -237,6 +237,7 @@ export interface SessionTurnSummary {
   turnIndex: number;
   sourceMessageIndex: number | null;
   sourceTurnId?: string | null;
+  agentTriggered?: boolean;
   synthetic: boolean;
   status: SessionTurnStatus;
   startedAt: string | null;
