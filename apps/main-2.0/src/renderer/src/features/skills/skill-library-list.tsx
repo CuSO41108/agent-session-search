@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import type { KeyboardEvent as ReactKeyboardEvent, ReactElement } from "react";
 import { Check, ChevronDown, ChevronRight, Search } from "lucide-react";
 import type { ManagedSkill, ManagedSkillOriginKind } from "../../../../core/managed-skill-library";
+import type { RemoteSkillGroup } from "../../../../core/skill-sync";
 import { formatCompactNumber } from "../../format-count";
 import { localize, type LanguageMode } from "../../language";
 
@@ -47,6 +48,9 @@ export function SkillLibraryList({
   onSortChange,
   onSelect,
   onToggleChecked,
+  remoteOnlyGroups,
+  selectedRemoteFingerprint,
+  onSelectRemote,
   evalBadgeCounts,
   onNavigateToEval,
 }: {
@@ -63,6 +67,9 @@ export function SkillLibraryList({
   onSortChange: (sort: ManagedSkillSort) => void;
   onSelect: (managedId: string) => void;
   onToggleChecked: (managedId: string) => void;
+  remoteOnlyGroups: RemoteSkillGroup[];
+  selectedRemoteFingerprint: string | null;
+  onSelectRemote: (fingerprint: string) => void;
   evalBadgeCounts?: Map<string, { low: number; medium: number }>;
   onNavigateToEval?: (skillName: string) => void;
 }): ReactElement {
@@ -135,7 +142,7 @@ export function SkillLibraryList({
 
       <div className="skill-library-scroll" role="listbox" aria-label={l("Managed Skill library", "托管 Skill 库")}>
         {loading && skills.length === 0 ? <div className="skill-library-empty">{l("Loading Skills…", "正在加载 Skill…")}</div> : null}
-        {!loading && skills.length === 0 ? (
+        {!loading && skills.length === 0 && remoteOnlyGroups.length === 0 ? (
           <div className="skill-library-empty">
             <strong>{l("No managed Skills", "Skill 库还是空的")}</strong>
             <span>{l("Import an existing Skill or discover one from skills.sh.", "可以导入本机已有 Skill，或从 skills.sh 发现新 Skill。")}</span>
@@ -218,6 +225,39 @@ export function SkillLibraryList({
             </section>
           );
         })}
+        {remoteOnlyGroups.length > 0 ? (
+          <section className="skill-library-group cloud-only-skill-group">
+            <div className="skill-library-group-header cloud-only-skill-group-header">
+              <span aria-hidden="true" />
+              <span>{l("Cloud only", "仅云端")}</span>
+              <small>{formatCompactNumber(remoteOnlyGroups.length)}</small>
+            </div>
+            {remoteOnlyGroups.map((group) => {
+              const active = group.fingerprint === selectedRemoteFingerprint;
+              return (
+                <div
+                  key={group.fingerprint}
+                  className={`skill-library-row cloud-only-skill-row ${active ? "active" : ""}`}
+                  role="option"
+                  aria-selected={active}
+                  tabIndex={active ? 0 : -1}
+                  onClick={() => onSelectRemote(group.fingerprint)}
+                >
+                  <span className="cloud-only-skill-icon" aria-hidden="true">☁</span>
+                  <div className="skill-library-row-copy">
+                    <div className="skill-library-row-title">
+                      <strong title={group.name}>{group.name}</strong>
+                      <span>v{group.latest.version}</span>
+                    </div>
+                    <div className="skill-library-row-meta">
+                      <span>{l("Cloud version available", "云端已有版本")}</span>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </section>
+        ) : null}
       </div>
     </aside>
   );

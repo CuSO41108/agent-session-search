@@ -11,7 +11,7 @@ import * as path from "node:path";
 export type SkillAgent = "codex" | "claude" | "codebuddy" | "qoder" | "trae" | "pi";
 
 /** An agent directory a managed Skill can be installed into. */
-export type SkillInstallTarget = "codex" | "claude" | "codebuddy" | "qoder" | "trae" | "pi";
+export type SkillInstallTarget = "codex" | "codex-shared" | "claude" | "codebuddy" | "qoder" | "trae" | "pi";
 
 /** Portability scope used by cross-device Skill sync. */
 export type SkillPortableScope = "agent-recall-v2" | "codex-user" | "claude-user" | "qoder-user" | "shared";
@@ -119,7 +119,8 @@ export const SKILL_AGENTS: readonly SkillAgent[] = AGENT_SKILL_REGISTRY.map((ent
 
 export const SKILL_INSTALL_TARGETS: readonly SkillInstallTarget[] = AGENT_SKILL_REGISTRY
   .map((entry) => entry.installTarget)
-  .filter((target): target is SkillInstallTarget => target !== null);
+  .filter((target): target is SkillInstallTarget => target !== null)
+  .flatMap((target) => target === "codex" ? [target, "codex-shared"] : [target]);
 
 export function agentEntry(id: SkillAgent): AgentSkillRegistryEntry {
   const entry = AGENT_SKILL_REGISTRY.find((candidate) => candidate.id === id);
@@ -139,6 +140,7 @@ export function agentSkillDir(id: SkillAgent, homeDir: string): string | null {
 
 export function agentInstallTargetDir(target: SkillInstallTarget, homeDir: string, codexHome?: string): string {
   if (target === "codex") return path.join(codexHome ?? path.join(homeDir, ".codex"), "skills");
+  if (target === "codex-shared") return path.join(homeDir, ".agents", "skills");
   const entry = AGENT_SKILL_REGISTRY.find((candidate) => candidate.installTarget === target);
   if (!entry?.skillDir) throw new Error(`Unknown install target: ${target}`);
   return path.join(homeDir, entry.skillDir);

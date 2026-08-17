@@ -379,6 +379,19 @@
   background: var(--row-selected-bg);
 }
 
+.cloud-only-skill-row {
+  grid-template-columns: 20px minmax(0, 1fr);
+}
+
+.cloud-only-skill-icon {
+  display: grid;
+  width: 16px;
+  height: 16px;
+  place-items: center;
+  color: var(--accent);
+  font-size: 12px;
+}
+
 .skill-library-check {
   display: grid;
   width: 16px;
@@ -762,6 +775,41 @@
 .skill-discovery-markdown > :last-child,
 .managed-skill-version-preview > :last-child {
   margin-bottom: 0;
+}
+
+.cloud-skill-version-list {
+  display: flex;
+  gap: 6px;
+  padding: 9px 18px;
+  overflow-x: auto;
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--panel-subtle);
+}
+
+.cloud-skill-version-list button {
+  display: grid;
+  min-width: 112px;
+  gap: 2px;
+  padding: 6px 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 7px;
+  background: var(--panel-bg);
+  color: var(--text-muted);
+  text-align: left;
+}
+
+.cloud-skill-version-list button.active {
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+}
+
+.cloud-skill-version-list strong {
+  color: var(--text);
+  font-size: 11px;
+}
+
+.cloud-skill-version-list span {
+  font-size: 9.5px;
 }
 
 .managed-skill-sync {
