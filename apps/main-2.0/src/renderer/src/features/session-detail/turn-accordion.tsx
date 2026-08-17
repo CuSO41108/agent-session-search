@@ -856,8 +856,8 @@ export function TurnAccordion({
                   <strong>{localize(language, "Subagent task execution", "子 Agent 任务执行")}</strong>
                   <small>{localize(
                     language,
-                    "The following Turn records were produced by this subagent during independent execution",
-                    "以下 Turn 记录由该子 Agent 独立执行产生",
+                    "The following Turns record this subagent's task execution",
+                    "以下 Turn 为该子 Agent 的任务执行记录",
                   )}</small>
                 </span>
               </div>

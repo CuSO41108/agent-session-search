@@ -365,7 +365,7 @@ describe("TurnAccordion subagent labels", () => {
     expect(container.textContent).toContain("继承自父会话的上下文");
     expect(container.textContent).toContain("以下 2 个 Turn 为创建子 Agent 时继承的会话上下文");
     expect(container.textContent).toContain("子 Agent 任务执行");
-    expect(container.textContent).toContain("以下 Turn 记录由该子 Agent 独立执行产生");
+    expect(container.textContent).toContain("以下 Turn 为该子 Agent 的任务执行记录");
     expect(container.textContent).toContain("父会话第 1 轮 · Fork 继承");
     expect(container.textContent).toContain("子 Agent 第 1 轮 · Agent 触发");
     expect(container.textContent).toContain("子 Agent 第 2 轮");
