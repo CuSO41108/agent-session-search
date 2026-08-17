@@ -33,6 +33,7 @@ import { SessionBulkDeleteService } from "./session-bulk-delete-service";
 
 export interface SessionCatalogServiceDependencies {
   store: SessionStore;
+  listProjects?: (options?: ProjectQueryOptions) => Promise<ProjectSummary[]>;
   visibleSearchOptions(options?: SearchOptions): SearchOptions;
   visibleStatsOptions(options?: SessionStatsOptions): SessionStatsOptions;
   visibleProjectOptions(): ProjectQueryOptions;
@@ -150,10 +151,13 @@ export class SessionCatalogService {
   }
 
   listProjects(options?: ProjectQueryOptions): Promise<ProjectSummary[]> {
-    return this.dependencies.store.listProjects({
+    const query = {
       ...this.dependencies.visibleProjectOptions(),
       ...options,
-    });
+    };
+    return this.dependencies.listProjects
+      ? this.dependencies.listProjects(query)
+      : this.dependencies.store.listProjects(query);
   }
 
   listTagsByProject(): Promise<ProjectTagEntry[]> {

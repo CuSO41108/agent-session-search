@@ -52,6 +52,7 @@ const CODEWIZ_SHARE_DIR = path.join(".local", "share", "codewiz");
 const QODER_DIR = ".qoder";
 const PI_SESSIONS_DIR = path.join(".pi", "agent", "sessions");
 const TRAE_DIR_NAMES = [".trae", ".trae-cn"] as const;
+const CODEX_WORKSPACE_PLACEHOLDER = /^<[^>]+>$/u;
 
 export interface SessionLoadOptions {
   homeDir?: string;
@@ -108,28 +109,30 @@ export function parseCodexSessionMetaLine(parsed: unknown): {
   if (!parsed || typeof parsed !== "object") return null;
 
   const line = parsed as CodexConversationLine;
-  if (line.type === "session_meta" && line.payload?.id) {
+  const payload = line.payload;
+  const sessionId = payload?.id || payload?.session_id;
+  if (line.type === "session_meta" && payload && sessionId) {
     const structuredSource =
-      line.payload.source && typeof line.payload.source === "object" ? line.payload.source : null;
+      payload.source && typeof payload.source === "object" ? payload.source : null;
     const structuredParent = structuredSource?.subagent?.thread_spawn?.parent_thread_id;
-    const legacyParent = line.payload.thread_source === "subagent" ? line.payload.parent_thread_id : undefined;
+    const legacyParent = payload.thread_source === "subagent" ? payload.parent_thread_id : undefined;
     const parentSessionId = structuredParent || legacyParent || null;
-    const agentPath = line.payload.agent_path
+    const agentPath = payload.agent_path
       || structuredSource?.subagent?.thread_spawn?.agent_path
       || (parentSessionId === null ? "/root" : null);
     return {
-      id: line.payload.id,
-      projectPath: typeof line.payload.agent_recall_project_path === "string"
-        ? line.payload.agent_recall_project_path
-        : line.payload.cwd || "",
+      id: sessionId,
+      projectPath: typeof payload.agent_recall_project_path === "string"
+        ? payload.agent_recall_project_path
+        : payload.cwd || "",
       ts: line.timestamp ? new Date(line.timestamp).getTime() : 0,
-      title: line.payload.title,
-      gitBranch: line.payload.git?.branch,
-      originator: line.payload.originator,
+      title: payload.title,
+      gitBranch: payload.git?.branch,
+      originator: payload.originator,
       isSubagent: parentSessionId !== null,
       parentSessionId,
       agentPath,
-      historyMode: (line.payload as { history_mode?: unknown }).history_mode === "paginated" ? "paginated" : "legacy",
+      historyMode: (payload as { history_mode?: unknown }).history_mode === "paginated" ? "paginated" : "legacy",
     };
   }
 
@@ -160,7 +163,7 @@ function findCodexSessionMeta(rows: unknown[]): NonNullable<ReturnType<typeof pa
     }
     result = {
       ...result,
-      projectPath: result.projectPath || parsed.projectPath,
+      projectPath: usableCodexProjectPath(result.projectPath) ? result.projectPath : parsed.projectPath || result.projectPath,
       ts: result.ts || parsed.ts,
       title: result.title || parsed.title,
       gitBranch: result.gitBranch || parsed.gitBranch,
@@ -171,7 +174,28 @@ function findCodexSessionMeta(rows: unknown[]): NonNullable<ReturnType<typeof pa
       historyMode: result.historyMode === "paginated" || parsed.historyMode === "paginated" ? "paginated" : "legacy",
     };
   }
+  const turnContextProjectPath = rows
+    .map(codexTurnContextProjectPath)
+    .find((projectPath): projectPath is string => Boolean(projectPath));
+  if (result && !usableCodexProjectPath(result.projectPath) && turnContextProjectPath) {
+    result.projectPath = turnContextProjectPath;
+  }
   return result;
+}
+
+function usableCodexProjectPath(value: string): boolean {
+  const normalized = value.trim();
+  return Boolean(normalized) && !CODEX_WORKSPACE_PLACEHOLDER.test(normalized);
+}
+
+function codexTurnContextProjectPath(value: unknown): string {
+  if (!isRecord(value) || value.type !== "turn_context") return "";
+  const payload = objectField(value, "payload");
+  const cwd = stringField(payload, "cwd").trim();
+  if (usableCodexProjectPath(cwd)) return cwd;
+  const roots = payload?.workspace_roots;
+  if (!Array.isArray(roots)) return "";
+  return roots.find((root): root is string => typeof root === "string" && usableCodexProjectPath(root))?.trim() || "";
 }
 
 function safeStat(filePath: string): VirtualSessionFileStat {
@@ -1783,7 +1807,7 @@ function createCodexScanAccumulator(base?: { offset: number; loaded: LoadedSessi
       if (parsedMeta) {
         meta = meta ? {
           ...meta,
-          projectPath: meta.projectPath || parsedMeta.projectPath,
+          projectPath: usableCodexProjectPath(meta.projectPath) ? meta.projectPath : parsedMeta.projectPath || meta.projectPath,
           ts: meta.ts || parsedMeta.ts,
           title: meta.title || parsedMeta.title,
           gitBranch: meta.gitBranch || parsedMeta.gitBranch,
@@ -1793,6 +1817,10 @@ function createCodexScanAccumulator(base?: { offset: number; loaded: LoadedSessi
           agentPath: meta.agentPath || parsedMeta.agentPath,
           historyMode: meta.historyMode === "paginated" || parsedMeta.historyMode === "paginated" ? "paginated" : "legacy",
         } : parsedMeta;
+      }
+      const turnContextProjectPath = codexTurnContextProjectPath(row);
+      if (meta && !usableCodexProjectPath(meta.projectPath) && turnContextProjectPath) {
+        meta = { ...meta, projectPath: turnContextProjectPath };
       }
 
       if (isRecord(row)) {

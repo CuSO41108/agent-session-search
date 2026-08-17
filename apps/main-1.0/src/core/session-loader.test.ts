@@ -20,6 +20,28 @@ import {
 import { TRACE_DETAIL_PREVIEW_MAX_CHARS } from "./trace-detail";
 
 describe("Codex session loading", () => {
+  it("uses the first real turn_context cwd when Desktop metadata has a local-workspace placeholder", () => {
+    const loaded = loadCodexSessionRows("/tmp/codex-placeholder-workspace.jsonl", [
+      {
+        type: "session_meta",
+        timestamp: "2026-08-18T00:00:00Z",
+        payload: { session_id: "codex-placeholder", cwd: "<local-workspace>", originator: "Codex Desktop" },
+      },
+      {
+        type: "turn_context",
+        timestamp: "2026-08-18T00:00:01Z",
+        payload: { cwd: "E:\\Code\\CreatedProject", workspace_roots: ["E:\\Code\\CreatedProject"] },
+      },
+      {
+        type: "response_item",
+        timestamp: "2026-08-18T00:00:02Z",
+        payload: { type: "message", role: "user", content: [{ type: "input_text", text: "创建项目后的第一条消息" }] },
+      },
+    ]);
+
+    expect(loaded?.session.projectPath).toBe("E:\\Code\\CreatedProject");
+  });
+
   it("preserves explicit timezone offsets as absolute instants", () => {
     const loaded = loadCodexSessionRows("/tmp/codex-offset.jsonl", [
       {
