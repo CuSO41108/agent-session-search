@@ -113,6 +113,48 @@ describe("findSessionFamily", () => {
     });
   });
 
+  it("reports the parent Turn that spawned each subagent", () => {
+    const db = setupDb();
+    insertSession(db, { sessionKey: "codex:root", rawId: "root", title: "Root" });
+    insertSession(db, {
+      sessionKey: "codex:child",
+      rawId: "child",
+      title: "Child",
+      parentSessionId: "root",
+    });
+    db.prepare(`
+      INSERT INTO messages (
+        session_key, message_index, role, content, timestamp, source_turn_id
+      ) VALUES
+        ('codex:root', 0, 'user', 'first', '2026-08-12T09:00:00.000Z', 'turn-1'),
+        ('codex:root', 1, 'user', 'delegate', '2026-08-12T09:05:00.000Z', 'turn-2')
+    `).run();
+    db.prepare(`
+      INSERT INTO trace_events (
+        session_key, trace_index, kind, source, title, detail, timestamp,
+        event_type, status, source_turn_id, attributes_json
+      ) VALUES
+        (?, 0, 'event', 'codex', 'Session metadata', '',
+          '2026-08-12T08:59:00.000Z', 'codex.session.metadata', 'completed', NULL, NULL),
+        (?, 1, 'event', 'codex', 'agent · spawn_agent', '', ?,
+          'codex.collaboration.tool', 'completed', 'turn-2', ?)
+    `).run(
+      "codex:root",
+      "codex:root",
+      "2026-08-12T09:05:01.000Z",
+      JSON.stringify({
+        codex: { rawType: "CollabAgentToolCall" },
+        collaboration: { tool: "spawn_agent", receiverThreadIds: ["child"] },
+      }),
+    );
+
+    const rootFamily = findSessionFamily(db, "codex:root");
+    expect(rootFamily.children[0].originTurnIndex).toBe(1);
+    const childFamily = findSessionFamily(db, "codex:child");
+    expect(childFamily.parentOriginTurnIndex).toBe(1);
+    expect(childFamily.parent?.originTurnIndex).toBeNull();
+  });
+
   it("does not cross source or environment boundaries and excludes explicitly hidden children", () => {
     const db = setupDb();
     insertSession(db, { sessionKey: "codex:root", rawId: "root", title: "Root" });

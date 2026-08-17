@@ -14,6 +14,7 @@ export interface SubagentSessionSummary {
   messageCount: number;
   lastActivityAt: number;
   aiSummary: string | null;
+  originTurnIndex?: number | null;
 }
 
 export interface SubagentSessionNode extends SubagentSessionSummary {
@@ -22,6 +23,7 @@ export interface SubagentSessionNode extends SubagentSessionSummary {
 
 export interface SessionFamily {
   parent: SubagentSessionSummary | null;
+  parentOriginTurnIndex?: number | null;
   children: SubagentSessionNode[];
   truncated: boolean;
 }
@@ -97,6 +99,7 @@ export function findSessionFamily(
       AND sessions.environment_id = ?
       AND sessions.hidden = 0
   `).all(target.source, target.environment_id) as unknown as SessionFamilyRow[];
+  const originTurnIndexes = findOriginTurnIndexes(db, rows, target.source, target.environment_id);
 
   rows.sort(compareRows);
   const rowsByRawId = new Map<string, SessionFamilyRow>();
@@ -135,7 +138,7 @@ export function findSessionFamily(
       const nextPath = new Set(path);
       nextPath.add(candidate.raw_id);
       children.push({
-        ...summaryFrom(candidate),
+        ...summaryFrom(candidate, originTurnIndexes.get(candidate.session_key) ?? null),
         children: buildChildren(candidate.raw_id, depth + 1, nextPath),
       });
     }
@@ -147,12 +150,13 @@ export function findSessionFamily(
     : null;
   return {
     parent: parentRow ? summaryFrom(parentRow) : null,
+    parentOriginTurnIndex: originTurnIndexes.get(target.session_key) ?? null,
     children: buildChildren(target.raw_id, 0, new Set([target.raw_id])),
     truncated,
   };
 }
 
-function summaryFrom(row: SessionFamilyRow): SubagentSessionSummary {
+function summaryFrom(row: SessionFamilyRow, originTurnIndex: number | null = null): SubagentSessionSummary {
   return {
     sessionKey: row.session_key,
     rawId: row.raw_id,
@@ -163,7 +167,130 @@ function summaryFrom(row: SessionFamilyRow): SubagentSessionSummary {
     messageCount: row.message_count,
     lastActivityAt: row.last_activity_at,
     aiSummary: row.ai_summary?.trim() || null,
+    originTurnIndex,
   };
+}
+
+interface OriginTraceRow {
+  session_key: string;
+  trace_index: number;
+  timestamp: string;
+  source_turn_id: string | null;
+  event_type: string | null;
+  attributes_json: string | null;
+}
+
+interface OriginBoundaryRow {
+  session_key: string;
+  boundary_order: number;
+  timestamp: string;
+  source_turn_id: string | null;
+}
+
+function findOriginTurnIndexes(
+  db: SessionStoreDatabase,
+  rows: readonly SessionFamilyRow[],
+  source: SessionSource,
+  environmentId: string,
+): Map<string, number> {
+  if (rows.length === 0) return new Map();
+  const traces = db.prepare(`
+    SELECT trace_events.session_key, trace_events.trace_index, trace_events.timestamp,
+      trace_events.source_turn_id, trace_events.event_type, trace_events.attributes_json
+    FROM trace_events
+    JOIN sessions ON sessions.session_key = trace_events.session_key
+    WHERE sessions.source = ? AND sessions.environment_id = ?
+      AND trace_events.event_type IN ('codex.collaboration.tool', 'codex.turn.started')
+    ORDER BY trace_events.session_key, trace_events.trace_index
+  `).all(source, environmentId) as unknown as OriginTraceRow[];
+  const userBoundaries = db.prepare(`
+    SELECT messages.session_key, messages.message_index AS boundary_order,
+      messages.timestamp, messages.source_turn_id
+    FROM messages
+    JOIN sessions ON sessions.session_key = messages.session_key
+    WHERE sessions.source = ? AND sessions.environment_id = ? AND messages.role = 'user'
+    ORDER BY messages.session_key, messages.message_index
+  `).all(source, environmentId) as unknown as OriginBoundaryRow[];
+
+  const rowsByRawId = new Map(rows.map((row) => [row.raw_id, row]));
+  const tracesBySessionKey = groupBySession(traces);
+  const boundariesBySessionKey = groupBySession([
+    ...userBoundaries,
+    ...traces
+      .filter((trace) => trace.event_type === "codex.turn.started")
+      .map((trace) => ({
+        session_key: trace.session_key,
+        boundary_order: trace.trace_index,
+        timestamp: trace.timestamp,
+        source_turn_id: trace.source_turn_id,
+      })),
+  ]);
+  const result = new Map<string, number>();
+
+  for (const child of rows) {
+    if (!child.parent_session_id) continue;
+    const parent = rowsByRawId.get(child.parent_session_id);
+    if (!parent) continue;
+    const spawn = (tracesBySessionKey.get(parent.session_key) ?? []).find((trace) =>
+      trace.event_type === "codex.collaboration.tool"
+      && traceSpawnsChild(trace.attributes_json, child.raw_id));
+    if (!spawn) continue;
+    const boundaries = uniqueTurnBoundaries(boundariesBySessionKey.get(parent.session_key) ?? []);
+    const sourceIndex = spawn.source_turn_id
+      ? boundaries.findIndex((boundary) => boundary.source_turn_id === spawn.source_turn_id)
+      : -1;
+    const fallbackIndex = boundaries.reduce((latest, boundary, index) =>
+      Date.parse(boundary.timestamp) <= Date.parse(spawn.timestamp) ? index : latest, -1);
+    const originTurnIndex = sourceIndex >= 0 ? sourceIndex : fallbackIndex;
+    if (originTurnIndex >= 0) result.set(child.session_key, originTurnIndex);
+  }
+  return result;
+}
+
+function groupBySession<T extends { session_key: string }>(rows: readonly T[]): Map<string, T[]> {
+  const grouped = new Map<string, T[]>();
+  for (const row of rows) {
+    const values = grouped.get(row.session_key) ?? [];
+    values.push(row);
+    grouped.set(row.session_key, values);
+  }
+  return grouped;
+}
+
+function uniqueTurnBoundaries(rows: readonly OriginBoundaryRow[]): OriginBoundaryRow[] {
+  const sorted = [...rows].sort((left, right) =>
+    Date.parse(left.timestamp) - Date.parse(right.timestamp)
+    || left.boundary_order - right.boundary_order);
+  const seenSourceTurnIds = new Set<string>();
+  return sorted.filter((row) => {
+    if (!row.source_turn_id) return true;
+    if (seenSourceTurnIds.has(row.source_turn_id)) return false;
+    seenSourceTurnIds.add(row.source_turn_id);
+    return true;
+  });
+}
+
+function traceSpawnsChild(attributesJson: string | null, childRawId: string): boolean {
+  if (!attributesJson) return false;
+  try {
+    const attributes = JSON.parse(attributesJson) as {
+      codex?: { rawType?: unknown };
+      collaboration?: {
+        tool?: unknown;
+        newThreadId?: unknown;
+        receiverThreadIds?: unknown;
+      };
+    };
+    const collaboration = attributes.collaboration;
+    const rawType = typeof attributes.codex?.rawType === "string" ? attributes.codex.rawType : "";
+    const spawn = collaboration?.tool === "spawn_agent" || rawType.startsWith("collab_spawn");
+    if (!spawn) return false;
+    return collaboration?.newThreadId === childRawId
+      || (Array.isArray(collaboration?.receiverThreadIds)
+        && collaboration.receiverThreadIds.includes(childRawId));
+  } catch {
+    return false;
+  }
 }
 
 function compareRows(left: SessionFamilyRow, right: SessionFamilyRow): number {

@@ -15,6 +15,7 @@ export interface SubagentSessionSummary {
   messageCount: number;
   lastActivityAt: number;
   aiSummary: string | null;
+  originTurnIndex?: number | null;
 }
 
 export interface SubagentSessionNode extends SubagentSessionSummary {
@@ -23,6 +24,7 @@ export interface SubagentSessionNode extends SubagentSessionSummary {
 
 export interface SessionFamily {
   parent: SubagentSessionSummary | null;
+  parentOriginTurnIndex?: number | null;
   children: SubagentSessionNode[];
   truncated: boolean;
 }
@@ -40,6 +42,7 @@ interface SessionFamilyRow extends Record<string, unknown> {
   last_activity_at: Date | string;
   ai_summary: string | null;
   parent_session_id: string | null;
+  origin_turn_index: number | string | null;
 }
 
 const EMPTY_FAMILY: SessionFamily = {
@@ -64,6 +67,48 @@ export async function findSessionFamily(
   if (!target) return EMPTY_FAMILY;
 
   const rowsResult = await database.query<SessionFamilyRow>(`
+    with visible_parent_turns as (
+      select
+        turns.*,
+        row_number() over (
+          partition by turns.session_key
+          order by turns.turn_index
+        ) - 1 as visible_turn_index
+      from agent_recall.session_turns turns
+      where turns.synthetic = false
+        or exists (
+          select 1
+          from agent_recall.trace_spans trigger_spans
+          where trigger_spans.turn_id = turns.id
+            and trigger_spans.attributes #>> '{eventType}' = 'codex.collaboration.message'
+            and trigger_spans.attributes #>> '{collaboration,triggerTurn}' = 'true'
+        )
+    ), spawn_origins as (
+      select distinct on (child_sessions.session_key)
+        child_sessions.session_key,
+        parent_turns.visible_turn_index as origin_turn_index
+      from agent_recall.sessions child_sessions
+      join agent_recall.sessions parent_sessions
+        on parent_sessions.raw_id = child_sessions.parent_session_id
+        and parent_sessions.source = child_sessions.source
+        and parent_sessions.environment_id = child_sessions.environment_id
+      join visible_parent_turns parent_turns
+        on parent_turns.session_key = parent_sessions.session_key
+      join agent_recall.trace_spans spans
+        on spans.turn_id = parent_turns.id
+      where child_sessions.source = $1
+        and child_sessions.environment_id = $2
+        and (
+          spans.attributes #>> '{collaboration,tool}' = 'spawn_agent'
+          or spans.attributes #>> '{codex,rawType}' like 'collab_spawn%'
+        )
+        and (
+          spans.attributes #>> '{collaboration,newThreadId}' = child_sessions.raw_id
+          or (spans.attributes #> '{collaboration,receiverThreadIds}')
+            @> jsonb_build_array(child_sessions.raw_id)
+        )
+      order by child_sessions.session_key, parent_turns.turn_index, spans.span_index
+    )
     select
       sessions.session_key,
       sessions.raw_id,
@@ -76,9 +121,11 @@ export async function findSessionFamily(
       sessions.message_count,
       sessions.ai_summary,
       sessions.parent_session_id,
+      origin.origin_turn_index,
       ${SESSION_ACTIVITY_SQL} as last_activity_at
     from agent_recall.sessions
     left join agent_recall.environments on environments.id = sessions.environment_id
+    left join spawn_origins origin on origin.session_key = sessions.session_key
     where sessions.source = $1
       and sessions.environment_id = $2
       and sessions.hidden = false
@@ -133,13 +180,16 @@ export async function findSessionFamily(
     ? rowsByRawId.get(target.parent_session_id) ?? null
     : null;
   return {
-    parent: parentRow ? summaryFrom(parentRow) : null,
+    parent: parentRow ? summaryFrom(parentRow, false) : null,
+    parentOriginTurnIndex: nullableTurnIndex(
+      rows.find((row) => row.session_key === target.session_key)?.origin_turn_index,
+    ),
     children: buildChildren(target.raw_id, 0, new Set([target.raw_id])),
     truncated,
   };
 }
 
-function summaryFrom(row: SessionFamilyRow): SubagentSessionSummary {
+function summaryFrom(row: SessionFamilyRow, includeOrigin = true): SubagentSessionSummary {
   return {
     sessionKey: row.session_key,
     rawId: row.raw_id,
@@ -150,7 +200,14 @@ function summaryFrom(row: SessionFamilyRow): SubagentSessionSummary {
     messageCount: row.message_count,
     lastActivityAt: Math.max(0, new Date(row.last_activity_at).getTime() || 0),
     aiSummary: row.ai_summary?.trim() || null,
+    originTurnIndex: includeOrigin ? nullableTurnIndex(row.origin_turn_index) : null,
   };
+}
+
+function nullableTurnIndex(value: number | string | null | undefined): number | null {
+  if (value === null || value === undefined) return null;
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed >= 0 ? parsed : null;
 }
 
 function compareRows(left: SessionFamilyRow, right: SessionFamilyRow): number {
