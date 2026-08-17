@@ -5,11 +5,12 @@ import type { ManagedSkill, SkillInstallTarget } from "../../../../core/managed-
 import { AGENT_SKILL_REGISTRY } from "../../../../core/agent-skill-registry";
 import { localize, type LanguageMode } from "../../language";
 
-const TARGET_LABELS: Record<SkillInstallTarget, string> = Object.fromEntries(
+const TARGET_LABELS: Record<SkillInstallTarget, string> = Object.fromEntries([
   AGENT_SKILL_REGISTRY
     .filter((entry) => entry.installTarget !== null)
     .map((entry) => [entry.installTarget!, entry.label]),
-) as Record<SkillInstallTarget, string>;
+  ["codex-shared", "Codex shared (~/.agents/skills)"],
+]) as Record<SkillInstallTarget, string>;
 
 export function SkillTargetDialog({
   open,

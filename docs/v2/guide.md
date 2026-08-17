@@ -351,7 +351,7 @@ Skills 页面包含 **本 App Skill**和**本地 Skill**两个区域。
 
 在 **本 App Skill**中打开 Skill 详情，点击 **管理安装**，选择 Codex、Claude Code、CodeBuddy、Qoder 或 Trae。
 
-这里的安装目标是本机编码 Agent，不是 Runtime 页面中创建的可复用 Agent。如果目标目录已有同名内容，页面会显示冲突，并且不会直接覆盖。
+这里的安装目标是本机编码 Agent，不是 Runtime 页面中创建的可复用 Agent。除了 Codex 私有目录外，还可以选择 **Codex shared (`~/.agents/skills`)**，适合让多个 Codex 工作区共用同一份 Skill；Windows 下对应用户目录中的 `.agents\skills`。如果目标目录已有同名内容，页面会显示冲突，并且不会直接覆盖。
 
 ### 跨设备同步 Skill
 
@@ -362,6 +362,8 @@ Skills 页面包含 **本 App Skill**和**本地 Skill**两个区域。
 - 比较本地与云端文件差异。
 - 在另一台设备把云端 Skill 加入 Skill 库。
 - 恢复指定历史版本。
+
+云端 Skill 会在 **本 App Skill** 左侧单独显示为“仅云端”，选中后可以直接预览任意版本，再加入本 App，不需要先找到一个同名的本地 Skill。
 
 系统、项目或插件管理的 Skill 不一定支持上传。AI 探索公共 Skill 时，可以在设置中指定使用哪个 Runtime；自动模式会选择第一个可用 Runtime。
 

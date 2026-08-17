@@ -9,6 +9,7 @@ import { localize, type LanguageMode } from "../../language";
 import { buildUnifiedSkillEntries } from "../../skill-sync-view-model";
 import type { SkillsFeedback } from "../../app-types";
 import { LocalSkillsTab } from "./local-skills-tab";
+import { CloudSkillDetail } from "./cloud-skill-detail";
 import { SkillDiscoveryDialog } from "./skill-discovery-dialog";
 import { SkillLibraryDetail } from "./skill-library-detail";
 import {
@@ -74,6 +75,7 @@ export function SkillsPage({
   const [localSkillCount, setLocalSkillCount] = useState(0);
   const [localRefreshVersion, setLocalRefreshVersion] = useState(0);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [selectedRemoteFingerprint, setSelectedRemoteFingerprint] = useState<string | null>(null);
   const [checkedIds, setCheckedIds] = useState<Set<string>>(() => new Set());
   const [discoveryOpen, setDiscoveryOpen] = useState(false);
   const [deleteCandidate, setDeleteCandidate] = useState<ManagedSkill | null>(null);
@@ -85,7 +87,9 @@ export function SkillsPage({
     () => filterManagedSkills(managedSkills, query, originFilter, sort),
     [managedSkills, originFilter, query, sort],
   );
-  const selectedSkill = filteredSkills.find((skill) => skill.managedId === selectedId) ?? filteredSkills[0] ?? null;
+  const selectedSkill = selectedRemoteFingerprint
+    ? null
+    : filteredSkills.find((skill) => skill.managedId === selectedId) ?? filteredSkills[0] ?? null;
   const selectedEntry = selectedSkill
     ? unifiedEntries.find((entry) => entry.local?.path === selectedSkill.path) ?? null
     : null;
@@ -93,6 +97,7 @@ export function SkillsPage({
     () => unifiedEntries.flatMap((entry) => !entry.local && entry.remote ? [entry.remote] : []),
     [unifiedEntries],
   );
+  const selectedRemoteGroup = remoteOnlyGroups.find((group) => group.fingerprint === selectedRemoteFingerprint) ?? null;
   const managedSourcePaths = useMemo(
     () => new Set(managedSkills.flatMap((skill) => skill.origin.kind === "local" && skill.origin.sourcePath
       ? [skill.origin.sourcePath]
@@ -101,6 +106,10 @@ export function SkillsPage({
   );
 
   useEffect(() => {
+    if (selectedRemoteFingerprint) {
+      if (selectedRemoteGroup) return;
+      setSelectedRemoteFingerprint(null);
+    }
     if (pendingSelection && managedSkills.some((skill) => skill.managedId === pendingSelection)) {
       setSelectedId(pendingSelection);
       setPendingSelection(null);
@@ -109,7 +118,7 @@ export function SkillsPage({
     if (!selectedId || !filteredSkills.some((skill) => skill.managedId === selectedId)) {
       setSelectedId(filteredSkills[0]?.managedId ?? null);
     }
-  }, [filteredSkills, managedSkills, pendingSelection, selectedId]);
+  }, [filteredSkills, managedSkills, pendingSelection, selectedId, selectedRemoteFingerprint, selectedRemoteGroup]);
 
   useEffect(() => {
     const existing = new Set(managedSkills.map((skill) => skill.managedId));
@@ -258,17 +267,37 @@ export function SkillsPage({
               onQueryChange={setQuery}
               onOriginFilterChange={setOriginFilter}
               onSortChange={setSort}
-              onSelect={setSelectedId}
+              onSelect={(managedId) => {
+                setSelectedRemoteFingerprint(null);
+                setSelectedId(managedId);
+              }}
               onToggleChecked={(managedId) => setCheckedIds((current) => {
                 const next = new Set(current);
                 if (next.has(managedId)) next.delete(managedId);
                 else next.add(managedId);
                 return next;
               })}
+              remoteOnlyGroups={remoteOnlyGroups}
+              selectedRemoteFingerprint={selectedRemoteFingerprint}
+              onSelectRemote={(fingerprint) => {
+                setSelectedId(null);
+                setSelectedRemoteFingerprint(fingerprint);
+              }}
               evalBadgeCounts={evalBadgeCountsMap}
               onNavigateToEval={onNavigateToEval}
             />
-            <SkillLibraryDetail
+            {selectedRemoteGroup ? (
+              <CloudSkillDetail
+                group={selectedRemoteGroup}
+                busy={loading || batchBusy}
+                language={language}
+                onInstall={async (remoteSkillId) => {
+                  await onInstallRemote(remoteSkillId);
+                  setSelectedRemoteFingerprint(null);
+                }}
+                onFetchVersion={onFetchVersion}
+              />
+            ) : <SkillLibraryDetail
               skill={selectedSkill}
               entry={selectedEntry}
               remoteOnlyGroups={remoteOnlyGroups}
@@ -287,7 +316,7 @@ export function SkillsPage({
               onCopyPath={onCopyPath}
               onReveal={onReveal}
               onRequestDelete={setDeleteCandidate}
-            />
+            />}
           </div>
         </section>
 

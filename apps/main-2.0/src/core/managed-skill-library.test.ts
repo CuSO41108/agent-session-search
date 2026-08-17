@@ -62,4 +62,22 @@ describe("AgentRecall bundled Skills", () => {
       url: "https://github.com/melodic-software/claude-code-plugins/tree/main/plugins/soft-skills/skills/resume-optimization",
     });
   });
+
+  it("installs a managed Skill into the shared Codex agents directory", () => {
+    const fixtureRoot = mkdtempSync(path.join(tmpdir(), "agent-recall-shared-skill-"));
+    temporaryDirectories.push(fixtureRoot);
+    const homeDir = path.join(fixtureRoot, "home");
+    const library = new ManagedSkillLibrary({
+      libraryRoot: path.join(fixtureRoot, "skills"),
+      homeDir,
+    });
+    const bundledRoot = fileURLToPath(new URL("../../assets/bundled-skills", import.meta.url));
+
+    library.ensureBuiltinSkills(bundledRoot);
+    const updated = library.updateTargets("grill-me", ["codex-shared"]);
+    const installation = updated.installations.find((item) => item.target === "codex-shared");
+
+    expect(installation?.state).toBe("installed");
+    expect(installation?.path).toBe(path.join(homeDir, ".agents", "skills", "grill-me"));
+  });
 });
