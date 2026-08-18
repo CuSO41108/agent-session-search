@@ -1905,5 +1905,5 @@ test("keeps the terminal attached until the updater reports an exit status", asy
 
 test("pins the Electron runtime used by CI and global installs", async () => {
   const packageJson = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
-  assert.equal(packageJson.dependencies.electron, "42.3.0");
+  assert.equal(packageJson.dependencies.electron, "42.9.2");
 });
