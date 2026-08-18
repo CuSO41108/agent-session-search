@@ -758,10 +758,10 @@ function RemoteRestoreDialog({
             onClick={() => setBind((selected) => !selected)}
           >
             <span className="migration-project-copy">
-              <strong>{l("Bind to the cloud session (read-only)", "绑定到原云端会话（只读）")}</strong>
+              <strong>{l("Bind to the cloud session", "绑定到原云端会话")}</strong>
               <small>{l(
-                "Off: restore an independent copy that creates a new cloud session on upload. On: keep a traceable link, but this copy cannot overwrite the source.",
-                "关闭：恢复为独立副本，之后上传会创建新的云端会话。开启：保留可追踪关联，但此副本不能覆盖源会话。",
+                "Off: restore an independent copy that creates a new cloud session on upload. On: continue updating this cloud session; a shorter local visible branch will be rejected.",
+                "关闭：恢复为独立副本，之后上传会创建新的云端会话。开启：之后继续更新此云端会话；本地可见分支较短时会拒绝覆盖。",
               )}</small>
             </span>
             <span className="migration-project-switch" aria-hidden="true"><span /></span>

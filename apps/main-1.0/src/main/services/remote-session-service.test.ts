@@ -844,7 +844,7 @@ describe("RemoteSessionService cloud orchestration", () => {
       lastLocalRevision: "restored-revision",
       lastRemoteRevision: "remote-revision",
       lastSyncedAt: 123,
-      direction: "restore",
+      direction: "upload",
     });
   });
 
@@ -863,23 +863,29 @@ describe("RemoteSessionService cloud orchestration", () => {
     expect(harness.store.upsertSessionSyncBinding).not.toHaveBeenCalled();
   });
 
-  it("never uploads a restore binding back into its source cloud session", async () => {
+  it("lets a bound restore update the same cloud session even when its project path changes", async () => {
+    const restored = localSession({
+      sessionKey: "local:restored",
+      rawId: "restored-session",
+      projectPath: "C:/another-project",
+    });
     const harness = createHarness({
       settings: configuredSettings(),
-      bindings: [{
-        localSessionKey: "local:session-1",
-        remoteSessionId: "remote-1",
-        lastLocalRevision: "old-local",
-        lastRemoteRevision: "remote-revision",
-        lastSyncedAt: 1,
-        direction: "restore",
-      }],
+      sessions: [restored],
+      localRevision: "restored-revision",
     });
 
-    await expect(harness.service.upload("local:session-1")).rejects.toThrow(
-      "bound restore copies are read-only",
+    await harness.service.restore("remote-1", "codex", "C:/another-project", vi.fn(), true);
+    await expect(harness.service.upload("local:restored")).resolves.toMatchObject({ status: "uploaded" });
+    expect(harness.buildUpload).toHaveBeenLastCalledWith(
+      harness.store,
+      "local:restored",
+      123,
+      "remote-1",
+      true,
+      undefined,
     );
-    expect(harness.client.uploadSession).not.toHaveBeenCalled();
+    expect(harness.client.uploadSession).toHaveBeenCalled();
   });
 
   it("rejects an upload that would shrink a complete cloud session to the visible branch", async () => {

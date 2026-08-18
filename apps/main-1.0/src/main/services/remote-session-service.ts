@@ -244,9 +244,6 @@ export class RemoteSessionService {
     const initialSession = store.getSession(sessionKey);
     if (!initialSession) throw new Error("Session not found.");
     const binding = store.getSessionSyncBindingForLocalKey(sessionKey);
-    if (binding?.direction === "restore") {
-      throw new Error("Cloud-bound restore copies are read-only; upload the original session or restore as an independent copy.");
-    }
     const sourceDescriptor = sessionSourceDescriptor(initialSession.source);
     if (!sourceDescriptor.capabilities.sessionSync) {
       throw new Error(`${sourceDescriptor.label} sessions cannot be saved remotely yet.`);
@@ -547,7 +544,7 @@ export class RemoteSessionService {
         lastLocalRevision: built.payload.content_hash,
         lastRemoteRevision: remote.contentHash,
         lastSyncedAt: this.dependencies.now(),
-        direction: "restore",
+        direction: "upload",
       });
     } catch {
       // The restored conversation remains usable if recording its sync relation fails.
