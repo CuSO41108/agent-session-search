@@ -10,6 +10,7 @@ import {
 import type { ConfiguredAgent } from "../../../../shared/types";
 import type { McpServerDefinition } from "../../../../shared/mcp/types";
 import { MCP_CATALOG } from "../../../../shared/mcp-config";
+import { runtimeSupportsCustomMcp } from "../../../../shared/runtime-catalog";
 import type { Language } from "../../app/language";
 import {
   InlineStatus,
@@ -43,7 +44,7 @@ export function McpAgentBindings({
         registryTitle: "已注册服务",
         registryDescription: "打开开关，即可让当前 Agent 在新会话中使用该服务。",
         noServers: "还没有可绑定的 MCP Server。",
-        apiNoServers: "API Agent 暂不支持 MCP；切换到其他运行时后即可绑定。",
+        runtimeNoServers: "当前 Runtime 暂不支持自定义 MCP；切换到支持 MCP 注入的 Runtime 后即可绑定。",
         tools: (count: number) => `${count} 个工具`,
         connected: "已连接",
         failed: "连接失败",
@@ -65,7 +66,7 @@ export function McpAgentBindings({
         githubToken: "GitHub Token",
         install: "安装",
         catalogCodexOnly: "托管目录仅支持 Codex。当前 Agent 仍可使用左侧的自定义 MCP Server。",
-        apiUnavailable: "API Agent 暂不支持 MCP 服务。",
+        runtimeUnavailable: "当前 Runtime 暂不支持自定义 MCP 服务。",
       }
     : {
         noAgents: "No agents",
@@ -78,7 +79,7 @@ export function McpAgentBindings({
         registryTitle: "Registered servers",
         registryDescription: "Turn on a server to make it available in this Agent's new sessions.",
         noServers: "No MCP servers are available to bind.",
-        apiNoServers: "API Agents do not support MCP. Choose another runtime to add bindings.",
+        runtimeNoServers: "This Runtime does not support custom MCP. Choose a Runtime with MCP injection to add bindings.",
         tools: (count: number) => `${count} tools`,
         connected: "Connected",
         failed: "Connection failed",
@@ -100,7 +101,7 @@ export function McpAgentBindings({
         githubToken: "GitHub token",
         install: "Install",
         catalogCodexOnly: "The managed catalog is available for Codex. This Agent can still use custom MCP servers on the left.",
-        apiUnavailable: "API Agents do not support MCP servers.",
+        runtimeUnavailable: "This Runtime does not support custom MCP servers.",
       };
   if (!model.agent) {
     return (
@@ -114,7 +115,7 @@ export function McpAgentBindings({
   const selected =
     MCP_CATALOG.find((item) => item.id === model.selectedCatalogId) ??
     model.available[0];
-  const supportsCustomServers = model.agent.runtimeAgentId !== "api";
+  const supportsCustomServers = runtimeSupportsCustomMcp(model.agent.runtimeAgentId);
   const customServers = supportsCustomServers
     ? model.customServers
     : servers.filter((server) => model.boundServerIds.has(server.id));
@@ -223,7 +224,7 @@ export function McpAgentBindings({
             }) : (
               <div className="mcp-binding-empty">
                 <Cable size={18} />
-                <p>{supportsCustomServers ? copy.noServers : copy.apiNoServers}</p>
+                <p>{supportsCustomServers ? copy.noServers : copy.runtimeNoServers}</p>
               </div>
             )}
           </div>
@@ -338,7 +339,7 @@ export function McpAgentBindings({
             ) : (
               <div className="mcp-binding-runtime-note">
                 <PackagePlus size={15} />
-                <p>{supportsCustomServers ? copy.catalogCodexOnly : copy.apiUnavailable}</p>
+                <p>{supportsCustomServers ? copy.catalogCodexOnly : copy.runtimeUnavailable}</p>
               </div>
             )}
           </div>

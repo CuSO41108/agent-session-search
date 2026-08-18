@@ -33,6 +33,7 @@ export async function runEvaluation(input: {
   executeJudge?: (
     runtimeId: string,
     prompt: string,
+    signal?: AbortSignal,
   ) => Promise<ExecutionResult>;
 }): Promise<EvaluationRun> {
   const startedAt = Date.now();
@@ -103,6 +104,7 @@ export async function runEvaluation(input: {
                     : undefined,
                   output,
                   input.executeJudge,
+                  input.signal,
                 ),
               ),
           );
@@ -139,8 +141,9 @@ async function score(
   context: string | undefined,
   output: string,
   executeJudge:
-    | ((runtimeId: string, prompt: string) => Promise<ExecutionResult>)
+    | ((runtimeId: string, prompt: string, signal?: AbortSignal) => Promise<ExecutionResult>)
     | undefined,
+  signal?: AbortSignal,
 ): Promise<EvaluationScore> {
   const startedAt = Date.now();
   let value = 0;
@@ -184,6 +187,7 @@ async function score(
       const result = await executeJudge(
         evaluator.runtimeId,
         judgePrompt,
+        signal,
       );
       const parsed = JSON.parse(
         result.output.match(/\{[\s\S]*\}/)?.[0] ?? "{}",

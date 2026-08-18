@@ -8,6 +8,7 @@ import type {
   WorkflowReadinessResult,
 } from "../../../shared/types";
 import { DEFAULT_MODEL_ID, isModelForChannel } from "../../../shared/models";
+import { runtimeSupportsCustomMcp } from "../../../shared/runtime-catalog";
 
 type ReadinessWorkflow = Pick<WorkflowDraftState, "configuredAgentId" | "modelId" | "reviewerConfiguredAgentId" | "reviewerModelId" | "definition">;
 
@@ -81,6 +82,7 @@ export function portableWorkflowReadiness(file: WorkflowPortableFileV1, catalogs
 }
 
 function availableTools(agent: ConfiguredAgent, servers: McpServerDefinition[]): Set<string> {
+  if (!runtimeSupportsCustomMcp(agent.runtimeAgentId)) return new Set();
   const serverById = new Map(servers.filter((server) => server.enabled).map((server) => [server.id, server]));
   const tools = new Set<string>();
   for (const binding of agent.mcpBindings ?? []) {

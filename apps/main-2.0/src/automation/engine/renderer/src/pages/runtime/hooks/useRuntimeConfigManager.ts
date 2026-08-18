@@ -399,9 +399,27 @@ export function useRuntimeConfigManager({
   }, [chatApi, persistChannelConfig, setSnapshot, syncChannelsFromSnapshot]);
 
   const importLocalConfig = useCallback(async (runtimeId: AgentId, channelId?: string): Promise<void> => {
-    if (configDirtyRef.current && !window.confirm("Discard unsaved config changes and import local defaults?")) return;
-    setConfigStatus(`Importing ${agentLabel(runtimeId)} local defaults...`);
     try {
+      const selectedChannelIsNew = Boolean(
+        channelId
+        && configChannelsRef.current.some((channel) => channel.id === channelId)
+        && !snapshot.channels.some((channel) => channel.id === channelId),
+      );
+      const dshImportNeedsCurrentEnvironment =
+        runtimeId === "dsh" && configDirtyRef.current;
+      if (selectedChannelIsNew || dshImportNeedsCurrentEnvironment) {
+        const message = selectedChannelIsNew
+          ? "Save this new config before importing local defaults?"
+          : "Save the current DeepSeek Harness config before importing local defaults?";
+        if (!window.confirm(message)) return;
+        await persistChannelConfig();
+      } else if (
+        configDirtyRef.current
+        && !window.confirm("Discard unsaved config changes and import local defaults?")
+      ) {
+        return;
+      }
+      setConfigStatus(`Importing ${agentLabel(runtimeId)} local defaults...`);
       const result = await chatApi.importRuntimeLocalConfig(runtimeId, channelId);
       setSelectedRuntimeId(runtimeId);
       configChannelsRef.current = result.snapshot.channels;
@@ -414,7 +432,7 @@ export function useRuntimeConfigManager({
     } catch (error) {
       setConfigStatus(error instanceof Error ? error.message : String(error));
     }
-  }, [chatApi, setSnapshot]);
+  }, [chatApi, persistChannelConfig, setSnapshot, snapshot.channels]);
 
   const testRuntimeChannel = useCallback(async (channelId: string): Promise<void> => {
     const channel = configChannelsRef.current.find((item) => item.id === channelId);

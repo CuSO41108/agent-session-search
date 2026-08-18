@@ -24,6 +24,7 @@
   --hermes: #8b5cf6;
   --opencode: #2563eb;
   --openclaw: #f5654a;
+  --dsh: #4d6bfe;
   --ok: var(--success-text);
   --ok-strong: var(--success-text);
   --ok-tint: var(--success-bg);
@@ -321,6 +322,10 @@ textarea:focus-visible {
 
 .agent-openclaw {
   background: var(--openclaw);
+}
+
+.agent-dsh {
+  background: var(--dsh);
 }
 
 .runtime-meta {

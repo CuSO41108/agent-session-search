@@ -60,6 +60,7 @@ export function configChannelsEqual(left: AgentChannel[], right: AgentChannel[])
 function isUntouchedOptionalRuntimeDefault(channel: AgentChannel): boolean {
   const definition = runtimeDefinition(channel.agentId);
   if (definition.autoCreateConfig) return false;
+  if ("persistDefaultConfig" in definition && definition.persistDefaultConfig) return false;
   return sameConfigValue(channel, {
     ...definition.defaultChannel,
     agentId: definition.id,

@@ -72,7 +72,7 @@ function fixture(injectAgents = true, optionOverrides: Partial<AutomationService
   } as unknown as McpRegistryStore;
   const evaluations = {
     configuredAgentReferences: vi.fn(async () => []),
-    close: vi.fn(() => { calls.push("evaluations-close"); }),
+    close: vi.fn(async () => { calls.push("evaluations-close"); }),
   } as unknown as EvaluationService;
   const teamChats = {
     connect: vi.fn(async () => {
@@ -443,7 +443,7 @@ describe("NativeAutomationService", () => {
     await service.shutdown();
     await service.shutdown();
 
-    expect(calls.slice(-6)).toEqual(["team-chat-close", "hub-stop", "bridge-stop", "router-stop", "evaluations-close", "registry-close"]);
+    expect(calls.slice(-6)).toEqual(["team-chat-close", "evaluations-close", "hub-stop", "bridge-stop", "router-stop", "registry-close"]);
     expect(service.evaluations).toBe(evaluations);
     expect(service.teamChat).toBe(teamChats);
     await expect(service.requireReady()).rejects.toThrow(/stopped/i);

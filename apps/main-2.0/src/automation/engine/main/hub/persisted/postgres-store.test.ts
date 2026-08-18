@@ -197,4 +197,54 @@ describe("PostgreSQL AgentHub persistence", () => {
       runs: 0,
     });
   });
+
+  it("round-trips DeepSeek Harness channels and configured Agents in auxiliary state", async () => {
+    const payload = {
+      version: 5,
+      activeChatId: null,
+      workDir: "/workspace",
+      channels: [{
+        id: "dsh-default",
+        agentId: "dsh",
+        label: "DeepSeek Harness",
+        presetId: "dsh-default",
+        models: [{ id: "default", label: "Default" }],
+      }],
+      configuredAgents: [{
+        id: "dsh-agent",
+        name: "DSH Agent",
+        description: "",
+        runtimeAgentId: "dsh",
+        channelId: "dsh-default",
+        modelId: "default",
+        tags: [],
+        createdAt: 1,
+        updatedAt: 2,
+      }],
+      sessions: [],
+      messages: [],
+      events: [],
+      workflowStore: {
+        activeWorkflowId: undefined,
+        workflows: [],
+        runs: [],
+      },
+    } as unknown as PersistedAppStateV5;
+
+    await store.save(payload);
+
+    await expect(store.load()).resolves.toMatchObject({
+      channels: [{
+        id: "dsh-default",
+        agentId: "dsh",
+        models: [{ id: "default" }],
+      }],
+      configuredAgents: [{
+        id: "dsh-agent",
+        runtimeAgentId: "dsh",
+        channelId: "dsh-default",
+        modelId: "default",
+      }],
+    });
+  });
 });

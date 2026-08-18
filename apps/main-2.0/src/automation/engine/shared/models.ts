@@ -58,6 +58,9 @@ export const FALLBACK_MODEL_OPTIONS: Record<AgentId, AgentModelOption[]> = {
     { id: "sonnet", label: "Sonnet" },
     { id: "opus", label: "Opus" },
   ],
+  dsh: [
+    defaultModelOption(),
+  ],
   api: [
     defaultModelOption(),
     { id: "gpt-4o", label: "GPT-4o" },

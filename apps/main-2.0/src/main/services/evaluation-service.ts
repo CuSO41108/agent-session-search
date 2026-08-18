@@ -45,10 +45,18 @@ export interface EvaluationServiceDependencies {
   executeAgent: EvaluationAgentExecution;
 }
 
+interface ActiveEvaluationExecution {
+  controller: AbortController;
+  promise: Promise<unknown>;
+}
+
 export class EvaluationService {
   // Live controllers keyed by run id, so a polling client can cancel a
   // background run cooperatively.
   private readonly activeRuns = new Map<string, AbortController>();
+  private readonly activeExecutions = new Set<ActiveEvaluationExecution>();
+  private closePromise: Promise<void> | undefined;
+  private closing = false;
 
   constructor(private readonly dependencies: EvaluationServiceDependencies) {}
 
@@ -148,9 +156,16 @@ export class EvaluationService {
   // Blocking execution used by the Experiments workbench: the run is
   // persisted once, after every case has finished.
   async runExperiment(experimentId: string): Promise<EvaluationRun> {
-    const input = await this.prepareExperimentRun(experimentId);
-    const run = await runEvaluation(input);
-    return this.dependencies.store.saveRun(run);
+    this.assertOpen();
+    const controller = new AbortController();
+    return this.trackExecution(controller, async () => {
+      const input = await this.prepareExperimentRun(experimentId);
+      const run = await runEvaluation({
+        ...input,
+        signal: controller.signal,
+      });
+      return this.dependencies.store.saveRun(run);
+    });
   }
 
   // Background execution used by skill regression suites: the run row is
@@ -161,37 +176,49 @@ export class EvaluationService {
     experimentId: string,
     options: { skillHash?: string | null } = {},
   ): Promise<string> {
-    const input = await this.prepareExperimentRun(experimentId);
-    const runId = `eval-run-${Date.now()}`;
+    this.assertOpen();
     const controller = new AbortController();
-    this.activeRuns.set(runId, controller);
-    await this.dependencies.store.saveRun({
-      id: runId,
-      experimentId,
-      status: "running",
-      ...(input.agentRevisionId ? { agentRevisionId: input.agentRevisionId } : {}),
-      ...(options.skillHash ? { skillHash: options.skillHash } : {}),
-      startedAt: Date.now(),
-      results: [],
+    let resolveStarted!: (runId: string) => void;
+    let rejectStarted!: (error: unknown) => void;
+    const started = new Promise<string>((resolve, reject) => {
+      resolveStarted = resolve;
+      rejectStarted = reject;
     });
-    void (async () => {
+
+    const execution = this.trackExecution(controller, async () => {
+      const input = await this.prepareExperimentRun(experimentId);
+      const runId = `eval-run-${Date.now()}`;
+      this.activeRuns.set(runId, controller);
       try {
-        await runEvaluation({
-          ...input,
-          runId,
+        await this.dependencies.store.saveRun({
+          id: runId,
+          experimentId,
+          status: "running",
+          ...(input.agentRevisionId ? { agentRevisionId: input.agentRevisionId } : {}),
           ...(options.skillHash ? { skillHash: options.skillHash } : {}),
-          signal: controller.signal,
-          onRunUpdate: async (run) => {
-            await this.dependencies.store.saveRun(run);
-          },
+          startedAt: Date.now(),
+          results: [],
         });
-      } catch (cause) {
-        await this.persistFailedRun(runId, experimentId, cause);
+        resolveStarted(runId);
+        try {
+          await runEvaluation({
+            ...input,
+            runId,
+            ...(options.skillHash ? { skillHash: options.skillHash } : {}),
+            signal: controller.signal,
+            onRunUpdate: async (run) => {
+              await this.dependencies.store.saveRun(run);
+            },
+          });
+        } catch (cause) {
+          await this.persistFailedRun(runId, experimentId, cause);
+        }
       } finally {
         this.activeRuns.delete(runId);
       }
-    })();
-    return runId;
+    });
+    void execution.catch(rejectStarted);
+    return started;
   }
 
   cancelRun(runId: string): void {
@@ -204,7 +231,11 @@ export class EvaluationService {
     evaluators: EvaluationEvaluator[];
     agentRevisionId?: string;
     execute: EvaluationAgentExecution;
-    executeJudge: (runtimeId: string, prompt: string) => ReturnType<EvaluationAgentExecution>;
+    executeJudge: (
+      runtimeId: string,
+      prompt: string,
+      signal?: AbortSignal,
+    ) => ReturnType<EvaluationAgentExecution>;
   }> {
     const experiment = (await this.dependencies.store.listExperiments()).find(
       (item) => item.id === experimentId,
@@ -254,14 +285,14 @@ export class EvaluationService {
         ? { agentRevisionId: targetAgent.currentRevisionId }
         : {}),
       execute: this.dependencies.executeAgent,
-      executeJudge: (runtimeId, prompt) => {
+      executeJudge: (runtimeId, prompt, signal) => {
         const judge = judgesByRuntime.get(runtimeId);
         if (!judge) {
           throw new Error(
             `Runtime channel ${runtimeId} does not have an execution Agent for LLM Judge.`,
           );
         }
-        return this.dependencies.executeAgent(judge.id, prompt);
+        return this.dependencies.executeAgent(judge.id, prompt, signal);
       },
     };
   }
@@ -287,8 +318,40 @@ export class EvaluationService {
     }
   }
 
-  close(): void {
-    for (const controller of this.activeRuns.values()) controller.abort();
+  close(): Promise<void> {
+    this.closing = true;
+    this.closePromise ??= this.closeActiveExecutions();
+    return this.closePromise;
+  }
+
+  private assertOpen(): void {
+    if (this.closing) {
+      throw new Error("Evaluation service is shutting down.");
+    }
+  }
+
+  private trackExecution<T>(
+    controller: AbortController,
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    const active: ActiveEvaluationExecution = {
+      controller,
+      promise: Promise.resolve(),
+    };
+    const promise = Promise.resolve()
+      .then(operation)
+      .finally(() => {
+        this.activeExecutions.delete(active);
+      });
+    active.promise = promise;
+    this.activeExecutions.add(active);
+    return promise;
+  }
+
+  private async closeActiveExecutions(): Promise<void> {
+    const active = [...this.activeExecutions];
+    for (const execution of active) execution.controller.abort();
+    await Promise.allSettled(active.map((execution) => execution.promise));
     this.activeRuns.clear();
     this.dependencies.store.close();
   }

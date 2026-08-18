@@ -82,6 +82,10 @@ export class RuntimeRouter {
     });
   }
 
+  shutdown(): Promise<void> {
+    return this.registry.shutdown();
+  }
+
   restorePersistedConversation(raw: unknown): RuntimeConversation | undefined {
     const envelope = this.asRuntimeConversationEnvelope(raw);
     if (!envelope) return undefined;

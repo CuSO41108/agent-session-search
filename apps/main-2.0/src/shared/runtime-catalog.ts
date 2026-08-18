@@ -7,6 +7,7 @@ export const RUNTIME_DEFINITIONS = [
     detection: "cli",
     localConfigImport: true,
     autoCreateConfig: true,
+    supportsCustomMcp: true,
     defaultChannel: {
       id: "codex-openai",
       label: "Codex OpenAI",
@@ -22,9 +23,26 @@ export const RUNTIME_DEFINITIONS = [
     detection: "cli",
     localConfigImport: true,
     autoCreateConfig: true,
+    supportsCustomMcp: true,
     defaultChannel: {
       id: "claude-code",
       label: "Claude Code",
+    },
+  },
+  {
+    id: "dsh",
+    label: "DeepSeek Harness",
+    executable: "dsh",
+    executableEnv: "DSH_PATH",
+    detection: "cli",
+    localConfigImport: true,
+    autoCreateConfig: false,
+    persistDefaultConfig: true,
+    supportsCustomMcp: false,
+    defaultChannel: {
+      id: "dsh-default",
+      label: "DeepSeek Harness",
+      presetId: "dsh-default",
     },
   },
   {
@@ -34,6 +52,7 @@ export const RUNTIME_DEFINITIONS = [
     detection: "virtual",
     localConfigImport: false,
     autoCreateConfig: false,
+    supportsCustomMcp: false,
     defaultChannel: {
       id: "api-openai",
       label: "OpenAI API",
@@ -50,6 +69,7 @@ export const RUNTIME_DEFINITIONS = [
     detection: "cli",
     localConfigImport: true,
     autoCreateConfig: false,
+    supportsCustomMcp: true,
     defaultChannel: {
       id: "hermes-default",
       label: "Hermes Default",
@@ -64,6 +84,7 @@ export const RUNTIME_DEFINITIONS = [
     detection: "cli",
     localConfigImport: true,
     autoCreateConfig: false,
+    supportsCustomMcp: true,
     defaultChannel: {
       id: "opencode-default",
       label: "OpenCode Default",
@@ -78,6 +99,7 @@ export const RUNTIME_DEFINITIONS = [
     detection: "cli",
     localConfigImport: true,
     autoCreateConfig: false,
+    supportsCustomMcp: true,
     defaultChannel: {
       id: "openclaw-default",
       label: "OpenClaw Default",
@@ -103,4 +125,8 @@ export function runtimeDefinition(runtimeId: RuntimeId): RuntimeDefinition {
 
 export function runtimeLabel(runtimeId: RuntimeId): string {
   return runtimeDefinition(runtimeId).label;
+}
+
+export function runtimeSupportsCustomMcp(runtimeId: RuntimeId): boolean {
+  return runtimeDefinition(runtimeId).supportsCustomMcp;
 }

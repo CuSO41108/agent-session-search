@@ -93,6 +93,7 @@ import type {
 import type { BoundMcpServer } from "./runtime/executor/runtime-mcp";
 import { normalizeConfigChannelsForStorage } from "../../shared/config-channels";
 import { DEFAULT_MODEL_ID, defaultModelForAgent, isModelForChannel } from "../../shared/models";
+import { runtimeSupportsCustomMcp } from "../../shared/runtime-catalog";
 import type { WorkflowV2Definition } from "../../shared/workflow-v2/definition";
 import { sanitizeWorkflowOperationRecord, sanitizeWorkflowTransactionValue } from "../../shared/workflow-v2/transaction";
 import { detectAgentRuntimes, resolveRuntimeExecutables } from "../agents/runtime/detect";
@@ -752,6 +753,7 @@ export class AgentHub {
     const imported = await loadRuntimeLocalConfig({
       runtimeId,
       executable: this.executables[runtimeId],
+      workingDirectory: this.workDir,
       ...(existingChannel ? { existingChannel } : {}),
     });
     const nextChannels = existingChannel
@@ -895,6 +897,7 @@ export class AgentHub {
 
   private boundMcpServersForAgent(configuredAgentId: string, allowedMcpTools?: readonly string[]): BoundMcpServer[] {
     const configuredAgent = this.configuredAgents.get(configuredAgentId);
+    if (!configuredAgent || !runtimeSupportsCustomMcp(configuredAgent.runtimeAgentId)) return [];
     const bindings = configuredAgent?.mcpBindings ?? [];
     if (allowedMcpTools !== undefined && configuredAgent?.runtimeAgentId !== "codex" && configuredAgent?.runtimeAgentId !== "claude") return [];
     const servers = new Map(
@@ -1064,13 +1067,20 @@ export class AgentHub {
       clearInterval(this.idleSweepTimer);
       this.idleSweepTimer = undefined;
     }
-    const stops = [...this.activeStops.values()];
+    const stops = [...this.activeStops.entries()];
+    for (const [runId] of stops) {
+      const task = this.tasks.get(runId);
+      if (!task) continue;
+      this.markTaskStopped(task);
+      this.finishTeamStepFromTask(task);
+    }
     this.activeStops.clear();
-    await Promise.allSettled(stops.map((stop) => Promise.resolve(stop())));
+    await Promise.allSettled(stops.map(([, stop]) => Promise.resolve(stop())));
     this.runtimeApprovals.cancelAll();
     await Promise.allSettled([
       this.interactiveSessions.disposeAll("app_shutdown"),
       this.workflowNodeConversations.shutdown(),
+      this.runtimeRouter.shutdown(),
     ]);
     await this.flushPersistence();
     await this.persistedStore?.close();
@@ -2399,7 +2409,7 @@ export class AgentHub {
         supportsInteractivePlanning: target
           ? this.selectExecutionMode(target.runtimeAgentId, "chat", "interactive") === "interactive"
           : false,
-        mcpBindings: (agent.mcpBindings ?? []).map((binding) => ({
+        mcpBindings: (runtimeSupportsCustomMcp(agent.runtimeAgentId) ? agent.mcpBindings ?? [] : []).map((binding) => ({
           serverId: binding.serverId,
           toolAllowlist: binding.toolAllowlist,
         })),
@@ -2567,17 +2577,20 @@ export class AgentHub {
     if (!chat) return; this.runtimeApprovals.cancelOwner(chatId);
     const stop = this.activeStops.get(chatId);
     this.activeStops.delete(chatId);
-    if (stop) await stop();
-    chat.running = false;
-    if (chat.runtimeState) {
-      chat.runtimeState.attachmentState = "interrupted";
-      chat.runtimeState.lastMeaningfulActivityAt = Date.now();
-      delete chat.runtimeState.activeTurnId;
+    try {
+      if (stop) await stop();
+    } finally {
+      chat.running = false;
+      if (chat.runtimeState) {
+        chat.runtimeState.attachmentState = "interrupted";
+        chat.runtimeState.lastMeaningfulActivityAt = Date.now();
+        delete chat.runtimeState.activeTurnId;
+      }
+      chat.messages = this.expirePendingInteractionEvents(chat.messages);
+      chat.messages.push(createErrorMessage("Stopped"));
+      chat.updatedAt = Date.now();
+      this.emit();
     }
-    chat.messages = this.expirePendingInteractionEvents(chat.messages);
-    chat.messages.push(createErrorMessage("Stopped"));
-    chat.updatedAt = Date.now();
-    this.emit();
   }
 
   selectTask(taskId: string): void {
@@ -2586,20 +2599,27 @@ export class AgentHub {
     this.emit();
   }
 
-  async stopTask(taskId: string): Promise<void> {
-    const task = this.tasks.get(taskId);
-    if (!task) return; this.runtimeApprovals.cancelOwner(taskId);
-    const stop = this.activeStops.get(taskId);
-    this.activeStops.delete(taskId);
-    if (stop) await stop();
+  private markTaskStopped(task: TaskState): void {
     task.running = false;
     task.status = "stopped";
     task.lastError = "Stopped";
     task.messages.push(createErrorMessage("Stopped"));
     task.updatedAt = Date.now();
-    this.finishTeamStepFromTask(task);
-    if (task.planningWorkflowId || task.workflowRunId) this.emitWorkflow();
-    else this.emit();
+  }
+
+  async stopTask(taskId: string): Promise<void> {
+    const task = this.tasks.get(taskId);
+    if (!task) return; this.runtimeApprovals.cancelOwner(taskId);
+    const stop = this.activeStops.get(taskId);
+    this.activeStops.delete(taskId);
+    this.markTaskStopped(task);
+    try {
+      if (stop) await stop();
+    } finally {
+      this.finishTeamStepFromTask(task);
+      if (task.planningWorkflowId || task.workflowRunId) this.emitWorkflow();
+      else this.emit();
+    }
   }
 
   updateTaskProgress(taskId: string, progress: TaskProgress): AppSnapshot {

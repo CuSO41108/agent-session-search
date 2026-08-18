@@ -63,12 +63,25 @@ function createAgentExecutor<N extends WorkflowAgentNode | WorkflowReviewNode>(
   agentInvoker: WorkflowAgentInvoker,
   onStream?: (event: WorkflowRunStreamEvent) => void,
 ): WorkflowNodeExecutor<N> {
+  const active = new Map<string, {
+    controller: AbortController;
+    promise: Promise<Record<string, unknown>>;
+  }>();
+  const executionKey = (runId: string, nodeId: string): string =>
+    `${runId}\u0000${nodeId}`;
+
   return {
     async execute({ run, node, resolvedInputs, workDir, signal }) {
       let hasStreamedText = false;
       let paragraphBreakPending = false;
       onStream?.({ runId: run.id, nodeId: node.id, type: "started", timestamp: Date.now() });
-      return agentInvoker.invoke({
+      const controller = new AbortController();
+      const forwardAbort = (): void => controller.abort(signal.reason);
+      if (signal.aborted) forwardAbort();
+      else signal.addEventListener("abort", forwardAbort, { once: true });
+
+      const key = executionKey(run.id, node.id);
+      const promise = Promise.resolve().then(() => agentInvoker.invoke({
         runId: run.id,
         nodeId: node.id,
         agentId: node.agentId,
@@ -97,8 +110,22 @@ function createAgentExecutor<N extends WorkflowAgentNode | WorkflowReviewNode>(
             timestamp: Date.now(),
           });
         },
-        signal,
-      });
+        signal: controller.signal,
+      }));
+      const execution = { controller, promise };
+      active.set(key, execution);
+      try {
+        return await promise;
+      } finally {
+        signal.removeEventListener("abort", forwardAbort);
+        if (active.get(key) === execution) active.delete(key);
+      }
+    },
+    async cancel(runId, nodeId) {
+      const execution = active.get(executionKey(runId, nodeId));
+      if (!execution) return;
+      execution.controller.abort(new Error("Workflow node cancelled."));
+      await execution.promise.catch(() => undefined);
     },
   };
 }

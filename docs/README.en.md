@@ -76,7 +76,7 @@ In addition to session management, remote sync, and usage statistics, v2 adds re
 ### Features
 
 - **Workbench and Sessions**: View usage, model quotas, and recent activity. Search, filter, and organize sessions from different sources. The detail page supports in-session search, Resume, migration, export, AI summaries, and remote restore.
-- **Runtime and Agents**: Prepare execution configurations for Codex, Claude Code, API, Hermes, OpenCode, or OpenClaw, then save Agents with fixed models and purpose descriptions for reuse in Chat, Workflow, Eval, and MCP.
+- **Runtime and Agents**: Prepare execution configurations for Codex, Claude Code, API, Hermes, OpenCode, OpenClaw, or DeepSeek Harness, then save reusable Agents for Chat, Workflow, and Eval. Runtimes that support MCP injection can also bind custom MCP Servers.
 - **Multi-agent Chat**: Create a studio with a shared project directory while each employee keeps an independent context. Use `@name` or the recipient list to request responses from one or more Agents.
 - **Workflow**: Describe a task and answer the planning Agent's follow-up questions. Generate, review, and confirm a workflow diagram before running Agent or script nodes. During execution, you can handle follow-up questions, approvals, artifacts, and error recovery.
 - **Eval**: Run an Agent repeatedly against a fixed dataset and evaluators, then review average scores, pass rates, failed cases, evaluation reasons, and historical results.

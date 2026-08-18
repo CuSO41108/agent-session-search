@@ -79,6 +79,44 @@ describe("workflow node executors", () => {
     ]);
   });
 
+  test("agent cancellation aborts the invocation and waits for process settlement", async () => {
+    let invocationSignal: AbortSignal | undefined;
+    let release: (() => void) | undefined;
+    const invoke = vi.fn((input: { signal: AbortSignal }) => {
+      invocationSignal = input.signal;
+      return new Promise<Record<string, unknown>>((_resolve, reject) => {
+        input.signal.addEventListener("abort", () => {
+          release = () => reject(input.signal.reason);
+        }, { once: true });
+      });
+    });
+    const executors = createWorkflowNodeExecutors({
+      agentInvoker: { invoke } as unknown as WorkflowAgentInvoker,
+    });
+    const execution = executors.agent.execute({
+      run: run(),
+      node: agentNode,
+      resolvedInputs: {},
+      signal: new AbortController().signal,
+    });
+    const executionOutcome = execution.catch((error: unknown) => error);
+    await vi.waitFor(() => expect(invoke).toHaveBeenCalledOnce());
+
+    let cancelSettled = false;
+    const cancelling = executors.agent.cancel!("run", "agent").finally(() => {
+      cancelSettled = true;
+    });
+    await Promise.resolve();
+
+    expect(invocationSignal?.aborted).toBe(true);
+    expect(cancelSettled).toBe(false);
+
+    release?.();
+    await cancelling;
+    await expect(executionOutcome).resolves.toBeInstanceOf(Error);
+    expect(cancelSettled).toBe(true);
+  });
+
   test("script executor authorizes elevated permissions and passes inputs as stdin JSON", async () => {
     const scriptNode: WorkflowScriptNode = {
       id: "script",

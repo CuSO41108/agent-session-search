@@ -55,7 +55,7 @@ Chat、Workflow、Eval 和 v2 MCP 绑定都依赖 Runtime 中保存的 Agent。�
 
 | 概念 | 用途 |
 | --- | --- |
-| Runtime 执行配置 | 决定使用哪个执行器、Provider、API Key、模型和插件 |
+| Runtime 执行配置 | 决定使用哪个执行器，以及该执行器支持的 Provider、凭据、模型和插件配置 |
 | Agent | 从某个执行配置中选择模型并保存为可复用角色 |
 | Provider 页面 | 管理本机 Codex、Claude Code，以及会话摘要和 AI 搜索所使用的服务 |
 
@@ -65,13 +65,36 @@ Runtime 执行配置负责 v2 自动化能力，Provider 页面负责本机工�
 
 进入 **Runtime → 执行配置**：
 
-1. 点击 **新增配置**，选择 Codex、Claude Code、API、Hermes、OpenCode 或 OpenClaw。
+1. 点击 **新增配置**，选择 Codex、Claude Code、API、Hermes、OpenCode、OpenClaw 或 DeepSeek Harness。
 2. 已在本机配置过的执行器可以尝试 **一键导入本地默认配置**。
 3. 选择 Provider，按需填写 API Key，并确认可用模型。
 4. Codex 配置还可以选择需要启用的插件。
 5. 点击 **测试**检查配置是否可用，再点击 **保存配置**。
 
 部分 Provider 支持余额查询。连接、环境变量或请求覆盖等选项位于高级配置中，没有特殊需求时保持默认即可。
+
+#### 使用 DeepSeek Harness
+
+DeepSeek Harness 使用官方 `dsh` CLI。当前版本要求 Node.js 22.19.0 及以上的 22.x，或 Node.js 24 及以上版本（不支持 Node.js 23），请先确保下面的命令可用：
+
+```bash
+npm install -g @deepseek-ai/dsh
+dsh --version
+```
+
+随后可运行 `dsh web` 完成模型和凭据设置，再回到 AgentRecall：
+
+1. 新建 **DeepSeek Harness** 执行配置；如果使用了自定义 Harness home，在高级配置中设置 `DSH_HOME`。
+2. 点击 **一键导入本地默认配置**，让页面显示当前 `settings.yaml` 中的模型。
+3. 创建 Agent 时选择 **Default** 模型，然后运行配置测试。
+
+当前官方标准入口是 `dsh --profile headless "<task>"`。它每次创建一个 fresh 会话，只在结束时返回最终文本，不提供单次模型覆盖、会话续接或 AgentRecall 自定义 MCP 注入。因此：
+
+- AgentRecall 不会改写 DSH 的 `settings.yaml` 或凭据文件，模型与凭据继续由 DSH 管理；
+- Chat、Workflow 和 Eval 的每次调用都是独立运行，界面不会宣称保留 DSH 上下文；
+- DSH 会为 Chat、Workflow、Eval 和配置测试的每次调用创建并持久化 fresh session；这些记录会保留在 `$DSH_HOME/sessions`，当前官方 headless 入口没有删除 API，AgentRecall 不会自动清理；
+- 非 `Default` 模型会被明确拒绝，避免看似切换成功、实际仍使用 DSH 默认模型；
+- 如果需要交互式续接或 MCP，请改用支持相应能力的 Runtime。
 
 ### 创建 Agent
 

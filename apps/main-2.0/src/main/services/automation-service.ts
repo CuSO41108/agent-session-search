@@ -693,10 +693,10 @@ export class NativeAutomationService {
   private async shutdownInternal(): Promise<void> {
     await (this.initializePromise ?? this.preparePromise)?.catch(() => undefined);
     await this.teamChat.close();
+    await this.evaluations.close();
     await this.hubInstance.shutdown();
     await this.bridge?.stop();
     await this.router?.stop();
-    this.evaluations.close();
     this.registryInstance.close();
     this.unsubscribeHub();
     this.listeners.clear();
