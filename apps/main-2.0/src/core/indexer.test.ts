@@ -322,6 +322,32 @@ describe("indexer", () => {
     }
   });
 
+  it("indexes a StepCode Claude variant when enabled after the native session was already indexed", async () => {
+    const store = createInMemoryStore();
+    const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "agent-recall-stepcode-claude-"));
+    try {
+      writeClaudeSession(homeDir, "stepcode-claude", "shared Claude question");
+      await syncDefaultSessionsInBatches(store, { batchSize: 1, loadOptions: { homeDir } });
+      fs.mkdirSync(path.join(homeDir, ".stepcode", "sessions"), { recursive: true });
+      fs.writeFileSync(
+        path.join(homeDir, ".stepcode", "sessions", "claude-session.jsonl"),
+        JSON.stringify({ type: "hook.trigger", agent: "claude", ccSessionId: "stepcode-claude" }),
+      );
+
+      const enabled = await syncDefaultSessionsInBatches(store, {
+        batchSize: 1,
+        loadOptions: { homeDir, includeStepcode: true },
+      });
+      const results = await store.searchSessions({ query: "shared Claude question", limit: 10 });
+
+      expect(enabled).toMatchObject({ indexed: 1, skipped: 0, total: 1 });
+      expect(results.map((item) => item.source)).toEqual(["stepcode-claude"]);
+    } finally {
+      await store.close();
+      fs.rmSync(homeDir, { recursive: true, force: true });
+    }
+  });
+
   it("rebuilds invalidated Codex sessions from the file head before resuming normal skips", async () => {
     const database = new PostgresDatabase(new PGliteTestPool(), {
       migrationLock: false,
@@ -1073,6 +1099,23 @@ function writeCodexSession(homeDir: string, id: string, question: string, title:
         payload: { type: "message", role: "user", content: [{ type: "input_text", text: question }] },
       }),
     ].join("\n"),
+  );
+  return filePath;
+}
+
+function writeClaudeSession(homeDir: string, id: string, question: string): string {
+  const projectDir = path.join(homeDir, ".claude", "projects", "-repo");
+  fs.mkdirSync(projectDir, { recursive: true });
+  const filePath = path.join(projectDir, `${id}.jsonl`);
+  fs.writeFileSync(
+    filePath,
+    JSON.stringify({
+      type: "user",
+      sessionId: id,
+      cwd: "/repo",
+      timestamp: "2026-06-01T10:00:00Z",
+      message: { role: "user", content: question },
+    }),
   );
   return filePath;
 }

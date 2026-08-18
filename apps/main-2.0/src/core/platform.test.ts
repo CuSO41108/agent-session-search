@@ -1,10 +1,42 @@
 import { describe, expect, it } from "vitest";
-import { defaultSettings, mergeAppSettings } from "./platform";
+import type { SessionSearchResult } from "./types";
+import { defaultSettings, getResumeCommand, mergeAppSettings } from "./platform";
 
 describe("app settings", () => {
   it("keeps WorkBuddy indexing opt-in while accepting an explicit enable", () => {
     expect(defaultSettings.includeWorkBuddy).toBe(false);
     expect(mergeAppSettings(defaultSettings, { includeWorkBuddy: true }).includeWorkBuddy).toBe(true);
+  });
+
+  it("keeps StepCode opt-in and resumes Codex and Claude sessions through the StepCode wrapper", () => {
+    expect(defaultSettings.includeStepcode).toBe(false);
+    const session = {
+      source: "stepcode-codex",
+      rawId: "native-codex-session",
+      projectPath: "/repo",
+      environmentId: "local",
+      environmentKind: "local",
+    } as SessionSearchResult;
+
+    expect(getResumeCommand(session, {
+      ...defaultSettings,
+      includeStepcode: true,
+      stepcodeBinary: "/opt/stepcode",
+    }, { platform: "darwin" })).toBe(
+      "cd /repo && /opt/stepcode codex resume native-codex-session",
+    );
+
+    expect(getResumeCommand({
+      ...session,
+      source: "stepcode-claude",
+      rawId: "native-claude-session",
+    }, {
+      ...defaultSettings,
+      includeStepcode: true,
+      stepcodeBinary: "/opt/stepcode",
+    }, { platform: "darwin" })).toBe(
+      "cd /repo && /opt/stepcode claude --resume native-claude-session",
+    );
   });
 
   it("starts every summary source on the machine's own config directory", () => {

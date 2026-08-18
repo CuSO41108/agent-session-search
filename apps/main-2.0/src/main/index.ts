@@ -111,7 +111,10 @@ import {
 } from "../core/refresh-policy";
 import { globalShortcutLabel, normalizeGlobalShortcut } from "../core/shortcuts";
 import { remoteSessionKey } from "../core/session-environment";
-import { OPTIONAL_SESSION_SOURCE_DESCRIPTORS } from "../core/session-sources";
+import {
+  OPTIONAL_SESSION_SOURCE_DESCRIPTORS,
+  sessionSourcesForOptionalSetting,
+} from "../core/session-sources";
 import type { AppSettings, AppSettingsUpdate } from "../core/platform";
 import { APP_UPDATE_EVENTS } from "../shared/ipc/app-update";
 import { QUOTA_EVENTS } from "../shared/ipc/quota";
@@ -220,7 +223,7 @@ const openVikingRuntimeArch = resolveOpenVikingRuntimeArchitecture();
 
 const OPTIONAL_SOURCE_SETTINGS = OPTIONAL_SESSION_SOURCE_DESCRIPTORS.map((descriptor) => ({
   key: descriptor.optionalSetting,
-  sources: [descriptor.id],
+  sources: sessionSourcesForOptionalSetting(descriptor.optionalSetting),
 }));
 
 // The skill-usage hook installer is a self-contained CommonJS script in bin/
@@ -1726,6 +1729,7 @@ function runIndexSync(): Promise<IndexStatus> {
       batchSize: 50,
       timeBudgetMs: 8,
       loadOptions: {
+        includeStepcode: settings.includeStepcode,
         includeTclaude: settings.includeTclaude,
         includeTcodex: settings.includeTcodex,
         includeCodeBuddyCli: settings.includeCodeBuddyCli,

@@ -149,6 +149,59 @@ export function parseCodexSessionMetaLine(parsed: unknown): CodexSessionMeta | n
   return null;
 }
 
+function readCodexSessionMetaHint(filePath: string): CodexSessionMeta | null {
+  let fd: number | undefined;
+  try {
+    fd = fs.openSync(filePath, "r");
+    const buffer = Buffer.allocUnsafe(256 * 1024);
+    const bytesRead = fs.readSync(fd, buffer, 0, buffer.length, 0);
+    const firstLine = buffer.toString("utf8", 0, bytesRead).split(/\r?\n/, 1)[0]?.trim();
+    return firstLine ? parseCodexSessionMetaLine(JSON.parse(firstLine)) : null;
+  } catch {
+    return null;
+  } finally {
+    if (fd !== undefined) fs.closeSync(fd);
+  }
+}
+
+function readClaudeSubagentParentSessionHint(filePath: string, fallbackParentSessionId: string): string {
+  let fd: number | undefined;
+  try {
+    fd = fs.openSync(filePath, "r");
+    const buffer = Buffer.allocUnsafe(256 * 1024);
+    const bytesRead = fs.readSync(fd, buffer, 0, buffer.length, 0);
+    for (const line of buffer.toString("utf8", 0, bytesRead).split(/\r?\n/)) {
+      if (!line.trim()) continue;
+      try {
+        const parsed: unknown = JSON.parse(line);
+        if (
+          isRecord(parsed)
+          && ("sessionId" in parsed || "agentId" in parsed)
+        ) {
+          return stringField(parsed, "sessionId").trim() || fallbackParentSessionId;
+        }
+      } catch {
+        // Continue looking for the relation row in the bounded prefix.
+      }
+    }
+  } catch {
+    return fallbackParentSessionId;
+  } finally {
+    if (fd !== undefined) fs.closeSync(fd);
+  }
+  return fallbackParentSessionId;
+}
+
+function codexSessionSource(
+  meta: CodexSessionMeta | null,
+  sourceOverride: SessionSource | undefined,
+  stepcodeSessionAgents: ReadonlyMap<string, "claude" | "codex"> | undefined,
+): SessionSource {
+  if (sourceOverride) return sourceOverride;
+  if (meta && stepcodeSessionAgents?.get(meta.id) === "codex") return "stepcode-codex";
+  return meta && CODEX_APP_ORIGINATORS.has(meta.originator || "") ? "codex-app" : "codex-cli";
+}
+
 function findCodexSessionMeta(
   rows: unknown[],
 ): CodexSessionMeta | null {
@@ -1101,15 +1154,16 @@ function createLoadedCodexSession(
     title?: string;
     updatedAt?: string;
     sourceOverride?: SessionSource;
+    stepcodeSessionAgents?: ReadonlyMap<string, "claude" | "codex">;
     stat?: VirtualSessionFileStat;
   },
   codexIncrementalState?: LoadedSession["codexIncrementalState"],
 ): LoadedSession {
   const tokenUsage = tokenUsageFromEvents(tokenEvents);
   const question = firstQuestion(messages);
-  const source: SessionSource = options.sourceOverride || (CODEX_APP_ORIGINATORS.has(meta.originator || "") ? "codex-app" : "codex-cli");
+  const source = codexSessionSource(meta, options.sourceOverride, options.stepcodeSessionAgents);
   const session = createIndexedSession({
-    keyPrefix: source === "tcodex-cli" ? "tcodex" : "codex",
+    keyPrefix: source === "tcodex-cli" ? "tcodex" : source === "stepcode-codex" ? "stepcode" : "codex",
     rawId: meta.id,
     source,
     projectPath: meta.projectPath,
@@ -1441,7 +1495,14 @@ export function* loadCodexSessionsIterator(
 
   for (const filePath of walkJsonlFiles(sessionsDir)) {
     const stat = safeStat(filePath);
-    if (shouldSkipFile(options, filePath, stat, indexStat.mtimeMs)) continue;
+    const metaHint = readCodexSessionMetaHint(filePath);
+    if (shouldSkipFile(
+      options,
+      filePath,
+      stat,
+      indexStat.mtimeMs,
+      codexSessionSource(metaHint, sourceOverride, options.stepcodeSessionAgents),
+    )) continue;
     const incrementalBase = options.incrementalCodexSessions?.get(filePath);
     const scanned = scanCodexSessionFile(
       filePath,
@@ -1453,6 +1514,7 @@ export function* loadCodexSessionsIterator(
       title: indexedTitle?.title,
       updatedAt: indexedTitle?.updatedAt,
       sourceOverride,
+      stepcodeSessionAgents: options.stepcodeSessionAgents,
       stat: { ...stat, size: scanned.committedOffset },
     }, scanned.codexIncrementalState);
     yield loaded;
@@ -1478,7 +1540,14 @@ export async function* loadCodexSessionsAsyncIterator(
 
   for (const filePath of walkJsonlFiles(sessionsDir)) {
     const stat = safeStat(filePath);
-    if (shouldSkipFile(options, filePath, stat, indexStat.mtimeMs)) continue;
+    const metaHint = readCodexSessionMetaHint(filePath);
+    if (shouldSkipFile(
+      options,
+      filePath,
+      stat,
+      indexStat.mtimeMs,
+      codexSessionSource(metaHint, sourceOverride, options.stepcodeSessionAgents),
+    )) continue;
     const incrementalBase = await options.loadIncrementalCodexSession?.(filePath)
       ?? options.incrementalCodexSessions?.get(filePath);
     const scanned = await scanCodexSessionFileAsync(
@@ -1491,6 +1560,7 @@ export async function* loadCodexSessionsAsyncIterator(
       title: indexedTitle?.title,
       updatedAt: indexedTitle?.updatedAt,
       sourceOverride,
+      stepcodeSessionAgents: options.stepcodeSessionAgents,
       stat: { ...stat, size: scanned.committedOffset },
     }, scanned.codexIncrementalState);
   }
@@ -1508,6 +1578,7 @@ export function loadClaudeCliSessionRows(
     cwd?: string;
     startedAt?: number;
     source?: SessionSource;
+    stepcodeAgent?: "claude" | "codex";
     stat?: VirtualSessionFileStat;
     isSubagent?: boolean;
     parentSessionId?: string | null;
@@ -1531,11 +1602,17 @@ export function loadClaudeCliSessionRows(
   const aiTitle = firstAiTitle(rows);
   const embeddedCwd = (rows.find((row) => row && typeof row === "object" && "cwd" in row) as ClaudeConversationLine | undefined)?.cwd;
   const gitBranch = firstClaudeGitBranch(rows);
+  const source = options.source
+    ?? (options.stepcodeAgent === "claude" ? "stepcode-claude" : "claude-cli");
   return {
     session: createIndexedSession({
-      keyPrefix: options.source === "tclaude-cli" ? "tclaude" : "claude",
+      keyPrefix: source === "tclaude-cli"
+        ? "tclaude"
+        : source === "stepcode-claude"
+          ? "stepcode-claude"
+          : "claude",
       rawId,
-      source: options.source ?? "claude-cli",
+      source,
       projectPath: options.cwd || embeddedCwd || "",
       filePath,
       originalTitle: customTitle || aiTitle || cleanTitle(question) || "Untitled Session",
@@ -1559,7 +1636,7 @@ export function loadClaudeCliSessions(claudeDir = path.join(os.homedir(), ".clau
 
 export function* loadClaudeCliSessionsIterator(
   claudeDir = path.join(os.homedir(), ".claude"),
-  source: SessionSource = "claude-cli",
+  source: SessionSource | null = "claude-cli",
   options: SessionLoadOptions = {},
 ): Generator<LoadedSession> {
   const sessionsDir = path.join(claudeDir, "sessions");
@@ -1592,12 +1669,14 @@ export function* loadClaudeCliSessionsIterator(
       const rawId = file.replace(/\.jsonl$/, "");
       const filePath = path.join(projectPath, file);
       const stat = safeStat(filePath);
-      if (shouldSkipFile(options, filePath, stat, indexMtimeBySessionId.get(rawId) ?? 0)) continue;
+      const sessionSource = source
+        ?? (options.stepcodeSessionAgents?.get(rawId) === "claude" ? "stepcode-claude" : "claude-cli");
+      if (shouldSkipFile(options, filePath, stat, indexMtimeBySessionId.get(rawId) ?? 0, sessionSource)) continue;
       const loaded = loadClaudeCliSessionRows(filePath, readJsonl(filePath), {
         rawId,
         cwd: index.get(rawId)?.cwd,
         startedAt: index.get(rawId)?.startedAt,
-        source,
+        source: sessionSource,
         stat,
       });
       if (loaded) yield loaded;
@@ -1611,7 +1690,10 @@ export function* loadClaudeCliSessionsIterator(
         if (!file.endsWith(".jsonl")) continue;
         const filePath = path.join(subagentsDir, file);
         const stat = safeStat(filePath);
-        if (shouldSkipFile(options, filePath, stat)) continue;
+        const parentSessionIdHint = readClaudeSubagentParentSessionHint(filePath, parentEntry.name);
+        const sessionSource = source
+          ?? (options.stepcodeSessionAgents?.get(parentSessionIdHint) === "claude" ? "stepcode-claude" : "claude-cli");
+        if (shouldSkipFile(options, filePath, stat, 0, sessionSource)) continue;
         const rows = readJsonl(filePath);
         const relationRow = rows.find(
           (row): row is ClaudeConversationLine => Boolean(row && typeof row === "object" && ("sessionId" in row || "agentId" in row)),
@@ -1621,7 +1703,7 @@ export function* loadClaudeCliSessionsIterator(
         const loaded = loadClaudeCliSessionRows(filePath, rows, {
           rawId,
           cwd: index.get(parentSessionId)?.cwd,
-          source,
+          source: sessionSource,
           stat,
           isSubagent: true,
           parentSessionId,
@@ -1768,15 +1850,52 @@ export function loadDefaultSessions(options: SessionLoadOptions = {}): LoadedSes
   return [...loadDefaultSessionsIterator(options)];
 }
 
+export function loadStepcodeSessionAgents(homeDir: string): Map<string, "claude" | "codex"> {
+  const agents = new Map<string, "claude" | "codex">();
+  const sessionsDir = path.join(homeDir, ".stepcode", "sessions");
+  if (!fs.existsSync(sessionsDir)) return agents;
+  for (const file of fs.readdirSync(sessionsDir)) {
+    if (!file.endsWith(".jsonl")) continue;
+    for (const row of readJsonl(path.join(sessionsDir, file))) {
+      if (!isRecord(row)) continue;
+      const nativeSessionId = stringField(row, "ccSessionId").trim();
+      const agent = stringField(row, "agent").trim();
+      if (nativeSessionId && (agent === "claude" || agent === "codex")) {
+        agents.set(nativeSessionId, agent);
+      }
+    }
+  }
+  return agents;
+}
+
+function sessionRootsMatch(firstDir: string, secondDir: string): boolean {
+  try {
+    return fs.realpathSync(path.join(firstDir, "sessions"))
+      === fs.realpathSync(path.join(secondDir, "sessions"));
+  } catch {
+    return false;
+  }
+}
+
 export function* loadDefaultSessionsIterator(options: SessionLoadOptions = {}): Generator<LoadedSession> {
   const homeDir = options.homeDir ?? os.homedir();
-  yield* loadClaudeCliSessionsIterator(path.join(homeDir, ".claude"), "claude-cli", options);
+  const stepcodeSessionAgents = options.includeStepcode
+    ? loadStepcodeSessionAgents(homeDir)
+    : undefined;
+  const effectiveOptions = { ...options, stepcodeSessionAgents };
+  const nativeClaudeDir = path.join(homeDir, ".claude");
+  yield* loadClaudeCliSessionsIterator(nativeClaudeDir, null, effectiveOptions);
   yield* loadClaudeAppSessionsIterator(
     path.join(homeDir, "Library", "Application Support", "Claude", "claude-code-sessions"),
     path.join(homeDir, ".claude"),
-    options,
+    effectiveOptions,
   );
-  yield* loadCodexSessionsIterator(path.join(homeDir, ".codex"), undefined, options);
+  const nativeCodexDir = path.join(homeDir, ".codex");
+  const stepcodeCodexDir = path.join(homeDir, ".stepcode", "codex");
+  yield* loadCodexSessionsIterator(nativeCodexDir, undefined, effectiveOptions);
+  if (options.includeStepcode && !sessionRootsMatch(nativeCodexDir, stepcodeCodexDir)) {
+    yield* loadCodexSessionsIterator(stepcodeCodexDir, undefined, effectiveOptions);
+  }
   if (options.includeOpenClaw) {
     yield* loadOpenClawSessionsIterator(path.join(homeDir, ".openclaw"), options);
     yield* loadOpenClawSessionsIterator(path.join(homeDir, ".clawdbot"), options);
@@ -1799,13 +1918,23 @@ export function* loadDefaultSessionsIterator(options: SessionLoadOptions = {}): 
 
 export async function* loadDefaultSessionsAsyncIterator(options: SessionLoadOptions = {}): AsyncGenerator<LoadedSession> {
   const homeDir = options.homeDir ?? os.homedir();
-  yield* loadClaudeCliSessionsIterator(path.join(homeDir, ".claude"), "claude-cli", options);
+  const stepcodeSessionAgents = options.includeStepcode
+    ? loadStepcodeSessionAgents(homeDir)
+    : undefined;
+  const effectiveOptions = { ...options, stepcodeSessionAgents };
+  const nativeClaudeDir = path.join(homeDir, ".claude");
+  yield* loadClaudeCliSessionsIterator(nativeClaudeDir, null, effectiveOptions);
   yield* loadClaudeAppSessionsIterator(
     path.join(homeDir, "Library", "Application Support", "Claude", "claude-code-sessions"),
     path.join(homeDir, ".claude"),
-    options,
+    effectiveOptions,
   );
-  yield* loadCodexSessionsAsyncIterator(path.join(homeDir, ".codex"), undefined, options);
+  const nativeCodexDir = path.join(homeDir, ".codex");
+  const stepcodeCodexDir = path.join(homeDir, ".stepcode", "codex");
+  yield* loadCodexSessionsAsyncIterator(nativeCodexDir, undefined, effectiveOptions);
+  if (options.includeStepcode && !sessionRootsMatch(nativeCodexDir, stepcodeCodexDir)) {
+    yield* loadCodexSessionsAsyncIterator(stepcodeCodexDir, undefined, effectiveOptions);
+  }
   if (options.includeOpenClaw) {
     yield* loadOpenClawSessionsIterator(path.join(homeDir, ".openclaw"), options);
     yield* loadOpenClawSessionsIterator(path.join(homeDir, ".clawdbot"), options);

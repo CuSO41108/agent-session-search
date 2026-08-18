@@ -26,6 +26,7 @@ import {
   localizedLiveStateLabel,
   remoteRevealTitle,
   SOURCE_LABEL,
+  sessionAvailableSources,
   sourceUiFamily,
 } from "../../session-ui";
 import { readInitialToolEventsVisibility, storeToolEventsVisibility } from "../../tool-events-visibility";
@@ -480,9 +481,11 @@ export function DetailPanel({
         <div className="detail-header">
           <div>
             <div className="detail-badges">
-              <div className={`source-badge ${sourceUiFamily(session.source)}`}>
-                {SOURCE_LABEL[session.source]}
-              </div>
+              {sessionAvailableSources(session).map((source) => (
+                <div className={`source-badge ${sourceUiFamily(source)}`} key={source}>
+                  {SOURCE_LABEL[source]}
+                </div>
+              ))}
               {session.sourceAvailable === false ? (
                 <span
                   className="source-cache-badge"

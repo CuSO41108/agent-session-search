@@ -13,6 +13,7 @@ export interface SessionRow extends Record<string, unknown> {
   session_key: string;
   raw_id: string;
   source: SessionSource;
+  available_sources: SessionSource[] | null;
   environment_id: string;
   storage_environment_id: string | null;
   environment_kind: EnvironmentKind;
@@ -136,6 +137,27 @@ export const SESSION_ACTIVITY_SQL = `
 
 export const SESSION_SELECT_SQL = `
   sessions.*,
+  coalesce(
+    (
+      select array_agg(distinct related.source order by related.source)
+      from agent_recall.sessions related
+      where related.environment_id = sessions.environment_id
+        and related.raw_id = sessions.raw_id
+        and related.project_path = sessions.project_path
+        and related.is_subagent = sessions.is_subagent
+        and related.parent_session_id is not distinct from sessions.parent_session_id
+        and case
+          when related.source in ('claude-cli', 'claude-app', 'stepcode-claude') then 'claude'
+          when related.source in ('codex-cli', 'codex-app', 'stepcode-codex') then 'codex'
+          else related.source
+        end = case
+          when sessions.source in ('claude-cli', 'claude-app', 'stepcode-claude') then 'claude'
+          when sessions.source in ('codex-cli', 'codex-app', 'stepcode-codex') then 'codex'
+          else sessions.source
+        end
+    ),
+    array[sessions.source]::text[]
+  ) as available_sources,
   environments.kind as environment_kind,
   environments.label as environment_label,
   ${SESSION_ACTIVITY_SQL} as last_activity_at,
@@ -351,6 +373,7 @@ export function hydrateSession(
     sessionKey: row.session_key,
     rawId: row.raw_id,
     source: row.source,
+    availableSources: row.available_sources ?? [row.source],
     environmentId: row.environment_id,
     storageEnvironmentId: row.storage_environment_id || row.environment_id,
     environmentKind: row.environment_kind,

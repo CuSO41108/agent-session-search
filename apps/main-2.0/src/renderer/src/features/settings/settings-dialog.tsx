@@ -593,6 +593,24 @@ export function SettingsDialog({
                 </header>
                 <label className="settings-field settings-toggle">
                   <div className="settings-field-text">
+                    <span className="settings-field-title">StepCode</span>
+                    <span className="settings-field-sub">
+                      {l(
+                        "Adds StepCode variants for Claude Code and Codex sessions, resumed through StepCode.",
+                        "为 Claude Code 和 Codex 会话添加 StepCode 来源，并通过 StepCode 恢复。",
+                      )}
+                    </span>
+                  </div>
+                  <input
+                    type="checkbox"
+                    className="switch"
+                    checked={Boolean(settings?.includeStepcode)}
+                    disabled={!settings}
+                    onChange={(event) => onSettingsChange({ includeStepcode: event.currentTarget.checked })}
+                  />
+                </label>
+                <label className="settings-field settings-toggle">
+                  <div className="settings-field-text">
                     <span className="settings-field-title">Include CodeWiz</span>
                     <span className="settings-field-sub">{l("Indexes CodeWiz sessions from ~/.local/share/codewiz.", "索引 ~/.local/share/codewiz 中的 CodeWiz 会话。")}</span>
                   </div>

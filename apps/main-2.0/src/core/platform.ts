@@ -81,11 +81,13 @@ export interface AppSettings {
   globalShortcut: GlobalShortcut;
   claudeBinary: string;
   codexBinary: string;
+  stepcodeBinary: string;
   codeBuddyBinary: string;
   codeWizBinary: string;
   cursorBinary: string;
   tclaudeBinary: string;
   tcodexBinary: string;
+  includeStepcode: boolean;
   includeTclaude: boolean;
   includeTcodex: boolean;
   includeCodeBuddyCli: boolean;
@@ -172,11 +174,13 @@ export const defaultSettings: AppSettings = {
   globalShortcut: DEFAULT_GLOBAL_SHORTCUT,
   claudeBinary: "claude",
   codexBinary: "codex",
+  stepcodeBinary: "stepcode",
   codeBuddyBinary: "codebuddy",
   codeWizBinary: "codewiz",
   cursorBinary: "cursor-agent",
   tclaudeBinary: "tclaude",
   tcodexBinary: "tcodex",
+  includeStepcode: false,
   includeTclaude: false,
   includeTcodex: false,
   includeCodeBuddyCli: false,
@@ -430,7 +434,14 @@ function buildResumeRuntimeProcessSpec(
     throw new Error(`Resume is not supported for ${sourceDisplayName(session.source)} sessions yet.`);
   }
 
-  const args = migrationResumeArgs(target, session.rawId);
+  const stepcodeAgent = session.source === "stepcode-codex"
+    ? "codex"
+    : session.source === "stepcode-claude"
+      ? "claude"
+      : null;
+  const args = stepcodeAgent
+    ? [stepcodeAgent, ...migrationResumeArgs(target, session.rawId)]
+    : migrationResumeArgs(target, session.rawId);
   const legacyProvider = legacyMigratedCodexProvider(session, target);
   if (legacyProvider) args.splice(1, 0, "-c", `model_provider=${JSON.stringify(legacyProvider)}`);
   if (skipPermissions) {
@@ -442,7 +453,7 @@ function buildResumeRuntimeProcessSpec(
   }
 
   return {
-    command: migrationBinary(target, settings),
+    command: stepcodeAgent ? settings.stepcodeBinary : migrationBinary(target, settings),
     args,
     cwd: session.projectPath || undefined,
   };
