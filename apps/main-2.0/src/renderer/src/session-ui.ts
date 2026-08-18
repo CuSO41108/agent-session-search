@@ -28,6 +28,13 @@ export const SOURCE_LABEL = Object.fromEntries(
   SESSION_SOURCE_DESCRIPTORS.map(({ id, label }) => [id, label]),
 ) as Record<SessionSource, string>;
 
+export function sessionAvailableSources(session: Pick<SessionSearchResult, "source" | "availableSources">): SessionSource[] {
+  const sources = new Set(session.availableSources?.length ? session.availableSources : [session.source]);
+  if (session.source === "stepcode-claude") sources.add("claude-cli");
+  if (session.source === "stepcode-codex") sources.add("codex-cli");
+  return [...sources];
+}
+
 export interface UsageStatsDisplayRow extends SessionStatsSummary {
   key: string;
   label: string;
@@ -133,8 +140,12 @@ const BASE_SOURCE_FILTERS: Array<{ label: string; value: SearchOptions["source"]
 export function sourceFilters(settings: AppSettings | null): Array<{ label: string; value: SearchOptions["source"] }> {
   return [
     ...BASE_SOURCE_FILTERS,
-    ...OPTIONAL_SESSION_SOURCE_DESCRIPTORS.flatMap((descriptor) =>
-      settings?.[descriptor.optionalSetting] ? [{ label: descriptor.label, value: descriptor.id }] : []),
+    ...OPTIONAL_SESSION_SOURCE_DESCRIPTORS.flatMap((descriptor) => {
+      if (!settings?.[descriptor.optionalSetting]) return [];
+      const value: SearchOptions["source"] =
+        descriptor.optionalSetting === "includeStepcode" ? "stepcode" : descriptor.id;
+      return [{ label: descriptor.label, value }];
+    }),
   ];
 }
 

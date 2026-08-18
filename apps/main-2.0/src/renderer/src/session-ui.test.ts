@@ -5,6 +5,7 @@ import {
   environmentBadgeLabel,
   environmentBadgeTitle,
   migrationTargetsForSession,
+  sessionAvailableSources,
   sourceFilters,
   usageCacheRate,
 } from "./session-ui";
@@ -55,11 +56,35 @@ describe("environment badges", () => {
 });
 
 describe("sourceFilters", () => {
+  it("places StepCode before the other optional sources", () => {
+    const filters = sourceFilters({
+      ...defaultSettings,
+      includeStepcode: true,
+      includeWorkBuddy: true,
+    });
+
+    expect(filters.slice(3, 5)).toEqual([
+      { label: "StepCode", value: "stepcode" },
+      { label: "WorkBuddy", value: "workbuddy-cli" },
+    ]);
+  });
+
   it("shows WorkBuddy only when its setting is enabled", () => {
     expect(sourceFilters(defaultSettings)).not.toContainEqual({ label: "WorkBuddy", value: "workbuddy-cli" });
     expect(sourceFilters({ ...defaultSettings, includeWorkBuddy: true })).toContainEqual({
       label: "WorkBuddy",
       value: "workbuddy-cli",
     });
+  });
+});
+
+describe("sessionAvailableSources", () => {
+  it("shows the native agent alongside a real StepCode session", () => {
+    expect(sessionAvailableSources({ source: "stepcode-claude" })).toEqual(["stepcode-claude", "claude-cli"]);
+    expect(sessionAvailableSources({ source: "stepcode-codex" })).toEqual(["stepcode-codex", "codex-cli"]);
+  });
+
+  it("does not label a native Codex Desktop session as StepCode", () => {
+    expect(sessionAvailableSources({ source: "codex-app" })).toEqual(["codex-app"]);
   });
 });

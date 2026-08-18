@@ -13,6 +13,7 @@ import {
   loadCodexSessionsIterator,
   loadCodexSessions,
   loadDefaultSessions,
+  loadDefaultSessionsAsyncIterator,
   parseCodexSessionMetaLine,
 } from "./session-loader";
 import { TRACE_DETAIL_PREVIEW_MAX_CHARS } from "./trace-detail";
@@ -768,6 +769,71 @@ describe("Codex session loading", () => {
     expect(skipped).toEqual([filePath]);
 
     fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  it("uses Codex metadata to select the incremental snapshot source", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "session-search-codex-source-snapshot-"));
+    const filePath = path.join(root, "sessions", "2026", "06", "26", "rollout.jsonl");
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.writeFileSync(filePath, JSON.stringify({
+      type: "session_meta",
+      timestamp: "2026-06-26T10:00:00Z",
+      payload: { id: "desktop-session", cwd: "/repo", originator: "Codex Desktop" },
+    }) + "\n");
+
+    try {
+      const skippedSources: Array<string | undefined> = [];
+      const loaded = [
+        ...loadCodexSessionsIterator(root, undefined, {
+          shouldSkipFile: (_file, _stat, _dependencyMtime, source) => {
+            skippedSources.push(source);
+            return true;
+          },
+        }),
+      ];
+
+      expect(loaded).toEqual([]);
+      expect(skippedSources).toEqual(["codex-app"]);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("does not skip a Codex file when its StepCode provenance changed", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "session-search-codex-stepcode-reclassify-"));
+    const filePath = path.join(root, "sessions", "2026", "06", "26", "rollout.jsonl");
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.writeFileSync(filePath, [
+      JSON.stringify({
+        type: "session_meta",
+        timestamp: "2026-06-26T10:00:00Z",
+        payload: { id: "mapped-session", cwd: "/repo", originator: "Codex Desktop" },
+      }),
+      JSON.stringify({
+        type: "response_item",
+        timestamp: "2026-06-26T10:01:00Z",
+        payload: { type: "message", role: "user", content: [{ type: "input_text", text: "hello" }] },
+      }),
+      "",
+    ].join("\n"));
+
+    try {
+      const sources: Array<string | undefined> = [];
+      const loaded = [
+        ...loadCodexSessionsIterator(root, undefined, {
+          stepcodeSessionAgents: new Map([["mapped-session", "codex"]]),
+          shouldSkipFile: (_file, _stat, _dependencyMtime, source) => {
+            sources.push(source);
+            return source === "codex-cli";
+          },
+        }),
+      ];
+
+      expect(sources).toEqual(["stepcode-codex"]);
+      expect(loaded[0]?.session.source).toBe("stepcode-codex");
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it("extracts id, cwd, originator, first question, and visible messages from a rollout file", () => {
@@ -3569,5 +3635,158 @@ describe("tclaude / tcodex optional sources", () => {
     expect(err?.status).toBe("failed");
     expect(bare?.status).toBe("unknown");
     expect(bad?.attributes?.durationMs).toBeUndefined();
+  });
+});
+
+describe("StepCode optional source", () => {
+  function writeCodexSession(codexDir: string, id: string): void {
+    const sessionDir = path.join(codexDir, "sessions", "2026", "08", "18");
+    fs.mkdirSync(sessionDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(sessionDir, `rollout-${id}.jsonl`),
+      [
+        JSON.stringify({
+          type: "session_meta",
+          timestamp: "2026-08-18T10:00:00Z",
+          payload: { id, cwd: "/repo" },
+        }),
+        JSON.stringify({
+          type: "response_item",
+          timestamp: "2026-08-18T10:01:00Z",
+          payload: { type: "message", role: "user", content: [{ type: "input_text", text: id }] },
+        }),
+      ].join("\n"),
+    );
+  }
+
+  function writeClaudeSession(claudeDir: string, id: string): void {
+    const projectDir = path.join(claudeDir, "projects", "-repo");
+    fs.mkdirSync(projectDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(projectDir, `${id}.jsonl`),
+      JSON.stringify({
+        type: "user",
+        sessionId: id,
+        cwd: "/repo",
+        timestamp: "2026-08-18T10:00:00Z",
+        message: { role: "user", content: id },
+      }),
+    );
+  }
+
+  function writeStepcodeMapping(home: string, agent: "claude" | "codex", id: string): void {
+    const sessionsDir = path.join(home, ".stepcode", "sessions");
+    fs.mkdirSync(sessionsDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(sessionsDir, `${agent}-${id}.jsonl`),
+      JSON.stringify({ type: "hook.trigger", agent, ccSessionId: id }),
+    );
+  }
+
+  it("uses the StepCode source only when StepCode recorded the Codex session", () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "session-search-stepcode-shared-"));
+    const nativeCodexDir = path.join(home, ".codex");
+    const stepcodeCodexDir = path.join(home, ".stepcode", "codex");
+    writeCodexSession(nativeCodexDir, "shared-session");
+    fs.mkdirSync(stepcodeCodexDir, { recursive: true });
+    fs.symlinkSync(
+      path.join(nativeCodexDir, "sessions"),
+      path.join(stepcodeCodexDir, "sessions"),
+      process.platform === "win32" ? "junction" : "dir",
+    );
+
+    const nativeLoaded = loadDefaultSessions({ homeDir: home, includeStepcode: true })
+      .filter((item) => item.session.rawId === "shared-session");
+
+    expect(nativeLoaded).toHaveLength(1);
+    expect(nativeLoaded[0]?.session.source).toBe("codex-cli");
+
+    writeStepcodeMapping(home, "codex", "shared-session");
+    const stepcodeLoaded = loadDefaultSessions({ homeDir: home, includeStepcode: true })
+      .filter((item) => item.session.rawId === "shared-session");
+    expect(stepcodeLoaded).toHaveLength(1);
+    expect(stepcodeLoaded[0]?.session.source).toBe("stepcode-codex");
+
+    fs.rmSync(home, { recursive: true, force: true });
+  });
+
+  it("uses the StepCode source only when StepCode recorded the Claude session", () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "session-search-stepcode-claude-"));
+    writeClaudeSession(path.join(home, ".claude"), "claude-session");
+    writeStepcodeMapping(home, "claude", "claude-session");
+
+    const loaded = loadDefaultSessions({ homeDir: home, includeStepcode: true })
+      .filter((item) => item.session.rawId === "claude-session");
+
+    expect(loaded).toHaveLength(1);
+    expect(loaded[0]?.session).toMatchObject({
+      sessionKey: "stepcode-claude:claude-session",
+      source: "stepcode-claude",
+    });
+
+    fs.rmSync(home, { recursive: true, force: true });
+  });
+
+  it("reclassifies Claude subagents from their StepCode parent before incremental skipping", () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "session-search-stepcode-claude-subagent-"));
+    const claudeDir = path.join(home, ".claude");
+    writeClaudeSession(claudeDir, "parent-session");
+    const subagentsDir = path.join(claudeDir, "projects", "-repo", "parent-session", "subagents");
+    fs.mkdirSync(subagentsDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(subagentsDir, "agent-child-session.jsonl"),
+      JSON.stringify({
+        type: "user",
+        agentId: "child-session",
+        sessionId: "parent-session",
+        isSidechain: true,
+        cwd: "/repo",
+        message: { role: "user", content: "child question" },
+      }),
+    );
+    writeStepcodeMapping(home, "claude", "parent-session");
+
+    try {
+      const skippedSources: Array<string | undefined> = [];
+      const loaded = loadDefaultSessions({
+        homeDir: home,
+        includeStepcode: true,
+        shouldSkipFile: (filePath, _stat, _dependencyMtime, source) => {
+          if (filePath.includes(`${path.sep}subagents${path.sep}`)) {
+            skippedSources.push(source);
+            return source === "claude-cli";
+          }
+          return false;
+        },
+      });
+
+      expect(skippedSources).toEqual(["stepcode-claude"]);
+      expect(loaded.find((item) => item.session.rawId === "child-session")?.session.source).toBe("stepcode-claude");
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps native Codex and StepCode sessions separate when their roots differ", async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "session-search-stepcode-distinct-"));
+    writeCodexSession(path.join(home, ".codex"), "native-session");
+    writeCodexSession(path.join(home, ".stepcode", "codex"), "stepcode-session");
+    writeStepcodeMapping(home, "codex", "stepcode-session");
+
+    const loaded = [];
+    for await (const session of loadDefaultSessionsAsyncIterator({ homeDir: home, includeStepcode: true })) {
+      loaded.push(session);
+    }
+
+    expect(loaded.find((item) => item.session.rawId === "native-session")?.session).toMatchObject({
+      sessionKey: "codex:native-session",
+      source: "codex-cli",
+    });
+    expect(loaded.find((item) => item.session.rawId === "stepcode-session")?.session).toMatchObject({
+      sessionKey: "stepcode:stepcode-session",
+      source: "stepcode-codex",
+    });
+
+    fs.rmSync(home, { recursive: true, force: true });
   });
 });

@@ -64,6 +64,12 @@ type SessionExportContent = {
   traceEvents: SessionTraceEvent[];
 };
 
+export function nativeResumeSession(session: SessionSearchResult): SessionSearchResult {
+  if (session.source === "stepcode-claude") return { ...session, source: "claude-cli" };
+  if (session.source === "stepcode-codex") return { ...session, source: "codex-cli" };
+  return session;
+}
+
 /**
  * Owns native actions launched from a Session card or detail page.
  *
@@ -102,54 +108,77 @@ export class SessionCommandService {
   async copyResumeCommand(sessionKey: string): Promise<void> {
     const session = await this.dependencies.store.getSession(sessionKey);
     if (!session) return;
-    const options = session.environmentKind === "wsl"
-      ? await this.dependencies.remoteAccess.requireWslResumeOptions(session)
-      : { sshArgs: await this.dependencies.remoteAccess.requireSshArgs(session) };
-    this.dependencies.copyText(getResumeCommand(session, this.dependencies.getSettings(), options));
+    const resumeSession = nativeResumeSession(session);
+    const options = resumeSession.environmentKind === "wsl"
+      ? await this.dependencies.remoteAccess.requireWslResumeOptions(resumeSession)
+      : { sshArgs: await this.dependencies.remoteAccess.requireSshArgs(resumeSession) };
+    this.dependencies.copyText(getResumeCommand(resumeSession, this.dependencies.getSettings(), options));
   }
 
   async resume(sessionKey: string): Promise<ResumeRouteResult> {
     const session = await this.dependencies.store.getSession(sessionKey);
     if (!session) return { route: "resume" };
-    if (session.environmentKind === "wsl") return this.resumeWsl(session);
+    const resumeSession = nativeResumeSession(session);
+    if (resumeSession.environmentKind === "wsl") return this.resumeWsl(resumeSession);
 
-    const sshArgs = await this.dependencies.remoteAccess.requireSshArgs(session);
-    if (!isLocalSessionEnvironment(session)) {
-      await this.dependencies.remoteAccess.ensureResumePreflight(session);
-      await openResumeInTerminal(session, this.dependencies.getSettings(), { sshArgs });
+    const sshArgs = await this.dependencies.remoteAccess.requireSshArgs(resumeSession);
+    if (!isLocalSessionEnvironment(resumeSession)) {
+      await this.dependencies.remoteAccess.ensureResumePreflight(resumeSession);
+      await openResumeInTerminal(resumeSession, this.dependencies.getSettings(), { sshArgs });
       await this.dependencies.store.markResumed(sessionKey);
       return { route: "resume" };
     }
 
     const snapshot = await this.dependencies.loadLiveSessions();
-    const route = routeResumeSession(session, snapshot.error ? [] : snapshot.sessions);
+    const route = routeResumeSession(resumeSession, snapshot.error ? [] : snapshot.sessions);
     if (route.route === "app") {
-      await openNativeApp(session, { openExternal: this.dependencies.openExternal });
+      await openNativeApp(resumeSession, { openExternal: this.dependencies.openExternal });
     } else if (route.route === "focus") {
       await focusLiveSessionTerminal(route.pid);
     } else {
-      await openResumeInTerminal(session, this.dependencies.getSettings(), { sshArgs });
+      await openResumeInTerminal(resumeSession, this.dependencies.getSettings(), { sshArgs });
     }
     await this.dependencies.store.markResumed(sessionKey);
     return route;
   }
 
+  async resumeWithStepcode(sessionKey: string): Promise<void> {
+    const session = await this.dependencies.store.getSession(sessionKey);
+    if (!session || !isLocalSessionEnvironment(session)) return;
+    const settings = this.dependencies.getSettings();
+    if (!settings.includeStepcode) return;
+    const stepcodeSource =
+      session.source === "claude-cli"
+      || session.source === "claude-app"
+      || session.source === "stepcode-claude"
+        ? "stepcode-claude"
+        : session.source === "codex-cli"
+          || session.source === "codex-app"
+          || session.source === "stepcode-codex"
+          ? "stepcode-codex"
+          : null;
+    if (!stepcodeSource) return;
+    await openResumeInTerminal({ ...session, source: stepcodeSource }, settings);
+    await this.dependencies.store.markResumed(sessionKey);
+  }
+
   async resumeInIterm(sessionKey: string): Promise<void> {
     const session = await this.dependencies.store.getSession(sessionKey);
     if (!session) return;
-    if (session.environmentKind === "wsl") {
-      await this.dependencies.remoteAccess.ensureWslResumePreflight(session);
+    const resumeSession = nativeResumeSession(session);
+    if (resumeSession.environmentKind === "wsl") {
+      await this.dependencies.remoteAccess.ensureWslResumePreflight(resumeSession);
       await openResumeInSpecificTerminal(
-        session,
+        resumeSession,
         this.dependencies.getSettings(),
         "iTerm",
-        await this.dependencies.remoteAccess.requireWslResumeOptions(session),
+        await this.dependencies.remoteAccess.requireWslResumeOptions(resumeSession),
       );
     } else {
-      const sshArgs = await this.dependencies.remoteAccess.requireSshArgs(session);
-      await this.dependencies.remoteAccess.ensureResumePreflight(session);
+      const sshArgs = await this.dependencies.remoteAccess.requireSshArgs(resumeSession);
+      await this.dependencies.remoteAccess.ensureResumePreflight(resumeSession);
       await openResumeInSpecificTerminal(
-        session,
+        resumeSession,
         this.dependencies.getSettings(),
         "iTerm",
         { sshArgs },
@@ -265,6 +294,7 @@ export class SessionCommandService {
     const isCodexSession = [
       "codex-cli",
       "codex-app",
+      "stepcode-codex",
       "tcodex-cli",
     ].includes(session.source);
     if (!isCodexSession || !isLocalSessionEnvironment(session)) return null;

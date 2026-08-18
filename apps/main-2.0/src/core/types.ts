@@ -3,6 +3,8 @@ export type SessionSource =
   | "claude-app"
   | "codex-cli"
   | "codex-app"
+  | "stepcode-claude"
+  | "stepcode-codex"
   | "tclaude-cli"
   | "tcodex-cli"
   | "codebuddy-cli"
@@ -342,7 +344,7 @@ export interface LoadedSession {
   };
 }
 
-export type SessionSourceFilter = SessionSource | "claude" | "codex" | "all";
+export type SessionSourceFilter = SessionSource | "claude" | "codex" | "stepcode" | "all";
 
 export interface SearchOptions {
   query?: string;
@@ -404,6 +406,7 @@ export interface SessionSearchResult extends IndexedSession {
   favorited: boolean;
   hidden: boolean;
   sourceAvailable?: boolean;
+  availableSources?: SessionSource[];
   tags: string[];
   matchSnippet: string | null;
   lastOpenedAt: number | null;
