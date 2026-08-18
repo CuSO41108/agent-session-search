@@ -27,6 +27,7 @@
   },
   "files": [
     "out",
+    "!out/mcp/*.map",
     "dist/main/index.js",
     "bin",
     "assets",
