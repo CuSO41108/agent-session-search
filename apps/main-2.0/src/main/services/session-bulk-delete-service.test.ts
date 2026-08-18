@@ -4,6 +4,7 @@ import * as path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import {
   SESSION_DELETE_CONFIRMATION_REQUIRED_MESSAGE,
+  SESSION_DELETE_LIVE_CHECK_CONFIRMATION_REQUIRED_MESSAGE,
   type SessionBulkDeleteTarget,
 } from "../../core/session-bulk-delete";
 import type { SessionStore } from "../../core/session-store";
@@ -74,6 +75,36 @@ describe("SessionBulkDeleteService", () => {
     expect(preview.skipped).toEqual([]);
   });
 
+  it("fails closed when live sessions could not be checked until separately confirmed", async () => {
+    const store = createStore([target("closed")]);
+    const service = new SessionBulkDeleteService(store);
+    const request = {
+      sessionKeys: ["closed"],
+      liveSessionKeys: [],
+      liveSessionCheckFailed: true,
+    };
+
+    const preview = await service.preview(request);
+    expect(preview).toMatchObject({
+      deletableCount: 1,
+      liveSessionCheckFailed: true,
+    });
+    await expect(service.delete(request)).rejects.toThrow(
+      SESSION_DELETE_LIVE_CHECK_CONFIRMATION_REQUIRED_MESSAGE,
+    );
+    expect(store.deleteSessionRecords).not.toHaveBeenCalled();
+
+    await expect(service.delete({
+      ...request,
+      confirmed: true,
+      allowUnverifiedLiveSessions: true,
+      confirmationFingerprint: preview.confirmationFingerprint,
+    })).resolves.toMatchObject({
+      deletedSessionKeys: ["closed"],
+      liveSessionCheckFailed: true,
+    });
+  });
+
   it("previews and deletes an entire descendant tree as one unit", async () => {
     const targets = [
       target("parent"),
@@ -87,7 +118,9 @@ describe("SessionBulkDeleteService", () => {
     const store = createStore(targets);
     const service = new SessionBulkDeleteService(store);
 
-    await expect(service.preview({ sessionKeys: ["parent"], liveSessionKeys: [] })).resolves.toMatchObject({
+    const request = { sessionKeys: ["parent"], liveSessionKeys: [] };
+    const preview = await service.preview(request);
+    expect(preview).toMatchObject({
       requestedCount: 1,
       matchedCount: 1,
       expandedCount: 2,
@@ -95,9 +128,9 @@ describe("SessionBulkDeleteService", () => {
       hasRelatedSessions: true,
     });
     await expect(service.delete({
-      sessionKeys: ["parent"],
-      liveSessionKeys: [],
+      ...request,
       confirmed: true,
+      confirmationFingerprint: preview.confirmationFingerprint,
     })).resolves.toMatchObject({
       deletedSessionKeys: ["parent", "child"],
       failed: [],
@@ -126,8 +159,41 @@ describe("SessionBulkDeleteService", () => {
 
     await expect(service.delete(
       { sessionKeys: ["parent"], liveSessionKeys: [] },
-      { confirmed: true, requireSingleSession: true },
+      {
+        confirmed: true,
+        confirmationFingerprint: (await service.preview({
+          sessionKeys: ["parent"],
+          liveSessionKeys: [],
+        })).confirmationFingerprint,
+        requireSingleSession: true,
+      },
     )).resolves.toMatchObject({ deletedSessionKeys: ["parent", "child"] });
+  });
+
+  it("protects an open single session and binds confirmation to the latest preflight", async () => {
+    const store = createStore([target("open")]);
+    const service = new SessionBulkDeleteService(store);
+    const request = {
+      sessionKeys: ["open"],
+      liveSessionKeys: [],
+      openSessionKey: "open",
+    };
+
+    await expect(service.prepareSingleDelete(request)).rejects.toThrow(
+      SESSION_DELETE_CONFIRMATION_REQUIRED_MESSAGE,
+    );
+    await expect(service.prepareSingleDelete(request, {
+      confirmed: true,
+      confirmationFingerprint: "stale",
+    })).rejects.toThrow(SESSION_DELETE_CONFIRMATION_REQUIRED_MESSAGE);
+
+    const preview = await service.preview(request);
+    await expect(service.prepareSingleDelete(request, {
+      confirmed: true,
+      confirmationFingerprint: preview.confirmationFingerprint,
+    })).resolves.toMatchObject({
+      preview: { includesOpenSession: true },
+    });
   });
 
   it("throws directly when a single-node delete is live", async () => {
@@ -174,6 +240,7 @@ describe("SessionBulkDeleteService", () => {
     await expect(service.delete(request, {
       confirmed: true,
       allowLiveSessions: true,
+      confirmationFingerprint: (await service.preview(request)).confirmationFingerprint,
       requireSingleSession: true,
     })).resolves.toMatchObject({
       deletedSessionKeys: ["parent", "child"],
@@ -268,13 +335,19 @@ describe("SessionBulkDeleteService", () => {
       liveSessionKeys: [],
     };
 
-    await expect(service.preview(request)).resolves.toMatchObject({ deletableCount: 9 });
+    const preview = await service.preview(request);
+    expect(preview).toMatchObject({ deletableCount: 9 });
     await expect(service.delete(request)).rejects.toThrow(
       SESSION_DELETE_CONFIRMATION_REQUIRED_MESSAGE,
     );
     expect(store.deleteSessionRecords).not.toHaveBeenCalled();
 
-    await expect(service.delete({ ...request, confirmed: true })).resolves.toMatchObject({
+    const finalPreview = await service.preview(request);
+    await expect(service.delete({
+      ...request,
+      confirmed: true,
+      confirmationFingerprint: finalPreview.confirmationFingerprint,
+    })).resolves.toMatchObject({
       deletedSessionKeys: finalTargets.map((item) => item.sessionKey),
     });
   });
@@ -387,10 +460,16 @@ describe("SessionBulkDeleteService", () => {
       }),
     ];
     try {
-      await expect(new SessionBulkDeleteService(createStore(targets)).delete({
+      const service = new SessionBulkDeleteService(createStore(targets));
+      const request = {
         sessionKeys: ["parent"],
         liveSessionKeys: [],
+      };
+      const preview = await service.preview(request);
+      await expect(service.delete({
+        ...request,
         confirmed: true,
+        confirmationFingerprint: preview.confirmationFingerprint,
       })).resolves.toMatchObject({ deletedSessionKeys: ["parent", "child"], failed: [] });
       expect(fs.existsSync(root)).toBe(true);
     } finally {
@@ -425,11 +504,17 @@ describe("SessionBulkDeleteService", () => {
     ];
 
     try {
-      await expect(new SessionBulkDeleteService(createStore(targets)).delete({
+      const service = new SessionBulkDeleteService(createStore(targets));
+      const request = {
         sessionKeys: [],
         liveSessionKeys: [],
         includeOrphanedSubagents: true,
+      };
+      const preview = await service.preview(request);
+      await expect(service.delete({
+        ...request,
         confirmed: true,
+        confirmationFingerprint: preview.confirmationFingerprint,
       })).resolves.toMatchObject({ deletedSessionKeys: ["orphan-root", "orphan-child"], failed: [] });
       expect(fs.existsSync(subagentsDirectory)).toBe(false);
     } finally {

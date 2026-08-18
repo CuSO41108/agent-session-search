@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
   isSessionDeleteConfirmationRequiredMessage,
+  isSessionDeleteLiveCheckConfirmationRequiredMessage,
   normalizeSessionDeleteOptions,
   SESSION_BULK_DELETE_CONFIRMATION_THRESHOLD,
   SESSION_DELETE_CONFIRMATION_REQUIRED_MESSAGE,
+  SESSION_DELETE_LIVE_CHECK_CONFIRMATION_REQUIRED_MESSAGE,
 } from "./session-bulk-delete";
 
 describe("session deletion options", () => {
@@ -21,12 +23,16 @@ describe("session deletion options", () => {
     expect(isSessionDeleteConfirmationRequiredMessage(
       `${SESSION_DELETE_CONFIRMATION_REQUIRED_MESSAGE} Retry later.`,
     )).toBe(false);
+    expect(isSessionDeleteLiveCheckConfirmationRequiredMessage(
+      `Error invoking remote method 'session:delete': Error: ${SESSION_DELETE_LIVE_CHECK_CONFIRMATION_REQUIRED_MESSAGE}`,
+    )).toBe(true);
   });
 
-  it("defaults both confirmation permissions to false", () => {
+  it("defaults every confirmation permission to false", () => {
     expect(normalizeSessionDeleteOptions(undefined)).toEqual({
       confirmed: false,
       allowLiveSessions: false,
+      allowUnverifiedLiveSessions: false,
     });
   });
 
@@ -37,13 +43,24 @@ describe("session deletion options", () => {
     })).toEqual({
       confirmed: false,
       allowLiveSessions: false,
+      allowUnverifiedLiveSessions: false,
     });
     expect(normalizeSessionDeleteOptions({
       confirmed: true,
       allowLiveSessions: true,
+      allowUnverifiedLiveSessions: false,
     })).toEqual({
       confirmed: true,
       allowLiveSessions: true,
+      allowUnverifiedLiveSessions: false,
+    });
+    expect(normalizeSessionDeleteOptions({
+      confirmed: true,
+      allowUnverifiedLiveSessions: true,
+    })).toEqual({
+      confirmed: true,
+      allowLiveSessions: false,
+      allowUnverifiedLiveSessions: true,
     });
   });
 
@@ -53,6 +70,7 @@ describe("session deletion options", () => {
     [],
     { confirmed: "yes" },
     { allowLiveSessions: 1 },
+    { allowUnverifiedLiveSessions: "yes" },
   ])("rejects invalid IPC options: %j", (options) => {
     expect(() => normalizeSessionDeleteOptions(options)).toThrow(
       "The session deletion options are invalid.",

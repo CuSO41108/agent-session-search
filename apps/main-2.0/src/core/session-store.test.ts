@@ -475,6 +475,114 @@ describe("SessionStore PostgreSQL facade", () => {
     }
   });
 
+  it("deletes the prepared Hermes tree from the shared database without hidden expansion", async () => {
+    const store = createStore();
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "agent-recall-v2-hermes-store-delete-"));
+    try {
+      const dbPath = path.join(root, "state.db");
+      const db = new DatabaseSync(dbPath);
+      db.exec(`
+        PRAGMA foreign_keys = ON;
+        CREATE TABLE sessions (
+          id TEXT PRIMARY KEY,
+          parent_session_id TEXT REFERENCES sessions(id),
+          model_config TEXT,
+          started_at REAL NOT NULL
+        );
+        CREATE TABLE messages (id INTEGER PRIMARY KEY, session_id TEXT, timestamp REAL NOT NULL);
+      `);
+      const insert = db.prepare(
+        "INSERT INTO sessions (id, parent_session_id, model_config, started_at) VALUES (?, ?, ?, ?)",
+      );
+      insert.run("parent", null, "{}", 1);
+      insert.run("delegate", "parent", JSON.stringify({ _delegate_from: "parent" }), 2);
+      insert.run("hidden", "parent", JSON.stringify({ _delegate_from: "parent" }), 3);
+      db.close();
+
+      await store.upsertIndexedSession(indexedSession({
+        sessionKey: "hermes:parent",
+        rawId: "parent",
+        source: "hermes",
+        filePath: dbPath,
+      }), messages);
+      await store.upsertIndexedSession(indexedSession({
+        sessionKey: "hermes:delegate",
+        rawId: "delegate",
+        source: "hermes",
+        filePath: dbPath,
+        isSubagent: true,
+        parentSessionId: "parent",
+      }), messages);
+
+      const prepared = await store.getSessionDeletionTargets(["hermes:parent"]);
+      expect(prepared.map((item) => item.sessionKey)).toEqual(["hermes:parent", "hermes:delegate"]);
+      await expect(store.deleteExactSessionTargets(prepared, "hermes:parent")).resolves.toBe(true);
+      await expect(store.getSession("hermes:parent")).resolves.toBeNull();
+      await expect(store.getSession("hermes:delegate")).resolves.toBeNull();
+
+      const verify = new DatabaseSync(dbPath);
+      try {
+        expect(verify.prepare("SELECT id, parent_session_id FROM sessions").all()).toEqual([
+          { id: "hidden", parent_session_id: null },
+        ]);
+      } finally {
+        verify.close();
+      }
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it.each(["opencode-cli", "codewiz-cli"] as const)(
+    "deletes an unavailable %s cache without touching its shared database",
+    async (source) => {
+      const store = createStore();
+      const sessionKey = `${source}:cached`;
+      await store.upsertIndexedSession(indexedSession({
+        sessionKey,
+        rawId: "cached",
+        source,
+        filePath: `/synthetic/${source}.db`,
+      }), messages);
+      await store.setSessionSourceAvailable(sessionKey, false);
+
+      await expect(store.deleteSession(sessionKey)).resolves.toBe(true);
+      await expect(store.getSession(sessionKey)).resolves.toBeNull();
+    },
+  );
+
+  it("rejects exact SSH cache deletion when an expanded descendant is still available", async () => {
+    const store = createStore();
+    const root = indexedSession({
+      sessionKey: "ssh:dev:opencode-cli:parent",
+      rawId: "parent",
+      source: "opencode-cli",
+      filePath: "/remote/opencode.db",
+      environmentId: "dev",
+      environmentKind: "ssh",
+    });
+    const child = indexedSession({
+      sessionKey: "ssh:dev:opencode-cli:child",
+      rawId: "child",
+      source: "opencode-cli",
+      filePath: "/remote/opencode.db",
+      environmentId: "dev",
+      environmentKind: "ssh",
+      isSubagent: true,
+      parentSessionId: "parent",
+    });
+    await store.upsertIndexedSession(root, messages);
+    await store.upsertIndexedSession(child, messages);
+    await store.setSessionSourceAvailable(root.sessionKey, false);
+    const targets = await store.getSessionDeletionTargets([root.sessionKey]);
+
+    await expect(store.deleteExactSessionTargets(targets, root.sessionKey)).rejects.toThrow(
+      "Cannot delete sessions stored on SSH remote environments.",
+    );
+    await expect(store.getSession(root.sessionKey)).resolves.not.toBeNull();
+    await expect(store.getSession(child.sessionKey)).resolves.not.toBeNull();
+  });
+
   it("refuses to delete the shared CodeWiz database", async () => {
     const store = createStore();
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "agent-recall-v2-codewiz-delete-"));

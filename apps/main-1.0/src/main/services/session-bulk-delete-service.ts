@@ -10,6 +10,7 @@ import type {
 import {
   SESSION_BULK_DELETE_CONFIRMATION_THRESHOLD,
   SESSION_DELETE_CONFIRMATION_REQUIRED_MESSAGE,
+  SESSION_DELETE_LIVE_CHECK_CONFIRMATION_REQUIRED_MESSAGE,
 } from "../../core/session-bulk-delete";
 import { deleteLocalSessionSources } from "../../core/session-source-delete";
 import { sessionSourceDescriptor } from "../../core/session-sources";
@@ -40,8 +41,26 @@ export class SessionBulkDeleteService {
     const { preview, targets } = this.preflight(request, allowLiveSessions);
     if (
       options.requireSingleSession
+      && confirmed
+      && options.confirmationFingerprint !== undefined
+      && options.confirmationFingerprint !== preview.confirmationFingerprint
+    ) {
+      throw new Error(SESSION_DELETE_CONFIRMATION_REQUIRED_MESSAGE);
+    }
+    if (!options.requireSingleSession && confirmed && request.confirmationFingerprint !== preview.confirmationFingerprint) {
+      throw new Error(SESSION_DELETE_CONFIRMATION_REQUIRED_MESSAGE);
+    }
+    const allowUnverifiedLiveSessions = options.requireSingleSession
+      ? confirmed && options.allowUnverifiedLiveSessions === true
+      : request.confirmed === true && request.allowUnverifiedLiveSessions === true;
+    if (preview.liveSessionCheckFailed && !allowUnverifiedLiveSessions) {
+      throw new Error(SESSION_DELETE_LIVE_CHECK_CONFIRMATION_REQUIRED_MESSAGE);
+    }
+    if (
+      options.requireSingleSession
       && (
         (!confirmed && preview.expandedCount > 1)
+        || (!confirmed && preview.includesOpenSession)
         || preview.skipped.some((issue) => issue.reason === "live")
       )
     ) {
@@ -102,6 +121,21 @@ function normalizeRequest(request: SessionBulkDeleteRequest): string[] {
   }
   if (request.openSessionKey !== undefined && typeof request.openSessionKey !== "string") {
     throw new Error("The open session key is invalid.");
+  }
+  if (
+    request.liveSessionCheckFailed !== undefined
+    && typeof request.liveSessionCheckFailed !== "boolean"
+  ) {
+    throw new Error("The live-session check status is invalid.");
+  }
+  if (request.confirmationFingerprint !== undefined && typeof request.confirmationFingerprint !== "string") {
+    throw new Error("The deletion confirmation fingerprint is invalid.");
+  }
+  if (
+    request.allowUnverifiedLiveSessions !== undefined
+    && typeof request.allowUnverifiedLiveSessions !== "boolean"
+  ) {
+    throw new Error("The unverified live-session deletion option is invalid.");
   }
   const keys = [...new Set(request.sessionKeys.map((key) => key.trim()).filter(Boolean))];
   if (keys.length > 100_000) throw new Error("Too many sessions were selected.");
@@ -172,10 +206,24 @@ function buildPreflight(
       deletableCount: targets.length,
       hasRelatedSessions,
       includesOpenSession,
+      liveSessionCheckFailed: request.liveSessionCheckFailed === true,
+      confirmationFingerprint: deletionConfirmationFingerprint(rows, request),
       sourceCounts,
       skipped: dedupeIssues(skipped),
     },
   };
+}
+
+function deletionConfirmationFingerprint(
+  rows: SessionBulkDeleteTarget[],
+  request: SessionBulkDeleteRequest,
+): string {
+  return JSON.stringify({
+    targets: [...new Set(rows.map((row) => row.sessionKey))].sort(),
+    live: [...new Set(request.liveSessionKeys)].sort(),
+    liveSessionCheckFailed: request.liveSessionCheckFailed === true,
+    openSessionKey: request.openSessionKey?.trim() || null,
+  });
 }
 
 function classifyTarget(

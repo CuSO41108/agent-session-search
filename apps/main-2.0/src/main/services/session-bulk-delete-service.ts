@@ -2,6 +2,7 @@ import type { SessionStore } from "../../core/session-store";
 import {
   SESSION_BULK_DELETE_CONFIRMATION_THRESHOLD,
   SESSION_DELETE_CONFIRMATION_REQUIRED_MESSAGE,
+  SESSION_DELETE_LIVE_CHECK_CONFIRMATION_REQUIRED_MESSAGE,
   type SessionDeleteOptions,
   type SessionBulkDeleteIssue,
   type SessionBulkDeletePreview,
@@ -42,6 +43,17 @@ export class SessionBulkDeleteService {
     const { preview, targets } = options.requireSingleSession
       ? await this.prepareSingleDelete(request, options)
       : await this.preflight(request, options);
+    const confirmed = options.requireSingleSession ? options.confirmed === true : request.confirmed === true;
+    if (!options.requireSingleSession && confirmed && request.confirmationFingerprint !== preview.confirmationFingerprint) {
+      throw new Error(SESSION_DELETE_CONFIRMATION_REQUIRED_MESSAGE);
+    }
+    if (
+      !options.requireSingleSession
+      && preview.liveSessionCheckFailed
+      && !(request.confirmed === true && request.allowUnverifiedLiveSessions === true)
+    ) {
+      throw new Error(SESSION_DELETE_LIVE_CHECK_CONFIRMATION_REQUIRED_MESSAGE);
+    }
     if (
       !options.requireSingleSession
       && request.confirmed !== true
@@ -81,8 +93,22 @@ export class SessionBulkDeleteService {
     const prepared = await this.preflight(request, options);
     const confirmed = options.confirmed === true;
     const allowLiveSessions = confirmed && options.allowLiveSessions === true;
+    const allowUnverifiedLiveSessions = confirmed && options.allowUnverifiedLiveSessions === true;
     const hasLiveSession = prepared.preview.skipped.some((issue) => issue.reason === "live");
-    if ((!confirmed && prepared.allRows.length > 1) || (hasLiveSession && !allowLiveSessions)) {
+    if (
+      confirmed
+      && options.confirmationFingerprint !== undefined
+      && options.confirmationFingerprint !== prepared.preview.confirmationFingerprint
+    ) {
+      throw new Error(SESSION_DELETE_CONFIRMATION_REQUIRED_MESSAGE);
+    }
+    if (prepared.preview.liveSessionCheckFailed && !allowUnverifiedLiveSessions) {
+      throw new Error(SESSION_DELETE_LIVE_CHECK_CONFIRMATION_REQUIRED_MESSAGE);
+    }
+    if (
+      (!confirmed && (prepared.allRows.length > 1 || prepared.preview.includesOpenSession))
+      || (hasLiveSession && !allowLiveSessions)
+    ) {
       throw new Error(SESSION_DELETE_CONFIRMATION_REQUIRED_MESSAGE);
     }
     return prepared;
@@ -123,6 +149,16 @@ function normalizeRequest(request: SessionBulkDeleteRequest): {
   if (
     request.openSessionKey !== undefined
     && (typeof request.openSessionKey !== "string" || request.openSessionKey.trim().length === 0)
+  ) {
+    throw new Error("The bulk deletion request is invalid.");
+  }
+  if (
+    (request.liveSessionCheckFailed !== undefined && typeof request.liveSessionCheckFailed !== "boolean")
+    || (
+      request.allowUnverifiedLiveSessions !== undefined
+      && typeof request.allowUnverifiedLiveSessions !== "boolean"
+    )
+    || (request.confirmationFingerprint !== undefined && typeof request.confirmationFingerprint !== "string")
   ) {
     throw new Error("The bulk deletion request is invalid.");
   }
@@ -195,10 +231,25 @@ function buildPreflight(
       hasRelatedSessions: hasRelatedTargets(targets),
       includesOpenSession: openSessionKey !== null
         && targets.some((target) => target.sessionKey === openSessionKey),
+      liveSessionCheckFailed: request.liveSessionCheckFailed === true,
+      confirmationFingerprint: deletionConfirmationFingerprint(allRows, request, openSessionKey),
       sourceCounts,
       skipped: dedupeIssues(skipped),
     },
   };
+}
+
+function deletionConfirmationFingerprint(
+  rows: SessionBulkDeleteTarget[],
+  request: SessionBulkDeleteRequest,
+  openSessionKey: string | null,
+): string {
+  return JSON.stringify({
+    targets: rows.map((row) => row.sessionKey).sort(),
+    live: [...new Set(request.liveSessionKeys)].sort(),
+    liveSessionCheckFailed: request.liveSessionCheckFailed === true,
+    openSessionKey,
+  });
 }
 
 function requiresBulkDeleteConfirmation(preview: SessionBulkDeletePreview): boolean {

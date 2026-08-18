@@ -1,20 +1,34 @@
 import type { EnvironmentKind, LiveSession, SessionSource } from "./types";
 
 export const SESSION_DELETE_CONFIRMATION_REQUIRED_MESSAGE = "Session deletion requires explicit confirmation.";
+export const SESSION_DELETE_LIVE_CHECK_CONFIRMATION_REQUIRED_MESSAGE =
+  "Session deletion requires explicit confirmation because running sessions could not be verified.";
 export const SESSION_BULK_DELETE_CONFIRMATION_THRESHOLD = 10;
 
 export function isSessionDeleteConfirmationRequiredMessage(message: string): boolean {
-  return message === SESSION_DELETE_CONFIRMATION_REQUIRED_MESSAGE
-    || message.endsWith(`: ${SESSION_DELETE_CONFIRMATION_REQUIRED_MESSAGE}`);
+  return matchesIpcErrorMessage(message, SESSION_DELETE_CONFIRMATION_REQUIRED_MESSAGE);
+}
+
+export function isSessionDeleteLiveCheckConfirmationRequiredMessage(message: string): boolean {
+  return matchesIpcErrorMessage(message, SESSION_DELETE_LIVE_CHECK_CONFIRMATION_REQUIRED_MESSAGE);
 }
 
 export interface SessionDeleteOptions {
   confirmed?: boolean;
   allowLiveSessions?: boolean;
+  allowUnverifiedLiveSessions?: boolean;
+  confirmationFingerprint?: string;
 }
 
-export function normalizeSessionDeleteOptions(options: unknown): Required<SessionDeleteOptions> {
-  if (options === undefined) return { confirmed: false, allowLiveSessions: false };
+export function normalizeSessionDeleteOptions(options: unknown): Required<Omit<SessionDeleteOptions, "confirmationFingerprint">>
+  & Pick<SessionDeleteOptions, "confirmationFingerprint"> {
+  if (options === undefined) {
+    return {
+      confirmed: false,
+      allowLiveSessions: false,
+      allowUnverifiedLiveSessions: false,
+    };
+  }
   if (!options || typeof options !== "object" || Array.isArray(options)) {
     throw new Error("The session deletion options are invalid.");
   }
@@ -25,10 +39,21 @@ export function normalizeSessionDeleteOptions(options: unknown): Required<Sessio
   if (candidate.allowLiveSessions !== undefined && typeof candidate.allowLiveSessions !== "boolean") {
     throw new Error("The session deletion options are invalid.");
   }
+  if (
+    candidate.allowUnverifiedLiveSessions !== undefined
+    && typeof candidate.allowUnverifiedLiveSessions !== "boolean"
+  ) {
+    throw new Error("The session deletion options are invalid.");
+  }
+  if (candidate.confirmationFingerprint !== undefined && typeof candidate.confirmationFingerprint !== "string") {
+    throw new Error("The session deletion options are invalid.");
+  }
   const confirmed = candidate.confirmed === true;
   return {
     confirmed,
     allowLiveSessions: confirmed && candidate.allowLiveSessions === true,
+    allowUnverifiedLiveSessions: confirmed && candidate.allowUnverifiedLiveSessions === true,
+    confirmationFingerprint: confirmed ? candidate.confirmationFingerprint as string | undefined : undefined,
   };
 }
 
@@ -49,6 +74,9 @@ export interface SessionBulkDeleteRequest {
   includeOrphanedSubagents?: boolean;
   confirmed?: boolean;
   openSessionKey?: string;
+  liveSessionCheckFailed?: boolean;
+  allowUnverifiedLiveSessions?: boolean;
+  confirmationFingerprint?: string;
 }
 
 export interface SessionBulkDeleteTarget {
@@ -81,6 +109,8 @@ export interface SessionBulkDeletePreview {
   deletableCount: number;
   hasRelatedSessions: boolean;
   includesOpenSession: boolean;
+  liveSessionCheckFailed: boolean;
+  confirmationFingerprint: string;
   sourceCounts: Array<{ source: SessionSource; count: number }>;
   skipped: SessionBulkDeleteIssue[];
 }
@@ -93,4 +123,8 @@ export interface SessionBulkDeleteResult extends SessionBulkDeletePreview {
 export function liveSessionDeleteKey(session: Pick<LiveSession, "family" | "rawId" | "environmentId">): string {
   const familyKey = `${session.family}:${session.rawId}`;
   return session.environmentId ? `${session.environmentId}\0${familyKey}` : familyKey;
+}
+
+function matchesIpcErrorMessage(message: string, expected: string): boolean {
+  return message === expected || message.endsWith(`: ${expected}`);
 }

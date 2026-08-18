@@ -62,6 +62,7 @@ export interface SessionCatalogServiceDependencies {
  */
 export class SessionCatalogService {
   private readonly bulkDelete: SessionBulkDeleteService;
+  private openSessionKey: string | undefined;
 
   constructor(private readonly dependencies: SessionCatalogServiceDependencies) {
     this.bulkDelete = new SessionBulkDeleteService(dependencies.store);
@@ -193,6 +194,10 @@ export class SessionCatalogService {
     return this.dependencies.store.setHidden(sessionKey, hidden);
   }
 
+  setOpenSession(sessionKey?: string): void {
+    this.openSessionKey = sessionKey?.trim() || undefined;
+  }
+
   async delete(sessionKey: string, options?: unknown): Promise<boolean> {
     const normalizedOptions = normalizeSessionDeleteOptions(options);
     const session = await this.dependencies.store.getSession(sessionKey);
@@ -230,6 +235,8 @@ export class SessionCatalogService {
     const result = await this.bulkDelete.delete(request, {
       confirmed: normalizedOptions.confirmed,
       allowLiveSessions: normalizedOptions.allowLiveSessions,
+      allowUnverifiedLiveSessions: normalizedOptions.allowUnverifiedLiveSessions,
+      confirmationFingerprint: normalizedOptions.confirmationFingerprint,
       requireSingleSession: true,
     });
     if (result.failed[0]) throw new Error(result.failed[0].message);
@@ -237,24 +244,31 @@ export class SessionCatalogService {
   }
 
   previewBulkDelete(request: SessionBulkDeleteRequest): Promise<SessionBulkDeletePreview> {
-    return this.bulkDelete.preview(request);
+    return this.bulkDelete.preview({ ...request, openSessionKey: this.openSessionKey });
   }
 
   async bulkDeleteSessions(request: SessionBulkDeleteRequest): Promise<SessionBulkDeleteResult> {
-    return this.bulkDelete.delete(await this.withFreshLiveSessions(request));
+    return this.bulkDelete.delete(await this.withFreshLiveSessions({
+      ...request,
+      openSessionKey: this.openSessionKey,
+    }));
   }
 
   private async withFreshLiveSessions(request: SessionBulkDeleteRequest): Promise<SessionBulkDeleteRequest> {
     const liveSessionKeys = new Set(request.liveSessionKeys);
+    let liveSessionCheckFailed = request.liveSessionCheckFailed === true;
     try {
       const snapshot = await this.dependencies.loadLiveSessions(true);
+      if (snapshot.error) liveSessionCheckFailed = true;
       for (const session of snapshot.sessions) liveSessionKeys.add(liveSessionDeleteKey(session));
     } catch {
-      // Keep the exact live-session keys from the confirmed preview when a refresh fails.
+      liveSessionCheckFailed = true;
     }
     return {
       ...request,
+      openSessionKey: this.openSessionKey,
       liveSessionKeys: [...liveSessionKeys],
+      liveSessionCheckFailed,
     };
   }
 

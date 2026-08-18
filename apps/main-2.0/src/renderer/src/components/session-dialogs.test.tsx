@@ -25,6 +25,8 @@ function bulkPreview(overrides: Partial<SessionBulkDeletePreview> = {}): Session
     deletableCount: 1,
     hasRelatedSessions: false,
     includesOpenSession: false,
+    liveSessionCheckFailed: false,
+    confirmationFingerprint: "preview",
     sourceCounts: [{ source: "codex-cli", count: 1 }],
     skipped: [],
     ...overrides,
@@ -198,6 +200,25 @@ describe("session dialogs", () => {
     expect(onConfirm).toHaveBeenCalledOnce();
   });
 
+  it("requires typed confirmation when running state cannot be verified", async () => {
+    await act(async () => root.render(createElement(DeleteSessionDialog, {
+      session: session("unverified"),
+      cascadeCount: 1,
+      hasLiveSession: false,
+      liveSessionCheckFailed: true,
+      isOpen: false,
+      blockedMessage: null,
+      language: "zh",
+      deleting: false,
+      onConfirm: vi.fn(),
+      onCancel: vi.fn(),
+    })));
+
+    expect(container.textContent).toContain("无法确认该会话树是否仍在运行");
+    expect(container.querySelector(".delete-confirmation-field")).not.toBeNull();
+    expect(container.querySelector<HTMLButtonElement>(".dialog-actions .danger-action")?.disabled).toBe(true);
+  });
+
   it("requires typed confirmation for an open session and clears it for a new candidate", async () => {
     const props = {
       cascadeCount: 1,
@@ -225,6 +246,25 @@ describe("session dialogs", () => {
 
     expect(container.querySelector<HTMLInputElement>(".delete-confirmation-field input")?.value).toBe("");
     expect(container.querySelector<HTMLButtonElement>(".dialog-actions .danger-action")?.disabled).toBe(true);
+  });
+
+  it("clears typed confirmation when the same candidate receives a refreshed risk preview", async () => {
+    const props = {
+      session: session("same"),
+      cascadeCount: 2,
+      hasLiveSession: false,
+      isOpen: false,
+      blockedMessage: null,
+      language: "zh" as const,
+      deleting: false,
+      onConfirm: vi.fn(),
+      onCancel: vi.fn(),
+    };
+    await act(async () => root.render(createElement(DeleteSessionDialog, { ...props, confirmationVersion: 1 })));
+    await typeInto(container.querySelector(".delete-confirmation-field input"), "确认删除");
+
+    await act(async () => root.render(createElement(DeleteSessionDialog, { ...props, confirmationVersion: 2 })));
+    expect(container.querySelector<HTMLInputElement>(".delete-confirmation-field input")?.value).toBe("");
   });
 
   it("uses a simple confirmation below 10 sessions and typed confirmation at 10", async () => {
@@ -346,5 +386,30 @@ describe("session dialogs", () => {
     await act(async () =>
       container.querySelector<HTMLButtonElement>(".dialog-actions .danger-action")?.click());
     expect(onConfirm).toHaveBeenCalledWith(true);
+  });
+
+  it("clears typed bulk confirmation whenever the preview is replaced", async () => {
+    const props = {
+      mode: "selection" as const,
+      dateValue: "",
+      favoriteCount: 0,
+      busy: false,
+      language: "zh" as const,
+      onDateChange: vi.fn(),
+      onPreview: vi.fn(),
+      onConfirm: vi.fn(),
+      onCancel: vi.fn(),
+    };
+    await act(async () => root.render(createElement(BulkDeleteDialog, {
+      ...props,
+      preview: bulkPreview({ deletableCount: 10 }),
+    })));
+    await typeInto(container.querySelector(".delete-confirmation-field input"), "确认删除");
+
+    await act(async () => root.render(createElement(BulkDeleteDialog, {
+      ...props,
+      preview: bulkPreview({ deletableCount: 10, liveSessionCheckFailed: true }),
+    })));
+    expect(container.querySelector<HTMLInputElement>(".delete-confirmation-field input")?.value).toBe("");
   });
 });

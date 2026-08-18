@@ -498,6 +498,39 @@ describe("extra session sources", () => {
     expect(loaded[0].session.projectPath).toBe("/work/hermes-current");
   });
 
+  it("maps Hermes delegates as related sessions without treating ordinary branches as subagents", () => {
+    const root = tmpDir("hermes-relations");
+    const db = new DatabaseSync(path.join(root, "state.db"));
+    db.exec(`
+      CREATE TABLE sessions (
+        id TEXT PRIMARY KEY,
+        parent_session_id TEXT,
+        model_config TEXT,
+        started_at REAL NOT NULL
+      );
+      CREATE TABLE messages (id INTEGER PRIMARY KEY, session_id TEXT, timestamp REAL NOT NULL);
+    `);
+    const insert = db.prepare(
+      "INSERT INTO sessions (id, parent_session_id, model_config, started_at) VALUES (?, ?, ?, ?)",
+    );
+    insert.run("root", null, "{}", 1);
+    insert.run("branch", "root", "{}", 2);
+    insert.run("delegate", "root", JSON.stringify({ _delegate_from: "root" }), 3);
+    db.close();
+
+    const loaded = loadHermesSessions(root);
+    fs.rmSync(root, { recursive: true, force: true });
+
+    expect(loaded.find((item) => item.session.rawId === "branch")?.session).toMatchObject({
+      isSubagent: false,
+      parentSessionId: null,
+    });
+    expect(loaded.find((item) => item.session.rawId === "delegate")?.session).toMatchObject({
+      isSubagent: true,
+      parentSessionId: "root",
+    });
+  });
+
   it("skips unsupported Hermes database schemas without failing the index", () => {
     const root = tmpDir("hermes-schema");
     const dbPath = path.join(root, "state.db");

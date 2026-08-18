@@ -4,6 +4,7 @@ import * as path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import {
   SESSION_DELETE_CONFIRMATION_REQUIRED_MESSAGE,
+  SESSION_DELETE_LIVE_CHECK_CONFIRMATION_REQUIRED_MESSAGE,
   type SessionBulkDeleteRequest,
   type SessionBulkDeleteTarget,
 } from "../../core/session-bulk-delete";
@@ -71,6 +72,34 @@ describe("SessionBulkDeleteService", () => {
     });
     expect(preview.deletableCount).toBe(1);
     expect(preview.skipped).toEqual([]);
+  });
+
+  it("fails closed when live sessions could not be checked until separately confirmed", async () => {
+    const store = createStore([target("closed")]);
+    const service = new SessionBulkDeleteService(store);
+    const request: SessionBulkDeleteRequest = {
+      sessionKeys: ["closed"],
+      liveSessionKeys: [],
+      liveSessionCheckFailed: true,
+    };
+
+    expect(service.preview(request)).toMatchObject({
+      deletableCount: 1,
+      liveSessionCheckFailed: true,
+    });
+    await expect(service.delete(request)).rejects.toThrow(
+      SESSION_DELETE_LIVE_CHECK_CONFIRMATION_REQUIRED_MESSAGE,
+    );
+    expect(store.deleteSessionRecords).not.toHaveBeenCalled();
+
+    await expect(service.delete({
+      ...request,
+      confirmed: true,
+      allowUnverifiedLiveSessions: true,
+    })).resolves.toMatchObject({
+      deletedSessionKeys: ["closed"],
+      liveSessionCheckFailed: true,
+    });
   });
 
   it("treats WorkBuddy source files as read-only", async () => {
@@ -255,10 +284,13 @@ describe("SessionBulkDeleteService", () => {
       }),
     ];
     const store = createStore(targets);
+    const service = new SessionBulkDeleteService(store);
+    const request = { sessionKeys: ["parent"], liveSessionKeys: [] };
+    const preview = service.preview(request);
 
-    await expect(new SessionBulkDeleteService(store).delete(
-      { sessionKeys: ["parent"], liveSessionKeys: [] },
-      { confirmed: true, requireSingleSession: true },
+    await expect(service.delete(
+      request,
+      { confirmed: true, confirmationFingerprint: preview.confirmationFingerprint, requireSingleSession: true },
     )).resolves.toMatchObject({
       deletedSessionKeys: ["parent", "child"],
       failed: [],
@@ -282,6 +314,8 @@ describe("SessionBulkDeleteService", () => {
 
   it("only allows live deletion after confirmation explicitly permits it", async () => {
     const request = { sessionKeys: ["live"], liveSessionKeys: ["live"] };
+    const service = new SessionBulkDeleteService(createStore([target("live")]));
+    const preview = service.preview(request);
     await expect(new SessionBulkDeleteService(createStore([target("live")])).delete(
       request,
       { confirmed: true, requireSingleSession: true },
@@ -290,9 +324,14 @@ describe("SessionBulkDeleteService", () => {
       request,
       { allowLiveSessions: true, requireSingleSession: true },
     )).rejects.toThrow(SESSION_DELETE_CONFIRMATION_REQUIRED_MESSAGE);
-    await expect(new SessionBulkDeleteService(createStore([target("live")])).delete(
+    await expect(service.delete(
       request,
-      { confirmed: true, allowLiveSessions: true, requireSingleSession: true },
+      {
+        confirmed: true,
+        allowLiveSessions: true,
+        confirmationFingerprint: preview.confirmationFingerprint,
+        requireSingleSession: true,
+      },
     )).resolves.toMatchObject({
       deletedSessionKeys: ["live"],
       skipped: [],
@@ -310,9 +349,17 @@ describe("SessionBulkDeleteService", () => {
         parentSessionId: "parent",
       }),
     ];
-    await expect(new SessionBulkDeleteService(createStore(family)).delete(
-      { sessionKeys: ["parent"], liveSessionKeys: ["child"] },
-      { confirmed: true, allowLiveSessions: true, requireSingleSession: true },
+    const familyService = new SessionBulkDeleteService(createStore(family));
+    const familyRequest = { sessionKeys: ["parent"], liveSessionKeys: ["child"] };
+    const familyPreview = familyService.preview(familyRequest);
+    await expect(familyService.delete(
+      familyRequest,
+      {
+        confirmed: true,
+        allowLiveSessions: true,
+        confirmationFingerprint: familyPreview.confirmationFingerprint,
+        requireSingleSession: true,
+      },
     )).resolves.toMatchObject({
       deletedSessionKeys: ["parent", "child"],
       skipped: [],
@@ -324,9 +371,17 @@ describe("SessionBulkDeleteService", () => {
       parentSessionId: "parent",
       ancestorRawIds: ["parent"],
     });
-    await expect(new SessionBulkDeleteService(createStore([child])).delete(
-      { sessionKeys: ["child"], liveSessionKeys: ["codex:parent"] },
-      { confirmed: true, allowLiveSessions: true, requireSingleSession: true },
+    const childService = new SessionBulkDeleteService(createStore([child]));
+    const childRequest = { sessionKeys: ["child"], liveSessionKeys: ["codex:parent"] };
+    const childPreview = childService.preview(childRequest);
+    await expect(childService.delete(
+      childRequest,
+      {
+        confirmed: true,
+        allowLiveSessions: true,
+        confirmationFingerprint: childPreview.confirmationFingerprint,
+        requireSingleSession: true,
+      },
     )).resolves.toMatchObject({
       deletedSessionKeys: ["child"],
       skipped: [],
@@ -342,11 +397,18 @@ describe("SessionBulkDeleteService", () => {
       target("shared", { source: "hermes" }),
     ];
     const store = createStore(targets);
-    const result = await new SessionBulkDeleteService(store).delete({
+    const service = new SessionBulkDeleteService(store);
+    const request = {
       sessionKeys: targets.map((item) => item.sessionKey),
       liveSessionKeys: targets.map((item) => item.sessionKey),
       inactiveBefore: 200,
       protectFavorites: true,
+    };
+    const preview = service.preview(request);
+    const result = await service.delete({
+      ...request,
+      confirmed: true,
+      confirmationFingerprint: preview.confirmationFingerprint,
     }, {
       confirmed: true,
       allowLiveSessions: true,

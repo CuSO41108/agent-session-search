@@ -21,6 +21,7 @@ const harness = vi.hoisted(() => ({
   getLiveSessions: vi.fn(),
   previewBulkDelete: vi.fn(),
   bulkDeleteSessions: vi.fn(),
+  setOpenSession: vi.fn(),
   searchAllMatching: vi.fn(async () => [] as SessionSearchResult[]),
   openLocal: vi.fn(),
   setSelectedKey: vi.fn(),
@@ -241,6 +242,7 @@ describe("external session opening", () => {
       getLiveSessions: harness.getLiveSessions,
       previewBulkDelete: harness.previewBulkDelete,
       bulkDeleteSessions: harness.bulkDeleteSessions,
+      setOpenSession: harness.setOpenSession,
       teamChat: { listRooms: vi.fn(async () => []) },
     };
     Reflect.set(window, "sessionSearch", sessionSearch);
@@ -289,6 +291,8 @@ describe("external session opening", () => {
       deletableCount: 1,
       hasRelatedSessions: false,
       includesOpenSession,
+      liveSessionCheckFailed: false,
+      confirmationFingerprint: `preview:${includesOpenSession}`,
       sourceCounts: [{ source: "codex-cli", count: 1 }],
       skipped: [],
     });

@@ -1,4 +1,4 @@
-import { deleteHermesSession } from "./hermes-session-writer";
+import { deleteHermesSessions } from "./hermes-session-writer";
 import {
   canDeleteSessionLocally,
   isLocalSessionStorage,
@@ -260,6 +260,18 @@ export class SessionStore {
     ) {
       throw new Error("Cannot delete shared source databases on WSL by removing the database file.");
     }
+    for (const item of targets) {
+      if (!canDeleteSessionLocally(item)) {
+        throw new Error("Cannot delete sessions stored on SSH remote environments.");
+      }
+      if (
+        item.environmentKind === "wsl"
+        && item.sourceAvailable
+        && isSharedSessionSourceDatabase(item)
+      ) {
+        throw new Error("Cannot delete shared source databases on WSL by removing the database file.");
+      }
+    }
     if (target.source === "zcode-cli") {
       const idsByFilePath = new Map<string, string[]>();
       if (target.sourceAvailable) {
@@ -273,11 +285,25 @@ export class SessionStore {
       return this.deleteSessionTargetRecords(targets, requestedSessionKey);
     }
     if (target.source === "hermes") {
-      if (target.sourceAvailable) deleteHermesSession(target.filePath, target.rawId);
+      if (target.sourceAvailable) {
+        const idsByFilePath = new Map<string, string[]>();
+        for (const item of targets.filter((item) => item.sourceAvailable)) {
+          const rawIds = idsByFilePath.get(item.filePath) ?? [];
+          rawIds.push(item.rawId);
+          idsByFilePath.set(item.filePath, rawIds);
+        }
+        for (const [filePath, rawIds] of idsByFilePath) deleteHermesSessions(filePath, rawIds);
+      }
       return this.deleteSessionTargetRecords(targets, requestedSessionKey);
     }
-    if (target.source === "opencode-cli") throw new Error("Cannot delete shared OpenCode source database.");
-    if (target.source === "codewiz-cli") throw new Error("Cannot delete shared CodeWiz source database.");
+    if (target.source === "opencode-cli") {
+      if (!target.sourceAvailable) return this.deleteSessionTargetRecords(targets, requestedSessionKey);
+      throw new Error("Cannot delete shared OpenCode source database.");
+    }
+    if (target.source === "codewiz-cli") {
+      if (!target.sourceAvailable) return this.deleteSessionTargetRecords(targets, requestedSessionKey);
+      throw new Error("Cannot delete shared CodeWiz source database.");
+    }
     if (target.source === "cursor-agent" && /(^|[\\/])state\.vscdb$/iu.test(target.filePath)) {
       if (!target.sourceAvailable) {
         return this.deleteSessionTargetRecords(targets, requestedSessionKey);

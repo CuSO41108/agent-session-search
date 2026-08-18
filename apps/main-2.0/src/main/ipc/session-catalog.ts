@@ -1,6 +1,10 @@
 import type { IpcMain } from "electron";
 import type { TraceEventQueryOptions } from "../../core/session-store";
-import type { SessionBulkDeleteRequest, SessionDeleteOptions } from "../../core/session-bulk-delete";
+import {
+  SESSION_DELETE_CONFIRMATION_REQUIRED_MESSAGE,
+  type SessionBulkDeleteRequest,
+  type SessionDeleteOptions,
+} from "../../core/session-bulk-delete";
 import type {
   ProjectQueryOptions,
   SearchOptions,
@@ -52,8 +56,13 @@ export function registerSessionCatalogIpc(
     service.setFavorited(sessionKey, favorited));
   ipc.handle("hide:set", (_event, sessionKey: string, hidden: boolean) =>
     service.setHidden(sessionKey, hidden));
-  ipc.handle("session:delete", (_event, sessionKey: string, options?: SessionDeleteOptions) =>
-    service.delete(sessionKey, options));
+  ipc.handle("session:set-open", (_event, sessionKey?: string) => service.setOpenSession(sessionKey));
+  ipc.handle("session:delete", (_event, sessionKey: string, options?: SessionDeleteOptions) => {
+    if (options?.confirmed === true && !options.confirmationFingerprint) {
+      throw new Error(SESSION_DELETE_CONFIRMATION_REQUIRED_MESSAGE);
+    }
+    return service.delete(sessionKey, options);
+  });
   ipc.handle("session:bulk-delete-preview", (_event, request: SessionBulkDeleteRequest) =>
     service.previewBulkDelete(request));
   ipc.handle("session:bulk-delete", (_event, request: SessionBulkDeleteRequest) =>

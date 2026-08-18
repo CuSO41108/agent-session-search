@@ -99,6 +99,7 @@ const api = {
   deleteTag: (tagName: string): Promise<void> => ipcRenderer.invoke("tag:delete", tagName),
   setFavorited: (sessionKey: string, favorited: boolean): Promise<void> => ipcRenderer.invoke("favorite:set", sessionKey, favorited),
   setHidden: (sessionKey: string, hidden: boolean): Promise<void> => ipcRenderer.invoke("hide:set", sessionKey, hidden),
+  setOpenSession: (sessionKey?: string): Promise<void> => ipcRenderer.invoke("session:set-open", sessionKey),
   deleteSession: (sessionKey: string, options?: SessionDeleteOptions): Promise<boolean> =>
     ipcRenderer.invoke("session:delete", sessionKey, options),
   previewBulkDelete: (request: SessionBulkDeleteRequest): Promise<SessionBulkDeletePreview> =>

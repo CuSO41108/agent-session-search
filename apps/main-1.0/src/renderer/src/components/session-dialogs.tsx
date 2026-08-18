@@ -52,6 +52,8 @@ export function DeleteSessionDialog({
   session,
   cascadeCount,
   hasLiveSession,
+  liveSessionCheckFailed,
+  confirmationVersion,
   isOpen,
   blockedMessage,
   language,
@@ -62,6 +64,8 @@ export function DeleteSessionDialog({
   session: SessionSearchResult;
   cascadeCount: number | null;
   hasLiveSession: boolean;
+  liveSessionCheckFailed?: boolean;
+  confirmationVersion?: number;
   isOpen: boolean;
   blockedMessage: string | null;
   language: LanguageMode;
@@ -71,11 +75,12 @@ export function DeleteSessionDialog({
 }): ReactElement {
   const l = (en: string, zh: string) => localize(language, en, zh);
   const [confirmationText, setConfirmationText] = useState("");
-  const requiresTypedConfirmation = (cascadeCount ?? 0) > 1 || hasLiveSession || isOpen;
+  const requiresTypedConfirmation =
+    (cascadeCount ?? 0) > 1 || hasLiveSession || liveSessionCheckFailed || isOpen;
   const canConfirm = !requiresTypedConfirmation || confirmationText === "确认删除";
   useEffect(() => {
     setConfirmationText("");
-  }, [session.sessionKey]);
+  }, [confirmationVersion, session.sessionKey]);
   return (
     <div className="dialog-backdrop" onMouseDown={onCancel}>
       <div className="command-dialog delete-session-dialog" onMouseDown={(event) => event.stopPropagation()}>
@@ -102,6 +107,14 @@ export function DeleteSessionDialog({
             {l(
               'A session in this tree is still running. Type "确认删除" to force deletion; the running process may fail or recreate session data.',
               "会话树中有会话正在运行。输入“确认删除”后可强制删除；运行中的进程可能报错或重新生成会话数据。",
+            )}
+          </p>
+        ) : null}
+        {liveSessionCheckFailed ? (
+          <p className="dialog-copy danger-copy">
+            {l(
+              'AgentRecall could not verify whether this session tree is still running. Type "确认删除" to continue; a running process may fail or recreate session data.',
+              "AgentRecall 无法确认该会话树是否仍在运行。输入“确认删除”后继续；运行中的进程可能报错或重新生成会话数据。",
             )}
           </p>
         ) : null}
@@ -165,7 +178,7 @@ export function DeleteSessionDialog({
           >
             {deleting
               ? l("Deleting...", "正在删除...")
-              : hasLiveSession
+              : hasLiveSession || liveSessionCheckFailed
                 ? l("Force Delete", "强制删除")
               : !requiresTypedConfirmation
                 ? l("Confirm", "确认")
@@ -210,11 +223,12 @@ export function BulkDeleteDialog({
       preview.deletableCount >= SESSION_BULK_DELETE_CONFIRMATION_THRESHOLD
       || preview.hasRelatedSessions
       || preview.includesOpenSession
+      || preview.liveSessionCheckFailed
     ),
   );
   const canConfirm = !requiresTypedConfirmation || confirmationText === "确认删除";
   useEffect(() => {
-    if (!preview) setConfirmationText("");
+    setConfirmationText("");
   }, [preview]);
   const hasDeletableSessions = (preview?.deletableCount ?? 0) > 0;
   const skippedCounts = preview ? countIssueReasons(preview) : [];
@@ -252,6 +266,14 @@ export function BulkDeleteDialog({
             {preview.skipped.length > 0 ? <p className="dialog-copy">{l("Excluded", "已排除")}：{skippedCounts.map(([reason, count]) => `${issueReasonLabel(reason, l)} · ${count}`).join("，")}</p> : null}
             {mode === "selection" && favoriteCount > 0 ? <p className="dialog-copy danger-copy">{l(`${favoriteCount} favorite sessions are included.`, `其中包含 ${favoriteCount} 个收藏会话。`)}</p> : null}
             {preview.includesOpenSession ? <p className="dialog-copy danger-copy">{l("The currently open session is included.", "其中包含当前打开的会话。")}</p> : null}
+            {preview.liveSessionCheckFailed ? (
+              <p className="dialog-copy danger-copy">
+                {l(
+                  "AgentRecall could not verify whether these sessions are still running. Continuing may interrupt running processes or recreate session data.",
+                  "AgentRecall 无法确认这些会话是否仍在运行。继续删除可能中断运行中的进程，或导致会话数据被重新生成。",
+                )}
+              </p>
+            ) : null}
             {hasDeletableSessions ? (
               <>
                 <p className="dialog-copy danger-copy">{l("Original session data may be deleted. This cannot be undone.", "原始会话数据可能被删除，且无法撤销。")}</p>

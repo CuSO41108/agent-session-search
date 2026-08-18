@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   SESSION_DELETE_CONFIRMATION_REQUIRED_MESSAGE,
+  SESSION_DELETE_LIVE_CHECK_CONFIRMATION_REQUIRED_MESSAGE,
   type SessionBulkDeleteTarget,
 } from "../../core/session-bulk-delete";
 import type { SessionStore } from "../../core/session-store";
@@ -141,6 +142,30 @@ describe("SessionCatalogService deletion policy", () => {
     expect(store.deleteExactSessionTargets).not.toHaveBeenCalled();
   });
 
+  it("rejects an unavailable SSH cache when an expanded descendant is still available", async () => {
+    const current = session({ sourceAvailable: false });
+    const { service, store } = createService(current);
+    const root = (await store.getSessionDeletionTargets())[0];
+    store.getSessionDeletionTargets.mockResolvedValue([
+      root,
+      {
+        ...root,
+        sessionKey: "cursor:remote:available-child",
+        rawId: "available-child",
+        filePath: "/remote/available-child.jsonl",
+        isSubagent: true,
+        parentSessionId: current.rawId,
+        ancestorRawIds: [current.rawId],
+        sourceAvailable: true,
+      },
+    ]);
+
+    await expect(service.delete(current.sessionKey)).rejects.toThrow(
+      "Cannot delete sessions stored on SSH remote environments.",
+    );
+    expect(store.deleteExactSessionTargets).not.toHaveBeenCalled();
+  });
+
   it("passes the exact confirmed SSH session tree to the store", async () => {
     const current = session({ sourceAvailable: false });
     const { service, store } = createService(current);
@@ -181,7 +206,11 @@ describe("SessionCatalogService deletion policy", () => {
     await expect(service.delete(current.sessionKey)).rejects.toThrow(
       SESSION_DELETE_CONFIRMATION_REQUIRED_MESSAGE,
     );
-    await expect(service.delete(current.sessionKey, { confirmed: true })).resolves.toBe(true);
+    const preview = await service.previewBulkDelete({ sessionKeys: [current.sessionKey], liveSessionKeys: [] });
+    await expect(service.delete(current.sessionKey, {
+      confirmed: true,
+      confirmationFingerprint: preview.confirmationFingerprint,
+    })).resolves.toBe(true);
     expect(store.deleteExactSessionTargets).toHaveBeenCalledWith([
       expect.objectContaining({ sessionKey: current.sessionKey }),
       child,
@@ -247,6 +276,10 @@ describe("SessionCatalogService deletion policy", () => {
     await expect(service.delete(current.sessionKey, {
       confirmed: true,
       allowLiveSessions: true,
+      confirmationFingerprint: (await service.previewBulkDelete({
+        sessionKeys: [current.sessionKey],
+        liveSessionKeys: ["codex:live"],
+      })).confirmationFingerprint,
     })).resolves.toBe(true);
 
     expect(loadLiveSessions).toHaveBeenCalledWith(true);
@@ -305,7 +338,11 @@ describe("SessionCatalogService deletion policy", () => {
     );
     expect(store.deleteSessionRecords).not.toHaveBeenCalled();
 
-    await expect(service.delete(current.sessionKey, { confirmed: true })).resolves.toBe(true);
+    const preview = await service.previewBulkDelete({ sessionKeys: [current.sessionKey], liveSessionKeys: [] });
+    await expect(service.delete(current.sessionKey, {
+      confirmed: true,
+      confirmationFingerprint: preview.confirmationFingerprint,
+    })).resolves.toBe(true);
     expect(store.deleteSessionRecords).toHaveBeenCalledWith(
       [current.sessionKey, "codex:child"],
       false,
@@ -347,6 +384,10 @@ describe("SessionCatalogService deletion policy", () => {
     await expect(service.delete(current.sessionKey, {
       confirmed: true,
       allowLiveSessions: true,
+      confirmationFingerprint: (await service.previewBulkDelete({
+        sessionKeys: [current.sessionKey],
+        liveSessionKeys: ["hermes:live"],
+      })).confirmationFingerprint,
     })).resolves.toBe(true);
 
     expect(store.deleteExactSessionTargets).toHaveBeenCalledWith([
@@ -424,7 +465,7 @@ describe("SessionCatalogService deletion policy", () => {
     expect(store.deleteSessionRecords).not.toHaveBeenCalled();
   });
 
-  it("continues deletion when the fresh live-session scan reports an error", async () => {
+  it("fails closed when the fresh live-session scan reports an error until separately confirmed", async () => {
     const current = session({
       sessionKey: "codex:closed",
       rawId: "closed",
@@ -441,11 +482,30 @@ describe("SessionCatalogService deletion policy", () => {
       error: "process list unavailable",
     });
 
-    await expect(service.bulkDeleteSessions({
+    const request = {
       sessionKeys: [current.sessionKey],
       liveSessionKeys: [],
+    };
+    const preview = await service.previewBulkDelete({ ...request, liveSessionCheckFailed: true });
+    expect(preview).toMatchObject({
+      liveSessionCheckFailed: true,
+    });
+    await expect(service.previewBulkDelete(request)).resolves.toMatchObject({
+      liveSessionCheckFailed: false,
+    });
+    await expect(service.bulkDeleteSessions(request)).rejects.toThrow(
+      SESSION_DELETE_LIVE_CHECK_CONFIRMATION_REQUIRED_MESSAGE,
+    );
+    expect(store.deleteSessionRecords).not.toHaveBeenCalled();
+
+    await expect(service.bulkDeleteSessions({
+      ...request,
+      confirmed: true,
+      allowUnverifiedLiveSessions: true,
+      confirmationFingerprint: preview.confirmationFingerprint,
     })).resolves.toMatchObject({
       deletedSessionKeys: [current.sessionKey],
+      liveSessionCheckFailed: true,
       skipped: [],
       failed: [],
     });
@@ -453,6 +513,48 @@ describe("SessionCatalogService deletion policy", () => {
     expect(loadLiveSessions).toHaveBeenCalledWith(true);
     expect(store.deleteSessionRecords).toHaveBeenCalledWith([current.sessionKey], false);
   });
+
+  it.each(["opencode-cli", "codewiz-cli"] as const)(
+    "deletes an unavailable SSH %s cache through exact prepared targets",
+    async (source) => {
+      const current = session({
+        sessionKey: `${source}:ssh-cache`,
+        rawId: "ssh-cache",
+        source,
+        environmentId: "ssh-dev",
+        environmentKind: "ssh",
+        filePath: `/remote/${source}.db`,
+        sourceAvailable: false,
+      });
+      const { service, store } = createService(current);
+
+      await expect(service.delete(current.sessionKey)).resolves.toBe(true);
+      expect(store.deleteExactSessionTargets).toHaveBeenCalledWith([
+        expect.objectContaining({ source, sourceAvailable: false }),
+      ], current.sessionKey);
+    },
+  );
+
+  it.each(["opencode-cli", "codewiz-cli"] as const)(
+    "deletes an unavailable WSL %s cache through exact prepared targets",
+    async (source) => {
+      const current = session({
+        sessionKey: `${source}:wsl-cache`,
+        rawId: "wsl-cache",
+        source,
+        environmentId: "ubuntu",
+        environmentKind: "wsl",
+        filePath: `/home/user/${source}.db`,
+        sourceAvailable: false,
+      });
+      const { service, store } = createService(current);
+
+      await expect(service.delete(current.sessionKey)).resolves.toBe(true);
+      expect(store.deleteExactSessionTargets).toHaveBeenCalledWith([
+        expect.objectContaining({ source, sourceAvailable: false }),
+      ], current.sessionKey);
+    },
+  );
 
   it("refuses to delete a shared Hermes database file on WSL", async () => {
     const store = {
@@ -480,4 +582,5 @@ describe("SessionCatalogService deletion policy", () => {
     expect(store.deleteSession).not.toHaveBeenCalled();
     expect(store.deleteSessionRecord).not.toHaveBeenCalled();
   });
+
 });
