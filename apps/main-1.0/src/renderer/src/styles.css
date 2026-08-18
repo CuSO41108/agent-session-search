@@ -8988,6 +8988,10 @@ body.overlay-open .sidebar {
   font-weight: 600;
 }
 
+.subagent-tree-head {
+  margin-left: 18px;
+}
+
 .subagent-tree-head h4 {
   margin: 0;
   font-size: 13px;
