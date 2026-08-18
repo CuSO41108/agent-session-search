@@ -843,7 +843,7 @@
   place-items: center;
   min-height: 104px;
   margin-bottom: 12px;
-  border: 1px solid var(--border-strong);
+  border: 1px dashed var(--border-strong);
   border-radius: 8px;
   background: var(--panel-subtle);
   color: var(--text-muted);
@@ -950,7 +950,7 @@
   gap: 8px;
   margin: 9px 2px 2px;
   padding: 9px 10px;
-  border: 1px dashed var(--border-strong);
+  border: 1px solid var(--border-strong);
   border-radius: 9px;
   background: var(--panel-subtle);
   color: var(--text-muted);
