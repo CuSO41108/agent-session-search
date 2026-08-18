@@ -1926,7 +1926,7 @@ select:focus-visible {
 /* Parent/subagent Session relationships */
 .subagent-session-tree {
   margin-top: 18px;
-  padding-top: 14px;
+  padding: 14px 18px 0;
   border-top: 1px solid var(--border-subtle);
 }
 
@@ -1971,10 +1971,6 @@ select:focus-visible {
   color: var(--accent);
   font-size: 12px;
   font-weight: 600;
-}
-
-.subagent-tree-head {
-  margin-left: 18px;
 }
 
 .subagent-tree-head h4 {

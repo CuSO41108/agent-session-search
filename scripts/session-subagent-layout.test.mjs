@@ -8,16 +8,16 @@ const styleFiles = [
 ];
 
 for (const [appName, styleFile] of styleFiles) {
-  test(`${appName} aligns the subagent heading with its session cards`, () => {
+  test(`${appName} aligns related sessions with the conversation content`, () => {
     const styles = readFileSync(styleFile, "utf8");
-    const rules = [...styles.matchAll(/\.subagent-tree-head\s*\{([^}]*)\}/g)];
+    const rules = [...styles.matchAll(/\.subagent-session-tree\s*\{([^}]*)\}/g)];
     const rule = rules.at(-1)?.[1];
 
-    assert.ok(rule, ".subagent-tree-head styles should exist");
+    assert.ok(rule, ".subagent-session-tree styles should exist");
     assert.match(
       rule,
-      /margin-left:\s*18px;/,
-      "the subagent heading should keep the same left gutter as its card content",
+      /padding:\s*14px 18px 0;/,
+      "the related-session area should keep the same horizontal gutter as the conversation",
     );
   });
 }
