@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile as execFileCallback } from "node:child_process";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -68,6 +68,37 @@ test("prints the package filename when invoked from the release workflow", async
     });
 
     assert.equal(stdout.trim(), "agent-recall-pack-fixture-1.0.0.tgz");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("rejects MCP source maps from the release archive", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-recall-pack-release-mcp-map-"));
+  try {
+    await writeFile(path.join(root, "package.json"), JSON.stringify({
+      name: "agent-recall-pack-fixture",
+      version: "1.0.0",
+      files: ["out"],
+    }, null, 2) + "\n", "utf8");
+    const mcpOutput = path.join(root, "out", "mcp");
+    await mkdir(mcpOutput, { recursive: true });
+    await writeFile(path.join(mcpOutput, "migration-entry.js"), "export {};\n", "utf8");
+    await writeFile(path.join(mcpOutput, "migration-entry.js.map"), "{}\n", "utf8");
+
+    await assert.rejects(
+      packReleaseArchive({
+        root,
+        destination: path.join(root, "archives"),
+        environment: {
+          ...process.env,
+          HOME: path.join(root, "home"),
+          USERPROFILE: path.join(root, "home"),
+          npm_config_cache: path.join(root, "npm-cache"),
+        },
+      }),
+      /must not include MCP source maps: out\/mcp\/migration-entry\.js\.map/,
+    );
   } finally {
     await rm(root, { recursive: true, force: true });
   }
