@@ -15,6 +15,7 @@ import { enabledMigrationTargets, migrationTargetDescriptor, type MigrationTarge
 import {
   OPTIONAL_SESSION_SOURCE_DESCRIPTORS,
   SESSION_SOURCE_DESCRIPTORS,
+  isSessionSource,
   sessionSourceDescriptor,
   type SessionSourceUiFamily,
 } from "../../core/session-sources";
@@ -41,6 +42,7 @@ export interface UsageStatsDisplayRow extends SessionStatsSummary {
 }
 
 function usageStatsDisplayGroup(source: SessionSource): { key: string; label: string } {
+  if (!isSessionSource(source)) return { key: String(source), label: String(source) };
   const descriptor = sessionSourceDescriptor(source);
   if (descriptor.statsGroup) {
     return { key: descriptor.statsGroup, label: descriptor.statsGroup === "claude" ? "Claude Code" : "Codex" };
@@ -158,10 +160,12 @@ export function displayTagName(tagName: string): string {
 }
 
 export function sourceUiFamily(source: SessionSource): SessionSourceUiFamily {
+  if (!isSessionSource(source)) return "other";
   return sessionSourceDescriptor(source).uiFamily;
 }
 
 export function supportsResumeSource(source: SessionSource): boolean {
+  if (!isSessionSource(source)) return false;
   return sessionSourceDescriptor(source).capabilities.resume;
 }
 
@@ -170,6 +174,7 @@ export function supportsMigrationSource(source: SessionSource): boolean {
 }
 
 export function migrationTargetsForSource(source: SessionSource, settings: MigrationTargetSettings): MigrationTarget[] {
+  if (!isSessionSource(source)) return [];
   return supportedMigrationTargets(source, enabledMigrationTargets(settings));
 }
 
@@ -199,6 +204,7 @@ export function migrationAgentLabel(target: MigrationTarget): string {
 }
 
 export function sourceMigrationAgent(source: SessionSource): MigrationAgent | null {
+  if (!isSessionSource(source)) return null;
   return sessionSourceDescriptor(source).migrationAgent;
 }
 

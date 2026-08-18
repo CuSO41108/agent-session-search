@@ -48,6 +48,7 @@ import {
   openMigrationResumeInTerminal,
   revealInFileManager,
 } from "../core/platform";
+import { DEEPSEEK_WEB_URL, openDeepSeekWebSessionPage } from "./deepseek-web-session";
 import { loadUsageQuotaSnapshot } from "../core/quota";
 import { repairLegacyAgentRecallCodexRollouts } from "../core/codex-migration-repair";
 import { setLiveSessionTerminalTitle } from "../core/session-focus";
@@ -341,6 +342,7 @@ let postgresRuntime: PostgresRuntime | null = null;
 let postgresRuntimeStartup: Promise<PostgresRuntime> | null = null;
 let postgresDatabase: PostgresDatabase | null = null;
 let quickSearchWindow: BrowserWindow | null = null;
+let deepSeekWebWindow: BrowserWindow | null = null;
 const interfaceZoomController = createInterfaceZoomController(() => [mainWindow, quickSearchWindow]);
 let tray: Tray | null = null;
 let store: SessionStore;
@@ -1470,6 +1472,57 @@ function createQuickSearchWindow(): BrowserWindow {
   return window;
 }
 
+function getDeepSeekWebWindow(): BrowserWindow {
+  if (deepSeekWebWindow && !deepSeekWebWindow.isDestroyed()) return deepSeekWebWindow;
+  const allowedOrigin = new URL(DEEPSEEK_WEB_URL).origin;
+  const window = new BrowserWindow({
+    width: 1280,
+    height: 840,
+    minWidth: 860,
+    minHeight: 600,
+    show: false,
+    title: "DeepSeek Harness",
+    backgroundColor: "#0a0b0d",
+    webPreferences: {
+      sandbox: true,
+      contextIsolation: true,
+      nodeIntegration: false,
+      partition: "persist:deepseek-harness-web",
+    },
+  });
+  window.webContents.setWindowOpenHandler(({ url }) => {
+    const externalUrl = normalizeExternalLink(url);
+    if (externalUrl) void shell.openExternal(externalUrl);
+    return { action: "deny" };
+  });
+  window.webContents.on("will-navigate", (event, url) => {
+    try {
+      if (new URL(url).origin === allowedOrigin) return;
+    } catch {
+      // Invalid URLs are denied below.
+    }
+    event.preventDefault();
+    const externalUrl = normalizeExternalLink(url);
+    if (externalUrl) void shell.openExternal(externalUrl);
+  });
+  window.on("closed", () => {
+    if (deepSeekWebWindow === window) deepSeekWebWindow = null;
+  });
+  deepSeekWebWindow = window;
+  return window;
+}
+
+async function showDeepSeekWebSession(sessionId: string): Promise<void> {
+  const window = getDeepSeekWebWindow();
+  window.hide();
+  await openDeepSeekWebSessionPage({
+    loadURL: (url) => window.loadURL(url),
+    executeJavaScript: (script) => window.webContents.executeJavaScript(script),
+    show: () => window.show(),
+    focus: () => window.focus(),
+  }, sessionId);
+}
+
 function showQuickSearch(): void {
   if (!quickSearchWindow || quickSearchWindow.isDestroyed()) {
     quickSearchWindow = createQuickSearchWindow();
@@ -1743,6 +1796,7 @@ function runIndexSync(): Promise<IndexStatus> {
         includeCursorAgent: settings.includeCursorAgent,
         includeTrae: settings.includeTrae,
         includeQoder: settings.includeQoder,
+        includeDeepSeekCli: settings.includeDeepSeekCli,
       },
       indexFailureLogPath: indexFailureLogger.logPath,
       logIndexFailure: indexFailureLogger.write,
@@ -2096,7 +2150,16 @@ function localSessionMigrationRuntime(event: IpcMainInvokeEvent) {
       completeTokenLimit: number,
     ) => applyMigrationLengthPolicy(portable, compressor, onProgress, completeTokenLimit),
     write: (migrationTarget: MigrationTarget, portable: PortableSession, targetSessionId?: string) =>
-      writeMigratedSession({ target: migrationTarget, session: portable, sessionId: targetSessionId }),
+      writeMigratedSession({
+        target: migrationTarget,
+        session: portable,
+        sessionId: targetSessionId,
+        // Test/sandboxed launches may redirect the migration home so writes
+        // to ~/.codex, ~/.dsh, ... never hit a TCC-protected real home.
+        ...process.env.AGENT_RECALL_MIGRATION_HOME
+          ? { homeDir: process.env.AGENT_RECALL_MIGRATION_HOME }
+          : {},
+      }),
     record: (record: Parameters<SessionStore["recordSessionMigration"]>[0]) => store.recordSessionMigration(record),
     refreshIndex: async (migrationTarget: MigrationTarget, writtenFilePath: string, targetSessionId: string) => {
       const status = await indexMigratedSessionFile(store, migrationTarget, writtenFilePath, targetSessionId);
@@ -2712,6 +2775,7 @@ function registerIpc(): void {
     }),
     copyText: (text) => clipboard.writeText(text),
     openExternal: (url) => shell.openExternal(url),
+    openDeepSeekWebSession: showDeepSeekWebSession,
     chooseMarkdownPath: chooseMarkdownExportPath,
     chooseJsonFormat: chooseJsonExportFormat,
     chooseJsonPath: chooseJsonExportPath,

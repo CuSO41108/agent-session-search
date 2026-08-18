@@ -1,3 +1,4 @@
+import { homedir } from "node:os";
 import {
   reconstructCodexResponsesRequest,
   resolveCodexResponsesRequest,
@@ -13,10 +14,13 @@ import {
 } from "../../core/format-session";
 import {
   getResumeCommand,
+  openDeepSeekWebInTerminal,
   openNativeApp,
   openResumeInSpecificTerminal,
   openResumeInTerminal,
+  probeDeepSeekWeb,
   revealInFileManager,
+  waitForDeepSeekWeb,
   type AppSettings,
 } from "../../core/platform";
 import { routeResumeSession, type ResumeRouteResult } from "../../core/resume-router";
@@ -43,6 +47,7 @@ export interface SessionCommandServiceDependencies {
   loadLiveSessions(): Promise<LiveSessionSnapshot>;
   copyText(text: string): void;
   openExternal(url: string): Promise<unknown>;
+  openDeepSeekWebSession(sessionId: string): Promise<void>;
   chooseMarkdownPath(defaultFileName: string): Promise<string | null>;
   chooseJsonFormat(): Promise<JsonExportFormat | null>;
   chooseJsonPath(defaultFileName: string): Promise<string | null>;
@@ -125,6 +130,18 @@ export class SessionCommandService {
     if (!isLocalSessionEnvironment(resumeSession)) {
       await this.dependencies.remoteAccess.ensureResumePreflight(resumeSession);
       await openResumeInTerminal(resumeSession, this.dependencies.getSettings(), { sshArgs });
+      await this.dependencies.store.markResumed(sessionKey);
+      return { route: "resume" };
+    }
+
+    if (session.source === "deepseek-cli") {
+      if (!await probeDeepSeekWeb()) {
+        await openDeepSeekWebInTerminal(session.projectPath || homedir(), this.dependencies.getSettings());
+        if (!await waitForDeepSeekWeb()) {
+          throw new Error("DeepSeek Harness Web did not start on http://127.0.0.1:3080.");
+        }
+      }
+      await this.dependencies.openDeepSeekWebSession(session.rawId);
       await this.dependencies.store.markResumed(sessionKey);
       return { route: "resume" };
     }

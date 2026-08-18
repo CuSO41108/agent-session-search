@@ -12,6 +12,8 @@ import {
   parseJsonlText,
   type SessionLoadOptions,
 } from "./session-loader";
+import { loadDeepSeekCliSessionFile } from "./session-loaders/alternative-sources";
+import { safeStat } from "./session-loaders/common";
 import { migrationTargetDescriptor } from "./migration-targets";
 import type { SessionStore } from "./session-store";
 import type { LoadedSession, MigrationTarget, SessionEnvironment } from "./types";
@@ -461,6 +463,10 @@ export async function indexMigratedSessionFile(
 
 function loadMigratedSessionFile(target: MigrationTarget, filePath: string, sessionId?: string): LoadedSession | null {
   if (target === "cursor") return loadCursorTranscriptFile(filePath);
+  if (target === "deepseek") {
+    const stat = safeStat(filePath);
+    return loadDeepSeekCliSessionFile(filePath, stat);
+  }
 
   const descriptor = migrationTargetDescriptor(target);
   if (descriptor.family === "codebuddy") return loadCodeBuddyCliSessionFile(filePath);

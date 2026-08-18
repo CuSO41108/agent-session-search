@@ -34,7 +34,7 @@ import { TurnAccordion, type TurnMessageRoleFilter } from "./turn-accordion";
 import { MessageHead } from "./message-shell";
 import type { SessionFamily } from "../../../../core/session-family";
 import { canDeleteSessionLocally } from "../../../../core/session-environment";
-import { sessionSourceDescriptor } from "../../../../core/session-sources";
+import { isSessionSource, sessionSourceDescriptor } from "../../../../core/session-sources";
 import { SubagentSessionTree } from "./subagent-session-tree";
 import { SessionContextComponentsPanel } from "./session-context-components-panel";
 import { collaborationMessageMetadata } from "./collaboration-message";
@@ -279,7 +279,8 @@ export function DetailPanel({
     && !messages.some((message) => message.role === roleFilter);
   const localOnlyDisabled = isRemoteSession(session);
   const canDelete = canDeleteSessionLocally(session);
-  const canSyncSession = sessionSourceDescriptor(session.source).capabilities.sessionSync;
+  const canSyncSession = isSessionSource(session.source)
+    && sessionSourceDescriptor(session.source).capabilities.sessionSync;
   const revealTitle = localOnlyDisabled ? remoteRevealTitle(language) : l(`Show in ${revealLabel}`, `在${revealLabel}中显示`);
 
   const toggleTools = () => {
