@@ -23,8 +23,8 @@ import { isLocalSessionEnvironment } from "../../core/session-environment";
 import type { SessionSyncHookStatus } from "../../core/session-sync-queue";
 import type { V1ImportResult } from "../../core/v1-import";
 import {
+  isSessionDeleteConfirmationRequiredMessage,
   liveSessionDeleteKey,
-  SESSION_DELETE_CONFIRMATION_REQUIRED_MESSAGE,
   type SessionBulkDeletePreview,
   type SessionBulkDeleteRequest,
 } from "../../core/session-bulk-delete";
@@ -967,7 +967,7 @@ export function App(): ReactElement {
       }
     } catch (error) {
       const rawMessage = error instanceof Error ? error.message : String(error);
-      if (rawMessage === SESSION_DELETE_CONFIRMATION_REQUIRED_MESSAGE) {
+      if (isSessionDeleteConfirmationRequiredMessage(rawMessage)) {
         const message = t(
           "The session tree changed. Review the updated deletion warning and confirm again.",
           "会话树状态已变化，请检查更新后的删除警告并重新确认。",
@@ -1146,7 +1146,7 @@ export function App(): ReactElement {
       });
     } catch (error) {
       const rawMessage = error instanceof Error ? error.message : String(error);
-      if (rawMessage === SESSION_DELETE_CONFIRMATION_REQUIRED_MESSAGE) {
+      if (isSessionDeleteConfirmationRequiredMessage(rawMessage)) {
         try {
           const { confirmed: _confirmed, ...requestWithoutConfirmation } = requestAtConfirmation;
           const request: SessionBulkDeleteRequest = {

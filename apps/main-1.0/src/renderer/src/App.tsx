@@ -34,7 +34,7 @@ import type { SessionSyncHookStatus } from "../../core/session-sync-queue";
 import { OPTIONAL_SESSION_SOURCE_DESCRIPTORS } from "../../core/session-sources";
 import type { TraceEventQueryOptions } from "../../core/session-store";
 import {
-  SESSION_DELETE_CONFIRMATION_REQUIRED_MESSAGE,
+  isSessionDeleteConfirmationRequiredMessage,
   liveSessionDeleteKey,
   type SessionBulkDeletePreview,
   type SessionBulkDeleteRequest,
@@ -1652,7 +1652,7 @@ export function App(): ReactElement {
       }
     } catch (error) {
       const rawMessage = error instanceof Error ? error.message : String(error);
-      if (rawMessage === SESSION_DELETE_CONFIRMATION_REQUIRED_MESSAGE) {
+      if (isSessionDeleteConfirmationRequiredMessage(rawMessage)) {
         requestDeleteSession(session);
         setActionStatus({
           kind: "error",
@@ -1839,7 +1839,7 @@ export function App(): ReactElement {
       });
     } catch (error) {
       const rawMessage = error instanceof Error ? error.message : String(error);
-      if (rawMessage === SESSION_DELETE_CONFIRMATION_REQUIRED_MESSAGE) {
+      if (isSessionDeleteConfirmationRequiredMessage(rawMessage)) {
         try {
           const request: SessionBulkDeleteRequest = {
             ...baseRequest,

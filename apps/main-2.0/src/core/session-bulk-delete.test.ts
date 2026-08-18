@@ -1,7 +1,23 @@
 import { describe, expect, it } from "vitest";
-import { normalizeSessionDeleteOptions } from "./session-bulk-delete";
+import {
+  isSessionDeleteConfirmationRequiredMessage,
+  normalizeSessionDeleteOptions,
+  SESSION_DELETE_CONFIRMATION_REQUIRED_MESSAGE,
+} from "./session-bulk-delete";
 
 describe("normalizeSessionDeleteOptions", () => {
+  it("recognizes bare and Electron-wrapped confirmation errors", () => {
+    expect(isSessionDeleteConfirmationRequiredMessage(
+      SESSION_DELETE_CONFIRMATION_REQUIRED_MESSAGE,
+    )).toBe(true);
+    expect(isSessionDeleteConfirmationRequiredMessage(
+      `Error invoking remote method 'session:delete': Error: ${SESSION_DELETE_CONFIRMATION_REQUIRED_MESSAGE}`,
+    )).toBe(true);
+    expect(isSessionDeleteConfirmationRequiredMessage(
+      `${SESSION_DELETE_CONFIRMATION_REQUIRED_MESSAGE} Retry later.`,
+    )).toBe(false);
+  });
+
   it("normalizes omitted and confirmed deletion options", () => {
     expect(normalizeSessionDeleteOptions(undefined)).toEqual({
       confirmed: false,

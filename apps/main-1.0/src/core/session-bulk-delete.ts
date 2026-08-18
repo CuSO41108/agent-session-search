@@ -3,6 +3,11 @@ import type { EnvironmentKind, LiveSession, SessionSource } from "./types";
 export const SESSION_DELETE_CONFIRMATION_REQUIRED_MESSAGE = "Session deletion requires explicit confirmation.";
 export const SESSION_BULK_DELETE_CONFIRMATION_THRESHOLD = 10;
 
+export function isSessionDeleteConfirmationRequiredMessage(message: string): boolean {
+  return message === SESSION_DELETE_CONFIRMATION_REQUIRED_MESSAGE
+    || message.endsWith(`: ${SESSION_DELETE_CONFIRMATION_REQUIRED_MESSAGE}`);
+}
+
 export interface SessionDeleteOptions {
   confirmed?: boolean;
   allowLiveSessions?: boolean;

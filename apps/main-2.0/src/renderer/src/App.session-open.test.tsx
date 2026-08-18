@@ -301,7 +301,9 @@ describe("external session opening", () => {
       .mockResolvedValueOnce(preview(false))
       .mockResolvedValueOnce(preview(true));
     harness.bulkDeleteSessions.mockRejectedValueOnce(
-      new Error(SESSION_DELETE_CONFIRMATION_REQUIRED_MESSAGE),
+      new Error(
+        `Error invoking remote method 'session:bulk-delete': Error: ${SESSION_DELETE_CONFIRMATION_REQUIRED_MESSAGE}`,
+      ),
     );
     harness.openLocal.mockImplementation(async (nextSession: SessionSearchResult) => {
       harness.detail = nextSession;
