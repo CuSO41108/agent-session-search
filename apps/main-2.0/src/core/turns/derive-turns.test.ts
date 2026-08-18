@@ -1148,6 +1148,70 @@ describe("deriveSessionTimeline", () => {
     ]);
   });
 
+  it("assigns id-less collaboration activity to the latest lifecycle-backed subagent Turn", () => {
+    const timeline = deriveSessionTimeline({
+      sessionKey: "codex:forked-subagent",
+      messages: [{
+        role: "user",
+        content: "Parent request inherited at fork time",
+        timestamp: "2026-08-12T09:05:18.000Z",
+        index: 0,
+        sourceTurnId: "parent-turn",
+      }],
+      traceEvents: [
+        {
+          index: 0,
+          kind: "event",
+          source: "codex",
+          title: "Parent Turn started",
+          detail: "",
+          timestamp: "2026-08-12T09:05:18.000Z",
+          eventType: "codex.turn.started",
+          status: "running",
+          sourceTurnId: "parent-turn",
+          attributes: { startedAt: "2026-08-12T09:05:18.000Z" },
+        },
+        {
+          index: 1,
+          kind: "event",
+          source: "codex",
+          title: "Subagent Turn started",
+          detail: "",
+          timestamp: "2026-08-12T09:05:46.000Z",
+          eventType: "codex.turn.started",
+          status: "running",
+          sourceTurnId: "subagent-turn",
+          attributes: { startedAt: "2026-08-12T09:05:46.000Z" },
+        },
+        {
+          index: 2,
+          kind: "event",
+          source: "codex",
+          title: "subagent · started",
+          detail: "",
+          timestamp: "2026-08-12T09:06:04.000Z",
+          eventType: "codex.collaboration.activity",
+          status: "completed",
+          attributes: {
+            codex: { rawType: "sub_agent_activity" },
+            collaboration: { kind: "started", agentThreadId: "grandchild" },
+          },
+        },
+      ],
+    });
+
+    expect(timeline.turns).toHaveLength(2);
+    expect(timeline.turns[0]).toMatchObject({
+      sourceTurnId: "parent-turn",
+      spans: [],
+    });
+    expect(timeline.turns[1]).toMatchObject({
+      sourceTurnId: "subagent-turn",
+      synthetic: false,
+      spans: [{ name: "subagent" }],
+    });
+  });
+
   it("creates a synthetic Turn when a transcript has no user message", () => {
     const timeline = deriveSessionTimeline({
       sessionKey: "claude:assistant-only",

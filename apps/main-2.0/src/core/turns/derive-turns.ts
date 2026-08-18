@@ -9,7 +9,7 @@ import type {
 } from "../types";
 import { tracePresentation } from "../trace-presentation";
 
-export const TURN_DERIVATION_VERSION = 5;
+export const TURN_DERIVATION_VERSION = 6;
 
 export interface DerivedRawEvent {
   eventIndex: number;
@@ -241,11 +241,46 @@ function buildTurnDrafts(
     }
   }
 
+  const lifecycleStartedAt = new Map<TurnDraft, number>();
+  for (const event of [...traceEvents].sort(compareTimestamped)) {
+    if (
+      !event.sourceTurnId
+      || (
+        event.eventType !== "codex.turn.started"
+        && event.eventType !== "codex.turn.completed"
+        && event.eventType !== "codex.turn.aborted"
+      )
+    ) {
+      continue;
+    }
+    let lifecycleTurn = turnsBySourceId.get(event.sourceTurnId);
+    if (!lifecycleTurn) {
+      lifecycleTurn = {
+        ...createSyntheticTurn(),
+        sourceTurnId: event.sourceTurnId,
+      };
+      turnsBySourceId.set(event.sourceTurnId, lifecycleTurn);
+      turns.push(lifecycleTurn);
+    }
+    if (event.eventType !== "codex.turn.started") continue;
+    const rawStartedAt = event.attributes?.startedAt;
+    const startedAt = timestampMs(
+      typeof rawStartedAt === "string" || typeof rawStartedAt === "number"
+        ? rawStartedAt
+        : event.timestamp,
+    );
+    if (startedAt === null) continue;
+    const previous = lifecycleStartedAt.get(lifecycleTurn);
+    if (previous === undefined || startedAt < previous) lifecycleStartedAt.set(lifecycleTurn, startedAt);
+  }
+
   const timestampBoundaries = turns
     .map((turn, order) => ({
       turn,
       order,
-      startedAt: timestampMs(turn.messages.find((message) => message.role === "user")?.timestamp ?? ""),
+      startedAt: timestampMs(turn.messages.find((message) => message.role === "user")?.timestamp ?? "")
+        ?? lifecycleStartedAt.get(turn)
+        ?? null,
     }))
     .filter((boundary): boundary is typeof boundary & { startedAt: number } => boundary.startedAt !== null)
     .sort((left, right) => left.startedAt - right.startedAt || left.order - right.order);

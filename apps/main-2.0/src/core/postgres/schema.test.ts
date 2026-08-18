@@ -692,11 +692,11 @@ describe("AgentRecall PostgreSQL schema", () => {
     await upgradedDatabase.close();
   });
 
-  it("invalidates existing Codex subagent indexes when Turn boundaries need re-derivation", async () => {
+  it("invalidates existing Codex subagent indexes when lifecycle fallback boundaries change", async () => {
     const pool = new PGliteTestPool();
     const legacyDatabase = new PostgresDatabase(pool, {
       migrationLock: false,
-      migrations: POSTGRES_MIGRATIONS.filter((migration) => migration.version <= 37),
+      migrations: POSTGRES_MIGRATIONS.filter((migration) => migration.version <= 38),
     });
     await legacyDatabase.initialize();
     await legacyDatabase.query(`
