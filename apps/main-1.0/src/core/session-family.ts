@@ -200,7 +200,11 @@ function findOriginTurnIndexes(
     FROM trace_events
     JOIN sessions ON sessions.session_key = trace_events.session_key
     WHERE sessions.source = ? AND sessions.environment_id = ?
-      AND trace_events.event_type IN ('codex.collaboration.tool', 'codex.turn.started')
+      AND trace_events.event_type IN (
+        'codex.collaboration.tool',
+        'codex.collaboration.activity',
+        'codex.turn.started'
+      )
     ORDER BY trace_events.session_key, trace_events.trace_index
   `).all(source, environmentId) as unknown as OriginTraceRow[];
   const userBoundaries = db.prepare(`
@@ -232,8 +236,7 @@ function findOriginTurnIndexes(
     const parent = rowsByRawId.get(child.parent_session_id);
     if (!parent) continue;
     const spawn = (tracesBySessionKey.get(parent.session_key) ?? []).find((trace) =>
-      trace.event_type === "codex.collaboration.tool"
-      && traceSpawnsChild(trace.attributes_json, child.raw_id));
+      traceSpawnsChild(trace, child.raw_id));
     if (!spawn) continue;
     const boundaries = uniqueTurnBoundaries(boundariesBySessionKey.get(parent.session_key) ?? []);
     const sourceIndex = spawn.source_turn_id
@@ -270,18 +273,27 @@ function uniqueTurnBoundaries(rows: readonly OriginBoundaryRow[]): OriginBoundar
   });
 }
 
-function traceSpawnsChild(attributesJson: string | null, childRawId: string): boolean {
-  if (!attributesJson) return false;
+function traceSpawnsChild(trace: OriginTraceRow, childRawId: string): boolean {
+  if (!trace.attributes_json) return false;
   try {
-    const attributes = JSON.parse(attributesJson) as {
+    const attributes = JSON.parse(trace.attributes_json) as {
       codex?: { rawType?: unknown };
       collaboration?: {
+        kind?: unknown;
         tool?: unknown;
+        agentThreadId?: unknown;
         newThreadId?: unknown;
         receiverThreadIds?: unknown;
       };
     };
     const collaboration = attributes.collaboration;
+    if (
+      trace.event_type === "codex.collaboration.activity"
+      && collaboration?.kind === "started"
+      && collaboration.agentThreadId === childRawId
+    ) {
+      return true;
+    }
     const rawType = typeof attributes.codex?.rawType === "string" ? attributes.codex.rawType : "";
     const spawn = collaboration?.tool === "spawn_agent" || rawType.startsWith("collab_spawn");
     if (!spawn) return false;

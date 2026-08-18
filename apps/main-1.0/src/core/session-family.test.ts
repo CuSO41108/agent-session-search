@@ -155,6 +155,41 @@ describe("findSessionFamily", () => {
     expect(childFamily.parent?.originTurnIndex).toBeNull();
   });
 
+  it("recognizes the persisted subagent started activity as the spawn origin", () => {
+    const db = setupDb();
+    insertSession(db, { sessionKey: "codex:root", rawId: "root", title: "Root" });
+    insertSession(db, {
+      sessionKey: "codex:child",
+      rawId: "child",
+      title: "Child",
+      parentSessionId: "root",
+    });
+    db.prepare(`
+      INSERT INTO messages (
+        session_key, message_index, role, content, timestamp, source_turn_id
+      ) VALUES
+        ('codex:root', 0, 'user', 'first', '2026-08-12T09:00:00.000Z', 'turn-1'),
+        ('codex:root', 1, 'user', 'delegate', '2026-08-12T09:05:00.000Z', 'turn-2')
+    `).run();
+    db.prepare(`
+      INSERT INTO trace_events (
+        session_key, trace_index, kind, source, title, detail, timestamp,
+        event_type, status, source_turn_id, attributes_json
+      ) VALUES (?, 0, 'event', 'codex', 'subagent · started', '', ?,
+        'codex.collaboration.activity', 'completed', 'turn-2', ?)
+    `).run(
+      "codex:root",
+      "2026-08-12T09:05:01.000Z",
+      JSON.stringify({
+        codex: { rawType: "sub_agent_activity" },
+        collaboration: { kind: "started", agentThreadId: "child" },
+      }),
+    );
+
+    expect(findSessionFamily(db, "codex:root").children[0].originTurnIndex).toBe(1);
+    expect(findSessionFamily(db, "codex:child").parentOriginTurnIndex).toBe(1);
+  });
+
   it("does not cross source or environment boundaries and excludes explicitly hidden children", () => {
     const db = setupDb();
     insertSession(db, { sessionKey: "codex:root", rawId: "root", title: "Root" });

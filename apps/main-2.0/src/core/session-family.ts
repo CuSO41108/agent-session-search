@@ -99,13 +99,22 @@ export async function findSessionFamily(
       where child_sessions.source = $1
         and child_sessions.environment_id = $2
         and (
-          spans.attributes #>> '{collaboration,tool}' = 'spawn_agent'
-          or spans.attributes #>> '{codex,rawType}' like 'collab_spawn%'
-        )
-        and (
-          spans.attributes #>> '{collaboration,newThreadId}' = child_sessions.raw_id
-          or (spans.attributes #> '{collaboration,receiverThreadIds}')
-            @> jsonb_build_array(child_sessions.raw_id)
+          (
+            spans.attributes #>> '{eventType}' = 'codex.collaboration.activity'
+            and spans.attributes #>> '{collaboration,kind}' = 'started'
+            and spans.attributes #>> '{collaboration,agentThreadId}' = child_sessions.raw_id
+          )
+          or (
+            (
+              spans.attributes #>> '{collaboration,tool}' = 'spawn_agent'
+              or spans.attributes #>> '{codex,rawType}' like 'collab_spawn%'
+            )
+            and (
+              spans.attributes #>> '{collaboration,newThreadId}' = child_sessions.raw_id
+              or (spans.attributes #> '{collaboration,receiverThreadIds}')
+                @> jsonb_build_array(child_sessions.raw_id)
+            )
+          )
         )
       order by child_sessions.session_key, parent_turns.turn_index, spans.span_index
     )

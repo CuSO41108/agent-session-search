@@ -103,4 +103,51 @@ describe("findSessionFamily", () => {
     expect(childFamily.parentOriginTurnIndex).toBe(1);
     expect(childFamily.parent?.originTurnIndex).toBeNull();
   });
+
+  it("recognizes the persisted subagent started activity as the spawn origin", async () => {
+    const messages: SessionMessage[] = [
+      {
+        index: 0,
+        role: "user",
+        content: "first",
+        timestamp: "2026-08-12T09:00:00.000Z",
+        sourceTurnId: "turn-1",
+      },
+      {
+        index: 1,
+        role: "user",
+        content: "delegate",
+        timestamp: "2026-08-12T09:05:00.000Z",
+        sourceTurnId: "turn-2",
+      },
+    ];
+    const traces: SessionTraceEvent[] = [{
+      index: 0,
+      kind: "event",
+      source: "codex",
+      title: "subagent · started",
+      detail: "",
+      timestamp: "2026-08-12T09:05:01.000Z",
+      eventType: "codex.collaboration.activity",
+      status: "completed",
+      sourceTurnId: "turn-2",
+      attributes: {
+        codex: { rawType: "sub_agent_activity" },
+        collaboration: { kind: "started", agentThreadId: "child" },
+      },
+    }];
+    await repository.upsertIndexedSession(session({}), messages, [], traces);
+    await repository.upsertIndexedSession(session({
+      sessionKey: "codex:child",
+      rawId: "child",
+      filePath: "/tmp/child.jsonl",
+      originalTitle: "Child",
+      firstQuestion: "Child",
+      isSubagent: true,
+      parentSessionId: "root",
+    }), [], [], []);
+
+    expect((await findSessionFamily(database, "codex:root")).children[0].originTurnIndex).toBe(1);
+    expect((await findSessionFamily(database, "codex:child")).parentOriginTurnIndex).toBe(1);
+  });
 });
