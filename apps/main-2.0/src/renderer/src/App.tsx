@@ -93,6 +93,7 @@ import { useAutomation } from "./features/automation/automation-provider";
 import { selectWorkbenchWorkflows, selectWorkbenchWorkflowSummaries } from "./features/automation/workbench-workflows";
 import {
   canMigrateSession,
+  isSidebarProjectVisible,
   isBranchTag,
   displayTagName,
   resumeActionLabel,
@@ -775,14 +776,23 @@ export function App(): ReactElement {
     for (const entry of projectTags) {
       tagMap.set(`${entry.environmentId}\0${entry.projectPath}`, entry.tags);
     }
-    const groups = new Map<string, { environment: SessionEnvironment | null; projects: Array<ProjectSummary & { tags: string[] }> }>();
+    const groups = new Map<string, {
+      environment: SessionEnvironment | null;
+      projects: Array<ProjectSummary & { tags: string[] }>;
+      emptyProjects: Array<ProjectSummary & { tags: string[] }>;
+    }>();
     for (const project of projects) {
       const environment = environments.find((env) => env.id === project.environmentId) ?? null;
       const key = project.environmentId;
       const projectTagsList = tagMap.get(`${project.environmentId}\0${project.path}`) ?? [];
       const group = groups.get(key);
-      if (group) group.projects.push({ ...project, tags: projectTagsList });
-      else groups.set(key, { environment, projects: [{ ...project, tags: projectTagsList }] });
+      const target = isSidebarProjectVisible(project, projectPath, projectEnvironmentId) ? "projects" : "emptyProjects";
+      if (group) group[target].push({ ...project, tags: projectTagsList });
+      else groups.set(key, {
+        environment,
+        projects: target === "projects" ? [{ ...project, tags: projectTagsList }] : [],
+        emptyProjects: target === "emptyProjects" ? [{ ...project, tags: projectTagsList }] : [],
+      });
     }
     return [...groups.values()].sort(
       (a, b) =>

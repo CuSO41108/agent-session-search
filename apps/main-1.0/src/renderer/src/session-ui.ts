@@ -186,13 +186,29 @@ export function projectSortTimestamp(project: Pick<ProjectSummary, "createdAt" |
   return project.lastActivityAt || project.createdAt || 0;
 }
 
+export function isSidebarProjectVisible(
+  project: Pick<ProjectSummary, "path" | "environmentId" | "sessionCount">,
+  selectedProjectPath: string | undefined,
+  selectedEnvironmentId: string | undefined,
+): boolean {
+  return project.sessionCount > 0
+    || (project.path === selectedProjectPath && project.environmentId === selectedEnvironmentId);
+}
+
 export function projectDisplayLabel(
   project: Pick<ProjectSummary, "label" | "labelKind" | "labelSuffix">,
   language: LanguageMode,
 ): string {
-  const base = project.labelKind === "codex-task-untitled"
+  const opaqueLabel = /^[a-f\d]{8}(?:-[a-f\d]{4,})+$/iu.test(project.label.trim());
+  const base = opaqueLabel
+    ? localize(language, "Unnamed workspace", "未命名工作区")
+    : project.labelKind === "codex-task-untitled"
     ? localize(language, "Untitled session", "未命名会话")
     : project.label;
+  if (opaqueLabel) {
+    const shortId = project.label.replace(/[^a-f\d]/giu, "").slice(-8);
+    return `${base} · ${shortId}`;
+  }
   return project.labelSuffix ? `${base} · ${project.labelSuffix}` : base;
 }
 

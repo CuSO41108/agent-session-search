@@ -243,6 +243,10 @@ export class RemoteSessionService {
     const store = this.dependencies.getStore();
     const initialSession = store.getSession(sessionKey);
     if (!initialSession) throw new Error("Session not found.");
+    const binding = store.getSessionSyncBindingForLocalKey(sessionKey);
+    if (binding?.direction === "restore") {
+      throw new Error("Cloud-bound restore copies are read-only; upload the original session or restore as an independent copy.");
+    }
     const sourceDescriptor = sessionSourceDescriptor(initialSession.source);
     if (!sourceDescriptor.capabilities.sessionSync) {
       throw new Error(`${sourceDescriptor.label} sessions cannot be saved remotely yet.`);
@@ -254,7 +258,6 @@ export class RemoteSessionService {
     await this.runBounded(descendants, 4, async (descendant) => {
       await this.prepareSessionForUpload(store, descendant);
     });
-    const binding = store.getSessionSyncBindingForLocalKey(sessionKey);
     const targetRemoteId = binding?.remoteSessionId ?? remoteSessionId(sessionKey);
     const existingRemote = binding || session.sourceAvailable === false
       ? await client.getRemoteSession(targetRemoteId).catch((error) => {
@@ -278,6 +281,9 @@ export class RemoteSessionService {
       this.dependencies.getSettings().syncSessionAttachments,
       preservedSourceArchive,
     );
+    if (existingRemote && existingRemote.messageCount > payload.message_count) {
+      throw new Error("This upload cannot overwrite a cloud session with fewer messages than the complete remote copy.");
+    }
     if (existingRemote?.contentHash === payload.content_hash) {
       store.upsertSessionSyncBinding({
         localSessionKey: sessionKey,
@@ -406,12 +412,13 @@ export class RemoteSessionService {
     target: MigrationAgent,
     localProjectPath: string,
     onProgress: (progress: SessionMigrationProgress) => void,
+    bind = false,
   ): Promise<SessionMigrationResult> {
     const client = this.createClient();
     const portable = await client.getPortableSession(remoteId);
     const deps = await this.dependencies.createLocalRestoreDependencies(onProgress);
     const result = await this.operations.restorePortable({ remoteId, portable, target, localProjectPath, deps });
-    await this.bindRestoredSession(client, remoteId, result.targetSessionId);
+    if (bind) await this.bindRestoredSession(client, remoteId, result.targetSessionId);
     return result;
   }
 
@@ -419,6 +426,7 @@ export class RemoteSessionService {
     remoteId: string,
     target: MigrationAgent,
     onProgress: (progress: SessionMigrationProgress) => void,
+    bind = false,
   ): Promise<SessionMigrationResult> {
     const client = this.createClient();
     const remote = await client.getRemoteSession(remoteId);
@@ -438,7 +446,7 @@ export class RemoteSessionService {
       localProjectPath: portable.projectPath,
       deps,
     });
-    await this.bindRestoredSession(client, remoteId, result.targetSessionId);
+    if (bind) await this.bindRestoredSession(client, remoteId, result.targetSessionId);
     return result;
   }
 

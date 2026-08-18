@@ -902,7 +902,7 @@ describe("RemoteSessionService cloud orchestration", () => {
     });
     const onProgress = vi.fn();
 
-    await expect(harness.service.restore("remote-1", "codex", "/tmp/project", onProgress)).resolves.toEqual(
+    await expect(harness.service.restore("remote-1", "codex", "/tmp/project", onProgress, true)).resolves.toEqual(
       migrationResult(),
     );
 
@@ -922,6 +922,67 @@ describe("RemoteSessionService cloud orchestration", () => {
       lastSyncedAt: 123,
       direction: "restore",
     });
+  });
+
+  it("keeps a default restore independent from its cloud source", async () => {
+    const restored = localSession({ sessionKey: "local:restored", rawId: "restored-session" });
+    const harness = createHarness({
+      settings: configuredSettings(),
+      sessions: [restored],
+      localRevision: "restored-revision",
+    });
+
+    await expect(harness.service.restore("remote-1", "codex", "/tmp/project", vi.fn(), false)).resolves.toEqual(
+      migrationResult(),
+    );
+
+    expect(harness.store.upsertSessionSyncBinding).not.toHaveBeenCalled();
+  });
+
+  it("never uploads a restore binding back into its source cloud session", async () => {
+    const harness = createHarness({
+      settings: configuredSettings(),
+      bindings: [{
+        localSessionKey: "local:session-1",
+        remoteSessionId: "remote-1",
+        lastLocalRevision: "old-local",
+        lastRemoteRevision: "remote-revision",
+        lastSyncedAt: 1,
+        direction: "restore",
+      }],
+    });
+
+    await expect(harness.service.upload("local:session-1")).rejects.toThrow(
+      "bound restore copies are read-only",
+    );
+    expect(harness.client.uploadSession).not.toHaveBeenCalled();
+  });
+
+  it("rejects an upload that would shrink a complete cloud session to the visible branch", async () => {
+    const harness = createHarness({
+      settings: configuredSettings(),
+      bindings: [{
+        localSessionKey: "local:session-1",
+        remoteSessionId: "remote-1",
+        lastLocalRevision: "old-local",
+        lastRemoteRevision: "remote-revision",
+        lastSyncedAt: 1,
+        direction: "upload",
+      }],
+      remote: remoteSession({ messageCount: 205 }),
+    });
+    harness.buildUpload.mockReturnValue({
+      payload: { content_hash: "new-local", message_count: 41 },
+      detailJson: "{}",
+      portableJson: "{}",
+      attachmentObjects: [],
+      sourceObjects: [],
+    } as unknown as ReturnType<RemoteSessionServiceOperations["buildUpload"]>);
+
+    await expect(harness.service.upload("local:session-1")).rejects.toThrow(
+      "cannot overwrite a cloud session with fewer messages",
+    );
+    expect(harness.client.uploadSession).not.toHaveBeenCalled();
   });
 
   it("rejects source-environment restore for non-SSH sessions or unavailable SSH environments", async () => {
