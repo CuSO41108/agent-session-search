@@ -4,9 +4,11 @@ import {
   canMigrateSession,
   environmentBadgeLabel,
   environmentBadgeTitle,
+  isSidebarProjectVisible,
   migrationTargetsForSession,
   sessionAvailableSources,
   sourceMigrationAgent,
+  projectDisplayLabel,
   sourceFilters,
   sourceUiFamily,
   supportsResumeSource,
@@ -49,21 +51,29 @@ describe("migrationTargetsForSession", () => {
 
 describe("usageCacheRate", () => {
   it("treats cache creation as a miss and cache reads as hits", () => {
-    expect(usageCacheRate({
-      inputTokens: 500,
-      cachedInputTokens: 300,
-      cacheCreationInputTokens: 2_000,
-    })).toBe(10.7);
+    expect(usageCacheRate({ inputTokens: 500, cachedInputTokens: 300, cacheCreationInputTokens: 2_000 })).toBe(10.7);
   });
 });
 
 describe("environment badges", () => {
   it("identifies WSL sessions without presenting them as ordinary local sessions", () => {
     const session = { environmentKind: "wsl", environmentLabel: "Ubuntu-24.04" } as const;
-
     expect(environmentBadgeLabel(session, "en")).toBe("WSL · Ubuntu-24.04");
     expect(environmentBadgeTitle(session, "en")).toBe("Local WSL environment: Ubuntu-24.04");
     expect(environmentBadgeTitle(session, "zh")).toBe("本地 WSL 环境：Ubuntu-24.04");
+  });
+});
+
+describe("sidebar project presentation", () => {
+  it("keeps empty workspace rows out of the active project list unless selected", () => {
+    const project = { path: "C:/workspace/ebb3b242", environmentId: "local", sessionCount: 0 };
+    expect(isSidebarProjectVisible(project, undefined, undefined)).toBe(false);
+    expect(isSidebarProjectVisible(project, project.path, project.environmentId)).toBe(true);
+  });
+
+  it("uses a readable label for opaque workspace ids", () => {
+    expect(projectDisplayLabel({ label: "ebb3b242-1234-5678-90ab-cdef01234567", labelKind: "path", labelSuffix: null }, "zh"))
+      .toBe("未命名工作区 · 01234567");
   });
 });
 

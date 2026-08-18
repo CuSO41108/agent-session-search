@@ -243,6 +243,7 @@ export class RemoteSessionService {
     const store = this.dependencies.getStore();
     const initialSession = await store.getSession(sessionKey);
     if (!initialSession) throw new Error("Session not found.");
+    const binding = await store.getSessionSyncBindingForLocalKey(sessionKey);
     const sourceDescriptor = sessionSourceDescriptor(initialSession.source);
     if (!sourceDescriptor.capabilities.sessionSync) {
       throw new Error(`${sourceDescriptor.label} sessions cannot be saved remotely yet.`);
@@ -257,7 +258,6 @@ export class RemoteSessionService {
     await this.runBounded(descendants, 4, async (descendant) => {
       await this.prepareSessionForUpload(store, descendant);
     });
-    const binding = await store.getSessionSyncBindingForLocalKey(sessionKey);
     const targetRemoteId = binding?.remoteSessionId ?? remoteSessionId(sessionKey);
     const existingRemote = binding || session.sourceAvailable === false
       ? await client.getRemoteSession(targetRemoteId).catch((error) => {
@@ -281,6 +281,9 @@ export class RemoteSessionService {
       this.dependencies.getSettings().syncSessionAttachments,
       preservedSourceArchive,
     );
+    if (existingRemote && existingRemote.messageCount > payload.message_count) {
+      throw new Error("This upload cannot overwrite a cloud session with fewer messages than the complete remote copy.");
+    }
     if (existingRemote?.contentHash === payload.content_hash) {
       await store.upsertSessionSyncBinding({
         localSessionKey: sessionKey,
@@ -410,6 +413,7 @@ export class RemoteSessionService {
     target: MigrationAgent,
     localProjectPath: string,
     onProgress: (progress: SessionMigrationProgress) => void,
+    bind = false,
   ): Promise<SessionMigrationResult> {
     const client = this.createClient();
     const portable = await client.getPortableSession(remoteId);
@@ -422,7 +426,7 @@ export class RemoteSessionService {
       completeTokenLimit: this.dependencies.getSettings().migrationCompleteTokenLimit,
       deps,
     });
-    await this.bindRestoredSession(client, remoteId, result.targetSessionId);
+    if (bind) await this.bindRestoredSession(client, remoteId, result.targetSessionId);
     return result;
   }
 
@@ -430,6 +434,7 @@ export class RemoteSessionService {
     remoteId: string,
     target: MigrationAgent,
     onProgress: (progress: SessionMigrationProgress) => void,
+    bind = false,
   ): Promise<SessionMigrationResult> {
     const client = this.createClient();
     const remote = await client.getRemoteSession(remoteId);
@@ -450,7 +455,7 @@ export class RemoteSessionService {
       completeTokenLimit: this.dependencies.getSettings().migrationCompleteTokenLimit,
       deps,
     });
-    await this.bindRestoredSession(client, remoteId, result.targetSessionId);
+    if (bind) await this.bindRestoredSession(client, remoteId, result.targetSessionId);
     return result;
   }
 
@@ -554,7 +559,7 @@ export class RemoteSessionService {
         lastLocalRevision: built.payload.content_hash,
         lastRemoteRevision: remote.contentHash,
         lastSyncedAt: this.dependencies.now(),
-        direction: "restore",
+        direction: "upload",
       });
     } catch {
       // The restored conversation remains usable if recording its sync relation fails.
