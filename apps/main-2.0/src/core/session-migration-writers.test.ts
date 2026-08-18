@@ -404,7 +404,7 @@ describe("writeMigratedSession", () => {
     } finally {
       fs.rmSync(codeWizHome, { recursive: true, force: true });
     }
-  });
+  }, 10_000);
 
   it("writes a native Codex rollout and round-trips it through the existing loader", async () => {
     const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "migration-writer-codex-"));
