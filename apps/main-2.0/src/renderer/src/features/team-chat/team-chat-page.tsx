@@ -168,6 +168,7 @@ export function TeamChatPage({
   const [selectedRoomId, setSelectedRoomId] = useState<string>();
   const selectedRoomIdRef = useRef<string | undefined>(undefined);
   const [activeRoom, setActiveRoom] = useState<TeamChatRoom>();
+  const activeRoomIdRef = useRef<string | undefined>(undefined);
   const [messages, setMessages] = useState<TeamChatMessage[]>([]);
   const [nextBefore, setNextBefore] = useState<string>();
   const [loadingRooms, setLoadingRooms] = useState(false);
@@ -187,11 +188,14 @@ export function TeamChatPage({
   const [createOpen, setCreateOpen] = useState(false);
   const [addEmployeeOpen, setAddEmployeeOpen] = useState(false);
   const [roomActionsOpen, setRoomActionsOpen] = useState(false);
+  const [deletingRoomId, setDeletingRoomId] = useState<string>();
+  const deletingRoomIdRef = useRef<string | undefined>(undefined);
   const composerRef = useRef<HTMLTextAreaElement>(null);
   const transcriptEndRef = useRef<HTMLDivElement>(null);
   const skipNextAutoScrollRef = useRef(false);
 
   selectedRoomIdRef.current = selectedRoomId;
+  activeRoomIdRef.current = activeRoom?.id;
 
   const mentionContext = useMemo(
     () => activeMentionContext(composer, composerCursor),
@@ -293,7 +297,10 @@ export function TeamChatPage({
         refreshRooms: () => void loadRooms(),
         refreshActiveRoom: (roomId) => {
           void api.getRoom(roomId).then((room) => {
-            if (selectedRoomIdRef.current === roomId) setActiveRoom(room);
+            if (selectedRoomIdRef.current === roomId) {
+              activeRoomIdRef.current = room?.id;
+              setActiveRoom(room);
+            }
           }).catch((error) => setFeedback(errorMessage(error)));
         },
       });
@@ -311,6 +318,7 @@ export function TeamChatPage({
     setAddEmployeeOpen(false);
     setMentionMenuOpen(false);
     if (!selectedRoomId || connection.state !== "ready") {
+      activeRoomIdRef.current = undefined;
       setActiveRoom(undefined);
       setMessages([]);
       setNextBefore(undefined);
@@ -324,6 +332,7 @@ export function TeamChatPage({
       api.listMessages({ roomId: selectedRoomId, limit: 100 }),
     ]).then(([room, page]) => {
       if (!active) return;
+      activeRoomIdRef.current = room?.id;
       setActiveRoom(room);
       setMessages(page.messages);
       setNextBefore(page.nextBefore);
@@ -475,24 +484,32 @@ export function TeamChatPage({
     }
   };
 
-  const deleteRoom = async (): Promise<void> => {
-    if (!activeRoom) return;
+  const deleteRoom = async (room: Pick<TeamChatRoomSummary, "id" | "name">): Promise<void> => {
+    if (deletingRoomIdRef.current) return;
     const confirmed = window.confirm(l(
-      `Permanently delete “${activeRoom.name}” and all of its messages? This cannot be undone.`,
-      `永久删除“${activeRoom.name}”及其中的全部消息？此操作无法撤销。`,
+      `Permanently delete “${room.name}” and all of its messages? This cannot be undone.`,
+      `永久删除“${room.name}”及其中的全部消息？此操作无法撤销。`,
     ));
     if (!confirmed) return;
+    deletingRoomIdRef.current = room.id;
+    setDeletingRoomId(room.id);
     setRoomActionsOpen(false);
     setFeedback(undefined);
     try {
-      await api.deleteRoom(activeRoom.id);
-      setActiveRoom(undefined);
-      setMessages([]);
-      setStreams({});
-      setActiveRootMessageId(undefined);
+      await api.deleteRoom(room.id);
+      if (activeRoomIdRef.current === room.id) {
+        activeRoomIdRef.current = undefined;
+        setActiveRoom(undefined);
+        setMessages([]);
+        setStreams({});
+        setActiveRootMessageId(undefined);
+      }
       await loadRooms();
     } catch (error) {
       setFeedback(errorMessage(error));
+    } finally {
+      deletingRoomIdRef.current = undefined;
+      setDeletingRoomId(undefined);
     }
   };
 
@@ -591,7 +608,10 @@ export function TeamChatPage({
         roomId: activeRoom.id,
         agentId: member.agentId,
       });
-      if (selectedRoomIdRef.current === room.id) setActiveRoom(room);
+      if (selectedRoomIdRef.current === room.id) {
+        activeRoomIdRef.current = room.id;
+        setActiveRoom(room);
+      }
     } catch (error) {
       setFeedback(errorMessage(error));
     } finally {
@@ -640,15 +660,31 @@ export function TeamChatPage({
             <div className="team-chat-room-list">
               {loadingRooms && rooms.length === 0 ? <LoaderCircle className="spin" size={16} /> : null}
               {rooms.map((room) => (
-                <button
-                  type="button"
+                <div
                   key={room.id}
-                  className={room.id === selectedRoomId ? "active" : ""}
-                  onClick={() => setSelectedRoomId(room.id)}
+                  className={`team-chat-room-item${room.id === selectedRoomId ? " active" : ""}`}
                 >
-                  <strong>{room.name}</strong>
-                  <span>{room.lastMessage || l(`${room.agentCount} employees`, `${room.agentCount} 名员工`)}</span>
-                </button>
+                  <button
+                    className="team-chat-room-select"
+                    type="button"
+                    onClick={() => setSelectedRoomId(room.id)}
+                  >
+                    <strong>{room.name}</strong>
+                    <span>{room.lastMessage || l(`${room.agentCount} employees`, `${room.agentCount} 名员工`)}</span>
+                  </button>
+                  <button
+                    className="team-chat-room-delete"
+                    type="button"
+                    disabled={deletingRoomId !== undefined}
+                    onClick={() => void deleteRoom(room)}
+                    title={l(`Delete room “${room.name}”`, `删除房间“${room.name}”`)}
+                    aria-label={l(`Delete room “${room.name}”`, `删除房间“${room.name}”`)}
+                  >
+                    {deletingRoomId === room.id
+                      ? <LoaderCircle className="spin" size={13} />
+                      : <Trash2 size={13} />}
+                  </button>
+                </div>
               ))}
               {!loadingRooms && rooms.length === 0 ? (
                 <div className="team-chat-room-empty">
@@ -690,8 +726,16 @@ export function TeamChatPage({
                           <Archive size={14} />
                           {l("Archive studio", "归档工作室")}
                         </button>
-                        <button className="danger" type="button" role="menuitem" onClick={() => void deleteRoom()}>
-                          <Trash2 size={14} />
+                        <button
+                          className="danger"
+                          type="button"
+                          role="menuitem"
+                          disabled={deletingRoomId !== undefined}
+                          onClick={() => void deleteRoom(activeRoom)}
+                        >
+                          {deletingRoomId === activeRoom.id
+                            ? <LoaderCircle className="spin" size={14} />
+                            : <Trash2 size={14} />}
                           {l("Delete permanently", "永久删除")}
                         </button>
                       </div>
