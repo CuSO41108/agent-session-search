@@ -11,12 +11,16 @@ import {
   sanitizeCodexTraceValue,
 } from "./session-loaders/codex-rollout";
 import {
+  DEEPSEEK_HARNESS_DIR,
+} from "./deepseek-harness";
+import {
   CODEWIZ_SHARE_DIR,
   PI_SESSIONS_DIR,
   QODER_DIR,
   TRAE_DIR_NAMES,
   loadCodeWizSessions,
   loadCursorAgentSessionsIterator,
+  loadDeepSeekCliSessionsIterator,
   loadHermesSessions,
   loadOpenClawSessionsIterator,
   loadOpenCodeSessions,
@@ -1909,6 +1913,12 @@ export function* loadDefaultSessionsIterator(options: SessionLoadOptions = {}): 
     for (const dirName of TRAE_DIR_NAMES) yield* loadTraeSessionsIterator(path.join(homeDir, dirName), options);
   }
   if (options.includeQoder) yield* loadQoderSessionsIterator(path.join(homeDir, QODER_DIR), options);
+  if (options.includeDeepSeekCli) {
+    const deepSeekDir = options.homeDir === undefined
+      ? process.env.DSH_HOME?.trim() || path.join(homeDir, DEEPSEEK_HARNESS_DIR)
+      : path.join(homeDir, DEEPSEEK_HARNESS_DIR);
+    yield* loadDeepSeekCliSessionsIterator(deepSeekDir, options);
+  }
   if (options.includePi) yield* loadPiSessionsIterator(path.join(homeDir, PI_SESSIONS_DIR), options);
   if (options.includeTclaude) yield* loadClaudeCliSessionsIterator(path.join(homeDir, TCLAUDE_DIR), "tclaude-cli", options);
   if (options.includeTcodex) yield* loadCodexSessionsIterator(path.join(homeDir, TCODEX_DIR), "tcodex-cli", options);
@@ -1948,6 +1958,12 @@ export async function* loadDefaultSessionsAsyncIterator(options: SessionLoadOpti
     for (const dirName of TRAE_DIR_NAMES) yield* loadTraeSessionsIterator(path.join(homeDir, dirName), options);
   }
   if (options.includeQoder) yield* loadQoderSessionsIterator(path.join(homeDir, QODER_DIR), options);
+  if (options.includeDeepSeekCli) {
+    const deepSeekDir = options.homeDir === undefined
+      ? process.env.DSH_HOME?.trim() || path.join(homeDir, DEEPSEEK_HARNESS_DIR)
+      : path.join(homeDir, DEEPSEEK_HARNESS_DIR);
+    yield* loadDeepSeekCliSessionsIterator(deepSeekDir, options);
+  }
   if (options.includePi) yield* loadPiSessionsIterator(path.join(homeDir, PI_SESSIONS_DIR), options);
   if (options.includeTclaude) yield* loadClaudeCliSessionsIterator(path.join(homeDir, TCLAUDE_DIR), "tclaude-cli", options);
   if (options.includeTcodex) yield* loadCodexSessionsAsyncIterator(path.join(homeDir, TCODEX_DIR), "tcodex-cli", options);

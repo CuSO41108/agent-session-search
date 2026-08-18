@@ -1,3 +1,4 @@
+import { deleteDeepSeekCliSessionDirectory } from "./deepseek-harness";
 import { deleteHermesSession } from "./hermes-session-writer";
 import { isLocalSessionStorage } from "./session-environment";
 import { deleteLocalSessionSources } from "./session-source-delete";
@@ -252,6 +253,12 @@ export class SessionStore {
     }
     if (target.source === "hermes") {
       if (target.sourceAvailable) deleteHermesSession(target.filePath, target.rawId);
+      return this.deleteSessionTargetRecords(targets, sessionKey);
+    }
+    if (target.source === "deepseek-cli") {
+      for (const item of targets) {
+        if (item.sourceAvailable) deleteDeepSeekCliSessionDirectory(item.filePath);
+      }
       return this.deleteSessionTargetRecords(targets, sessionKey);
     }
     if (target.source === "opencode-cli") throw new Error("Cannot delete shared OpenCode source database.");

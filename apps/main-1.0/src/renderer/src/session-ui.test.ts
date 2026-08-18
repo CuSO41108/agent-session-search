@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { defaultSettings } from "../../core/platform";
-import { canMigrateSession, migrationTargetsForSession, sourceFilters } from "./session-ui";
+import { canMigrateSession, migrationTargetsForSession, sourceFilters, sourceMigrationAgent, sourceUiFamily, supportsResumeSource } from "./session-ui";
 
 const settings = { includeTclaude: false, includeTcodex: false };
 
@@ -24,6 +24,15 @@ describe("migrationTargetsForSession", () => {
   it("keeps local and WSL target behavior", () => {
     expect(migrationTargetsForSession({ source: "claude-cli", environmentId: "local", environmentKind: "local" }, settings)).toEqual(["claude", "codex", "codebuddy", "codewiz", "cursor"]);
     expect(migrationTargetsForSession({ source: "codex-cli", environmentId: "wsl-1", environmentKind: "wsl" }, settings)).toEqual(["claude", "codex"]);
+  });
+
+  it("safely disables actions for a stale persisted source", () => {
+    const source = "workbuddy-cli" as never;
+    const session = { source, environmentId: "local", environmentKind: "local" } as const;
+    expect(sourceUiFamily(source)).toBe("other");
+    expect(supportsResumeSource(source)).toBe(false);
+    expect(sourceMigrationAgent(source)).toBeNull();
+    expect(migrationTargetsForSession(session, settings)).toEqual([]);
   });
 });
 

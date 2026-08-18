@@ -51,12 +51,16 @@ import {
   inspectMigrationCli,
   mergeAppSettings,
   normalizeTerminal,
+  openDeepSeekWebInTerminal,
   openNativeApp,
   openMigrationResumeInTerminal,
   openResumeInSpecificTerminal,
   openResumeInTerminal,
+  probeDeepSeekWeb,
   revealInFileManager,
+  waitForDeepSeekWeb,
 } from "../core/platform";
+import { DEEPSEEK_WEB_URL, openDeepSeekWebSessionPage } from "./deepseek-web-session";
 import { loadUsageQuotaSnapshot } from "../core/quota";
 import { repairLegacyAgentRecallCodexRollouts } from "../core/codex-migration-repair";
 import { focusLiveSessionTerminal, setLiveSessionTerminalTitle } from "../core/session-focus";
@@ -236,6 +240,7 @@ bootstrapApplicationPaths({
 
 let mainWindow: BrowserWindow | null = null;
 let quickSearchWindow: BrowserWindow | null = null;
+let deepSeekWebWindow: BrowserWindow | null = null;
 const interfaceZoomController = createInterfaceZoomController(() => [mainWindow, quickSearchWindow]);
 let tray: Tray | null = null;
 let store: SessionStore;
@@ -916,6 +921,57 @@ function createQuickSearchWindow(): BrowserWindow {
   return window;
 }
 
+function getDeepSeekWebWindow(): BrowserWindow {
+  if (deepSeekWebWindow && !deepSeekWebWindow.isDestroyed()) return deepSeekWebWindow;
+  const allowedOrigin = new URL(DEEPSEEK_WEB_URL).origin;
+  const window = new BrowserWindow({
+    width: 1280,
+    height: 840,
+    minWidth: 860,
+    minHeight: 600,
+    show: false,
+    title: "DeepSeek Harness",
+    backgroundColor: "#0a0b0d",
+    webPreferences: {
+      sandbox: true,
+      contextIsolation: true,
+      nodeIntegration: false,
+      partition: "persist:deepseek-harness-web",
+    },
+  });
+  window.webContents.setWindowOpenHandler(({ url }) => {
+    const externalUrl = normalizeExternalLink(url);
+    if (externalUrl) void shell.openExternal(externalUrl);
+    return { action: "deny" };
+  });
+  window.webContents.on("will-navigate", (event, url) => {
+    try {
+      if (new URL(url).origin === allowedOrigin) return;
+    } catch {
+      // Invalid URLs are denied below.
+    }
+    event.preventDefault();
+    const externalUrl = normalizeExternalLink(url);
+    if (externalUrl) void shell.openExternal(externalUrl);
+  });
+  window.on("closed", () => {
+    if (deepSeekWebWindow === window) deepSeekWebWindow = null;
+  });
+  deepSeekWebWindow = window;
+  return window;
+}
+
+async function showDeepSeekWebSession(sessionId: string): Promise<void> {
+  const window = getDeepSeekWebWindow();
+  window.hide();
+  await openDeepSeekWebSessionPage({
+    loadURL: (url) => window.loadURL(url),
+    executeJavaScript: (script) => window.webContents.executeJavaScript(script),
+    show: () => window.show(),
+    focus: () => window.focus(),
+  }, sessionId);
+}
+
 function showQuickSearch(): void {
   if (!quickSearchWindow || quickSearchWindow.isDestroyed()) {
     quickSearchWindow = createQuickSearchWindow();
@@ -1203,6 +1259,7 @@ function runIndexSync(): Promise<IndexStatus> {
         includeCursorAgent: settings.includeCursorAgent,
         includeTrae: settings.includeTrae,
         includeQoder: settings.includeQoder,
+        includeDeepSeekCli: settings.includeDeepSeekCli,
       },
     }, {
       onEnvironmentsChanged: emitEnvironmentsUpdated,
@@ -2229,6 +2286,17 @@ function registerIpc(): void {
     if (!isLocalSessionEnvironment(session)) {
       await ensureRemoteResumePreflight(session);
       await openResumeInTerminal(session, getSettings(), { sshArgs });
+      store.markResumed(sessionKey);
+      return { route: "resume" as const };
+    }
+    if (session.source === "deepseek-cli") {
+      if (!await probeDeepSeekWeb()) {
+        await openDeepSeekWebInTerminal(session.projectPath || homedir(), getSettings());
+        if (!await waitForDeepSeekWeb()) {
+          throw new Error("DeepSeek Harness Web did not start on http://127.0.0.1:3080.");
+        }
+      }
+      await showDeepSeekWebSession(session.rawId);
       store.markResumed(sessionKey);
       return { route: "resume" as const };
     }

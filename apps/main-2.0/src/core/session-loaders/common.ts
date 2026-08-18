@@ -33,6 +33,7 @@ export interface SessionLoadOptions {
   includeTrae?: boolean;
   includeQoder?: boolean;
   includePi?: boolean;
+  includeDeepSeekCli?: boolean;
   cursorStateDbPath?: string;
   cursorWorkspacePathMap?: ReadonlyMap<string, string>;
   shouldSkipFile?: (
@@ -311,7 +312,8 @@ export function createIndexedSession(input: {
     | "cursor"
     | "trae"
     | "qoder"
-    | "pi";
+    | "pi"
+    | "deepseek";
   rawId: string;
   source: SessionSource;
   projectPath: string;

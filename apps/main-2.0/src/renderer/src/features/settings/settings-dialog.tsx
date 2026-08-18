@@ -784,6 +784,19 @@ export function SettingsDialog({
                     onChange={(event) => onSettingsChange({ includeQoder: event.currentTarget.checked })}
                   />
                 </label>
+                <label className="settings-field settings-toggle">
+                  <div className="settings-field-text">
+                    <span className="settings-field-title">Include DeepSeek Harness</span>
+                    <span className="settings-field-sub">{l("Indexes local DeepSeek Harness (dsh) sessions from DSH_HOME (default: ~/.dsh).", "从 DSH_HOME（默认 ~/.dsh）索引本地 DeepSeek Harness（dsh）会话。")}</span>
+                  </div>
+                  <input
+                    type="checkbox"
+                    className="switch"
+                    checked={Boolean(settings?.includeDeepSeekCli)}
+                    disabled={!settings}
+                    onChange={(event) => onSettingsChange({ includeDeepSeekCli: event.currentTarget.checked })}
+                  />
+                </label>
               </section>
             ) : null}
             {activeSection === "usage" ? (

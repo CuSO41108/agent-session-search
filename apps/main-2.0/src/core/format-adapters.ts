@@ -322,6 +322,7 @@ export const zcodeAdapter = genericAdapter("zcode");
 export const codeWizAdapter = genericAdapter("codewiz");
 export const traeAdapter = genericAdapter("trae");
 export const qoderAdapter = genericAdapter("qoder");
+export const deepseekAdapter = genericAdapter("deepseek");
 export const piAdapter: FormatAdapter = {
   format: "pi",
   parseLine(raw) {
@@ -367,6 +368,7 @@ export function getAdapter(sourceOrFormat: SessionSource | SessionFormat): Forma
   if (sourceOrFormat === "trae") return traeAdapter;
   if (sourceOrFormat === "qoder") return qoderAdapter;
   if (sourceOrFormat === "pi") return piAdapter;
+  if (sourceOrFormat === "deepseek") return deepseekAdapter;
   const format = getFormatForSource(sourceOrFormat);
   if (format === "claude") return claudeAdapter;
   if (format === "codebuddy") return codebuddyAdapter;
@@ -380,6 +382,7 @@ export function getAdapter(sourceOrFormat: SessionSource | SessionFormat): Forma
   if (format === "trae") return traeAdapter;
   if (format === "qoder") return qoderAdapter;
   if (format === "pi") return piAdapter;
+  if (format === "deepseek") return deepseekAdapter;
   return codexAdapter;
 }
 
