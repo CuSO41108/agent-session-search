@@ -1,10 +1,15 @@
 import type { SessionStore } from "../../core/session-store";
 import type {
+  SessionDeleteOptions,
   SessionBulkDeleteIssue,
   SessionBulkDeletePreview,
   SessionBulkDeleteRequest,
   SessionBulkDeleteResult,
   SessionBulkDeleteTarget,
+} from "../../core/session-bulk-delete";
+import {
+  SESSION_BULK_DELETE_CONFIRMATION_THRESHOLD,
+  SESSION_DELETE_CONFIRMATION_REQUIRED_MESSAGE,
 } from "../../core/session-bulk-delete";
 import { deleteLocalSessionSources } from "../../core/session-source-delete";
 import { sessionSourceDescriptor } from "../../core/session-sources";
@@ -15,6 +20,10 @@ import { deleteZcodeSessions } from "../../core/zcode-session-writer";
 const SHARED_DATABASE_SOURCES = new Set<SessionSource>(["hermes", "opencode-cli", "codewiz-cli"]);
 const WSL_FILE_SOURCES = new Set<SessionSource>(["codex-cli", "codex-app", "claude-cli", "claude-app"]);
 
+interface SessionBulkDeleteOptions extends SessionDeleteOptions {
+  requireSingleSession?: boolean;
+}
+
 export class SessionBulkDeleteService {
   constructor(private readonly store: SessionStore) {}
 
@@ -22,8 +31,33 @@ export class SessionBulkDeleteService {
     return this.preflight(request).preview;
   }
 
-  async delete(request: SessionBulkDeleteRequest): Promise<SessionBulkDeleteResult> {
-    const { preview, targets } = this.preflight(request);
+  async delete(
+    request: SessionBulkDeleteRequest,
+    options: SessionBulkDeleteOptions = {},
+  ): Promise<SessionBulkDeleteResult> {
+    const confirmed = options.confirmed === true;
+    const allowLiveSessions = confirmed && options.allowLiveSessions === true;
+    const { preview, targets } = this.preflight(request, allowLiveSessions);
+    if (
+      options.requireSingleSession
+      && (
+        (!confirmed && preview.expandedCount > 1)
+        || preview.skipped.some((issue) => issue.reason === "live")
+      )
+    ) {
+      throw new Error(SESSION_DELETE_CONFIRMATION_REQUIRED_MESSAGE);
+    }
+    if (
+      !options.requireSingleSession
+      && request.confirmed !== true
+      && (
+        preview.deletableCount >= SESSION_BULK_DELETE_CONFIRMATION_THRESHOLD
+        || preview.hasRelatedSessions
+        || preview.includesOpenSession
+      )
+    ) {
+      throw new Error(SESSION_DELETE_CONFIRMATION_REQUIRED_MESSAGE);
+    }
     if (targets.length === 0) return { ...preview, deletedSessionKeys: [], failed: [] };
     const failed: SessionBulkDeleteIssue[] = [];
     const successfulKeys = new Set<string>();
@@ -46,10 +80,13 @@ export class SessionBulkDeleteService {
     return { ...preview, deletedSessionKeys, failed };
   }
 
-  private preflight(request: SessionBulkDeleteRequest): { preview: SessionBulkDeletePreview; targets: SessionBulkDeleteTarget[] } {
+  private preflight(
+    request: SessionBulkDeleteRequest,
+    allowLiveSessions = false,
+  ): { preview: SessionBulkDeletePreview; targets: SessionBulkDeleteTarget[] } {
     const sessionKeys = normalizeRequest(request);
     const rows = this.store.getSessionDeletionTargets(sessionKeys, request.includeOrphanedSubagents === true);
-    return buildPreflight(request, sessionKeys, rows);
+    return buildPreflight(request, sessionKeys, rows, allowLiveSessions);
   }
 }
 
@@ -59,6 +96,12 @@ function normalizeRequest(request: SessionBulkDeleteRequest): string[] {
   }
   if (request.includeOrphanedSubagents !== undefined && typeof request.includeOrphanedSubagents !== "boolean") {
     throw new Error("The orphan cleanup option is invalid.");
+  }
+  if (request.confirmed !== undefined && typeof request.confirmed !== "boolean") {
+    throw new Error("The bulk deletion confirmation option is invalid.");
+  }
+  if (request.openSessionKey !== undefined && typeof request.openSessionKey !== "string") {
+    throw new Error("The open session key is invalid.");
   }
   const keys = [...new Set(request.sessionKeys.map((key) => key.trim()).filter(Boolean))];
   if (keys.length > 100_000) throw new Error("Too many sessions were selected.");
@@ -72,6 +115,7 @@ function buildPreflight(
   request: SessionBulkDeleteRequest,
   sessionKeys: string[],
   rows: SessionBulkDeleteTarget[],
+  allowLiveSessions: boolean,
 ): { preview: SessionBulkDeletePreview; targets: SessionBulkDeleteTarget[] } {
   const liveKeys = new Set(request.liveSessionKeys);
   const families = groupBy(rows, (row) => row.cascadeRootSessionKey);
@@ -96,7 +140,7 @@ function buildPreflight(
     }
     matchedCount += 1;
     const issues = family.flatMap((target) => {
-      const issue = classifyTarget(target, request, liveKeys);
+      const issue = classifyTarget(target, request, liveKeys, allowLiveSessions);
       return issue ? [issue] : [];
     });
     if (issues.length > 0) {
@@ -111,6 +155,13 @@ function buildPreflight(
   );
   const targets = dedupeAcceptedFamilies(acceptedFamilies);
   const expandedCount = new Set(rows.map((row) => row.sessionKey)).size;
+  const hasRelatedSessions = acceptedFamilies.some(
+    (family) => new Set(family.map((target) => target.sessionKey)).size > 1,
+  );
+  const openSessionKey = request.openSessionKey?.trim();
+  const includesOpenSession = Boolean(
+    openSessionKey && targets.some((target) => target.sessionKey === openSessionKey),
+  );
   const sourceCounts = [...countSources(targets).entries()].map(([source, count]) => ({ source, count }));
   return {
     targets,
@@ -119,6 +170,8 @@ function buildPreflight(
       matchedCount,
       expandedCount,
       deletableCount: targets.length,
+      hasRelatedSessions,
+      includesOpenSession,
       sourceCounts,
       skipped: dedupeIssues(skipped),
     },
@@ -129,6 +182,7 @@ function classifyTarget(
   target: SessionBulkDeleteTarget,
   request: SessionBulkDeleteRequest,
   liveKeys: Set<string>,
+  allowLiveSessions: boolean,
 ): SessionBulkDeleteIssue | null {
   const liveFamily = sessionSourceDescriptor(target.source).liveFamily;
   const familyKey = liveFamily === null ? null : `${liveFamily}:${target.rawId}`;
@@ -136,12 +190,12 @@ function classifyTarget(
   const ancestorIsLive = liveFamily !== null && target.ancestorRawIds.some((rawId) =>
     liveKeys.has(`${liveFamily}:${rawId}`)
     || liveKeys.has(`${target.environmentId}\0${liveFamily}:${rawId}`));
-  if (
+  if (!allowLiveSessions && (
     liveKeys.has(target.sessionKey)
     || (familyKey !== null && liveKeys.has(familyKey))
     || (scopedFamilyKey !== null && liveKeys.has(scopedFamilyKey))
     || ancestorIsLive
-  ) return issueFor(target.sessionKey, "live", "Live sessions cannot be deleted.");
+  )) return issueFor(target.sessionKey, "live", "Live sessions cannot be deleted.");
   if ((request.protectFavorites || request.inactiveBefore !== undefined) && target.favorited) {
     return issueFor(target.sessionKey, "favorite", "Favorite session was protected.");
   }

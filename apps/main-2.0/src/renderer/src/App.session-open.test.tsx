@@ -3,6 +3,10 @@
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import {
+  SESSION_DELETE_CONFIRMATION_REQUIRED_MESSAGE,
+  type SessionBulkDeletePreview,
+} from "../../core/session-bulk-delete";
 import type {
   SessionMigrationProgress,
   SessionMigrationResult,
@@ -10,9 +14,14 @@ import type {
 } from "../../core/types";
 
 const harness = vi.hoisted(() => ({
+  detail: null as SessionSearchResult | null,
   listener: null as ((sessionKey: string) => void) | null,
   migrationListener: null as ((progress: SessionMigrationProgress) => void) | null,
   getSession: vi.fn(),
+  getLiveSessions: vi.fn(),
+  previewBulkDelete: vi.fn(),
+  bulkDeleteSessions: vi.fn(),
+  searchAllMatching: vi.fn(async () => [] as SessionSearchResult[]),
   openLocal: vi.fn(),
   setSelectedKey: vi.fn(),
   sessionsPage: vi.fn((_props: unknown) => null),
@@ -32,6 +41,7 @@ const harness = vi.hoisted(() => ({
 vi.mock("./components/app-navigation", () => ({ AppNavigation: () => null }));
 vi.mock("./features/workbench/workbench-page", () => ({ WorkbenchPage: () => null }));
 vi.mock("./features/sessions/sessions-page", () => ({ SessionsPage: harness.sessionsPage }));
+vi.mock("./features/sessions/session-details", () => ({ SessionDetails: () => null }));
 vi.mock("./features/remote-sessions/remote-sessions-dialog", () => ({
   RemoteSessionsDialog: harness.remoteSessionsDialog,
 }));
@@ -39,7 +49,7 @@ vi.mock("./features/search/use-main-search-shortcut", () => ({ useMainSearchShor
 
 vi.mock("./features/sessions/use-session-detail", () => ({
   useSessionDetail: () => ({
-    detail: null,
+    detail: harness.detail,
     remoteDetail: null,
     turns: [],
     turnsLoading: false,
@@ -86,7 +96,7 @@ vi.mock("./features/sessions/use-session-catalog", () => ({
     currentPage: 1,
     totalPages: 1,
     goToPage: vi.fn(),
-    searchAllMatching: vi.fn(async () => []),
+    searchAllMatching: harness.searchAllMatching,
     clearProjectFilter: vi.fn(),
     clearProjectScopeFilter: vi.fn(),
     clearEnvironmentScopeFilter: vi.fn(),
@@ -228,6 +238,9 @@ describe("external session opening", () => {
       listSkills: vi.fn(async () => ({ skills: [] })),
       getOpenVikingMemorySnapshot: vi.fn(async () => null),
       getSession: harness.getSession,
+      getLiveSessions: harness.getLiveSessions,
+      previewBulkDelete: harness.previewBulkDelete,
+      bulkDeleteSessions: harness.bulkDeleteSessions,
       teamChat: { listRooms: vi.fn(async () => []) },
     };
     Reflect.set(window, "sessionSearch", sessionSearch);
@@ -261,6 +274,77 @@ describe("external session opening", () => {
     expect(harness.setSelectedKey).toHaveBeenCalledWith(session.sessionKey);
     expect(harness.getSession).toHaveBeenCalledWith(session.sessionKey);
     expect(harness.openLocal).toHaveBeenCalledWith(session);
+  });
+
+  it("rechecks the currently open session before final bulk deletion", async () => {
+    const session = {
+      sessionKey: "codex:bulk-delete-target",
+      source: "codex-cli",
+      displayTitle: "Bulk delete target",
+    } as SessionSearchResult;
+    const preview = (includesOpenSession: boolean): SessionBulkDeletePreview => ({
+      requestedCount: 1,
+      matchedCount: 1,
+      expandedCount: 1,
+      deletableCount: 1,
+      hasRelatedSessions: false,
+      includesOpenSession,
+      sourceCounts: [{ source: "codex-cli", count: 1 }],
+      skipped: [],
+    });
+
+    harness.detail = null;
+    harness.getSession.mockResolvedValue(session);
+    harness.getLiveSessions.mockResolvedValue({ sessions: [], error: null });
+    harness.searchAllMatching.mockResolvedValue([session]);
+    harness.previewBulkDelete
+      .mockResolvedValueOnce(preview(false))
+      .mockResolvedValueOnce(preview(true));
+    harness.bulkDeleteSessions.mockRejectedValueOnce(
+      new Error(SESSION_DELETE_CONFIRMATION_REQUIRED_MESSAGE),
+    );
+    harness.openLocal.mockImplementation(async (nextSession: SessionSearchResult) => {
+      harness.detail = nextSession;
+    });
+
+    await act(async () => root.render(createElement((await import("./App")).App)));
+    let sessionsProps = harness.sessionsPage.mock.calls.at(-1)?.[0] as {
+      actions: {
+        toggleBulkSession: (sessionKey: string) => void;
+        deleteSelected: () => void;
+      };
+    };
+    await act(async () => sessionsProps.actions.toggleBulkSession(session.sessionKey));
+    sessionsProps = harness.sessionsPage.mock.calls.at(-1)?.[0] as typeof sessionsProps;
+    await act(async () => {
+      sessionsProps.actions.deleteSelected();
+      await vi.waitFor(() => expect(harness.previewBulkDelete).toHaveBeenCalledTimes(1));
+    });
+
+    expect(container.querySelector(".bulk-delete-dialog input")).toBeNull();
+
+    await act(async () => {
+      harness.listener?.(session.sessionKey);
+      await vi.waitFor(() => expect(harness.openLocal).toHaveBeenCalledWith(session));
+      root.render(createElement((await import("./App")).App));
+    });
+
+    const confirmButton = container.querySelector<HTMLButtonElement>(".bulk-delete-dialog .danger-action");
+    expect(confirmButton?.textContent).toMatch(/Confirm|确认/);
+    await act(async () => {
+      confirmButton?.click();
+      await vi.waitFor(() => expect(harness.previewBulkDelete).toHaveBeenCalledTimes(2));
+    });
+
+    expect(harness.bulkDeleteSessions).toHaveBeenCalledWith(expect.objectContaining({
+      sessionKeys: [session.sessionKey],
+      confirmed: false,
+      openSessionKey: session.sessionKey,
+    }));
+    expect(harness.previewBulkDelete).toHaveBeenLastCalledWith(expect.objectContaining({
+      openSessionKey: session.sessionKey,
+    }));
+    expect(container.querySelector(".bulk-delete-dialog input")).not.toBeNull();
   });
 
   it("finishes a remote restore after a delayed launching progress event", async () => {

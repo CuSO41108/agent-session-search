@@ -5,7 +5,12 @@ import type { IndexStatus } from "../core/indexer";
 import type { RemoteHealthReport } from "../core/remote-health";
 import type { ResumeRouteResult } from "../core/resume-router";
 import type { TraceEventQueryOptions } from "../core/session-store";
-import type { SessionBulkDeletePreview, SessionBulkDeleteRequest, SessionBulkDeleteResult } from "../core/session-bulk-delete";
+import type {
+  SessionBulkDeletePreview,
+  SessionBulkDeleteRequest,
+  SessionBulkDeleteResult,
+  SessionDeleteOptions,
+} from "../core/session-bulk-delete";
 import type { SshConfigHost } from "../core/ssh-config";
 import type { SessionContextComponents } from "../core/session-context-components";
 import type { SessionMarkdownExportOptions } from "../core/format-session";
@@ -110,7 +115,8 @@ const api = {
   deleteTag: (tagName: string): Promise<void> => ipcRenderer.invoke("tag:delete", tagName),
   setFavorited: (sessionKey: string, favorited: boolean): Promise<void> => ipcRenderer.invoke("favorite:set", sessionKey, favorited),
   setHidden: (sessionKey: string, hidden: boolean): Promise<void> => ipcRenderer.invoke("hide:set", sessionKey, hidden),
-  deleteSession: (sessionKey: string): Promise<boolean> => ipcRenderer.invoke("session:delete", sessionKey),
+  deleteSession: (sessionKey: string, options?: SessionDeleteOptions): Promise<boolean> =>
+    ipcRenderer.invoke("session:delete", sessionKey, options),
   previewBulkDelete: (request: SessionBulkDeleteRequest): Promise<SessionBulkDeletePreview> =>
     ipcRenderer.invoke("session:bulk-delete-preview", request),
   bulkDeleteSessions: (request: SessionBulkDeleteRequest): Promise<SessionBulkDeleteResult> =>

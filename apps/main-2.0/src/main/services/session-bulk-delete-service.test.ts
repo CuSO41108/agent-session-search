@@ -2,7 +2,10 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import type { SessionBulkDeleteTarget } from "../../core/session-bulk-delete";
+import {
+  SESSION_DELETE_CONFIRMATION_REQUIRED_MESSAGE,
+  type SessionBulkDeleteTarget,
+} from "../../core/session-bulk-delete";
 import type { SessionStore } from "../../core/session-store";
 import type { SessionEnvironment, SessionSource } from "../../core/types";
 import { SessionBulkDeleteService } from "./session-bulk-delete-service";
@@ -89,13 +92,52 @@ describe("SessionBulkDeleteService", () => {
       matchedCount: 1,
       expandedCount: 2,
       deletableCount: 2,
+      hasRelatedSessions: true,
     });
-    await expect(service.delete({ sessionKeys: ["parent"], liveSessionKeys: [] })).resolves.toMatchObject({
+    await expect(service.delete({
+      sessionKeys: ["parent"],
+      liveSessionKeys: [],
+      confirmed: true,
+    })).resolves.toMatchObject({
       deletedSessionKeys: ["parent", "child"],
       failed: [],
     });
     expect(store.invalidateOpenVikingEvidenceForSessions).toHaveBeenCalledWith(targets);
     expect(store.deleteSessionRecords).toHaveBeenCalledWith(["parent", "child"], false);
+  });
+
+  it("requires explicit confirmation when a single-session delete expands during the final preflight", async () => {
+    const targets = [
+      target("parent"),
+      target("child", {
+        cascadeRootSessionKey: "parent",
+        isSubagent: true,
+        parentSessionId: "parent",
+      }),
+    ];
+    const store = createStore(targets);
+    const service = new SessionBulkDeleteService(store);
+
+    await expect(service.delete(
+      { sessionKeys: ["parent"], liveSessionKeys: [] },
+      { requireSingleSession: true },
+    )).rejects.toThrow(SESSION_DELETE_CONFIRMATION_REQUIRED_MESSAGE);
+    expect(store.deleteSessionRecords).not.toHaveBeenCalled();
+
+    await expect(service.delete(
+      { sessionKeys: ["parent"], liveSessionKeys: [] },
+      { confirmed: true, requireSingleSession: true },
+    )).resolves.toMatchObject({ deletedSessionKeys: ["parent", "child"] });
+  });
+
+  it("throws directly when a single-node delete is live", async () => {
+    const store = createStore([target("live")]);
+
+    await expect(new SessionBulkDeleteService(store).delete(
+      { sessionKeys: ["live"], liveSessionKeys: ["live"] },
+      { requireSingleSession: true },
+    )).rejects.toThrow(SESSION_DELETE_CONFIRMATION_REQUIRED_MESSAGE);
+    expect(store.deleteSessionRecords).not.toHaveBeenCalled();
   });
 
   it("keeps the whole tree when a descendant is live", async () => {
@@ -113,6 +155,63 @@ describe("SessionBulkDeleteService", () => {
     expect(preview.skipped).toMatchObject([{ sessionKey: "child", reason: "live" }]);
   });
 
+  it("deletes a live descendant tree only after live deletion was explicitly allowed", async () => {
+    const targets = [
+      target("parent"),
+      target("child", { cascadeRootSessionKey: "parent", isSubagent: true, parentSessionId: "parent" }),
+    ];
+    const store = createStore(targets);
+    const service = new SessionBulkDeleteService(store);
+    const request = { sessionKeys: ["parent"], liveSessionKeys: ["child"] };
+
+    await expect(service.delete(request, {
+      confirmed: false,
+      allowLiveSessions: true,
+      requireSingleSession: true,
+    })).rejects.toThrow(SESSION_DELETE_CONFIRMATION_REQUIRED_MESSAGE);
+    expect(store.deleteSessionRecords).not.toHaveBeenCalled();
+
+    await expect(service.delete(request, {
+      confirmed: true,
+      allowLiveSessions: true,
+      requireSingleSession: true,
+    })).resolves.toMatchObject({
+      deletedSessionKeys: ["parent", "child"],
+      skipped: [],
+      failed: [],
+    });
+  });
+
+  it("does not let live deletion permission bypass other protections", async () => {
+    const targets = [
+      target("favorite", { favorited: true }),
+      target("recent", { lastActivityAt: 500 }),
+      target("pi", { source: "pi-cli" }),
+      target("remote", { environmentId: "ssh-dev", environmentKind: "ssh" }),
+      target("shared", { source: "hermes" }),
+    ];
+    const store = createStore(targets);
+    const result = await new SessionBulkDeleteService(store).delete({
+      sessionKeys: targets.map((item) => item.sessionKey),
+      liveSessionKeys: targets.map((item) => item.sessionKey),
+      inactiveBefore: 200,
+      protectFavorites: true,
+    }, {
+      confirmed: true,
+      allowLiveSessions: true,
+    });
+
+    expect(result.deletedSessionKeys).toEqual([]);
+    expect(result.skipped.map((issue) => issue.reason)).toEqual([
+      "favorite",
+      "recent",
+      "read-only",
+      "remote-source",
+      "shared-database",
+    ]);
+    expect(store.deleteSessionRecords).not.toHaveBeenCalled();
+  });
+
   it("does not let an explicitly requested descendant bypass a blocked ancestor tree", async () => {
     const targets = [
       target("parent"),
@@ -126,6 +225,70 @@ describe("SessionBulkDeleteService", () => {
 
     expect(preview.deletableCount).toBe(0);
     expect(preview.skipped).toMatchObject([{ sessionKey: "parent", reason: "live" }]);
+  });
+
+  it("marks related sessions when a parent and child are both explicitly selected", async () => {
+    const preview = await new SessionBulkDeleteService(createStore([
+      target("parent"),
+      target("child", { cascadeRootSessionKey: "parent", isSubagent: true, parentSessionId: "parent" }),
+      target("child", { isSubagent: true, parentSessionId: "parent" }),
+    ])).preview({
+      sessionKeys: ["parent", "child"],
+      liveSessionKeys: [],
+    });
+
+    expect(preview.expandedCount).toBe(2);
+    expect(preview.requestedCount).toBe(2);
+    expect(preview.hasRelatedSessions).toBe(true);
+  });
+
+  it("marks an open descendant included by tree expansion", async () => {
+    const preview = await new SessionBulkDeleteService(createStore([
+      target("parent"),
+      target("child", { cascadeRootSessionKey: "parent", isSubagent: true, parentSessionId: "parent" }),
+    ])).preview({
+      sessionKeys: ["parent"],
+      liveSessionKeys: [],
+      openSessionKey: "child",
+    });
+
+    expect(preview.includesOpenSession).toBe(true);
+  });
+
+  it("requires confirmation when the final bulk preflight becomes dangerous", async () => {
+    const initialTargets = Array.from({ length: 9 }, (_, index) => target(`session-${index}`));
+    const finalTargets = [...initialTargets, target("session-9")];
+    const store = createStore(initialTargets);
+    vi.mocked(store.getSessionDeletionTargets)
+      .mockResolvedValueOnce(initialTargets)
+      .mockResolvedValue(finalTargets);
+    const service = new SessionBulkDeleteService(store);
+    const request = {
+      sessionKeys: finalTargets.map((item) => item.sessionKey),
+      liveSessionKeys: [],
+    };
+
+    await expect(service.preview(request)).resolves.toMatchObject({ deletableCount: 9 });
+    await expect(service.delete(request)).rejects.toThrow(
+      SESSION_DELETE_CONFIRMATION_REQUIRED_MESSAGE,
+    );
+    expect(store.deleteSessionRecords).not.toHaveBeenCalled();
+
+    await expect(service.delete({ ...request, confirmed: true })).resolves.toMatchObject({
+      deletedSessionKeys: finalTargets.map((item) => item.sessionKey),
+    });
+  });
+
+  it.each([
+    { sessionKeys: [1], liveSessionKeys: [] },
+    { sessionKeys: [], liveSessionKeys: [1] },
+    { sessionKeys: [], liveSessionKeys: [], confirmed: "yes" },
+    { sessionKeys: [], liveSessionKeys: [], openSessionKey: 42 },
+    { sessionKeys: [], liveSessionKeys: [], openSessionKey: " " },
+  ])("rejects invalid bulk request fields: %j", async (request) => {
+    await expect(new SessionBulkDeleteService(createStore([])).preview(
+      request as never,
+    )).rejects.toThrow("The bulk deletion request is invalid.");
   });
 
   it("keeps a directly requested subtree when one of its ancestors is live", async () => {
@@ -227,6 +390,7 @@ describe("SessionBulkDeleteService", () => {
       await expect(new SessionBulkDeleteService(createStore(targets)).delete({
         sessionKeys: ["parent"],
         liveSessionKeys: [],
+        confirmed: true,
       })).resolves.toMatchObject({ deletedSessionKeys: ["parent", "child"], failed: [] });
       expect(fs.existsSync(root)).toBe(true);
     } finally {
@@ -265,6 +429,7 @@ describe("SessionBulkDeleteService", () => {
         sessionKeys: [],
         liveSessionKeys: [],
         includeOrphanedSubagents: true,
+        confirmed: true,
       })).resolves.toMatchObject({ deletedSessionKeys: ["orphan-root", "orphan-child"], failed: [] });
       expect(fs.existsSync(subagentsDirectory)).toBe(false);
     } finally {

@@ -102,7 +102,12 @@ import type {
   SessionIndexWorkerInput,
   SessionIndexWorkerResult,
 } from "./session-index-worker-protocol";
-import { liveSessionDeleteKey, type SessionBulkDeleteRequest } from "../core/session-bulk-delete";
+import {
+  SESSION_DELETE_CONFIRMATION_REQUIRED_MESSAGE,
+  liveSessionDeleteKey,
+  normalizeSessionDeleteOptions,
+  type SessionBulkDeleteRequest,
+} from "../core/session-bulk-delete";
 import {
   AUTO_INDEX_REFRESH_INTERVAL_MS,
   INITIAL_INDEX_DELAY_MS,
@@ -2131,7 +2136,8 @@ function registerIpc(): void {
     sessionBulkDeleteService.preview(request));
   ipcMain.handle("session:bulk-delete", async (_event, request: SessionBulkDeleteRequest) =>
     sessionBulkDeleteService.delete(await withFreshLiveSessions(request)));
-  ipcMain.handle("session:delete", async (_event, sessionKey: string) => {
+  ipcMain.handle("session:delete", async (_event, sessionKey: string, options: unknown) => {
+    const { confirmed, allowLiveSessions } = normalizeSessionDeleteOptions(options);
     const session = store.getSession(sessionKey);
     if (session?.source === "pi-cli" || session?.source === "workbuddy-cli") {
       throw new Error(`${sessionSourceDescriptor(session.source).label} session source files are read-only.`);
@@ -2139,22 +2145,44 @@ function registerIpc(): void {
     if (session && !canDeleteSessionLocally(session)) {
       throw new Error("Cannot delete sessions stored on SSH remote environments.");
     }
-    if (!session || session.environmentKind === "ssh") return store.deleteSession(sessionKey);
-    if (session.environmentKind === "wsl" && isSharedSessionSourceDatabase(session)) {
-      if (session.sourceAvailable === false) return store.deleteSessionRecords([sessionKey]).includes(sessionKey);
+    if (!session) return store.deleteSession(sessionKey);
+    const isWslSharedDatabase = session.environmentKind === "wsl" && isSharedSessionSourceDatabase(session);
+    if (isWslSharedDatabase && session.sourceAvailable !== false) {
       throw new Error("Cannot delete shared source databases on WSL by removing the database file.");
     }
     const request = await withFreshLiveSessions({ sessionKeys: [sessionKey], liveSessionKeys: [] });
-    if (isSharedSessionSourceDatabase(session)) {
-      const preview = sessionBulkDeleteService.preview(request);
-      if (preview.skipped.some((issue) => issue.reason === "live")) {
-        throw new Error("A related session is currently live. Stop it before deleting this session tree.");
+    const preview = sessionBulkDeleteService.preview(request);
+    if (
+      (!confirmed && preview.expandedCount > 1)
+      || (!allowLiveSessions && preview.skipped.some((issue) => issue.reason === "live"))
+    ) {
+      throw new Error(SESSION_DELETE_CONFIRMATION_REQUIRED_MESSAGE);
+    }
+    if (session.environmentKind === "ssh") {
+      const targets = store.getSessionDeletionTargets([sessionKey]);
+      const rootTarget = targets.find((target) => target.sessionKey === sessionKey);
+      if (!rootTarget) return false;
+      if (rootTarget.sourceAvailable) {
+        throw new Error("Cannot delete sessions stored on SSH remote environments.");
       }
+      return store.deleteSessionRecords(
+        targets.map((target) => target.sessionKey),
+        false,
+      ).includes(sessionKey);
+    }
+    if (isWslSharedDatabase) {
+      return store.deleteSessionRecords([sessionKey]).includes(sessionKey);
+    }
+    if (isSharedSessionSourceDatabase(session)) {
       return store.deleteSession(sessionKey);
     }
-    const result = await sessionBulkDeleteService.delete(request);
+    const result = await sessionBulkDeleteService.delete(request, {
+      confirmed,
+      allowLiveSessions,
+      requireSingleSession: true,
+    });
     if (result.skipped.some((issue) => issue.reason === "live")) {
-      throw new Error("A related session is currently live. Stop it before deleting this session tree.");
+      throw new Error(SESSION_DELETE_CONFIRMATION_REQUIRED_MESSAGE);
     }
     if (result.failed[0]) throw new Error(result.failed[0].message);
     return result.deletedSessionKeys.includes(sessionKey);

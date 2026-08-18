@@ -1,5 +1,32 @@
 import type { EnvironmentKind, LiveSession, SessionSource } from "./types";
 
+export const SESSION_DELETE_CONFIRMATION_REQUIRED_MESSAGE = "Session deletion requires explicit confirmation.";
+export const SESSION_BULK_DELETE_CONFIRMATION_THRESHOLD = 10;
+
+export interface SessionDeleteOptions {
+  confirmed?: boolean;
+  allowLiveSessions?: boolean;
+}
+
+export function normalizeSessionDeleteOptions(options: unknown): Required<SessionDeleteOptions> {
+  if (options === undefined) return { confirmed: false, allowLiveSessions: false };
+  if (!options || typeof options !== "object" || Array.isArray(options)) {
+    throw new Error("The session deletion options are invalid.");
+  }
+  const candidate = options as Record<string, unknown>;
+  if (candidate.confirmed !== undefined && typeof candidate.confirmed !== "boolean") {
+    throw new Error("The session deletion options are invalid.");
+  }
+  if (candidate.allowLiveSessions !== undefined && typeof candidate.allowLiveSessions !== "boolean") {
+    throw new Error("The session deletion options are invalid.");
+  }
+  const confirmed = candidate.confirmed === true;
+  return {
+    confirmed,
+    allowLiveSessions: confirmed && candidate.allowLiveSessions === true,
+  };
+}
+
 export type SessionBulkDeleteSkipReason =
   | "not-found"
   | "live"
@@ -15,6 +42,8 @@ export interface SessionBulkDeleteRequest {
   inactiveBefore?: number;
   protectFavorites?: boolean;
   includeOrphanedSubagents?: boolean;
+  confirmed?: boolean;
+  openSessionKey?: string;
 }
 
 export interface SessionBulkDeleteTarget {
@@ -45,6 +74,8 @@ export interface SessionBulkDeletePreview {
   matchedCount: number;
   expandedCount: number;
   deletableCount: number;
+  hasRelatedSessions: boolean;
+  includesOpenSession: boolean;
   sourceCounts: Array<{ source: SessionSource; count: number }>;
   skipped: SessionBulkDeleteIssue[];
 }

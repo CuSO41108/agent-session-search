@@ -33,7 +33,12 @@ import { canDeleteSessionLocally, isLocalSessionEnvironment } from "../../core/s
 import type { SessionSyncHookStatus } from "../../core/session-sync-queue";
 import { OPTIONAL_SESSION_SOURCE_DESCRIPTORS } from "../../core/session-sources";
 import type { TraceEventQueryOptions } from "../../core/session-store";
-import { liveSessionDeleteKey, type SessionBulkDeletePreview, type SessionBulkDeleteRequest } from "../../core/session-bulk-delete";
+import {
+  SESSION_DELETE_CONFIRMATION_REQUIRED_MESSAGE,
+  liveSessionDeleteKey,
+  type SessionBulkDeletePreview,
+  type SessionBulkDeleteRequest,
+} from "../../core/session-bulk-delete";
 import type { RemoteSkill, SkillSyncSnapshot, SkillSyncUploadOutcome } from "../../core/skill-sync";
 import type { InstalledSkill, InstalledSkillsSnapshot } from "../../core/skill-manager";
 import type {
@@ -334,6 +339,7 @@ export function App(): ReactElement {
   const [deleteTagName, setDeleteTagName] = useState<string | null>(null);
   const [deleteSessionCandidate, setDeleteSessionCandidate] = useState<SessionSearchResult | null>(null);
   const [deleteSessionCascadeCount, setDeleteSessionCascadeCount] = useState<number | null>(null);
+  const [deleteSessionHasLiveSession, setDeleteSessionHasLiveSession] = useState(false);
   const [deleteSessionBlockedMessage, setDeleteSessionBlockedMessage] = useState<string | null>(null);
   const deleteSessionPreviewId = useRef(0);
   const [deletingSession, setDeletingSession] = useState(false);
@@ -1589,6 +1595,7 @@ export function App(): ReactElement {
     setContextMenu(null);
     setDeleteSessionCandidate(session);
     setDeleteSessionCascadeCount(null);
+    setDeleteSessionHasLiveSession(false);
     setDeleteSessionBlockedMessage(null);
     const previewId = ++deleteSessionPreviewId.current;
     void freshLiveKeysForBulkDelete()
@@ -1600,12 +1607,7 @@ export function App(): ReactElement {
       .then((preview) => {
         if (deleteSessionPreviewId.current !== previewId) return;
         setDeleteSessionCascadeCount(preview.expandedCount);
-        if (preview.skipped.some((issue) => issue.reason === "live")) {
-          setDeleteSessionBlockedMessage(t(
-            "A related session is currently live. Stop it before deleting this session tree.",
-            "关联会话正在运行，请先停止后再删除整棵会话树。",
-          ));
-        }
+        setDeleteSessionHasLiveSession(preview.skipped.some((issue) => issue.reason === "live"));
       })
       .catch((error) => {
         if (deleteSessionPreviewId.current === previewId) {
@@ -1617,12 +1619,19 @@ export function App(): ReactElement {
   async function confirmDeleteSession(): Promise<void> {
     if (!deleteSessionCandidate || deletingSession || deleteSessionCascadeCount === null || deleteSessionBlockedMessage) return;
     const session = deleteSessionCandidate;
+    const confirmed = deleteSessionCascadeCount > 1
+      || deleteSessionHasLiveSession
+      || detail?.sessionKey === session.sessionKey;
     setDeletingSession(true);
     setActionStatus({ kind: "running", message: t("Deleting session...", "正在删除会话...") });
     try {
-      const removed = await window.sessionSearch.deleteSession(session.sessionKey);
+      const removed = await window.sessionSearch.deleteSession(session.sessionKey, {
+        confirmed,
+        allowLiveSessions: confirmed && deleteSessionHasLiveSession,
+      });
       setDeleteSessionCandidate(null);
       setDeleteSessionCascadeCount(null);
+      setDeleteSessionHasLiveSession(false);
       setDeleteSessionBlockedMessage(null);
       if (removed) {
         if (detail?.sessionKey === session.sessionKey) closeDetail();
@@ -1643,13 +1652,18 @@ export function App(): ReactElement {
       }
     } catch (error) {
       const rawMessage = error instanceof Error ? error.message : String(error);
-      const message = rawMessage === "A related session is currently live. Stop it before deleting this session tree."
-        ? t(rawMessage, "关联会话正在运行，请先停止后再删除整棵会话树。")
-        : rawMessage;
-      if (rawMessage === "A related session is currently live. Stop it before deleting this session tree.") {
-        setDeleteSessionBlockedMessage(message);
+      if (rawMessage === SESSION_DELETE_CONFIRMATION_REQUIRED_MESSAGE) {
+        requestDeleteSession(session);
+        setActionStatus({
+          kind: "error",
+          message: t(
+            "The deletion risk changed. Review the updated session state and confirm again.",
+            "删除风险已发生变化，请检查更新后的会话状态并重新确认。",
+          ),
+        });
+      } else {
+        setActionStatus({ kind: "error", message: rawMessage });
       }
-      setActionStatus({ kind: "error", message });
     } finally {
       setDeletingSession(false);
     }
@@ -1730,6 +1744,7 @@ export function App(): ReactElement {
         sessionKeys: sessions.map((session) => session.sessionKey),
         liveSessionKeys: await freshLiveKeysForBulkDelete(),
         protectFavorites: false,
+        openSessionKey: detail?.sessionKey,
       };
       const preview = await window.sessionSearch.previewBulkDelete(request);
       setBulkDeleteDialog({
@@ -1762,6 +1777,7 @@ export function App(): ReactElement {
         liveSessionKeys: await freshLiveKeysForBulkDelete(),
         includeOrphanedSubagents: true,
         protectFavorites: false,
+        openSessionKey: detail?.sessionKey,
       };
       const preview = await window.sessionSearch.previewBulkDelete(request);
       setBulkDeleteDialog((current) => current?.mode === "orphans" ? { ...current, request, preview } : current);
@@ -1785,6 +1801,7 @@ export function App(): ReactElement {
         liveSessionKeys: await freshLiveKeysForBulkDelete(),
         inactiveBefore,
         protectFavorites: true,
+        openSessionKey: detail?.sessionKey,
       };
       const preview = await window.sessionSearch.previewBulkDelete(request);
       setBulkDeleteDialog((current) => current ? { ...current, request, preview } : current);
@@ -1795,12 +1812,17 @@ export function App(): ReactElement {
     }
   }
 
-  async function confirmBulkDelete(): Promise<void> {
+  async function confirmBulkDelete(confirmed: boolean): Promise<void> {
     if (!bulkDeleteDialog?.request || !bulkDeleteDialog.preview || bulkDeleteBusy) return;
+    const baseRequest = bulkDeleteDialog.request;
     setBulkDeleteBusy(true);
     setActionStatus({ kind: "running", message: t("Deleting sessions...", "正在批量删除会话...") });
     try {
-      const result = await window.sessionSearch.bulkDeleteSessions(bulkDeleteDialog.request);
+      const result = await window.sessionSearch.bulkDeleteSessions({
+        ...baseRequest,
+        confirmed,
+        openSessionKey: detail?.sessionKey,
+      });
       if (detail && result.deletedSessionKeys.includes(detail.sessionKey)) closeDetail();
       setBulkSelectedKeys((current) => {
         const next = new Set(current);
@@ -1816,7 +1838,34 @@ export function App(): ReactElement {
           : t(`Deleted ${result.deletedSessionKeys.length} sessions.`, `已删除 ${result.deletedSessionKeys.length} 个会话。`),
       });
     } catch (error) {
-      setActionStatus({ kind: "error", message: error instanceof Error ? error.message : String(error) });
+      const rawMessage = error instanceof Error ? error.message : String(error);
+      if (rawMessage === SESSION_DELETE_CONFIRMATION_REQUIRED_MESSAGE) {
+        try {
+          const request: SessionBulkDeleteRequest = {
+            ...baseRequest,
+            liveSessionKeys: await freshLiveKeysForBulkDelete(),
+            confirmed: false,
+            openSessionKey: detail?.sessionKey,
+          };
+          const preview = await window.sessionSearch.previewBulkDelete(request);
+          setBulkDeleteDialog((current) =>
+            current?.request === baseRequest ? { ...current, request, preview } : current);
+          setActionStatus({
+            kind: "error",
+            message: t(
+              "The deletion risk changed. Review the updated session state and confirm again.",
+              "删除风险已发生变化，请检查更新后的会话状态并重新确认。",
+            ),
+          });
+        } catch (previewError) {
+          setActionStatus({
+            kind: "error",
+            message: previewError instanceof Error ? previewError.message : String(previewError),
+          });
+        }
+      } else {
+        setActionStatus({ kind: "error", message: rawMessage });
+      }
     } finally {
       setBulkDeleteBusy(false);
     }
@@ -2723,6 +2772,8 @@ export function App(): ReactElement {
         <DeleteSessionDialog
           session={deleteSessionCandidate}
           cascadeCount={deleteSessionCascadeCount}
+          hasLiveSession={deleteSessionHasLiveSession}
+          isOpen={detail?.sessionKey === deleteSessionCandidate.sessionKey}
           blockedMessage={deleteSessionBlockedMessage}
           language={language}
           deleting={deletingSession}
@@ -2733,6 +2784,7 @@ export function App(): ReactElement {
               setDeleteSessionCandidate(null);
               closeDetail();
               setDeleteSessionCascadeCount(null);
+              setDeleteSessionHasLiveSession(false);
               setDeleteSessionBlockedMessage(null);
             }
           }}
@@ -2749,7 +2801,7 @@ export function App(): ReactElement {
           language={language}
           onDateChange={(dateValue) => setBulkDeleteDialog((current) => current ? { ...current, dateValue, request: null, preview: null } : current)}
           onPreview={() => void previewDateCleanup()}
-          onConfirm={() => void confirmBulkDelete()}
+          onConfirm={(confirmed) => void confirmBulkDelete(confirmed)}
           onCancel={() => setBulkDeleteDialog(null)}
         />
       ) : null}

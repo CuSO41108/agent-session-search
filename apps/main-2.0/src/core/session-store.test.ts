@@ -230,7 +230,7 @@ describe("SessionStore PostgreSQL facade", () => {
     await expect(store.getSession(sessionKey)).resolves.toBeNull();
   });
 
-  it("invalidates online memory evidence when its source Session is deleted", async () => {
+  it("deletes only prepared targets while invalidating their online memory evidence", async () => {
     const store = createStore();
     const uri = "viking://user/memories/events/release.md";
     await store.upsertIndexedSession(indexedSession(), messages);
@@ -264,7 +264,19 @@ describe("SessionStore PostgreSQL facade", () => {
       policyRefreshes += 1;
     });
 
-    await expect(store.deleteSession("codex:session-a")).resolves.toBe(true);
+    const preparedTargets = await store.getSessionDeletionTargets(["codex:session-a"]);
+    await store.upsertIndexedSession(indexedSession({
+      sessionKey: "codex:late-child",
+      rawId: "late-child",
+      isSubagent: true,
+      parentSessionId: "session-a",
+    }), messages);
+
+    await expect(
+      store.deleteExactSessionTargets(preparedTargets, "codex:session-a"),
+    ).resolves.toBe(true);
+    await expect(store.getSession("codex:session-a")).resolves.toBeNull();
+    await expect(store.getSession("codex:late-child")).resolves.not.toBeNull();
     await expect(store.getOpenVikingMemoryControl("workspace-1", uri)).resolves.toMatchObject({
       lifecycle: "invalidated",
       evidenceStatus: "invalid",
