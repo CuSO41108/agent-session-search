@@ -36,6 +36,7 @@
     "THIRD_PARTY_NOTICES.md"
   ],
   "scripts": {
+    "predev": "node ../../scripts/ensure-electron-runtime.mjs .",
     "dev": "npm run build:mcp && electron-vite dev",
     "build": "npm run typecheck && npm run build:mcp && electron-vite build",
     "typecheck": "tsc --noEmit",
