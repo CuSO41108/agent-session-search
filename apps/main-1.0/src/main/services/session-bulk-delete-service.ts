@@ -246,10 +246,6 @@ async function deleteTargetFamily(
     for (const target of availableTargets) deleteDeepSeekCliSessionDirectory(target.filePath);
     return;
   }
-  if (availableTargets[0].source === "deepseek-cli") {
-    for (const target of availableTargets) deleteDeepSeekCliSessionDirectory(target.filePath);
-    return;
-  }
   if (availableTargets[0].environmentKind === "wsl") {
     const environment = environments.get(availableTargets[0].environmentId);
     if (!environment) throw new Error("WSL environment was not found.");

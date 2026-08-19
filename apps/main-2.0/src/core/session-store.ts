@@ -281,7 +281,7 @@ export class SessionStore {
       for (const item of targets) {
         if (item.sourceAvailable) deleteDeepSeekCliSessionDirectory(item.filePath);
       }
-      return this.deleteSessionTargetRecords(targets, sessionKey);
+      return this.deleteSessionTargetRecords(targets, requestedSessionKey);
     }
     if (target.source === "opencode-cli") throw new Error("Cannot delete shared OpenCode source database.");
     if (target.source === "codewiz-cli") throw new Error("Cannot delete shared CodeWiz source database.");
