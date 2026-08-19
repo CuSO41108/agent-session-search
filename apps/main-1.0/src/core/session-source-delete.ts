@@ -8,7 +8,6 @@ const require = createRequire(import.meta.url);
 const { DatabaseSync } = require("node:sqlite") as { DatabaseSync: typeof DatabaseSyncType };
 
 const CLAUDE_SESSION_FILE_SOURCES = new Set<SessionSource>(["claude-cli", "claude-app"]);
-const CODEX_APP_SESSION_SOURCES = new Set<SessionSource>(["codex-app"]);
 
 export interface SessionSourceDeleteTarget {
   source: SessionSource;
@@ -92,7 +91,7 @@ export function deleteLocalSessionSources(targets: readonly SessionSourceDeleteT
 function deleteCodexAppStateRows(targets: readonly SessionSourceDeleteTarget[]): void {
   const idsByCodexHome = new Map<string, Set<string>>();
   for (const target of targets) {
-    if (!CODEX_APP_SESSION_SOURCES.has(target.source) || !target.rawId) continue;
+    if (target.source !== "codex-app" || !target.rawId) continue;
     const codexHome = codexHomeForRollout(target.filePath);
     if (!codexHome) continue;
     const ids = idsByCodexHome.get(codexHome) ?? new Set<string>();
