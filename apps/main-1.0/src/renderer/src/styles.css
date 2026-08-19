@@ -9005,7 +9005,7 @@ body.overlay-open .sidebar {
 
 .subagent-session-tree {
   margin-top: 18px;
-  padding-top: 14px;
+  padding: 14px 18px 0;
   border-top: 1px solid var(--border-subtle);
 }
 

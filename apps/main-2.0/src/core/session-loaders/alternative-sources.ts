@@ -742,6 +742,11 @@ function loadHermesSessionRow(db: import("node:sqlite").DatabaseSync, dbPath: st
   const question = firstQuestion(messages);
   const stat = safeStat(dbPath);
   const title = stringField(session, "title");
+  const modelConfig = parseJsonText(unknownField(session, "model_config"));
+  const delegateFrom = isRecord(modelConfig) ? stringField(modelConfig, "_delegate_from") || null : null;
+  const parentSessionId = delegateFrom
+    ? stringField(session, "parent_session_id") || delegateFrom
+    : null;
   return {
     session: createIndexedSession({
       keyPrefix: "hermes",
@@ -756,6 +761,8 @@ function loadHermesSessionRow(db: import("node:sqlite").DatabaseSync, dbPath: st
       timestamp: timestampMs(unknownField(session, "started_at")) || stat.mtimeMs,
       tokenUsage: usage,
       stat,
+      isSubagent: parentSessionId !== null,
+      parentSessionId,
     }),
     messages,
     traceEvents: dedupeTraceEvents(traceDrafts),

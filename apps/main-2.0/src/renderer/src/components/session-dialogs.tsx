@@ -5,7 +5,10 @@ import type { SessionSearchResult } from "../../../core/types";
 import { displayTagName, isBranchTag } from "../session-ui";
 import { localize, type LanguageMode } from "../language";
 import type { DialogState } from "../app-types";
-import type { SessionBulkDeletePreview } from "../../../core/session-bulk-delete";
+import {
+  SESSION_BULK_DELETE_CONFIRMATION_THRESHOLD,
+  type SessionBulkDeletePreview,
+} from "../../../core/session-bulk-delete";
 
 export function DeleteTagDialog({
   tagName,
@@ -48,6 +51,10 @@ export function DeleteTagDialog({
 export function DeleteSessionDialog({
   session,
   cascadeCount,
+  hasLiveSession,
+  liveSessionCheckFailed,
+  confirmationVersion,
+  isOpen,
   blockedMessage,
   language,
   deleting,
@@ -56,6 +63,10 @@ export function DeleteSessionDialog({
 }: {
   session: SessionSearchResult;
   cascadeCount: number | null;
+  hasLiveSession: boolean;
+  liveSessionCheckFailed?: boolean;
+  confirmationVersion?: number;
+  isOpen: boolean;
   blockedMessage: string | null;
   language: LanguageMode;
   deleting: boolean;
@@ -64,7 +75,12 @@ export function DeleteSessionDialog({
 }): ReactElement {
   const l = (en: string, zh: string) => localize(language, en, zh);
   const [confirmationText, setConfirmationText] = useState("");
-  const canConfirm = confirmationText === "确认删除";
+  const requiresConfirmation =
+    (cascadeCount ?? 0) > 1 || hasLiveSession || liveSessionCheckFailed || isOpen;
+  const canConfirm = !requiresConfirmation || confirmationText === "确认删除";
+  useEffect(() => {
+    setConfirmationText("");
+  }, [confirmationVersion, session.sessionKey]);
   return (
     <div className="dialog-backdrop" onMouseDown={onCancel}>
       <div className="command-dialog delete-session-dialog" onMouseDown={(event) => event.stopPropagation()}>
@@ -83,6 +99,30 @@ export function DeleteSessionDialog({
             <strong>{cascadeCount - 1}</strong>{l(
               " related subagent sessions will also be permanently deleted.",
               " 个关联 Subagent 会话也会被永久删除。",
+            )}
+          </p>
+        ) : null}
+        {hasLiveSession ? (
+          <p className="dialog-copy danger-copy">
+            {l(
+              'A session in this tree is still running. Type "确认删除" to force deletion; the running process may fail or recreate session data.',
+              "会话树中有会话正在运行。输入“确认删除”后可强制删除；运行中的进程可能报错或重新生成会话数据。",
+            )}
+          </p>
+        ) : null}
+        {liveSessionCheckFailed ? (
+          <p className="dialog-copy danger-copy">
+            {l(
+              'AgentRecall could not verify whether this session tree is still running. Type "确认删除" to continue; a running process may fail or recreate session data.',
+              "AgentRecall 无法确认该会话树是否仍在运行。输入“确认删除”后继续；运行中的进程可能报错或重新生成会话数据。",
+            )}
+          </p>
+        ) : null}
+        {isOpen ? (
+          <p className="dialog-copy danger-copy">
+            {l(
+              "This session is currently open in AgentRecall. Deleting it will close the session detail.",
+              "该会话当前正在 AgentRecall 中打开，删除后会关闭会话详情。",
             )}
           </p>
         ) : null}
@@ -113,17 +153,19 @@ export function DeleteSessionDialog({
                 "这会删除 Codex 或 Claude Code 的原始会话文件，并从本应用移除，无法撤销。",
               )}
         </p>
-        <label className="delete-confirmation-field">
-          <span>{l('Type "确认删除" to continue', '请输入“确认删除”以继续')}</span>
-          <input
-            type="text"
-            value={confirmationText}
-            placeholder="确认删除"
-            onChange={(event) => setConfirmationText(event.target.value)}
-            disabled={deleting}
-            autoComplete="off"
-          />
-        </label>
+        {requiresConfirmation ? (
+          <label className="delete-confirmation-field">
+            <span>{l('Type "确认删除" to continue', '请输入“确认删除”以继续')}</span>
+            <input
+              type="text"
+              value={confirmationText}
+              placeholder="确认删除"
+              onChange={(event) => setConfirmationText(event.target.value)}
+              disabled={deleting}
+              autoComplete="off"
+            />
+          </label>
+        ) : null}
         {session.sourceAvailable === false ? null : (
           <div className="delete-session-path" title={session.filePath}>
             {session.filePath}
@@ -141,9 +183,13 @@ export function DeleteSessionDialog({
           >
             {deleting
               ? l("Deleting...", "正在删除...")
-              : session.sourceAvailable === false
-                ? l("Delete Cache", "删除缓存")
-                : l("Delete Permanently", "永久删除")}
+              : hasLiveSession || liveSessionCheckFailed
+                ? l("Force Delete", "强制删除")
+                : !requiresConfirmation
+                  ? l("Confirm", "确认")
+                  : session.sourceAvailable === false
+                    ? l("Delete Cache", "删除缓存")
+                    : l("Delete Permanently", "永久删除")}
           </button>
         </div>
       </div>
@@ -171,16 +217,22 @@ export function BulkDeleteDialog({
   language: LanguageMode;
   onDateChange: (value: string) => void;
   onPreview: () => void;
-  onConfirm: () => void;
+  onConfirm: (confirmed: boolean) => void;
   onCancel: () => void;
 }): ReactElement {
   const l = (en: string, zh: string) => localize(language, en, zh);
   const [confirmationText, setConfirmationText] = useState("");
-  const canConfirm = confirmationText === "确认删除";
   useEffect(() => {
-    if (!preview) setConfirmationText("");
+    setConfirmationText("");
   }, [preview]);
   const hasDeletableSessions = (preview?.deletableCount ?? 0) > 0;
+  const requiresTypedConfirmation = Boolean(preview && (
+    preview.deletableCount >= SESSION_BULK_DELETE_CONFIRMATION_THRESHOLD
+    || preview.hasRelatedSessions
+    || preview.includesOpenSession
+    || preview.liveSessionCheckFailed
+  ));
+  const canConfirm = !requiresTypedConfirmation || confirmationText === "确认删除";
   const skippedCounts = preview ? countIssueReasons(preview) : [];
   return (
     <div className="dialog-backdrop" onMouseDown={onCancel}>
@@ -215,20 +267,35 @@ export function BulkDeleteDialog({
             </div>
             {preview.skipped.length > 0 ? <p className="dialog-copy">{l("Excluded", "已排除")}：{skippedCounts.map(([reason, count]) => `${issueReasonLabel(reason, l)} · ${count}`).join("，")}</p> : null}
             {mode === "selection" && favoriteCount > 0 ? <p className="dialog-copy danger-copy">{l(`${favoriteCount} favorite sessions are included.`, `其中包含 ${favoriteCount} 个收藏会话。`)}</p> : null}
+            {preview.includesOpenSession ? (
+              <p className="dialog-copy danger-copy">
+                {l("The currently open session is included.", "其中包含当前打开的会话。")}
+              </p>
+            ) : null}
+            {preview.liveSessionCheckFailed ? (
+              <p className="dialog-copy danger-copy">
+                {l(
+                  "AgentRecall could not verify whether these sessions are still running. Continuing may interrupt running processes or recreate session data.",
+                  "AgentRecall 无法确认这些会话是否仍在运行。继续删除可能中断运行中的进程，或导致会话数据被重新生成。",
+                )}
+              </p>
+            ) : null}
             {hasDeletableSessions ? (
               <>
                 <p className="dialog-copy danger-copy">{l("Original session data may be deleted. This cannot be undone.", "原始会话数据可能被删除，且无法撤销。")}</p>
-                <label className="delete-confirmation-field">
-                  <span>{l('Type "确认删除" to continue', '请输入“确认删除”以继续')}</span>
-                  <input
-                    type="text"
-                    value={confirmationText}
-                    placeholder="确认删除"
-                    onChange={(event) => setConfirmationText(event.target.value)}
-                    disabled={busy}
-                    autoComplete="off"
-                  />
-                </label>
+                {requiresTypedConfirmation ? (
+                  <label className="delete-confirmation-field">
+                    <span>{l('Type "确认删除" to continue', '请输入“确认删除”以继续')}</span>
+                    <input
+                      type="text"
+                      value={confirmationText}
+                      placeholder="确认删除"
+                      onChange={(event) => setConfirmationText(event.target.value)}
+                      disabled={busy}
+                      autoComplete="off"
+                    />
+                  </label>
+                ) : null}
               </>
             ) : null}
           </>
@@ -240,7 +307,11 @@ export function BulkDeleteDialog({
               ? <button type="button" className="primary-action" onClick={onPreview} disabled={busy || !dateValue}>{busy ? l("Loading...", "正在加载...") : l("Preview", "预览")}</button>
               : <button type="button" className="primary-action" disabled>{l("Scanning...", "正在扫描...")}</button>
           ) : hasDeletableSessions
-            ? <button type="button" className="danger-action" onClick={onConfirm} disabled={busy || !canConfirm}>{busy ? l("Deleting...", "正在删除...") : l("Delete Permanently", "永久删除")}</button>
+            ? <button type="button" className="danger-action" onClick={() => onConfirm(requiresTypedConfirmation)} disabled={busy || !canConfirm}>{busy
+              ? l("Deleting...", "正在删除...")
+              : requiresTypedConfirmation
+                ? l("Delete Permanently", "永久删除")
+                : l("Confirm", "确认")}</button>
             : null}
         </div>
       </div>

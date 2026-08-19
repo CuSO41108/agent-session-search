@@ -1,6 +1,7 @@
 import type { IndexStatus } from "../../core/indexer";
 import {
   liveSessionDeleteKey,
+  normalizeSessionDeleteOptions,
   type SessionBulkDeletePreview,
   type SessionBulkDeleteRequest,
   type SessionBulkDeleteResult,
@@ -61,6 +62,7 @@ export interface SessionCatalogServiceDependencies {
  */
 export class SessionCatalogService {
   private readonly bulkDelete: SessionBulkDeleteService;
+  private openSessionKey: string | undefined;
 
   constructor(private readonly dependencies: SessionCatalogServiceDependencies) {
     this.bulkDelete = new SessionBulkDeleteService(dependencies.store);
@@ -192,7 +194,12 @@ export class SessionCatalogService {
     return this.dependencies.store.setHidden(sessionKey, hidden);
   }
 
-  async delete(sessionKey: string): Promise<boolean> {
+  setOpenSession(sessionKey?: string): void {
+    this.openSessionKey = sessionKey?.trim() || undefined;
+  }
+
+  async delete(sessionKey: string, options?: unknown): Promise<boolean> {
+    const normalizedOptions = normalizeSessionDeleteOptions(options);
     const session = await this.dependencies.store.getSession(sessionKey);
     if (session?.source === "pi-cli" || session?.source === "workbuddy-cli") {
       throw new Error(`${session.source === "pi-cli" ? "Pi" : "WorkBuddy"} session source files are read-only.`);
@@ -200,51 +207,77 @@ export class SessionCatalogService {
     if (session && !canDeleteSessionLocally(session)) {
       throw new Error("Cannot delete sessions stored on SSH remote environments.");
     }
-    if (session?.environmentKind === "ssh") {
-      return (await this.dependencies.store.deleteSessionRecords([sessionKey])).includes(sessionKey);
-    }
-    if (session?.environmentKind === "wsl" && isSharedSessionSourceDatabase(session)) {
-      if (session.sourceAvailable === false) {
-        return (await this.dependencies.store.deleteSessionRecords([sessionKey])).includes(sessionKey);
-      }
+    if (
+      session?.environmentKind === "wsl"
+      && isSharedSessionSourceDatabase(session)
+      && session.sourceAvailable !== false
+    ) {
       throw new Error("Cannot delete shared source databases on WSL by removing the database file.");
     }
     if (!session) return false;
     const request = await this.withFreshLiveSessions({ sessionKeys: [sessionKey], liveSessionKeys: [] });
-    if (isSharedSessionSourceDatabase(session)) {
-      const preview = await this.bulkDelete.preview(request);
-      if (preview.skipped.some((issue) => issue.reason === "live")) {
-        throw new Error("A related session is currently live. Stop it before deleting this session tree.");
+    if (session.environmentKind === "ssh" || isSharedSessionSourceDatabase(session)) {
+      const prepared = await this.bulkDelete.prepareSingleDelete(request, normalizedOptions);
+      if (
+        session.environmentKind === "wsl"
+        && session.sourceAvailable === false
+        && isSharedSessionSourceDatabase(session)
+      ) {
+        return (await this.dependencies.store.deleteSessionRecords([sessionKey])).includes(sessionKey);
       }
-      return this.dependencies.store.deleteSession(sessionKey);
+      const preparedTarget = prepared.allRows.find((target) => target.sessionKey === sessionKey);
+      if (!preparedTarget) return false;
+      if (prepared.allRows.some((target) => !canDeleteSessionLocally(target))) {
+        throw new Error("Cannot delete sessions stored on SSH remote environments.");
+      }
+      if (
+        prepared.allRows.some((target) => (
+          target.environmentKind === "wsl"
+          && target.sourceAvailable
+          && isSharedSessionSourceDatabase(target)
+        ))
+      ) {
+        throw new Error("Cannot delete shared source databases on WSL by removing the database file.");
+      }
+      return this.dependencies.store.deleteExactSessionTargets(prepared.allRows, sessionKey);
     }
-    const result = await this.bulkDelete.delete(request);
-    if (result.skipped.some((issue) => issue.reason === "live")) {
-      throw new Error("A related session is currently live. Stop it before deleting this session tree.");
-    }
+    const result = await this.bulkDelete.delete(request, {
+      confirmed: normalizedOptions.confirmed,
+      allowLiveSessions: normalizedOptions.allowLiveSessions,
+      allowUnverifiedLiveSessions: normalizedOptions.allowUnverifiedLiveSessions,
+      confirmationFingerprint: normalizedOptions.confirmationFingerprint,
+      requireSingleSession: true,
+    });
     if (result.failed[0]) throw new Error(result.failed[0].message);
     return result.deletedSessionKeys.includes(sessionKey);
   }
 
   previewBulkDelete(request: SessionBulkDeleteRequest): Promise<SessionBulkDeletePreview> {
-    return this.bulkDelete.preview(request);
+    return this.bulkDelete.preview({ ...request, openSessionKey: this.openSessionKey });
   }
 
   async bulkDeleteSessions(request: SessionBulkDeleteRequest): Promise<SessionBulkDeleteResult> {
-    return this.bulkDelete.delete(await this.withFreshLiveSessions(request));
+    return this.bulkDelete.delete(await this.withFreshLiveSessions({
+      ...request,
+      openSessionKey: this.openSessionKey,
+    }));
   }
 
   private async withFreshLiveSessions(request: SessionBulkDeleteRequest): Promise<SessionBulkDeleteRequest> {
     const liveSessionKeys = new Set(request.liveSessionKeys);
+    let liveSessionCheckFailed = request.liveSessionCheckFailed === true;
     try {
       const snapshot = await this.dependencies.loadLiveSessions(true);
+      if (snapshot.error) liveSessionCheckFailed = true;
       for (const session of snapshot.sessions) liveSessionKeys.add(liveSessionDeleteKey(session));
     } catch {
-      // Keep the exact live-session keys from the confirmed preview when a refresh fails.
+      liveSessionCheckFailed = true;
     }
     return {
       ...request,
+      openSessionKey: this.openSessionKey,
       liveSessionKeys: [...liveSessionKeys],
+      liveSessionCheckFailed,
     };
   }
 

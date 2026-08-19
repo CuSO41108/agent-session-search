@@ -1,6 +1,10 @@
 import { deleteDeepSeekCliSessionDirectory } from "./deepseek-harness";
-import { deleteHermesSession } from "./hermes-session-writer";
-import { isLocalSessionStorage } from "./session-environment";
+import { deleteHermesSessions } from "./hermes-session-writer";
+import {
+  canDeleteSessionLocally,
+  isLocalSessionStorage,
+  isSharedSessionSourceDatabase,
+} from "./session-environment";
 import { deleteLocalSessionSources } from "./session-source-delete";
 import { deleteZcodeSessions } from "./zcode-session-writer";
 import {
@@ -234,10 +238,40 @@ export class SessionStore {
   async deleteSession(sessionKey: string): Promise<boolean> {
     await this.ready;
     const targets = await this.sessions.getSessionDeletionTargets([sessionKey]);
-    const target = targets.find((item) => item.sessionKey === sessionKey);
+    return this.deleteExactSessionTargets(targets, sessionKey);
+  }
+
+  async deleteExactSessionTargets(
+    targets: readonly SessionBulkDeleteTarget[],
+    requestedSessionKey: string,
+  ): Promise<boolean> {
+    await this.ready;
+    const target = targets.find((item) => item.sessionKey === requestedSessionKey);
     if (!target) return false;
     if (target.source === "pi-cli" || target.source === "workbuddy-cli") {
       throw new Error(`${target.source === "pi-cli" ? "Pi" : "WorkBuddy"} session source files are read-only.`);
+    }
+    if (!canDeleteSessionLocally(target)) {
+      throw new Error("Cannot delete sessions stored on SSH remote environments.");
+    }
+    if (
+      target.environmentKind === "wsl"
+      && target.sourceAvailable
+      && isSharedSessionSourceDatabase(target)
+    ) {
+      throw new Error("Cannot delete shared source databases on WSL by removing the database file.");
+    }
+    for (const item of targets) {
+      if (!canDeleteSessionLocally(item)) {
+        throw new Error("Cannot delete sessions stored on SSH remote environments.");
+      }
+      if (
+        item.environmentKind === "wsl"
+        && item.sourceAvailable
+        && isSharedSessionSourceDatabase(item)
+      ) {
+        throw new Error("Cannot delete shared source databases on WSL by removing the database file.");
+      }
     }
     if (target.source === "zcode-cli") {
       const idsByFilePath = new Map<string, string[]>();
@@ -249,28 +283,42 @@ export class SessionStore {
         }
       }
       for (const [filePath, rawIds] of idsByFilePath) deleteZcodeSessions(filePath, rawIds);
-      return this.deleteSessionTargetRecords(targets, sessionKey);
+      return this.deleteSessionTargetRecords(targets, requestedSessionKey);
     }
     if (target.source === "hermes") {
-      if (target.sourceAvailable) deleteHermesSession(target.filePath, target.rawId);
-      return this.deleteSessionTargetRecords(targets, sessionKey);
+      if (target.sourceAvailable) {
+        const idsByFilePath = new Map<string, string[]>();
+        for (const item of targets.filter((item) => item.sourceAvailable)) {
+          const rawIds = idsByFilePath.get(item.filePath) ?? [];
+          rawIds.push(item.rawId);
+          idsByFilePath.set(item.filePath, rawIds);
+        }
+        for (const [filePath, rawIds] of idsByFilePath) deleteHermesSessions(filePath, rawIds);
+      }
+      return this.deleteSessionTargetRecords(targets, requestedSessionKey);
+    }
+    if (target.source === "opencode-cli") {
+      if (!target.sourceAvailable) return this.deleteSessionTargetRecords(targets, requestedSessionKey);
+      throw new Error("Cannot delete shared OpenCode source database.");
+    }
+    if (target.source === "codewiz-cli") {
+      if (!target.sourceAvailable) return this.deleteSessionTargetRecords(targets, requestedSessionKey);
+      throw new Error("Cannot delete shared CodeWiz source database.");
     }
     if (target.source === "deepseek-cli") {
       for (const item of targets) {
         if (item.sourceAvailable) deleteDeepSeekCliSessionDirectory(item.filePath);
       }
-      return this.deleteSessionTargetRecords(targets, sessionKey);
+      return this.deleteSessionTargetRecords(targets, requestedSessionKey);
     }
-    if (target.source === "opencode-cli") throw new Error("Cannot delete shared OpenCode source database.");
-    if (target.source === "codewiz-cli") throw new Error("Cannot delete shared CodeWiz source database.");
     if (target.source === "cursor-agent" && /(^|[\\/])state\.vscdb$/iu.test(target.filePath)) {
       if (!target.sourceAvailable) {
-        return this.deleteSessionTargetRecords(targets, sessionKey);
+        return this.deleteSessionTargetRecords(targets, requestedSessionKey);
       }
       throw new Error("Cannot delete shared Cursor source database.");
     }
     if (target.sourceAvailable) deleteLocalSessionSources(targets.filter((item) => item.sourceAvailable));
-    return this.deleteSessionTargetRecords(targets, sessionKey);
+    return this.deleteSessionTargetRecords(targets, requestedSessionKey);
   }
 
   async deleteSessionRecord(sessionKey: string): Promise<boolean> {

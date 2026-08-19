@@ -14,9 +14,49 @@ import {
   loadCodexSessions,
   loadDefaultSessions,
   loadDefaultSessionsAsyncIterator,
+  loadHermesSessions,
   parseCodexSessionMetaLine,
 } from "./session-loader";
 import { TRACE_DETAIL_PREVIEW_MAX_CHARS } from "./trace-detail";
+
+const { DatabaseSync } = require("node:sqlite") as {
+  DatabaseSync: new (path: string) => import("node:sqlite").DatabaseSync;
+};
+
+describe("Hermes session loading", () => {
+  it("maps delegates as related sessions without treating ordinary branches as subagents", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "agent-recall-v2-hermes-relations-"));
+    const db = new DatabaseSync(path.join(root, "state.db"));
+    db.exec(`
+      CREATE TABLE sessions (
+        id TEXT PRIMARY KEY,
+        parent_session_id TEXT,
+        model_config TEXT,
+        started_at REAL NOT NULL
+      );
+      CREATE TABLE messages (id INTEGER PRIMARY KEY, session_id TEXT, timestamp REAL NOT NULL);
+    `);
+    const insert = db.prepare(
+      "INSERT INTO sessions (id, parent_session_id, model_config, started_at) VALUES (?, ?, ?, ?)",
+    );
+    insert.run("root", null, "{}", 1);
+    insert.run("branch", "root", "{}", 2);
+    insert.run("delegate", "root", JSON.stringify({ _delegate_from: "root" }), 3);
+    db.close();
+
+    const loaded = loadHermesSessions(root);
+    fs.rmSync(root, { recursive: true, force: true });
+
+    expect(loaded.find((item) => item.session.rawId === "branch")?.session).toMatchObject({
+      isSubagent: false,
+      parentSessionId: null,
+    });
+    expect(loaded.find((item) => item.session.rawId === "delegate")?.session).toMatchObject({
+      isSubagent: true,
+      parentSessionId: "root",
+    });
+  });
+});
 
 describe("Codex session loading", () => {
   it("uses the first real turn_context cwd when Desktop metadata has a local-workspace placeholder", () => {
