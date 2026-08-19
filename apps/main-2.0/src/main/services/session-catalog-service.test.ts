@@ -423,27 +423,6 @@ describe("SessionCatalogService deletion policy", () => {
     expect(store.deleteExactSessionTargets).not.toHaveBeenCalled();
   });
 
-  it.each(["opencode-cli", "codewiz-cli"] as const)(
-    "deletes only the indexed record for an unavailable WSL %s shared database",
-    async (source) => {
-      const current = session({
-        sessionKey: `${source}:wsl-cache`,
-        rawId: "wsl-cache",
-        source,
-        environmentId: "ubuntu",
-        environmentKind: "wsl",
-        filePath: `/home/user/.${source}/state.db`,
-        sourceAvailable: false,
-      });
-      const { service, store } = createService(current);
-
-      await expect(service.delete(current.sessionKey)).resolves.toBe(true);
-
-      expect(store.deleteSessionRecords).toHaveBeenCalledWith([current.sessionKey]);
-      expect(store.deleteExactSessionTargets).not.toHaveBeenCalled();
-    },
-  );
-
   it("uses the family-aware deletion service for a local file session", async () => {
     const current = session({
       sessionKey: "codex:closed",
@@ -556,6 +535,26 @@ describe("SessionCatalogService deletion policy", () => {
       expect(store.deleteExactSessionTargets).toHaveBeenCalledWith([
         expect.objectContaining({ source, sourceAvailable: false }),
       ], current.sessionKey);
+    },
+  );
+
+  it.each(["opencode-cli", "codewiz-cli"] as const)(
+    "deletes only the indexed record for an unavailable WSL %s cache",
+    async (source) => {
+      const current = session({
+        sessionKey: `${source}:wsl-cache`,
+        rawId: "wsl-cache",
+        source,
+        environmentId: "ubuntu",
+        environmentKind: "wsl",
+        filePath: `/home/user/${source}.db`,
+        sourceAvailable: false,
+      });
+      const { service, store } = createService(current);
+
+      await expect(service.delete(current.sessionKey)).resolves.toBe(true);
+      expect(store.deleteSessionRecords).toHaveBeenCalledWith([current.sessionKey]);
+      expect(store.deleteExactSessionTargets).not.toHaveBeenCalled();
     },
   );
 
