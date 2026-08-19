@@ -133,6 +133,8 @@ const api = {
   openSupabaseSqlEditor: (target: "sessions" | "skills"): Promise<void> => ipcRenderer.invoke("supabase:open-sql-editor", target),
   copyResumeCommand: (sessionKey: string): Promise<void> => ipcRenderer.invoke("command:copy-resume", sessionKey),
   resumeSession: (sessionKey: string): Promise<ResumeRouteResult> => ipcRenderer.invoke("command:resume", sessionKey),
+  resumeSessionWithStepcode: (sessionKey: string): Promise<void> =>
+    ipcRenderer.invoke("command:resume-stepcode", sessionKey),
   resumeSessionInIterm: (sessionKey: string): Promise<void> => ipcRenderer.invoke("command:resume-iterm", sessionKey),
   migrateSession: (request: SessionMigrationRequest): Promise<SessionMigrationResult> =>
     ipcRenderer.invoke("session:migrate", request),

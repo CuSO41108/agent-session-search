@@ -13,7 +13,8 @@ export type OptionalSessionSourceSetting =
   | "includeCursorAgent"
   | "includeTrae"
   | "includeQoder"
-  | "includePi";
+  | "includePi"
+  | "includeDeepSeekCli";
 
 export type SessionSourceFamily =
   | "claude"
@@ -30,7 +31,8 @@ export type SessionSourceFamily =
   | "cursor"
   | "trae"
   | "qoder"
-  | "pi";
+  | "pi"
+  | "deepseek";
 
 export type SessionSourceUiFamily = "claude" | "codex" | "codebuddy" | "codewiz" | "zcode" | "other";
 
@@ -165,6 +167,12 @@ export const SESSION_SOURCE_REGISTRY = {
     optionalSetting: "includePi", pendingKey: "pi", remoteCollectorOptional: false, liveFamily: null, migrationAgent: null,
     resumeTarget: null, remoteFamily: null, nativeAppFamily: null,
     capabilities: { live: false, resume: false, migrate: false, sessionSync: true, openApp: false },
+  },
+  "deepseek-cli": {
+    id: "deepseek-cli", label: "DeepSeek Harness", format: "deepseek", family: "deepseek", uiFamily: "other", statsGroup: null,
+    optionalSetting: "includeDeepSeekCli", pendingKey: "deepseek", remoteCollectorOptional: false, liveFamily: null, migrationAgent: "deepseek",
+    resumeTarget: "deepseek", remoteFamily: null, nativeAppFamily: null,
+    capabilities: { live: false, resume: true, migrate: true, sessionSync: false, openApp: false },
   },
 } as const satisfies Record<SessionSource, SessionSourceDescriptor>;
 

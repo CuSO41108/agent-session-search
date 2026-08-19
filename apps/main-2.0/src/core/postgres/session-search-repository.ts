@@ -22,8 +22,8 @@ import {
 
 const LIVE_SESSION_KEY_SQL = `
   case
-    when sessions.source in ('claude-cli', 'claude-app', 'claude-internal') then 'claude:' || sessions.raw_id
-    when sessions.source in ('codex-cli', 'codex-app', 'codex-internal') then 'codex:' || sessions.raw_id
+    when sessions.source in ('claude-cli', 'claude-app', 'claude-internal', 'stepcode-claude') then 'claude:' || sessions.raw_id
+    when sessions.source in ('codex-cli', 'codex-app', 'codex-internal', 'stepcode-codex') then 'codex:' || sessions.raw_id
     when sessions.source = 'tclaude-cli' then 'tclaude:' || sessions.raw_id
     when sessions.source = 'tcodex-cli' then 'tcodex:' || sessions.raw_id
     when sessions.source = 'codebuddy-cli' then 'codebuddy:' || sessions.raw_id
@@ -63,11 +63,13 @@ export class PostgresSessionSearchRepository {
     }
     if (options.source && options.source !== "all") {
       if (options.source === "claude") {
-        filters.push("sessions.source in ('claude-cli', 'claude-app')");
+        filters.push("sessions.available_sources && ARRAY['claude-cli', 'claude-app']::text[]");
       } else if (options.source === "codex") {
-        filters.push("sessions.source in ('codex-cli', 'codex-app')");
+        filters.push("sessions.available_sources && ARRAY['codex-cli', 'codex-app']::text[]");
+      } else if (options.source === "stepcode") {
+        filters.push("sessions.available_sources && ARRAY['stepcode-claude', 'stepcode-codex']::text[]");
       } else {
-        filters.push(`sessions.source = ${bind(options.source)}`);
+        filters.push(`sessions.available_sources @> ARRAY[${bind(options.source)}]::text[]`);
       }
     }
     if (Number.isFinite(options.dateFrom)) {
@@ -195,6 +197,21 @@ export class PostgresSessionSearchRepository {
     const offset = Number.isFinite(options.offset) ? Math.max(0, Math.floor(options.offset as number)) : 0;
     const limitPlaceholder = bind(limit);
     const offsetPlaceholder = bind(offset);
+    const preferredSourceOrder = options.source === "stepcode"
+      || options.source === "stepcode-claude"
+      || options.source === "stepcode-codex"
+      ? `
+              case
+                when base_sessions.source in ('stepcode-claude', 'stepcode-codex') then 0
+                when base_sessions.source in ('claude-cli', 'claude-app', 'codex-cli', 'codex-app') then 1
+                else 0
+              end,`
+      : `
+              case
+                when base_sessions.source in ('claude-cli', 'claude-app', 'codex-cli', 'codex-app') then 0
+                when base_sessions.source in ('stepcode-claude', 'stepcode-codex') then 1
+                else 0
+              end,`;
     const primarySort = sortBy === "created"
       ? "sessions.started_at asc"
       : sortBy === "activity"
@@ -222,10 +239,52 @@ export class PostgresSessionSearchRepository {
         null::bigint as turn_match_count,
       `;
     const filteredSessionsSql = `
-      from agent_recall.sessions sessions
+      from (
+        select
+          base_sessions.*,
+          coalesce(
+            (
+              select array_agg(distinct related.source order by related.source)
+              from agent_recall.sessions related
+              where related.environment_id = base_sessions.environment_id
+                and related.raw_id = base_sessions.raw_id
+                and related.project_path = base_sessions.project_path
+                and related.is_subagent = base_sessions.is_subagent
+                and related.parent_session_id is not distinct from base_sessions.parent_session_id
+                and case
+                  when related.source in ('claude-cli', 'claude-app', 'stepcode-claude') then 'claude'
+                  when related.source in ('codex-cli', 'codex-app', 'stepcode-codex') then 'codex'
+                  else related.source
+                end = case
+                  when base_sessions.source in ('claude-cli', 'claude-app', 'stepcode-claude') then 'claude'
+                  when base_sessions.source in ('codex-cli', 'codex-app', 'stepcode-codex') then 'codex'
+                  else base_sessions.source
+                end
+            ),
+            array[base_sessions.source]::text[]
+          ) as available_sources,
+          row_number() over (
+            partition by
+              base_sessions.environment_id,
+              base_sessions.raw_id,
+              base_sessions.project_path,
+              base_sessions.is_subagent,
+              base_sessions.parent_session_id,
+              case
+                when base_sessions.source in ('claude-cli', 'claude-app', 'stepcode-claude') then 'claude'
+                when base_sessions.source in ('codex-cli', 'codex-app', 'stepcode-codex') then 'codex'
+                else base_sessions.source
+              end
+            order by
+              ${preferredSourceOrder}
+              base_sessions.session_key
+          ) as source_rank
+        from agent_recall.sessions base_sessions
+      ) sessions
       join agent_recall.environments environments on environments.id = sessions.environment_id
       ${bestTurnJoin}
-      where ${filters.join(" and ")}
+      where sessions.source_rank = 1
+        and ${filters.join(" and ")}
     `;
     const result = await this.database.query<SessionRow>(
       `

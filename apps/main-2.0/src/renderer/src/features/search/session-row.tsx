@@ -32,6 +32,7 @@ import {
   isBranchTag,
   isRemoteSession,
   localizedLiveStateLabel,
+  sessionAvailableSources,
   sessionSortTimestamp,
   sourceUiFamily,
 } from "../../session-ui";
@@ -129,10 +130,12 @@ export const SessionRow = memo(function SessionRow({
             <span className="live-status-dot" />
             {localizedLiveStateLabel(liveState, language)}
           </span>
-          <span className={`source-badge ${sourceUiFamily(session.source)}`}>
-            {sourceUiFamily(session.source) === "claude" ? <Code2 size={13} /> : <TerminalIcon size={13} />}
-            {SOURCE_LABEL[session.source]}
-          </span>
+          {sessionAvailableSources(session).map((source) => (
+            <span className={`source-badge ${sourceUiFamily(source)}`} key={source}>
+              {sourceUiFamily(source) === "claude" ? <Code2 size={13} /> : <TerminalIcon size={13} />}
+              {SOURCE_LABEL[source]}
+            </span>
+          ))}
           {session.sourceAvailable === false ? (
             <span
               className="source-cache-badge"

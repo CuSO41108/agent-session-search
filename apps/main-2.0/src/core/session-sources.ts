@@ -1,6 +1,7 @@
 import type { LiveSessionFamily, MigrationAgent, MigrationTarget, RemoteSessionAgent, SessionFormat, SessionSource } from "./types";
 
 export type OptionalSessionSourceSetting =
+  | "includeStepcode"
   | "includeTclaude"
   | "includeTcodex"
   | "includeCodeBuddyCli"
@@ -13,11 +14,13 @@ export type OptionalSessionSourceSetting =
   | "includeCursorAgent"
   | "includeTrae"
   | "includeQoder"
-  | "includePi";
+  | "includePi"
+  | "includeDeepSeekCli";
 
 export type SessionSourceFamily =
   | "claude"
   | "codex"
+  | "stepcode"
   | "tclaude"
   | "tcodex"
   | "codebuddy"
@@ -30,7 +33,8 @@ export type SessionSourceFamily =
   | "cursor"
   | "trae"
   | "qoder"
-  | "pi";
+  | "pi"
+  | "deepseek";
 
 export type SessionSourceUiFamily = "claude" | "codex" | "codebuddy" | "codewiz" | "zcode" | "other";
 
@@ -88,6 +92,18 @@ export const SESSION_SOURCE_REGISTRY = {
     id: "codex-app", label: "Codex", format: "codex", family: "codex", uiFamily: "codex", statsGroup: "codex",
     optionalSetting: null, pendingKey: null, remoteCollectorOptional: false, liveFamily: "codex", migrationAgent: "codex",
     resumeTarget: "codex", remoteFamily: "codex", nativeAppFamily: "codex", capabilities: fullCapabilities(),
+  },
+  "stepcode-claude": {
+    id: "stepcode-claude", label: "StepCode", format: "claude", family: "claude", uiFamily: "claude", statsGroup: null,
+    optionalSetting: "includeStepcode", pendingKey: "stepcode", remoteCollectorOptional: false, liveFamily: "claude", migrationAgent: "claude",
+    resumeTarget: "claude", remoteFamily: "claude", nativeAppFamily: null,
+    capabilities: { live: true, resume: true, migrate: true, sessionSync: true, openApp: false },
+  },
+  "stepcode-codex": {
+    id: "stepcode-codex", label: "StepCode", format: "codex", family: "codex", uiFamily: "codex", statsGroup: null,
+    optionalSetting: "includeStepcode", pendingKey: "stepcode", remoteCollectorOptional: false, liveFamily: "codex", migrationAgent: "codex",
+    resumeTarget: "codex", remoteFamily: "codex", nativeAppFamily: null,
+    capabilities: { live: true, resume: true, migrate: true, sessionSync: true, openApp: false },
   },
   "tclaude-cli": {
     id: "tclaude-cli", label: "TClaude", format: "claude", family: "tclaude", uiFamily: "other", statsGroup: null,
@@ -166,16 +182,33 @@ export const SESSION_SOURCE_REGISTRY = {
     resumeTarget: null, remoteFamily: null, nativeAppFamily: null,
     capabilities: { live: false, resume: false, migrate: false, sessionSync: true, openApp: false },
   },
+  "deepseek-cli": {
+    id: "deepseek-cli", label: "DeepSeek Harness", format: "deepseek", family: "deepseek", uiFamily: "other", statsGroup: null,
+    optionalSetting: "includeDeepSeekCli", pendingKey: "deepseek", remoteCollectorOptional: false, liveFamily: null, migrationAgent: "deepseek",
+    resumeTarget: "deepseek", remoteFamily: null, nativeAppFamily: null,
+    capabilities: { live: false, resume: true, migrate: true, sessionSync: false, openApp: false },
+  },
 } as const satisfies Record<SessionSource, SessionSourceDescriptor>;
 
 export const SESSION_SOURCE_DESCRIPTORS = Object.values(SESSION_SOURCE_REGISTRY) as SessionSourceDescriptor[];
 
-export const OPTIONAL_SESSION_SOURCE_DESCRIPTORS = SESSION_SOURCE_DESCRIPTORS.filter(
+const OPTIONAL_SESSION_SOURCE_MEMBER_DESCRIPTORS = SESSION_SOURCE_DESCRIPTORS.filter(
   (descriptor): descriptor is SessionSourceDescriptor & {
     optionalSetting: OptionalSessionSourceSetting;
     pendingKey: SessionSourceFamily;
   } => descriptor.optionalSetting !== null && descriptor.pendingKey !== null,
 );
+
+export const OPTIONAL_SESSION_SOURCE_DESCRIPTORS = OPTIONAL_SESSION_SOURCE_MEMBER_DESCRIPTORS.filter(
+  (descriptor, index, descriptors) =>
+    descriptors.findIndex((candidate) => candidate.optionalSetting === descriptor.optionalSetting) === index,
+);
+
+export function sessionSourcesForOptionalSetting(setting: OptionalSessionSourceSetting): SessionSource[] {
+  return OPTIONAL_SESSION_SOURCE_MEMBER_DESCRIPTORS
+    .filter((descriptor) => descriptor.optionalSetting === setting)
+    .map((descriptor) => descriptor.id);
+}
 
 export function isSessionSource(value: unknown): value is SessionSource {
   return typeof value === "string" && Object.hasOwn(SESSION_SOURCE_REGISTRY, value);

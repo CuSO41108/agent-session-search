@@ -6,6 +6,7 @@ import type {
   SessionBulkDeleteResult,
   SessionBulkDeleteTarget,
 } from "../../core/session-bulk-delete";
+import { deleteDeepSeekCliSessionDirectory } from "../../core/deepseek-harness";
 import { deleteLocalSessionSources } from "../../core/session-source-delete";
 import { sessionSourceDescriptor } from "../../core/session-sources";
 import type { SessionEnvironment, SessionSource } from "../../core/types";
@@ -185,6 +186,10 @@ async function deleteTargetFamily(
     for (const group of groupBy(availableTargets, (target) => target.filePath).values()) {
       deleteZcodeSessions(group[0].filePath, group.map((target) => target.rawId));
     }
+    return;
+  }
+  if (availableTargets[0].source === "deepseek-cli") {
+    for (const target of availableTargets) deleteDeepSeekCliSessionDirectory(target.filePath);
     return;
   }
   if (availableTargets[0].environmentKind === "wsl") {

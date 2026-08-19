@@ -29,6 +29,11 @@ export async function packReleaseArchive({ root, destination, environment = proc
     shell: process.platform === "win32",
   });
   const packed = parsePackResult(stdout);
+  const bundledMcpSourceMap = packed.files?.find(({ path: filePath }) =>
+    filePath.startsWith("out/mcp/") && filePath.endsWith(".map"));
+  if (bundledMcpSourceMap) {
+    throw new Error(`Release package must not include MCP source maps: ${bundledMcpSourceMap.path}`);
+  }
   return path.join(destination, packed.filename);
 }
 

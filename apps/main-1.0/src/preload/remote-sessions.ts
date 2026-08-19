@@ -28,10 +28,10 @@ export function createRemoteSessionsApi(ipc: RemoteSessionsIpcRenderer) {
     ): Promise<{ kind: "image" | "text" | "unavailable"; data?: string }> =>
       ipc.invoke(REMOTE_SESSIONS_IPC.previewAttachment.channel, objectKey, sha256, mimeType, previewKind),
     chooseLocalProjectDirectory: (): Promise<string | null> => ipc.invoke(REMOTE_SESSIONS_IPC.chooseProject.channel),
-    restoreRemoteSession: (remoteId: string, target: MigrationAgent, localProjectPath: string): Promise<SessionMigrationResult> =>
-      ipc.invoke(REMOTE_SESSIONS_IPC.restore.channel, remoteId, target, localProjectPath),
-    restoreRemoteSessionToSourceEnvironment: (remoteId: string, target: MigrationAgent): Promise<SessionMigrationResult> =>
-      ipc.invoke(REMOTE_SESSIONS_IPC.restoreToSource.channel, remoteId, target),
+    restoreRemoteSession: (remoteId: string, target: MigrationAgent, localProjectPath: string, bind = false): Promise<SessionMigrationResult> =>
+      ipc.invoke(REMOTE_SESSIONS_IPC.restore.channel, remoteId, target, localProjectPath, bind),
+    restoreRemoteSessionToSourceEnvironment: (remoteId: string, target: MigrationAgent, bind = false): Promise<SessionMigrationResult> =>
+      ipc.invoke(REMOTE_SESSIONS_IPC.restoreToSource.channel, remoteId, target, bind),
     deleteRemoteSession: (remoteId: string): Promise<boolean> => ipc.invoke(REMOTE_SESSIONS_IPC.delete.channel, remoteId),
     deleteRemoteSessions: (remoteIds: string[]): Promise<RemoteSessionDeleteResult> =>
       ipc.invoke(REMOTE_SESSIONS_IPC.deleteMany.channel, remoteIds),
