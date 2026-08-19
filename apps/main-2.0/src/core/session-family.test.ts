@@ -150,4 +150,50 @@ describe("findSessionFamily", () => {
     expect((await findSessionFamily(database, "codex:root")).children[0].originTurnIndex).toBe(1);
     expect((await findSessionFamily(database, "codex:child")).parentOriginTurnIndex).toBe(1);
   });
+
+  it("falls back to the nearest visible parent Turn when a spawn source Turn is unmatched", async () => {
+    const messages: SessionMessage[] = [
+      {
+        index: 0,
+        role: "user",
+        content: "first",
+        timestamp: "2026-08-12T09:00:00.000Z",
+        sourceTurnId: "turn-1",
+      },
+      {
+        index: 1,
+        role: "user",
+        content: "delegate",
+        timestamp: "2026-08-12T09:05:00.000Z",
+        sourceTurnId: "turn-2",
+      },
+    ];
+    const traces: SessionTraceEvent[] = [{
+      index: 0,
+      kind: "event",
+      source: "codex",
+      title: "agent · spawn_agent",
+      detail: "",
+      timestamp: "2026-08-12T09:05:01.000Z",
+      eventType: "codex.collaboration.tool",
+      status: "completed",
+      sourceTurnId: "unmatched-turn",
+      attributes: {
+        collaboration: { tool: "spawn_agent", receiverThreadIds: ["child"] },
+      },
+    }];
+    await repository.upsertIndexedSession(session({}), messages, [], traces);
+    await repository.upsertIndexedSession(session({
+      sessionKey: "codex:child",
+      rawId: "child",
+      filePath: "/tmp/child.jsonl",
+      originalTitle: "Child",
+      firstQuestion: "Child",
+      isSubagent: true,
+      parentSessionId: "root",
+    }), [], [], []);
+
+    expect((await findSessionFamily(database, "codex:root")).children[0].originTurnIndex).toBe(1);
+    expect((await findSessionFamily(database, "codex:child")).parentOriginTurnIndex).toBe(1);
+  });
 });

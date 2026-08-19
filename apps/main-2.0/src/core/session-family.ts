@@ -83,19 +83,23 @@ export async function findSessionFamily(
             and trigger_spans.attributes #>> '{eventType}' = 'codex.collaboration.message'
             and trigger_spans.attributes #>> '{collaboration,triggerTurn}' = 'true'
         )
-    ), spawn_origins as (
+    ), spawn_events as (
       select distinct on (child_sessions.session_key)
         child_sessions.session_key,
-        parent_turns.visible_turn_index as origin_turn_index
+        parent_sessions.session_key as parent_session_key,
+        spawn_turns.turn_index as spawn_turn_index,
+        spans.turn_id as spawn_turn_id,
+        spans.span_index as spawn_span_index,
+        spans.started_at as spawned_at
       from agent_recall.sessions child_sessions
       join agent_recall.sessions parent_sessions
         on parent_sessions.raw_id = child_sessions.parent_session_id
         and parent_sessions.source = child_sessions.source
         and parent_sessions.environment_id = child_sessions.environment_id
-      join visible_parent_turns parent_turns
-        on parent_turns.session_key = parent_sessions.session_key
+      join agent_recall.session_turns spawn_turns
+        on spawn_turns.session_key = parent_sessions.session_key
       join agent_recall.trace_spans spans
-        on spans.turn_id = parent_turns.id
+        on spans.turn_id = spawn_turns.id
       where child_sessions.source = $1
         and child_sessions.environment_id = $2
         and (
@@ -116,7 +120,22 @@ export async function findSessionFamily(
             )
           )
         )
-      order by child_sessions.session_key, parent_turns.turn_index, spans.span_index
+      order by child_sessions.session_key, spawn_turns.turn_index, spans.span_index
+    ), spawn_origins as (
+      select
+        spawn_events.session_key,
+        coalesce(exact_turn.visible_turn_index, fallback_turn.visible_turn_index) as origin_turn_index
+      from spawn_events
+      left join visible_parent_turns exact_turn
+        on exact_turn.id = spawn_events.spawn_turn_id
+      left join lateral (
+        select candidate_turn.visible_turn_index
+        from visible_parent_turns candidate_turn
+        where candidate_turn.session_key = spawn_events.parent_session_key
+          and candidate_turn.started_at <= spawn_events.spawned_at
+        order by candidate_turn.started_at desc, candidate_turn.turn_index desc
+        limit 1
+      ) fallback_turn on exact_turn.id is null
     )
     select
       sessions.session_key,

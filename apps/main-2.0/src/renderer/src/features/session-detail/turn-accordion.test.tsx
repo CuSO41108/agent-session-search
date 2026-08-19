@@ -372,6 +372,82 @@ describe("TurnAccordion subagent labels", () => {
     expect(container.querySelectorAll('[data-turn-origin="inherited"]')).toHaveLength(2);
     expect(container.querySelectorAll('[data-turn-origin="subagent"]')).toHaveLength(2);
   });
+
+  it("labels unnumbered synthetic Turns as Session setup in both subagent sections", async () => {
+    const turn = (
+      id: string,
+      turnIndex: number,
+      overrides: Partial<SessionTurnSummary> = {},
+    ) => ({
+      id,
+      turnIndex,
+      sourceMessageIndex: turnIndex,
+      sourceTurnId: `source-${id}`,
+      agentTriggered: false,
+      synthetic: false,
+      status: "completed" as const,
+      startedAt: `2026-08-12T09:0${turnIndex}:00.000Z`,
+      endedAt: `2026-08-12T09:0${turnIndex}:30.000Z`,
+      userPreview: `request ${turnIndex + 1}`,
+      assistantPreview: `result ${turnIndex + 1}`,
+      inputTokens: 0,
+      outputTokens: 0,
+      cachedInputTokens: 0,
+      reasoningOutputTokens: 0,
+      totalTokens: 0,
+      errorCount: 0,
+      toolNames: [],
+      messageCount: 1,
+      spanCount: 0,
+      ...overrides,
+    });
+    const turns = [
+      turn("parent-setup", 0, {
+        sourceMessageIndex: null,
+        sourceTurnId: null,
+        synthetic: true,
+        userPreview: "",
+      }),
+      turn("parent-1", 1),
+      turn("child-1", 2, {
+        sourceMessageIndex: null,
+        agentTriggered: true,
+        synthetic: true,
+        subagentExecutionStart: true,
+        userPreview: "",
+      }),
+      turn("child-setup", 3, {
+        sourceMessageIndex: null,
+        sourceTurnId: null,
+        synthetic: true,
+        userPreview: "",
+      }),
+      turn("child-2", 4),
+    ] satisfies SessionTurnSummary[];
+
+    await act(async () => {
+      root.render(
+        <TurnAccordion
+          sessionKey="codex:subagent-1"
+          turns={turns}
+          loading={false}
+          matchedTurnId={null}
+          matchedMessageIndex={null}
+          showTools
+          query=""
+          language="zh"
+          isSubagent
+          onLoadTurn={async () => null}
+        />,
+      );
+    });
+
+    expect(container.textContent?.match(/会话准备/g)).toHaveLength(2);
+    expect(container.textContent).toContain("父会话第 1 轮 · Fork 继承");
+    expect(container.textContent).toContain("子 Agent 第 1 轮 · Agent 触发");
+    expect(container.textContent).toContain("子 Agent 第 2 轮");
+    expect(container.textContent).not.toMatch(/第 0 轮/);
+  });
 });
 
 describe("TurnAccordion span payloads", () => {

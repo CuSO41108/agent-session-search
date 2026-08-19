@@ -204,6 +204,7 @@ function turnTitle(
   origin: "inherited" | "subagent" | null,
   subagentTurnNumber: number | null,
 ): string {
+  if (turn.synthetic && !agentTriggered) return localize(language, "Session setup", "会话准备");
   if (origin === "inherited") {
     return localize(
       language,
@@ -225,7 +226,6 @@ function turnTitle(
       `第 ${displayTurnNumber} 轮 · Agent 触发`,
     );
   }
-  if (turn.synthetic) return localize(language, "Session setup", "会话准备");
   return localize(language, `Turn ${displayTurnNumber}`, `第 ${displayTurnNumber} 轮`);
 }
 
