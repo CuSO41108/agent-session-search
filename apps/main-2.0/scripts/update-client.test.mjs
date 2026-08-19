@@ -1694,6 +1694,7 @@ test("copies a same-version live Electron runtime before install.js or cache ext
 test("extracts cached Electron archives through a Node subprocess", async () => {
   const packagePath = await temporaryDirectory("agent-session-electron-subprocess-extract-");
   const electronPath = path.join(packagePath, "node_modules", "electron");
+  const extractorPath = path.join(packagePath, "node_modules", "@electron-internal", "extract-zip");
   const relativeExecutable = process.platform === "darwin"
     ? path.join("Electron.app", "Contents", "MacOS", "Electron")
     : process.platform === "win32"
@@ -1715,6 +1716,28 @@ test("extracts cached Electron archives through a Node subprocess", async () => 
     'const fs = require("node:fs"); const path = require("node:path"); fs.mkdirSync(path.join(__dirname, "dist"), { recursive: true }); fs.writeFileSync(path.join(__dirname, "dist", "version"), "42.3.0");\n',
     "utf8",
   );
+  await mkdir(extractorPath, { recursive: true });
+  await writeFile(
+    path.join(extractorPath, "package.json"),
+    JSON.stringify({ name: "@electron-internal/extract-zip", version: "1.0.5", main: "index.cjs" }),
+    "utf8",
+  );
+  await writeFile(
+    path.join(extractorPath, "index.cjs"),
+    [
+      'const fs = require("node:fs/promises"); const path = require("node:path");',
+      "exports.extract = async (_archivePath, { dir }) => {",
+      `  const executable = path.join(dir, ${JSON.stringify(relativeExecutable)});`,
+      `  const defaultApp = path.join(dir, ${JSON.stringify(relativeDefaultApp)});`,
+      '  await fs.mkdir(path.dirname(executable), { recursive: true });',
+      '  await fs.mkdir(path.dirname(defaultApp), { recursive: true });',
+      '  await fs.writeFile(executable, "#!/bin/sh\\necho v42.3.0\\n", { mode: 0o755 });',
+      '  await fs.writeFile(defaultApp, "ok");',
+      '  await fs.writeFile(path.join(dir, "version"), "42.3.0");',
+      "};",
+    ].join("\n"),
+    "utf8",
+  );
   await writeFile(archivePath, "fake-archive", "utf8");
 
   const extractCommands = [];
@@ -1723,15 +1746,9 @@ test("extracts cached Electron archives through a Node subprocess", async () => 
     timeoutMs: 5_000,
     findCachedArchiveImpl: async () => archivePath,
     execFileImpl: async (command, args, options) => {
-      if (command === process.execPath && args[0] === "-e" && String(args[1] || "").includes("extract-zip")) {
+      if (command === process.execPath && args[0] === "-e" && String(args[1] || "").includes("@electron-internal/extract-zip")) {
         extractCommands.push({ command, args, options });
-        const distPath = path.join(electronPath, "dist");
-        await mkdir(path.join(distPath, path.dirname(relativeExecutable)), { recursive: true });
-        await mkdir(path.join(distPath, path.dirname(relativeDefaultApp)), { recursive: true });
-        await writeFile(path.join(distPath, relativeExecutable), "#!/bin/sh\necho v42.3.0\n", "utf8");
-        await writeFile(path.join(distPath, relativeDefaultApp), "ok", "utf8");
-        await writeFile(path.join(distPath, "version"), "42.3.0", "utf8");
-        return { stdout: "", stderr: "" };
+        return execFileAsync(command, args, options);
       }
       return electronFixtureExec(command, args, options);
     },
@@ -1739,7 +1756,7 @@ test("extracts cached Electron archives through a Node subprocess", async () => 
 
   assert.equal(extractCommands.length, 1);
   assert.match(extractCommands[0].args[1], /createRequire/);
-  assert.match(extractCommands[0].args[1], /extract-zip/);
+  assert.match(extractCommands[0].args[1], /@electron-internal\/extract-zip/);
   assert.equal(extractCommands[0].options.timeout, 5_000);
   assert.equal(await readFile(path.join(electronPath, "path.txt"), "utf8"), relativeExecutable);
   assert.equal(isElectronRuntimeReady(packagePath), true);
@@ -1905,5 +1922,7 @@ test("keeps the terminal attached until the updater reports an exit status", asy
 
 test("pins the Electron runtime used by CI and global installs", async () => {
   const packageJson = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
-  assert.equal(packageJson.dependencies.electron, "42.3.0");
+  assert.equal(packageJson.dependencies.electron, "42.9.2");
+  const electronRequire = createRequire(require.resolve("electron/package.json"));
+  assert.equal(typeof electronRequire("@electron-internal/extract-zip").extract, "function");
 });

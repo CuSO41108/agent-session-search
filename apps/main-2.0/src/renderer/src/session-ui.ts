@@ -15,6 +15,7 @@ import { enabledMigrationTargets, migrationTargetDescriptor, type MigrationTarge
 import {
   OPTIONAL_SESSION_SOURCE_DESCRIPTORS,
   SESSION_SOURCE_DESCRIPTORS,
+  isSessionSource,
   sessionSourceDescriptor,
   type SessionSourceUiFamily,
 } from "../../core/session-sources";
@@ -28,12 +29,20 @@ export const SOURCE_LABEL = Object.fromEntries(
   SESSION_SOURCE_DESCRIPTORS.map(({ id, label }) => [id, label]),
 ) as Record<SessionSource, string>;
 
+export function sessionAvailableSources(session: Pick<SessionSearchResult, "source" | "availableSources">): SessionSource[] {
+  const sources = new Set(session.availableSources?.length ? session.availableSources : [session.source]);
+  if (session.source === "stepcode-claude") sources.add("claude-cli");
+  if (session.source === "stepcode-codex") sources.add("codex-cli");
+  return [...sources];
+}
+
 export interface UsageStatsDisplayRow extends SessionStatsSummary {
   key: string;
   label: string;
 }
 
 function usageStatsDisplayGroup(source: SessionSource): { key: string; label: string } {
+  if (!isSessionSource(source)) return { key: String(source), label: String(source) };
   const descriptor = sessionSourceDescriptor(source);
   if (descriptor.statsGroup) {
     return { key: descriptor.statsGroup, label: descriptor.statsGroup === "claude" ? "Claude Code" : "Codex" };
@@ -133,8 +142,12 @@ const BASE_SOURCE_FILTERS: Array<{ label: string; value: SearchOptions["source"]
 export function sourceFilters(settings: AppSettings | null): Array<{ label: string; value: SearchOptions["source"] }> {
   return [
     ...BASE_SOURCE_FILTERS,
-    ...OPTIONAL_SESSION_SOURCE_DESCRIPTORS.flatMap((descriptor) =>
-      settings?.[descriptor.optionalSetting] ? [{ label: descriptor.label, value: descriptor.id }] : []),
+    ...OPTIONAL_SESSION_SOURCE_DESCRIPTORS.flatMap((descriptor) => {
+      if (!settings?.[descriptor.optionalSetting]) return [];
+      const value: SearchOptions["source"] =
+        descriptor.optionalSetting === "includeStepcode" ? "stepcode" : descriptor.id;
+      return [{ label: descriptor.label, value }];
+    }),
   ];
 }
 
@@ -147,10 +160,12 @@ export function displayTagName(tagName: string): string {
 }
 
 export function sourceUiFamily(source: SessionSource): SessionSourceUiFamily {
+  if (!isSessionSource(source)) return "other";
   return sessionSourceDescriptor(source).uiFamily;
 }
 
 export function supportsResumeSource(source: SessionSource): boolean {
+  if (!isSessionSource(source)) return false;
   return sessionSourceDescriptor(source).capabilities.resume;
 }
 
@@ -159,6 +174,7 @@ export function supportsMigrationSource(source: SessionSource): boolean {
 }
 
 export function migrationTargetsForSource(source: SessionSource, settings: MigrationTargetSettings): MigrationTarget[] {
+  if (!isSessionSource(source)) return [];
   return supportedMigrationTargets(source, enabledMigrationTargets(settings));
 }
 
@@ -188,6 +204,7 @@ export function migrationAgentLabel(target: MigrationTarget): string {
 }
 
 export function sourceMigrationAgent(source: SessionSource): MigrationAgent | null {
+  if (!isSessionSource(source)) return null;
   return sessionSourceDescriptor(source).migrationAgent;
 }
 
@@ -203,13 +220,29 @@ export function projectSortTimestamp(project: Pick<ProjectSummary, "createdAt" |
   return project.lastActivityAt || project.createdAt || 0;
 }
 
+export function isSidebarProjectVisible(
+  project: Pick<ProjectSummary, "path" | "environmentId" | "sessionCount">,
+  selectedProjectPath: string | undefined,
+  selectedEnvironmentId: string | undefined,
+): boolean {
+  return project.sessionCount > 0
+    || (project.path === selectedProjectPath && project.environmentId === selectedEnvironmentId);
+}
+
 export function projectDisplayLabel(
   project: Pick<ProjectSummary, "label" | "labelKind" | "labelSuffix">,
   language: LanguageMode,
 ): string {
-  const base = project.labelKind === "codex-task-untitled"
+  const opaqueLabel = /^[a-f\d]{8}(?:-[a-f\d]{4,})+$/iu.test(project.label.trim());
+  const base = opaqueLabel
+    ? localize(language, "Unnamed workspace", "未命名工作区")
+    : project.labelKind === "codex-task-untitled"
     ? localize(language, "Untitled session", "未命名会话")
     : project.label;
+  if (opaqueLabel) {
+    const shortId = project.label.replace(/[^a-f\d]/giu, "").slice(-8);
+    return `${base} · ${shortId}`;
+  }
   return project.labelSuffix ? `${base} · ${project.labelSuffix}` : base;
 }
 

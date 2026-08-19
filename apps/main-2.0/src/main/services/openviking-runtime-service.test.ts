@@ -502,16 +502,12 @@ describe("OpenVikingRuntimeService", () => {
     });
     await service.install(manifest());
 
-    const outcome = await Promise.race([
+    await expect(
       service.start({
         embedding: { dense: { provider: "local", model: "model", dimension: 512 } },
         vlm: { provider: "openai-codex", model: "gpt-5.4" },
-      }).catch((error: unknown) => error),
-      new Promise((resolve) => setTimeout(() => resolve("timed-out"), 100)),
-    ]);
-
-    expect(outcome).toBeInstanceOf(Error);
-    expect((outcome as Error).message).toContain(
+      }),
+    ).rejects.toThrow(
       "ModuleNotFoundError: No module named 'mcp.server.fastmcp'",
     );
   });

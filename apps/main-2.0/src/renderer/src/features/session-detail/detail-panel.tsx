@@ -26,6 +26,7 @@ import {
   localizedLiveStateLabel,
   remoteRevealTitle,
   SOURCE_LABEL,
+  sessionAvailableSources,
   sourceUiFamily,
 } from "../../session-ui";
 import { readInitialToolEventsVisibility, storeToolEventsVisibility } from "../../tool-events-visibility";
@@ -33,7 +34,7 @@ import { TurnAccordion, type TurnMessageRoleFilter } from "./turn-accordion";
 import { MessageHead } from "./message-shell";
 import type { SessionFamily } from "../../../../core/session-family";
 import { canDeleteSessionLocally } from "../../../../core/session-environment";
-import { sessionSourceDescriptor } from "../../../../core/session-sources";
+import { isSessionSource, sessionSourceDescriptor } from "../../../../core/session-sources";
 import { SubagentSessionTree } from "./subagent-session-tree";
 import { SessionContextComponentsPanel } from "./session-context-components-panel";
 import { collaborationMessageMetadata } from "./collaboration-message";
@@ -278,7 +279,8 @@ export function DetailPanel({
     && !messages.some((message) => message.role === roleFilter);
   const localOnlyDisabled = isRemoteSession(session);
   const canDelete = canDeleteSessionLocally(session);
-  const canSyncSession = sessionSourceDescriptor(session.source).capabilities.sessionSync;
+  const canSyncSession = isSessionSource(session.source)
+    && sessionSourceDescriptor(session.source).capabilities.sessionSync;
   const revealTitle = localOnlyDisabled ? remoteRevealTitle(language) : l(`Show in ${revealLabel}`, `在${revealLabel}中显示`);
 
   const toggleTools = () => {
@@ -480,9 +482,11 @@ export function DetailPanel({
         <div className="detail-header">
           <div>
             <div className="detail-badges">
-              <div className={`source-badge ${sourceUiFamily(session.source)}`}>
-                {SOURCE_LABEL[session.source]}
-              </div>
+              {sessionAvailableSources(session).map((source) => (
+                <div className={`source-badge ${sourceUiFamily(source)}`} key={source}>
+                  {SOURCE_LABEL[source]}
+                </div>
+              ))}
               {session.sourceAvailable === false ? (
                 <span
                   className="source-cache-badge"

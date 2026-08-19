@@ -215,6 +215,32 @@ describe("PostgreSQL Turn search", () => {
     expect(emptyPage.hasMore).toBe(false);
   });
 
+  it("filters both Claude and Codex StepCode variants as one source", async () => {
+    await repository.upsertIndexedSession(
+      session("stepcode-claude:two", "StepCode Claude", "2026-07-24T08:00:00.000Z", {
+        source: "stepcode-claude",
+      }),
+      [message("user", "stepcode shared source", "2026-07-24T08:00:00.000Z", 0)],
+    );
+    await repository.upsertIndexedSession(
+      session("stepcode-codex:one", "StepCode Codex", "2026-07-25T08:00:00.000Z", {
+        source: "stepcode-codex",
+      }),
+      [message("user", "stepcode shared source", "2026-07-25T08:00:00.000Z", 0)],
+    );
+
+    const page = await searchRepository.searchSessionPage({
+      query: "stepcode shared source",
+      source: "stepcode",
+    });
+
+    expect(page.sessions).toHaveLength(2);
+    expect(page.sessions.map((item) => JSON.stringify(item.availableSources?.sort())).sort()).toEqual([
+      JSON.stringify(["claude-cli", "stepcode-claude"]),
+      JSON.stringify(["codex-cli", "stepcode-codex"]),
+    ].sort());
+  });
+
   it("keeps smart, recent, and oldest sorting behavior distinct", async () => {
     const dayMs = 24 * 60 * 60 * 1_000;
     const projectPath = "/projects/sort-modes";

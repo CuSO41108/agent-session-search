@@ -18,6 +18,7 @@ export type SessionIndexWorkerLoadOptions = Pick<
   | "includeCursorAgent"
   | "includeTrae"
   | "includeQoder"
+  | "includeDeepSeekCli"
 >;
 
 interface SessionIndexWorkerBaseInput {

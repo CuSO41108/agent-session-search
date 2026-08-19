@@ -13,6 +13,7 @@ import {
   type SessionLoadOptions,
 } from "./session-loader";
 import { migrationTargetDescriptor } from "./migration-targets";
+import { loadDeepSeekCliSessionFile, safeStat } from "./session-loader";
 import type { SessionStore } from "./session-store";
 import type { LoadedSession, MigrationTarget } from "./types";
 
@@ -364,6 +365,10 @@ export function indexMigratedSessionFile(
 
 function loadMigratedSessionFile(target: MigrationTarget, filePath: string, sessionId?: string): LoadedSession | null {
   if (target === "cursor") return loadCursorTranscriptFile(filePath);
+  if (target === "deepseek") {
+    const stat = safeStat(filePath);
+    return loadDeepSeekCliSessionFile(filePath, stat);
+  }
 
   const descriptor = migrationTargetDescriptor(target);
   if (descriptor.family === "codebuddy") return loadCodeBuddyCliSessionFile(filePath);
