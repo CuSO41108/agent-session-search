@@ -27,6 +27,7 @@ const ALL_SOURCES = [
   "trae",
   "qoder",
   "pi-cli",
+  "deepseek-cli",
 ] as const satisfies readonly SessionSource[];
 
 describe("session source capability registry", () => {
@@ -40,7 +41,10 @@ describe("session source capability registry", () => {
     for (const descriptor of SESSION_SOURCE_DESCRIPTORS) {
       expect(descriptor.capabilities.live).toBe(descriptor.liveFamily !== null);
       expect(descriptor.capabilities.migrate).toBe(descriptor.migrationAgent !== null);
-      if (descriptor.migrationAgent !== null) expect(descriptor.capabilities.sessionSync).toBe(true);
+      // Migrating targets sync remotely; deepseek migrates locally only.
+      if (descriptor.migrationAgent !== null && descriptor.remoteFamily !== null) {
+        expect(descriptor.capabilities.sessionSync).toBe(true);
+      }
       expect(descriptor.capabilities.openApp).toBe(descriptor.nativeAppFamily !== null);
       if (descriptor.capabilities.resume) expect(descriptor.resumeTarget).not.toBeNull();
       if (descriptor.remoteCollectorOptional) expect(descriptor.optionalSetting).not.toBeNull();
@@ -62,6 +66,7 @@ describe("session source capability registry", () => {
       "includeTrae",
       "includeQoder",
       "includePi",
+      "includeDeepSeekCli",
     ]);
     expect(sessionSourceDescriptor("tclaude-cli")).toMatchObject({ liveFamily: "tclaude", migrationAgent: "claude" });
     expect(sessionSourceDescriptor("tcodex-cli")).toMatchObject({ liveFamily: "tcodex", migrationAgent: "codex" });

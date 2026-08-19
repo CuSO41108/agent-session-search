@@ -1,6 +1,15 @@
 import { describe, expect, it } from "vitest";
 import { defaultSettings } from "../../core/platform";
-import { canMigrateSession, migrationTargetsForSession, sourceFilters } from "./session-ui";
+import {
+  canMigrateSession,
+  isSidebarProjectVisible,
+  migrationTargetsForSession,
+  projectDisplayLabel,
+  sourceFilters,
+  sourceMigrationAgent,
+  sourceUiFamily,
+  supportsResumeSource,
+} from "./session-ui";
 
 const settings = { includeTclaude: false, includeTcodex: false };
 
@@ -24,6 +33,28 @@ describe("migrationTargetsForSession", () => {
   it("keeps local and WSL target behavior", () => {
     expect(migrationTargetsForSession({ source: "claude-cli", environmentId: "local", environmentKind: "local" }, settings)).toEqual(["claude", "codex", "codebuddy", "codewiz", "cursor"]);
     expect(migrationTargetsForSession({ source: "codex-cli", environmentId: "wsl-1", environmentKind: "wsl" }, settings)).toEqual(["claude", "codex"]);
+  });
+
+  it("safely disables actions for a stale persisted source", () => {
+    const source = "workbuddy-cli" as never;
+    const session = { source, environmentId: "local", environmentKind: "local" } as const;
+    expect(sourceUiFamily(source)).toBe("other");
+    expect(supportsResumeSource(source)).toBe(false);
+    expect(sourceMigrationAgent(source)).toBeNull();
+    expect(migrationTargetsForSession(session, settings)).toEqual([]);
+  });
+});
+
+describe("sidebar project presentation", () => {
+  it("keeps empty workspace rows out of the active project list unless selected", () => {
+    const project = { path: "C:/workspace/ebb3b242", environmentId: "local", sessionCount: 0 };
+    expect(isSidebarProjectVisible(project, undefined, undefined)).toBe(false);
+    expect(isSidebarProjectVisible(project, project.path, project.environmentId)).toBe(true);
+  });
+
+  it("uses a readable label for opaque workspace ids", () => {
+    expect(projectDisplayLabel({ label: "ebb3b242-1234-5678-90ab-cdef01234567", labelKind: "path", labelSuffix: null }, "zh"))
+      .toBe("未命名工作区 · 01234567");
   });
 });
 

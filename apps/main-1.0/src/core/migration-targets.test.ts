@@ -12,6 +12,7 @@ import {
 const allDisabled: MigrationTargetSettings = {
   includeTclaude: false,
   includeTcodex: false,
+  includeDeepSeekCli: false,
 };
 
 describe("migration target registry", () => {
@@ -24,6 +25,7 @@ describe("migration target registry", () => {
       "cursor",
       "tclaude",
       "tcodex",
+      "deepseek",
     ]);
     expect(new Set(MIGRATION_TARGET_IDS).size).toBe(MIGRATION_TARGET_IDS.length);
     expect(MIGRATION_TARGETS.map(({ id }) => id)).toEqual(MIGRATION_TARGET_IDS);
@@ -70,7 +72,7 @@ describe("migration target registry", () => {
     ]);
   });
 
-  it("maps the two optional migration targets", () => {
+  it("maps the optional migration targets", () => {
     expect(MIGRATION_TARGETS.slice(5)).toEqual([
       {
         id: "tclaude",
@@ -86,6 +88,13 @@ describe("migration target registry", () => {
         source: "tcodex-cli",
         enabledSetting: "includeTcodex",
       },
+      {
+        id: "deepseek",
+        label: "DeepSeek Harness",
+        family: "deepseek",
+        source: "deepseek-cli",
+        enabledSetting: "includeDeepSeekCli",
+      },
     ]);
   });
 
@@ -100,6 +109,7 @@ describe("migration target registry", () => {
     expect(enabledMigrationTargets({
       includeTclaude: true,
       includeTcodex: true,
+      includeDeepSeekCli: true,
     })).toEqual(MIGRATION_TARGET_IDS);
   });
 

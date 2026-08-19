@@ -1079,13 +1079,13 @@ async function ensureInstalledElectron(options = {}) {
     if (options.extractArchiveImpl) {
       await options.extractArchiveImpl({ archivePath, distPath, electronModulePath });
     } else {
-      // Extract in a Node subprocess. Running extract-zip inside Electron's main
+      // Extract in a Node subprocess. Running the Electron archive extractor inside Electron's main
       // process can deadlock while holding the update UI on "validating".
       const extractScript = [
         "const { createRequire } = require(\"node:module\");",
         `const requireFromElectron = createRequire(${JSON.stringify(path.join(electronModulePath, "package.json"))});`,
-        "const extractZip = requireFromElectron(\"extract-zip\");",
-        `extractZip(${JSON.stringify(archivePath)}, { dir: ${JSON.stringify(distPath)} }).then(`,
+        "const { extract } = requireFromElectron(\"@electron-internal/extract-zip\");",
+        `extract(${JSON.stringify(archivePath)}, { dir: ${JSON.stringify(distPath)} }).then(`,
         "  () => process.exit(0),",
         "  (error) => {",
         "    console.error(error instanceof Error ? (error.stack || error.message) : String(error));",

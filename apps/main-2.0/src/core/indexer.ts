@@ -12,6 +12,8 @@ import {
   parseJsonlText,
   type SessionLoadOptions,
 } from "./session-loader";
+import { loadDeepSeekCliSessionFile } from "./session-loaders/alternative-sources";
+import { safeStat } from "./session-loaders/common";
 import { migrationTargetDescriptor } from "./migration-targets";
 import type { SessionStore } from "./session-store";
 import type { LoadedSession, MigrationTarget, SessionEnvironment } from "./types";
@@ -105,6 +107,7 @@ export async function syncLoadedSessionsInBatches(
   let pendingInBatch = 0;
   let sliceStartedAt = now();
   let cursorSessionKeysByIdentity: Map<string, Set<string>> | null = null;
+  let resumableSessionKeysByIdentity: Map<string, Set<string>> | null = null;
   const environments = await store.listEnvironments();
   const sshEnvironmentByHostAlias = new Map(
     environments
@@ -141,6 +144,49 @@ export async function syncLoadedSessionsInBatches(
             || sessionKeyMigrated;
         }
         cursorSessionKeysByIdentity.set(identityKey, new Set([item.session.sessionKey]));
+      }
+      const resumableFamily =
+        item.session.source === "claude-cli"
+        || item.session.source === "claude-app"
+        || item.session.source === "stepcode-claude"
+          ? "claude"
+          : item.session.source === "codex-cli"
+            || item.session.source === "codex-app"
+            || item.session.source === "stepcode-codex"
+            ? "codex"
+            : null;
+      if (resumableFamily) {
+        if (!resumableSessionKeysByIdentity) {
+          resumableSessionKeysByIdentity = new Map();
+          for (const source of [
+            "claude-cli",
+            "claude-app",
+            "stepcode-claude",
+            "codex-cli",
+            "codex-app",
+            "stepcode-codex",
+          ] as const) {
+            const family = source === "claude-cli" || source === "claude-app" || source === "stepcode-claude"
+              ? "claude"
+              : "codex";
+            for (const identity of await store.listSessionIdentitiesBySource(source)) {
+              const key = `${family}\u0000${identity.storageEnvironmentId}\u0000${identity.rawId}`;
+              const sessionKeys = resumableSessionKeysByIdentity.get(key) ?? new Set<string>();
+              sessionKeys.add(identity.sessionKey);
+              resumableSessionKeysByIdentity.set(key, sessionKeys);
+            }
+          }
+        }
+        const storageEnvironmentId =
+          item.session.storageEnvironmentId ?? item.session.environmentId ?? "local";
+        const identityKey = `${resumableFamily}\u0000${storageEnvironmentId}\u0000${item.session.rawId}`;
+        for (const previousKey of resumableSessionKeysByIdentity.get(identityKey) ?? []) {
+          if (previousKey === item.session.sessionKey) continue;
+          sessionKeyMigrated =
+            await store.migrateSessionKeyPreservingUserState(previousKey, item.session.sessionKey)
+            || sessionKeyMigrated;
+        }
+        resumableSessionKeysByIdentity.set(identityKey, new Set([item.session.sessionKey]));
       }
       if (
         !sessionKeyMigrated
@@ -260,10 +306,16 @@ export async function syncDefaultSessionsInBatches(
   options: BatchIndexOptions = {},
 ): Promise<IndexStatus> {
   const storedFiles = await store.listIndexedSessionFiles();
+  const loadOptions = options.loadOptions ?? {};
   const indexedFiles = sessionFileSnapshots(storedFiles);
   const incrementalCodexFiles = new Map<string, { offset: number; sessionKey: string }>();
   for (const file of storedFiles) {
-    if (file.source !== "codex-cli" && file.source !== "codex-app" && file.source !== "tcodex-cli") continue;
+    if (
+      file.source !== "codex-cli"
+      && file.source !== "codex-app"
+      && file.source !== "stepcode-codex"
+      && file.source !== "tcodex-cli"
+    ) continue;
     if (file.fileMtimeMs <= 0) continue;
     incrementalCodexFiles.set(file.filePath, {
       offset: file.fileSize,
@@ -272,7 +324,6 @@ export async function syncDefaultSessionsInBatches(
   }
   const dependencyChangedFiles = new Set<string>();
   let fileSkipped = 0;
-  const loadOptions = options.loadOptions ?? {};
   const shouldSkipFile = loadOptions.shouldSkipFile;
   const onSkippedFile = loadOptions.onSkippedFile;
   const scannedFilePaths = new Set<string>();
@@ -299,11 +350,11 @@ export async function syncDefaultSessionsInBatches(
         },
       };
     },
-    shouldSkipFile: (filePath, stat, dependencyMtimeMs = 0) => {
+    shouldSkipFile: (filePath, stat, dependencyMtimeMs = 0, source) => {
       scannedFilePaths.add(filePath);
-      const customDecision = shouldSkipFile?.(filePath, stat, dependencyMtimeMs);
+      const customDecision = shouldSkipFile?.(filePath, stat, dependencyMtimeMs, source);
       if (customDecision !== undefined) return customDecision;
-      const snapshot = findSessionFileSnapshot(indexedFiles, filePath, stat);
+      const snapshot = findSessionFileSnapshot(indexedFiles, filePath, stat, source);
       if (snapshot !== undefined && dependencyMtimeMs > snapshot.indexedAt) {
         dependencyChangedFiles.add(filePath);
         incrementalCodexFiles.delete(filePath);
@@ -352,12 +403,23 @@ interface SessionFileSnapshot {
   indexedAt: number;
 }
 
-function sessionFileSnapshots(files: Array<{ filePath: string; fileMtimeMs: number; fileSize: number; indexedAt: number }>): Map<string, SessionFileSnapshot[]> {
+function sessionFileSnapshotKey(filePath: string, source?: LoadedSession["session"]["source"]): string {
+  return `${source ?? ""}\0${filePath}`;
+}
+
+function sessionFileSnapshots(files: Array<{
+  source: LoadedSession["session"]["source"];
+  filePath: string;
+  fileMtimeMs: number;
+  fileSize: number;
+  indexedAt: number;
+}>): Map<string, SessionFileSnapshot[]> {
   const snapshots = new Map<string, SessionFileSnapshot[]>();
   for (const file of files) {
-    const bucket = snapshots.get(file.filePath) ?? [];
+    const key = sessionFileSnapshotKey(file.filePath, file.source);
+    const bucket = snapshots.get(key) ?? [];
     bucket.push({ fileMtimeMs: file.fileMtimeMs, fileSize: file.fileSize, indexedAt: file.indexedAt });
-    snapshots.set(file.filePath, bucket);
+    snapshots.set(key, bucket);
   }
   return snapshots;
 }
@@ -366,8 +428,10 @@ function findSessionFileSnapshot(
   snapshots: Map<string, SessionFileSnapshot[]>,
   filePath: string,
   stat: { mtimeMs: number; size: number },
+  source?: LoadedSession["session"]["source"],
 ): SessionFileSnapshot | undefined {
-  return snapshots.get(filePath)?.find((snapshot) => snapshot.fileSize === stat.size && Math.abs(snapshot.fileMtimeMs - stat.mtimeMs) < 1);
+  return snapshots.get(sessionFileSnapshotKey(filePath, source))
+    ?.find((snapshot) => snapshot.fileSize === stat.size && Math.abs(snapshot.fileMtimeMs - stat.mtimeMs) < 1);
 }
 
 export async function indexMigratedSessionFile(
@@ -399,6 +463,10 @@ export async function indexMigratedSessionFile(
 
 function loadMigratedSessionFile(target: MigrationTarget, filePath: string, sessionId?: string): LoadedSession | null {
   if (target === "cursor") return loadCursorTranscriptFile(filePath);
+  if (target === "deepseek") {
+    const stat = safeStat(filePath);
+    return loadDeepSeekCliSessionFile(filePath, stat);
+  }
 
   const descriptor = migrationTargetDescriptor(target);
   if (descriptor.family === "codebuddy") return loadCodeBuddyCliSessionFile(filePath);

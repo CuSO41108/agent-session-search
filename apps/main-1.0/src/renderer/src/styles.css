@@ -1485,6 +1485,70 @@ select:focus-visible {
   padding-left: 36px;
 }
 
+.tree-subsection-label {
+  padding: 5px 8px 2px 54px;
+  color: var(--text-faint);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.tree-empty-project .tree-label {
+  color: var(--text-faint);
+}
+
+.tree-empty-workspaces {
+  margin: 4px 0 2px 36px;
+  border-top: 1px solid color-mix(in srgb, var(--border) 55%, transparent);
+}
+
+.tree-empty-toggle,
+.tree-empty-workspace-row {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  min-width: 0;
+  gap: 7px;
+  border: 0;
+  background: transparent;
+  color: var(--text-faint);
+  font-size: 11px;
+  text-align: left;
+}
+
+.tree-empty-toggle {
+  height: 24px;
+  padding: 0 7px;
+}
+
+.tree-empty-toggle span,
+.tree-empty-workspace-row span {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tree-empty-toggle em,
+.tree-empty-workspace-row em {
+  flex: 0 0 auto;
+  font-size: 10px;
+  font-style: normal;
+}
+
+.tree-empty-toggle:hover,
+.tree-empty-workspace-row:hover,
+.tree-empty-workspace-row.active {
+  background: var(--panel-hover);
+  color: var(--text);
+}
+
+.tree-empty-workspace-row {
+  height: 24px;
+  padding: 0 7px 0 25px;
+}
+
 .tree-chevron {
   display: inline-grid;
   place-items: center;
