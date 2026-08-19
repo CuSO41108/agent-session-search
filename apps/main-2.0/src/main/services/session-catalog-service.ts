@@ -218,6 +218,13 @@ export class SessionCatalogService {
     const request = await this.withFreshLiveSessions({ sessionKeys: [sessionKey], liveSessionKeys: [] });
     if (session.environmentKind === "ssh" || isSharedSessionSourceDatabase(session)) {
       const prepared = await this.bulkDelete.prepareSingleDelete(request, normalizedOptions);
+      if (
+        session.environmentKind === "wsl"
+        && session.sourceAvailable === false
+        && isSharedSessionSourceDatabase(session)
+      ) {
+        return (await this.dependencies.store.deleteSessionRecords([sessionKey])).includes(sessionKey);
+      }
       const preparedTarget = prepared.allRows.find((target) => target.sessionKey === sessionKey);
       if (!preparedTarget) return false;
       if (prepared.allRows.some((target) => !canDeleteSessionLocally(target))) {
