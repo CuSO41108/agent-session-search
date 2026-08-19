@@ -1,8 +1,12 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { createRequire } from "node:module";
 import { describe, expect, it } from "vitest";
 import { deleteLocalSessionSources, sessionSourceDeletionPaths } from "./session-source-delete";
+
+const require = createRequire(import.meta.url);
+const { DatabaseSync } = require("node:sqlite") as { DatabaseSync: typeof import("node:sqlite").DatabaseSync };
 
 describe("session source deletion", () => {
   it("rejects relative source paths before deleting anything", () => {
@@ -145,6 +149,90 @@ describe("session source deletion", () => {
       expect(fs.existsSync(parentFile)).toBe(true);
       expect(fs.existsSync(childFile)).toBe(true);
       expect(fs.existsSync(subagentsDirectory)).toBe(true);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("removes stale Codex App state rows when the rollout file is already missing", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "agent-recall-codex-app-state-delete-"));
+    const codexHome = path.join(root, ".codex");
+    const rolloutPath = path.join(codexHome, "sessions", "2026", "08", "18", "rollout-stale.jsonl");
+    const statePath = path.join(codexHome, "state_1.sqlite");
+    const sessionId = "550e8400-e29b-41d4-a716-446655440000";
+    const childId = "650e8400-e29b-41d4-a716-446655440000";
+    fs.mkdirSync(path.dirname(rolloutPath), { recursive: true });
+    fs.writeFileSync(
+      path.join(codexHome, "session_index.jsonl"),
+      `${JSON.stringify({ id: sessionId, thread_name: "stale" })}\n${JSON.stringify({ id: "keep", thread_name: "keep" })}\n`,
+    );
+    const db = new DatabaseSync(statePath);
+    db.exec(`
+      CREATE TABLE threads (id TEXT PRIMARY KEY, rollout_path TEXT NOT NULL);
+      CREATE TABLE thread_spawn_edges (parent_thread_id TEXT NOT NULL, child_thread_id TEXT NOT NULL PRIMARY KEY);
+    `);
+    db.prepare("INSERT INTO threads (id, rollout_path) VALUES (?, ?)").run(sessionId, rolloutPath);
+    db.prepare("INSERT INTO threads (id, rollout_path) VALUES (?, ?)").run(childId, `${rolloutPath}.child`);
+    db.prepare("INSERT INTO thread_spawn_edges (parent_thread_id, child_thread_id) VALUES (?, ?)").run(sessionId, childId);
+    db.close();
+
+    try {
+      deleteLocalSessionSources([{
+        source: "codex-app",
+        rawId: sessionId,
+        filePath: rolloutPath,
+        isSubagent: false,
+      }]);
+
+      const verify = new DatabaseSync(statePath);
+      try {
+        expect(verify.prepare("SELECT id FROM threads WHERE id = ?").get(sessionId)).toBeUndefined();
+        expect(verify.prepare("SELECT id FROM threads WHERE id = ?").get(childId)).toBeUndefined();
+        expect(verify.prepare("SELECT child_thread_id FROM thread_spawn_edges WHERE parent_thread_id = ?").get(sessionId)).toBeUndefined();
+      } finally {
+        verify.close();
+      }
+      expect(fs.readFileSync(path.join(codexHome, "session_index.jsonl"), "utf8")).toBe(
+        `${JSON.stringify({ id: "keep", thread_name: "keep" })}\n`,
+      );
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("does not fail source deletion when Codex state cleanup is unavailable", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "agent-recall-codex-app-state-best-effort-"));
+    const codexHome = path.join(root, ".codex");
+    const rolloutPath = path.join(codexHome, "sessions", "2026", "08", "19", "rollout-busy.jsonl");
+    const statePath = path.join(codexHome, "state_1.sqlite");
+    const sessionId = "750e8400-e29b-41d4-a716-446655440000";
+    fs.mkdirSync(path.dirname(rolloutPath), { recursive: true });
+    fs.writeFileSync(rolloutPath, "fixture", "utf8");
+    fs.writeFileSync(
+      path.join(codexHome, "session_index.jsonl"),
+      `${JSON.stringify({ id: sessionId, thread_name: "busy" })}\n`,
+    );
+    const db = new DatabaseSync(statePath);
+    db.exec(`
+      CREATE TABLE threads (id TEXT PRIMARY KEY, rollout_path TEXT NOT NULL);
+      CREATE TRIGGER block_thread_delete
+      BEFORE DELETE ON threads
+      BEGIN
+        SELECT RAISE(ABORT, 'state cleanup blocked');
+      END;
+    `);
+    db.prepare("INSERT INTO threads (id, rollout_path) VALUES (?, ?)").run(sessionId, rolloutPath);
+    db.close();
+
+    try {
+      expect(() => deleteLocalSessionSources([{
+        source: "codex-app",
+        rawId: sessionId,
+        filePath: rolloutPath,
+        isSubagent: false,
+      }])).not.toThrow();
+      expect(fs.existsSync(rolloutPath)).toBe(false);
+      expect(fs.readFileSync(path.join(codexHome, "session_index.jsonl"), "utf8")).toBe("");
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }
