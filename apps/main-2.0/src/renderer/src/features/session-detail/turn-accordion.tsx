@@ -774,15 +774,9 @@ export function TurnAccordion({
 
   let visibleTurnNumber = 0;
   let subagentTurnNumber = 0;
-  const exactExecutionStartIndex = isSubagent
+  const executionStartIndex = isSubagent
     ? turns.findIndex((turn) => turn.subagentExecutionStart === true)
     : -1;
-  const fallbackExecutionStartIndex = isSubagent && exactExecutionStartIndex < 0
-    ? turns.findIndex((turn) => turn.agentTriggered === true && turn.sourceMessageIndex === null)
-    : -1;
-  const executionStartIndex = exactExecutionStartIndex >= 0
-    ? exactExecutionStartIndex
-    : fallbackExecutionStartIndex;
   const forkedTurnCount = executionStartIndex > 0
     ? turns.slice(0, executionStartIndex).filter((turn) => !turn.synthetic).length
     : 0;
