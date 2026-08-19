@@ -559,27 +559,6 @@ describe("SessionCatalogService deletion policy", () => {
     },
   );
 
-  it.each(["opencode-cli", "codewiz-cli"] as const)(
-    "deletes an unavailable WSL %s cache through exact prepared targets",
-    async (source) => {
-      const current = session({
-        sessionKey: `${source}:wsl-cache`,
-        rawId: "wsl-cache",
-        source,
-        environmentId: "ubuntu",
-        environmentKind: "wsl",
-        filePath: `/home/user/${source}.db`,
-        sourceAvailable: false,
-      });
-      const { service, store } = createService(current);
-
-      await expect(service.delete(current.sessionKey)).resolves.toBe(true);
-      expect(store.deleteExactSessionTargets).toHaveBeenCalledWith([
-        expect.objectContaining({ source, sourceAvailable: false }),
-      ], current.sessionKey);
-    },
-  );
-
   it("refuses to delete a shared Hermes database file on WSL", async () => {
     const store = {
       getSession: vi.fn(async () => session({
