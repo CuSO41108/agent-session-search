@@ -98,6 +98,149 @@ test("Runtime Review MCP binding exposes only requested tools declared read-only
   expect(bindings).toEqual([expect.objectContaining({ toolAllowlist: ["search"] })]);
 });
 
+test("DeepSeek Harness never exposes persisted custom MCP bindings to execution", () => {
+  const hub = new AgentHub();
+  (hub as any).channels.push({
+    id: "dsh-default",
+    agentId: "dsh",
+    label: "DeepSeek Harness",
+    presetId: "dsh-default",
+    models: [{ id: "default", label: "Default" }],
+  });
+  addConfiguredAgents(hub, [{
+    ...configuredAgent("dsh-agent", {
+      runtimeAgentId: "dsh",
+      channelId: "dsh-default",
+    }),
+    mcpBindings: [{ serverId: "evidence", toolAllowlist: [] }],
+  }]);
+  hub.setMcpServers([{
+    id: "evidence",
+    name: "Evidence",
+    transport: "http",
+    args: [],
+    url: "https://example.test/mcp",
+    env: {},
+    enabled: true,
+    tools: [{ name: "search", inputSchema: {}, readOnly: true }],
+    status: "connected",
+    createdAt: 1,
+    updatedAt: 1,
+  }]);
+
+  expect((hub as any).boundMcpServersForAgent("dsh-agent")).toEqual([]);
+  expect((hub as any).boundMcpServersForAgent("dsh-agent", ["search"])).toEqual([]);
+});
+
+test("shutdown waits for Runtime driver lifecycle cleanup", async () => {
+  let releaseShutdown: (() => void) | undefined;
+  const shutdown = vi.fn(() => new Promise<void>((resolve) => {
+    releaseShutdown = resolve;
+  }));
+  const runtimeDrivers = new RuntimeDriverRegistry([{
+    runtimeId: "codex",
+    surfaceSupport: [support("chat", ["oneshot"], ["fresh"])],
+    getCapabilities: () => oneshotChatCapabilities("codex"),
+    createOneShotExecutor: () => ({
+      start: async () => undefined,
+      stop: async () => undefined,
+    }),
+    shutdown,
+  } as any]);
+  const hub = new AgentHub(
+    { codex: "codex-for-test", claude: "missing-claude-for-test" },
+    undefined,
+    runtimeDrivers,
+  );
+
+  let settled = false;
+  const closing = hub.shutdown().finally(() => {
+    settled = true;
+  });
+  await vi.waitFor(() => expect(shutdown).toHaveBeenCalledOnce());
+
+  expect(settled).toBe(false);
+  releaseShutdown?.();
+  await closing;
+  expect(settled).toBe(true);
+});
+
+test("shutdown keeps an active DeepSeek Harness team task stopped when its process exits", async () => {
+  const hub = new AgentHub();
+  (hub as any).channels.push({
+    id: "dsh-default",
+    agentId: "dsh",
+    label: "DeepSeek Harness",
+    presetId: "dsh-default",
+    models: [{ id: "default", label: "Default" }],
+  });
+  addConfiguredAgents(hub, [configuredAgent("dsh-agent", {
+    runtimeAgentId: "dsh",
+    channelId: "dsh-default",
+  })]);
+  const created = hub.createTeam({
+    name: "DeepSeek pipeline",
+    members: [
+      {
+        roleName: "Implementer",
+        prompt: "Implement the change.",
+        configuredAgentId: "dsh-agent",
+      },
+      {
+        roleName: "Reviewer",
+        prompt: "Review the change.",
+        configuredAgentId: "dsh-agent",
+      },
+    ],
+  });
+  vi.spyOn(hub as any, "startTeamRun").mockResolvedValue(undefined);
+  const started = await hub.runTeam({
+    teamId: created.teams[0]!.id,
+    prompt: "Ship the change",
+    workDir: "/tmp/project",
+  });
+  const run = (hub as any).teamRuns.get(started.teamRuns[0]!.id);
+  const firstStep = run.steps[0];
+  firstStep.status = "running";
+  firstStep.startedAt = Date.now();
+  const task = (hub as any).createTaskState({
+    prompt: "Implement the change.",
+    configuredAgentId: "dsh-agent",
+    workDir: "/tmp/project",
+  });
+  task.running = true;
+  task.status = "running";
+  task.teamRunId = run.id;
+  task.teamStepId = firstStep.id;
+  firstStep.taskId = task.id;
+  (hub as any).tasks.set(task.id, task);
+  const startNextStep = vi.spyOn(hub as any, "startTeamRunStep");
+  const stop = vi.fn(async () => {
+    (hub as any).markRunExited(task);
+  });
+  (hub as any).activeStops.set(task.id, stop);
+
+  await hub.shutdown();
+
+  expect(stop).toHaveBeenCalledOnce();
+  expect(task).toMatchObject({
+    configuredAgentId: "dsh-agent",
+    running: false,
+    status: "stopped",
+    lastError: "Stopped",
+  });
+  expect(task.progress).not.toBe("in_review");
+  expect(run).toMatchObject({
+    status: "stopped",
+    lastError: "Stopped",
+    steps: [
+      expect.objectContaining({ status: "stopped", taskId: task.id }),
+      expect.objectContaining({ status: "queued", taskId: undefined }),
+    ],
+  });
+  expect(startNextStep).not.toHaveBeenCalled();
+});
+
 function createV2Workflow(hub: AgentHub, input: any): any {
   const configuredAgentId = input.configuredAgentId === TEST_CODEX_AGENT_ID
     ? TEST_CODEX_AGENT_ID
@@ -225,6 +368,7 @@ function createHubWithClaudeOneShot(
   const resolvedExecutables = {
     codex: executables.codex ?? "missing-codex-for-test",
     claude: executables.claude ?? "missing-claude-for-test",
+    dsh: executables.dsh ?? "missing-dsh-for-test",
     api: executables.api ?? "api",
     hermes: executables.hermes ?? "missing-hermes-for-test",
     opencode: executables.opencode ?? "missing-opencode-for-test",
@@ -307,7 +451,7 @@ test("ignores legacy CLAUDE_INTERACTIVE_TRANSPORT selectors and keeps Claude res
   process.env.CLAUDE_INTERACTIVE_TRANSPORT = "runner";
   try {
     const capabilities = createRuntimeDriverRegistry({
-      executables: { codex: "codex", claude: "claude", api: "api", hermes: "hermes", opencode: "opencode", openclaw: "openclaw" },
+      executables: { codex: "codex", claude: "claude", dsh: "dsh", api: "api", hermes: "hermes", opencode: "opencode", openclaw: "openclaw" },
       channelById: () => undefined,
     }).driverFor("claude").getCapabilities({
       id: "claude",
@@ -330,7 +474,7 @@ test("ignores legacy CLAUDE_INTERACTIVE_TRANSPORT selectors and keeps Claude res
 
 test("api runtime advertises oneshot chat style", () => {
   const capabilities = createRuntimeDriverRegistry({
-    executables: { codex: "codex", claude: "claude", api: "api", hermes: "hermes", opencode: "opencode", openclaw: "openclaw" },
+    executables: { codex: "codex", claude: "claude", dsh: "dsh", api: "api", hermes: "hermes", opencode: "opencode", openclaw: "openclaw" },
     channelById: () => undefined,
   }).driverFor("api").getCapabilities({
     id: "api",
@@ -6063,6 +6207,53 @@ describe("AgentHub task runs", () => {
       progress: "in_review",
       status: "completed",
     });
+  });
+
+  test("marks a task stopped before awaiting process shutdown so exit cannot complete it", async () => {
+    const hub = new AgentHub();
+    const task = (hub as any).createTaskState({
+      prompt: "Stop a long-running task",
+      configuredAgentId: TEST_CODEX_AGENT_ID,
+      workDir: "/tmp/project",
+    });
+    task.running = true;
+    task.status = "running";
+    (hub as any).tasks.set(task.id, task);
+    const finishedStatuses: string[] = [];
+    vi.spyOn(hub as any, "finishTeamStepFromTask")
+      .mockImplementation((currentTask: any) => {
+        finishedStatuses.push(currentTask.status);
+      });
+
+    let releaseStop: (() => void) | undefined;
+    const stop = vi.fn(() => new Promise<void>((resolve) => {
+      releaseStop = () => {
+        (hub as any).markRunExited(task);
+        resolve();
+      };
+    }));
+    (hub as any).activeStops.set(task.id, stop);
+
+    let settled = false;
+    const stopping = hub.stopTask(task.id).finally(() => {
+      settled = true;
+    });
+    await Promise.resolve();
+
+    expect(settled).toBe(false);
+    expect(stop).toHaveBeenCalledOnce();
+    expect(task).toMatchObject({
+      running: false,
+      status: "stopped",
+      lastError: "Stopped",
+    });
+
+    releaseStop?.();
+    await stopping;
+
+    expect(task.status).toBe("stopped");
+    expect(task.progress).not.toBe("in_review");
+    expect(finishedStatuses).toEqual(["stopped", "stopped"]);
   });
 
   test("stores task transcript events separately from chat transcript", () => {

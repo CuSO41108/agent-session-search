@@ -1,7 +1,8 @@
 import { readFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { DEFAULT_MODEL_ID, defaultModelOption } from "../../shared/models";
+import { parse as parseYaml } from "yaml";
+import { DEFAULT_MODEL_ID, FALLBACK_MODEL_OPTIONS, defaultModelOption } from "../../shared/models";
 import { runtimeDefinition } from "../../shared/runtime-catalog";
 import type { AgentChannel, AgentId, AgentModelOption, CodexDefaultConfig } from "../../shared/types";
 import { execCli } from "../platform/cli-launcher";
@@ -12,6 +13,9 @@ interface RuntimeLocalConfigLoaderDependencies {
   readTextFile: typeof readFile;
   homeDir: string;
   loadCodexConfig: () => Promise<CodexDefaultConfig>;
+  environment: NodeJS.ProcessEnv;
+  pathApi: Pick<typeof path, "join" | "resolve">;
+  workingDirectory: string;
 }
 
 export interface LoadedRuntimeLocalConfig {
@@ -27,8 +31,12 @@ function modelOptions(modelId: string | undefined): AgentModelOption[] {
 }
 
 function defaultChannel(runtimeId: AgentId, existing: AgentChannel | undefined): AgentChannel {
-  const fallback = createDefaultChannels().find((channel) => channel.agentId === runtimeId);
-  if (!fallback) throw new Error(`No default channel is registered for ${runtimeDefinition(runtimeId).label}.`);
+  const definition = runtimeDefinition(runtimeId);
+  const fallback = createDefaultChannels().find((channel) => channel.agentId === runtimeId) ?? {
+    ...definition.defaultChannel,
+    agentId: runtimeId,
+    models: FALLBACK_MODEL_OPTIONS[runtimeId],
+  };
   return existing ? { ...fallback, ...existing, agentId: runtimeId } : fallback;
 }
 
@@ -47,21 +55,58 @@ function optionalString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
 
+function recordValue(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
+}
+
 function yamlScalar(raw: string, section: string, key: string): string | undefined {
-  const lines = raw.split(/\r?\n/);
-  let inSection = false;
-  for (const line of lines) {
-    if (/^[^\s#][^:]*:\s*/.test(line)) {
-      inSection = line.startsWith(`${section}:`);
-      continue;
-    }
-    if (!inSection) continue;
-    const match = line.match(new RegExp(`^\\s{2}${key}:\\s*(.*?)\\s*$`));
-    if (!match?.[1]) continue;
-    const value = match[1].replace(/^['"]|['"]$/g, "").trim();
-    return value || undefined;
+  try {
+    const document = recordValue(parseYaml(raw));
+    return optionalString(recordValue(document?.[section])?.[key]);
+  } catch {
+    return undefined;
   }
-  return undefined;
+}
+
+function dshModelSelection(
+  raw: string,
+  sourcePath: string,
+): { provider?: string; model?: string } {
+  if (!raw.trim()) return {};
+  try {
+    const document = recordValue(parseYaml(raw));
+    const section = recordValue(document?.["agent-default-model"]);
+    const provider = optionalString(section?.provider);
+    const model = optionalString(section?.model);
+    return {
+      ...(provider ? { provider } : {}),
+      ...(model ? { model } : {}),
+    };
+  } catch (error) {
+    throw new Error(
+      `Failed to parse DSH settings at ${sourcePath}: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  }
+}
+
+function dshHome(channel: AgentChannel, dependencies: RuntimeLocalConfigLoaderDependencies): string {
+  const channelOverridesHome = Object.prototype.hasOwnProperty.call(
+    channel.environment ?? {},
+    "DSH_HOME",
+  );
+  const configured = channelOverridesHome
+    ? optionalString(channel.environment?.DSH_HOME)
+    : optionalString(dependencies.environment.DSH_HOME);
+  if (!configured) return dependencies.pathApi.join(dependencies.homeDir, ".dsh");
+  if (configured === "~") return dependencies.homeDir;
+  if (configured.startsWith("~/") || configured.startsWith("~\\")) {
+    return dependencies.pathApi.resolve(dependencies.homeDir, configured.slice(2));
+  }
+  return dependencies.pathApi.resolve(dependencies.workingDirectory, configured);
 }
 
 function applyCodexConfig(channel: AgentChannel, config: CodexDefaultConfig): AgentChannel {
@@ -120,6 +165,37 @@ async function loadClaudeConfig(
       ...(Object.keys(importedEnvironment).length > 0 ? { environment: importedEnvironment } : {}),
     },
   };
+}
+
+async function loadDshConfig(
+  channel: AgentChannel,
+  dependencies: RuntimeLocalConfigLoaderDependencies,
+): Promise<LoadedRuntimeLocalConfig> {
+  const sourcePath = dependencies.pathApi.join(dshHome(channel, dependencies), "settings.yaml");
+  let raw = "";
+  try {
+    raw = await dependencies.readTextFile(sourcePath, "utf8");
+  } catch (error) {
+    const code = error && typeof error === "object" ? (error as { code?: unknown }).code : undefined;
+    if (code !== "ENOENT") throw error;
+  }
+  const { provider, model } = dshModelSelection(raw, sourcePath);
+  const next: AgentChannel = {
+    ...channel,
+    presetId: "dsh-default",
+    models: [{
+      id: DEFAULT_MODEL_ID,
+      label: provider && model ? `Default (DSH: ${model})` : defaultModelOption().label,
+    }],
+  };
+  if (provider && model) {
+    next.modelProvider = provider;
+    next.providerName = provider;
+  } else {
+    delete next.modelProvider;
+    delete next.providerName;
+  }
+  return { source: sourcePath, channel: next };
 }
 
 async function loadHermesConfig(
@@ -217,6 +293,7 @@ export async function loadRuntimeLocalConfig(input: {
   runtimeId: AgentId;
   executable: string;
   existingChannel?: AgentChannel;
+  workingDirectory?: string;
   dependencies?: Partial<RuntimeLocalConfigLoaderDependencies>;
 }): Promise<LoadedRuntimeLocalConfig> {
   if (!runtimeDefinition(input.runtimeId).localConfigImport) {
@@ -227,6 +304,9 @@ export async function loadRuntimeLocalConfig(input: {
     readTextFile: input.dependencies?.readTextFile ?? readFile,
     homeDir: input.dependencies?.homeDir ?? os.homedir(),
     loadCodexConfig: input.dependencies?.loadCodexConfig ?? loadCodexDefaultConfig,
+    environment: input.dependencies?.environment ?? process.env,
+    pathApi: input.dependencies?.pathApi ?? path,
+    workingDirectory: input.dependencies?.workingDirectory ?? input.workingDirectory ?? process.cwd(),
   };
   const channel = defaultChannel(input.runtimeId, input.existingChannel);
   switch (input.runtimeId) {
@@ -236,6 +316,8 @@ export async function loadRuntimeLocalConfig(input: {
     }
     case "claude":
       return loadClaudeConfig(channel, dependencies);
+    case "dsh":
+      return loadDshConfig(channel, dependencies);
     case "hermes":
       return loadHermesConfig(input.executable, channel, dependencies);
     case "opencode":

@@ -110,8 +110,18 @@ describe("EvaluationService", () => {
 
     const run = await service.runExperiment("experiment-1");
 
-    expect(executeAgent).toHaveBeenNthCalledWith(1, "target-agent", "Explain the result", undefined);
-    expect(executeAgent).toHaveBeenNthCalledWith(2, "judge-agent", expect.stringContaining("subject output"));
+    expect(executeAgent).toHaveBeenNthCalledWith(
+      1,
+      "target-agent",
+      "Explain the result",
+      expect.any(AbortSignal),
+    );
+    expect(executeAgent).toHaveBeenNthCalledWith(
+      2,
+      "judge-agent",
+      expect.stringContaining("subject output"),
+      expect.any(AbortSignal),
+    );
     expect(saveRun).toHaveBeenCalledWith(expect.objectContaining({
       experimentId: "experiment-1",
       agentRevisionId: "revision-2",
@@ -148,7 +158,11 @@ describe("EvaluationService", () => {
     });
 
     await expect(service.runExperiment("experiment-1")).resolves.toMatchObject({ passRate: 1 });
-    expect(executeAgent).toHaveBeenCalledWith("judge-agent", expect.any(String));
+    expect(executeAgent).toHaveBeenCalledWith(
+      "judge-agent",
+      expect.any(String),
+      expect.any(AbortSignal),
+    );
   });
 
   describe("ensureBuiltinJudge", () => {
@@ -267,6 +281,92 @@ describe("EvaluationService", () => {
       const { service, store } = fixture();
       await expect(service.startExperiment("missing")).rejects.toThrow(/experiment not found/i);
       expect(store.saveRun).not.toHaveBeenCalled();
+    });
+
+    it("close aborts and awaits a blocking experiment before closing its store", async () => {
+      let targetSignal: AbortSignal | undefined;
+      let releaseSave: (() => void) | undefined;
+      const { service, store } = fixture({
+        executeAgent: vi.fn(async (agentId: string, _prompt: string, signal?: AbortSignal) => {
+          if (agentId !== "target-agent") {
+            return { output: '{"score":0.9,"reason":"clear"}', durationMs: 1 };
+          }
+          targetSignal = signal;
+          return new Promise<never>((_resolve, reject) => {
+            signal?.addEventListener("abort", () => reject(new Error("Run cancelled")), {
+              once: true,
+            });
+          });
+        }),
+      });
+      (store.saveRun as ReturnType<typeof vi.fn>).mockImplementation(
+        (run: EvaluationRun) => new Promise<EvaluationRun>((resolve) => {
+          releaseSave = () => resolve(run);
+        }),
+      );
+      const running = service.runExperiment("experiment-1");
+      await vi.waitFor(() => expect(targetSignal).toBeDefined());
+
+      let closeSettled = false;
+      const closing = service.close().finally(() => {
+        closeSettled = true;
+      });
+      await vi.waitFor(() => expect(store.saveRun).toHaveBeenCalledWith(
+        expect.objectContaining({ status: "cancelled" }),
+      ));
+
+      expect(targetSignal?.aborted).toBe(true);
+      expect(closeSettled).toBe(false);
+      expect(store.close).not.toHaveBeenCalled();
+
+      releaseSave?.();
+      await expect(running).resolves.toMatchObject({ status: "cancelled" });
+      await closing;
+      expect(store.close).toHaveBeenCalledOnce();
+    });
+
+    it("close aborts and awaits a background experiment before closing its store", async () => {
+      let targetSignal: AbortSignal | undefined;
+      let releaseCancelledSave: (() => void) | undefined;
+      const { service, store } = fixture({
+        executeAgent: vi.fn(async (agentId: string, _prompt: string, signal?: AbortSignal) => {
+          if (agentId !== "target-agent") {
+            return { output: '{"score":0.9,"reason":"clear"}', durationMs: 1 };
+          }
+          targetSignal = signal;
+          return new Promise<never>((_resolve, reject) => {
+            signal?.addEventListener("abort", () => reject(new Error("Run cancelled")), {
+              once: true,
+            });
+          });
+        }),
+      });
+      (store.saveRun as ReturnType<typeof vi.fn>).mockImplementation(
+        async (run: EvaluationRun) => {
+          if (run.status !== "cancelled") return run;
+          return new Promise<EvaluationRun>((resolve) => {
+            releaseCancelledSave = () => resolve(run);
+          });
+        },
+      );
+      const runId = await service.startExperiment("experiment-1");
+      await vi.waitFor(() => expect(targetSignal).toBeDefined());
+
+      let closeSettled = false;
+      const closing = service.close().finally(() => {
+        closeSettled = true;
+      });
+      await vi.waitFor(() => expect(store.saveRun).toHaveBeenCalledWith(
+        expect.objectContaining({ id: runId, status: "cancelled" }),
+      ));
+
+      expect(targetSignal?.aborted).toBe(true);
+      expect(closeSettled).toBe(false);
+      expect(store.close).not.toHaveBeenCalled();
+
+      releaseCancelledSave?.();
+      await closing;
+      expect(store.close).toHaveBeenCalledOnce();
     });
   });
 });

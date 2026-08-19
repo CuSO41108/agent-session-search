@@ -42,7 +42,7 @@ import type { NativeAutomationService } from "../services/automation-service";
 
 const idSchema = z.string().trim().min(1).max(256);
 const pathSchema = z.string().trim().min(1).max(8_192);
-const runtimeIdSchema = z.enum(["codex", "claude", "api", "hermes", "opencode", "openclaw"]);
+const runtimeIdSchema = z.enum(["codex", "claude", "dsh", "api", "hermes", "opencode", "openclaw"]);
 const channelSchema = z.object({
   id: idSchema,
   label: z.string().trim().min(1).max(200),

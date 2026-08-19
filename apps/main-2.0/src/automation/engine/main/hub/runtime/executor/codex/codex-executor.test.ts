@@ -41,7 +41,7 @@ function context(overrides: Partial<AgentExecutionContext> = {}): AgentExecution
 }
 
 const options: RuntimeAgentExecutorFactoryOptions = {
-  executables: { api: "", codex: "codex", claude: "", opencode: "", openclaw: "", hermes: "" },
+  executables: { api: "", codex: "codex", claude: "", dsh: "", opencode: "", openclaw: "", hermes: "" },
   channelById: () => ({ id: "codex-channel", agentId: "codex", label: "Codex", models: [{ id: "default", label: "Default" }] }),
 };
 

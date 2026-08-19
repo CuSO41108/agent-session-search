@@ -1547,6 +1547,11 @@
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--openclaw) 12%, transparent);
 }
 
+.runtime-choice-dot.agent-dsh {
+  background: var(--dsh);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--dsh) 12%, transparent);
+}
+
 .agent-provider-catalog {
   display: grid;
   gap: 14px;

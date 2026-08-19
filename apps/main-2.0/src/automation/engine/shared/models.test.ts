@@ -29,6 +29,10 @@ describe("model naming", () => {
     }
   });
 
+  it("offers only the runtime-owned Default selection for DeepSeek Harness", () => {
+    expect(FALLBACK_MODEL_OPTIONS.dsh).toEqual([defaultModelOption()]);
+  });
+
   it("renders a stored model id as its catalog label, never as a bare id", () => {
     const models = [defaultModelOption(), { id: "gpt-5.6-sol", label: "GPT-5.6-Sol" }];
     expect(modelDisplayLabel("gpt-5.6-sol", models)).toBe("GPT-5.6-Sol");

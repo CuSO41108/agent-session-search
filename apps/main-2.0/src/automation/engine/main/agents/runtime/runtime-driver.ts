@@ -91,6 +91,7 @@ export interface RuntimeDriver {
   askWorkflow?: ((input: RuntimeWorkflowRequestContext) => Promise<WorkflowAgentResponse>) | undefined;
   testChannel?: ((input: RuntimeChannelTestContext) => Promise<string>) | undefined;
   deleteSessionArtifacts?: ((input: RuntimeSessionCleanupContext) => Promise<void>) | undefined;
+  shutdown?: (() => Promise<void>) | undefined;
 }
 
 export class RuntimeDriverRegistry {
@@ -115,5 +116,11 @@ export class RuntimeDriverRegistry {
 
   maybeDriverFor(agentId: AgentId): RuntimeDriver | undefined {
     return this.drivers.find((item) => item.runtimeId === agentId);
+  }
+
+  async shutdown(): Promise<void> {
+    await Promise.allSettled(
+      this.drivers.map((driver) => driver.shutdown?.()),
+    );
   }
 }

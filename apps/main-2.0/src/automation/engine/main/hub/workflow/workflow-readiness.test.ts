@@ -48,6 +48,40 @@ describe("workflow readiness", () => {
     expect(inspectWorkflowReadiness({ workflow: workflow(), configuredAgents: [unrestrictedAgent], channels: [channel], mcpServers: [server] })).toEqual({ ready: true, issues: [] });
   });
 
+  test("does not treat persisted MCP bindings as usable for DeepSeek Harness", () => {
+    const dshChannel: AgentChannel = {
+      id: "dsh-default",
+      agentId: "dsh",
+      label: "DeepSeek Harness",
+      models: [{ id: "default", label: "Default" }],
+    };
+    const dshAgent: ConfiguredAgent = {
+      ...agent,
+      runtimeAgentId: "dsh",
+      channelId: "dsh-default",
+      modelId: "default",
+    };
+    const draft = workflow();
+    draft.modelId = "default";
+    draft.reviewerModelId = "default";
+    const node = draft.definition.nodes[0];
+    if (node?.execModel !== "llm") throw new Error("expected llm fixture");
+    node.modelId = "default";
+
+    const result = inspectWorkflowReadiness({
+      workflow: draft,
+      configuredAgents: [dshAgent],
+      channels: [dshChannel],
+      mcpServers: [server],
+    });
+
+    expect(result.ready).toBe(false);
+    expect(result.issues).toContainEqual(expect.objectContaining({
+      code: "REQUIRED_TOOL_MISSING",
+      configuredAgentId: "agent-a",
+    }));
+  });
+
   test("checks each Review Gate Agent without a separate tool route", () => {
     const draft = workflow();
     draft.definition.reviewEnabled = false;

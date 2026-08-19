@@ -99,6 +99,65 @@ export function RuntimeProviderFields({ channel, language, onChange }: RuntimePr
     });
   };
 
+  if (channel.agentId === "dsh") {
+    return (
+      <div className="config-field-grid">
+        <div className="config-field config-field-wide runtime-secret-visibility">
+          <button
+            type="button"
+            className="control-btn compact secondary"
+            aria-label={showSensitiveValues ? "Hide advanced secrets" : "Show advanced secrets"}
+            onClick={() => setShowSensitiveValues((visible) => !visible)}
+          >
+            {showSensitiveValues ? <EyeOff size={13} /> : <Eye size={13} />}
+            <span>
+              {showSensitiveValues
+                ? (zh ? "隐藏环境变量值" : "Hide environment values")
+                : (zh ? "显示环境变量值" : "Show environment values")}
+            </span>
+          </button>
+        </div>
+        <label className="config-field">
+          <span>{zh ? "渠道 ID" : "Channel ID"}</span>
+          <div className="configured-agent-runtime-readonly">
+            <span className={`agent-badge mini ${agentAccent(channel.agentId)}`}>{agentLabel(channel.agentId)}</span>
+            <strong>{channel.id}</strong>
+          </div>
+        </label>
+        <label className="config-field">
+          <span>{zh ? "名称" : "Label"}</span>
+          <input value={channel.label} onChange={(event) => onChange((current) => ({ ...current, label: event.currentTarget.value }))} />
+        </label>
+        <div className="config-field config-field-wide runtime-dsh-model-note" role="note">
+          <strong>{zh ? "模型与凭据由 DSH 管理" : "DSH manages models and credentials"}</strong>
+          <span>
+            {zh
+              ? "这里仅设置传给 dsh 的环境变量。可用 DSH_HOME 指向其他 Harness home；AgentRecall 不会在此编辑 settings.yaml 或凭据文件。"
+              : "Only environment variables passed to dsh are configured here. Set DSH_HOME to use another Harness home; AgentRecall does not edit settings.yaml or credential files here."}
+          </span>
+        </div>
+        <label className="config-field config-field-wide">
+          <span>{zh ? "运行时环境变量（每行 KEY=VALUE）" : "Runtime environment (KEY=VALUE per line)"}</span>
+          <textarea
+            aria-label="DSH runtime environment"
+            className={showSensitiveValues ? "" : "is-secret-masked"}
+            value={environmentText}
+            onChange={(event) => setEnvironmentText(event.currentTarget.value)}
+            onBlur={() => {
+              const environment = textToEnvironment(environmentText);
+              onChange((current) => {
+                const next = { ...current };
+                if (environment) next.environment = environment;
+                else delete next.environment;
+                return next;
+              });
+            }}
+          />
+        </label>
+      </div>
+    );
+  }
+
   return (
     <div className="config-field-grid">
       <div className="config-field config-field-wide runtime-secret-visibility">

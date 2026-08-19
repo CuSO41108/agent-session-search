@@ -170,8 +170,8 @@ export function RuntimePage({
   const runtimeTitle = language === "zh" ? "配置" : "Config";
   const runtimeDescription =
     language === "zh"
-      ? "管理 Codex / Claude / API / Hermes / OpenCode / OpenClaw 执行器、Provider、API Key、插件和模型。"
-      : "Manage Codex / Claude / API / Hermes / OpenCode / OpenClaw executors, providers, API keys, plugins, and models.";
+      ? "管理 Codex / Claude / API / Hermes / OpenCode / OpenClaw / DeepSeek Harness 执行器、Provider、API Key、插件和模型。"
+      : "Manage Codex / Claude / API / Hermes / OpenCode / OpenClaw / DeepSeek Harness executors, providers, API keys, plugins, and models.";
   const addConfigText = language === "zh" ? "新增配置" : "Add config";
   const deleteConfigText = language === "zh" ? "删除配置" : "Delete config";
   const runtimeConfigReady = language === "zh" ? "配置可用" : "Config works";
@@ -188,9 +188,21 @@ export function RuntimePage({
   const balanceUnavailableText = language === "zh" ? "不可用" : "Unavailable";
   const changeProviderText = language === "zh" ? "更换 Provider" : "Change provider";
   const currentConfigText = language === "zh" ? "当前配置" : "Current config";
-  const modelsDescription = language === "zh" ? "管理当前配置可用的模型" : "Manage models available to this config";
+  const modelsDescription = selectedRuntimeId === "dsh"
+    ? language === "zh"
+      ? "DeepSeek Harness 使用自身的本地模型配置"
+      : "DeepSeek Harness uses its own local model configuration"
+    : language === "zh"
+      ? "管理当前配置可用的模型"
+      : "Manage models available to this config";
   const pluginsDescription = language === "zh" ? "管理 Codex 的扩展能力" : "Manage Codex extensions";
-  const advancedDescription = language === "zh" ? "连接、环境变量与请求覆盖" : "Connection, environment, and request overrides";
+  const advancedDescription = selectedRuntimeId === "dsh"
+    ? language === "zh"
+      ? "DSH_HOME 与运行时环境变量"
+      : "DSH_HOME and runtime environment"
+    : language === "zh"
+      ? "连接、环境变量与请求覆盖"
+      : "Connection, environment, and request overrides";
   const visibleRuntimeChannels = useMemo(() => selectConfigChannelsForDisplay(channels), [channels]);
   const selectedRuntimeChannels = useMemo(
     () => visibleRuntimeChannels.filter((channel) => channel.agentId === selectedRuntimeId),
@@ -244,6 +256,7 @@ export function RuntimePage({
 
   const applyRuntimePreset = async (preset: AgentProviderPreset): Promise<void> => {
     if (!selectedRuntimeChannelRecord) return;
+    if (selectedRuntime === "dsh") return;
     if (preset.id === CODEX_LOCAL_DEFAULT_PRESET_ID) {
       try {
         onStatusChange?.("");
@@ -428,32 +441,50 @@ export function RuntimePage({
                   </div>
 
                   <div className="runtime-summary-provider">
-                    <span>Provider</span>
-                    <strong>{selectedRuntimePreset?.label ?? selectedRuntimeChannelRecord.providerName ?? agentLabel(selectedRuntime)}</strong>
-                    <button type="button" className="runtime-summary-link" onClick={() => setProviderPickerOpen(true)}>
-                      {changeProviderText}
-                    </button>
+                    <span>{selectedRuntime === "dsh" ? (language === "zh" ? "模型来源" : "Model source") : "Provider"}</span>
+                    <strong>
+                      {selectedRuntime === "dsh"
+                        ? (language === "zh" ? "由 DSH 管理" : "Managed by DSH")
+                        : selectedRuntimePreset?.label ?? selectedRuntimeChannelRecord.providerName ?? agentLabel(selectedRuntime)}
+                    </strong>
+                    {selectedRuntime !== "dsh" ? (
+                      <button type="button" className="runtime-summary-link" onClick={() => setProviderPickerOpen(true)}>
+                        {changeProviderText}
+                      </button>
+                    ) : null}
                   </div>
 
                   <div className={`runtime-summary-balance ${selectedBalanceResult?.status ?? "idle"}`}>
                     <div>
-                      <span>{balanceTitle}</span>
-                      <strong>{selectedBalanceValue}</strong>
+                      <span>
+                        {selectedRuntime === "dsh"
+                          ? (language === "zh" ? "模型" : "Model")
+                          : balanceTitle}
+                      </span>
+                      <strong>
+                        {selectedRuntime === "dsh"
+                          ? selectedRuntimeChannelRecord.models[0]?.label ?? DEFAULT_MODEL_ID
+                          : selectedBalanceValue}
+                      </strong>
                       <small>
-                        {selectedBalanceItem?.label ?? selectedBalanceResult?.message ?? selectedRuntimeChannelRecord.providerName ?? selectedRuntimeChannelRecord.label}
-                        {selectedBalanceDetail ? ` · ${selectedBalanceDetail}` : ""}
+                        {selectedRuntime === "dsh"
+                          ? "DSH_HOME/settings.yaml"
+                          : selectedBalanceItem?.label ?? selectedBalanceResult?.message ?? selectedRuntimeChannelRecord.providerName ?? selectedRuntimeChannelRecord.label}
+                        {selectedRuntime !== "dsh" && selectedBalanceDetail ? ` · ${selectedBalanceDetail}` : ""}
                       </small>
                     </div>
-                    <button
-                      type="button"
-                      className="icon-btn"
-                      aria-label={selectedBalanceLoading ? balanceRefreshingText : refreshBalanceText}
-                      title={selectedBalanceLoading ? balanceRefreshingText : refreshBalanceText}
-                      onClick={() => void onQueryBalance?.(selectedRuntimeChannelRecord.id)}
-                      disabled={selectedBalanceLoading || !onQueryBalance}
-                    >
-                      <RefreshCw size={13} className={selectedBalanceLoading ? "is-spinning" : undefined} />
-                    </button>
+                    {selectedRuntime !== "dsh" ? (
+                      <button
+                        type="button"
+                        className="icon-btn"
+                        aria-label={selectedBalanceLoading ? balanceRefreshingText : refreshBalanceText}
+                        title={selectedBalanceLoading ? balanceRefreshingText : refreshBalanceText}
+                        onClick={() => void onQueryBalance?.(selectedRuntimeChannelRecord.id)}
+                        disabled={selectedBalanceLoading || !onQueryBalance}
+                      >
+                        <RefreshCw size={13} className={selectedBalanceLoading ? "is-spinning" : undefined} />
+                      </button>
+                    ) : null}
                   </div>
                 </div>
 
@@ -570,7 +601,7 @@ export function RuntimePage({
                 </section>
               ) : null}
 
-              {providerPickerOpen ? (
+              {providerPickerOpen && selectedRuntime !== "dsh" ? (
                 <RuntimeProviderPicker
                   language={language}
                   presets={runtimeProviderPresets}
@@ -689,49 +720,63 @@ export function RuntimePage({
                   <small>{selectedRuntimeChannelRecord.models.length}</small>
                 </summary>
                 <div className="runtime-disclosure-content agent-channel-models">
-                <div className="config-models-header">
-                  <span>{language === "zh" ? "模型 ID 与显示名称" : "Model ID and display name"}</span>
-                  <div className="config-plugin-actions">
-                    <button
-                      className="control-btn compact secondary"
-                      type="button"
-                      aria-label={configText.refreshModels}
-                      title={configText.refreshModels}
-                      disabled={!onRefreshModels || refreshingModelChannelId === selectedRuntimeChannelRecord.id}
-                      onClick={() => void detectModels(selectedRuntimeChannelRecord.id)}
-                    >
-                      <RefreshCw size={13} className={refreshingModelChannelId === selectedRuntimeChannelRecord.id ? "is-spinning" : undefined} />
-                      <span>{configText.refreshModels}</span>
-                    </button>
-                    <button className="control-btn compact secondary" onClick={() => onAddModel(selectedRuntimeChannelRecord.id)}>
-                      <Plus size={13} />
-                      <span>{configText.addModel}</span>
-                    </button>
+                {selectedRuntime === "dsh" ? (
+                  <div className="runtime-dsh-model-note" role="note">
+                    <strong>{language === "zh" ? "请选择 Default" : "Select Default"}</strong>
+                    <span>
+                      {language === "zh"
+                        ? "标准 dsh headless 命令不支持单次覆盖模型。AgentRecall 会让每次运行跟随 DSH_HOME 下的 settings.yaml 与凭据配置；可用“一键导入本地默认配置”刷新这里的显示。"
+                        : "The standard dsh headless command cannot override a model per run. AgentRecall follows the settings.yaml and credentials under DSH_HOME; use “Import local defaults” to refresh the model shown here."}
+                    </span>
+                    <code>{selectedRuntimeChannelRecord.models[0]?.label ?? DEFAULT_MODEL_ID}</code>
                   </div>
-                </div>
-                <div className="config-model-list">
-                  {selectedRuntimeChannelRecord.models.map((model, index) => (
-                    <div key={`${model.id}:${index}`} className="config-model-row">
-                      <input
-                        aria-label="Agent model id"
-                        value={model.id}
-                        onChange={(event) => onUpdateModel(selectedRuntimeChannelRecord.id, index, (item) => ({ ...item, id: event.currentTarget.value }))}
-                      />
-                      <input
-                        aria-label="Agent model label"
-                        value={model.label}
-                        onChange={(event) => onUpdateModel(selectedRuntimeChannelRecord.id, index, (item) => ({ ...item, label: event.currentTarget.value }))}
-                      />
-                      <button
-                        className="icon-btn danger"
-                        onClick={() => onRemoveModel(selectedRuntimeChannelRecord.id, index)}
-                        disabled={model.id === DEFAULT_MODEL_ID}
-                      >
-                        <Trash2 size={13} />
-                      </button>
+                ) : (
+                  <>
+                    <div className="config-models-header">
+                      <span>{language === "zh" ? "模型 ID 与显示名称" : "Model ID and display name"}</span>
+                      <div className="config-plugin-actions">
+                        <button
+                          className="control-btn compact secondary"
+                          type="button"
+                          aria-label={configText.refreshModels}
+                          title={configText.refreshModels}
+                          disabled={!onRefreshModels || refreshingModelChannelId === selectedRuntimeChannelRecord.id}
+                          onClick={() => void detectModels(selectedRuntimeChannelRecord.id)}
+                        >
+                          <RefreshCw size={13} className={refreshingModelChannelId === selectedRuntimeChannelRecord.id ? "is-spinning" : undefined} />
+                          <span>{configText.refreshModels}</span>
+                        </button>
+                        <button className="control-btn compact secondary" onClick={() => onAddModel(selectedRuntimeChannelRecord.id)}>
+                          <Plus size={13} />
+                          <span>{configText.addModel}</span>
+                        </button>
+                      </div>
                     </div>
-                  ))}
-                </div>
+                    <div className="config-model-list">
+                      {selectedRuntimeChannelRecord.models.map((model, index) => (
+                        <div key={`${model.id}:${index}`} className="config-model-row">
+                          <input
+                            aria-label="Agent model id"
+                            value={model.id}
+                            onChange={(event) => onUpdateModel(selectedRuntimeChannelRecord.id, index, (item) => ({ ...item, id: event.currentTarget.value }))}
+                          />
+                          <input
+                            aria-label="Agent model label"
+                            value={model.label}
+                            onChange={(event) => onUpdateModel(selectedRuntimeChannelRecord.id, index, (item) => ({ ...item, label: event.currentTarget.value }))}
+                          />
+                          <button
+                            className="icon-btn danger"
+                            onClick={() => onRemoveModel(selectedRuntimeChannelRecord.id, index)}
+                            disabled={model.id === DEFAULT_MODEL_ID}
+                          >
+                            <Trash2 size={13} />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  </>
+                )}
                 </div>
               </details>
 

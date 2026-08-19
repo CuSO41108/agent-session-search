@@ -76,7 +76,7 @@ v2 在会话管理、远程同步和用量统计之外，增加了可复用 Agen
 ### 功能
 
 - **工作台和 Session**：查看用量、模型额度和最近活动，搜索、筛选并整理不同来源的会话；详情页支持会话内查找、Resume、迁移、导出、AI 摘要和远程恢复。
-- **Runtime 和 Agent**：为 Codex、Claude Code、API、Hermes、OpenCode 或 OpenClaw 准备执行配置，再保存带有固定模型和用途说明的 Agent，供 Chat、Workflow、Eval 和 MCP 复用。
+- **Runtime 和 Agent**：为 Codex、Claude Code、API、Hermes、OpenCode、OpenClaw 或 DeepSeek Harness 准备执行配置，再保存可复用 Agent，供 Chat、Workflow 和 Eval 使用；支持 MCP 注入的 Runtime 还可绑定自定义 MCP Server。
 - **多 Agent Chat**：创建共享项目目录的工作室，让多名员工保留独立上下文；通过 `@名称` 或接收者列表指定一个或多个 Agent 响应。
 - **Workflow**：描述任务并回答规划 Agent 的追问，生成、Review 和确认流程图后运行 Agent 或脚本节点；运行期间可以处理追问、审批、产物和异常恢复。
 - **Eval**：支持 skill 维度的 Eval 驱动优化闭环，用户可以自定义 good cases，支持 Case + LLM Judge 回归评测，逐 Case 评分和跨版本对⽐。

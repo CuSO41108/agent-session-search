@@ -24,6 +24,12 @@ function setup(pickDirectory?: (defaultPath?: string) => Promise<string | undefi
   const hub = {
     saveModelChannels: vi.fn(async (value) => ({ channels: value })),
     updateConfiguredAgents: vi.fn((value, _options?: { detectDeletedManagedAgents?: boolean }) => ({ configuredAgents: value })),
+    importRuntimeLocalConfig: vi.fn(async (runtimeId: string, channelId?: string) => ({
+      runtimeId,
+      channelId: channelId ?? `${runtimeId}-default`,
+      source: `${runtimeId} settings`,
+      snapshot: { channels: [] },
+    })),
     createWorkflowDraft: vi.fn((value) => ({ workflowDraft: value })),
     sendWorkflowDraftReply: vi.fn(async (value) => ({ workflowDraft: value })),
     applyWorkflowReviewToManager: vi.fn(async (value) => ({ workflowDraft: value })),
@@ -240,11 +246,15 @@ describe("registerAutomationIpc", () => {
 
   it("validates and delegates runtime channel saves", async () => {
     const { invoke, hub } = setup();
-    const channels = [{ id: "codex-local", label: "Codex", agentId: "codex", models: [] }];
+    const channels = [{ id: "dsh-default", label: "DeepSeek Harness", agentId: "dsh", models: [] }];
 
     await expect(invoke(AUTOMATION_CHANNELS.runtimeSaveChannels, channels)).resolves.toEqual({ channels });
     expect(hub.saveModelChannels).toHaveBeenCalledWith(channels, { validateDeletedChannelReferences: true });
     await expect(invoke(AUTOMATION_CHANNELS.runtimeSaveChannels, [{ id: "" }])).rejects.toThrow(/id/i);
+    await expect(invoke(AUTOMATION_CHANNELS.runtimeSaveChannels, [{
+      ...channels[0],
+      agentId: "unsupported-runtime",
+    }])).rejects.toThrow();
   });
 
   it("validates Agent instructions and MCP bindings before saving", async () => {
@@ -272,6 +282,28 @@ describe("registerAutomationIpc", () => {
       ...agent,
       mcpBindings: "not-an-array",
     }])).rejects.toThrow(/array/i);
+    await expect(invoke(AUTOMATION_CHANNELS.runtimeSaveAgents, [{
+      ...agent,
+      runtimeAgentId: "unsupported-runtime",
+    }])).rejects.toThrow();
+  });
+
+  it("accepts DeepSeek Harness local imports and rejects unknown runtime ids", async () => {
+    const { invoke, hub } = setup();
+
+    await expect(invoke(AUTOMATION_CHANNELS.runtimeImportLocal, {
+      runtimeId: "dsh",
+      channelId: "dsh-default",
+    })).resolves.toMatchObject({
+      runtimeId: "dsh",
+      channelId: "dsh-default",
+    });
+    expect(hub.importRuntimeLocalConfig).toHaveBeenCalledWith("dsh", "dsh-default");
+
+    await expect(invoke(AUTOMATION_CHANNELS.runtimeImportLocal, {
+      runtimeId: "unsupported-runtime",
+    })).rejects.toThrow();
+    expect(hub.importRuntimeLocalConfig).toHaveBeenCalledOnce();
   });
 
   it("validates and delegates deletion using the concrete Agent id", async () => {

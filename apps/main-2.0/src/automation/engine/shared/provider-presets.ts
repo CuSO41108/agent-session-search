@@ -5,6 +5,7 @@ import { CC_SWITCH_PROVIDER_PRESETS } from "./cc-switch-provider-presets.generat
 export const CODEX_DEFAULT_PRESET_ID = "codex-default";
 export const CODEX_LOCAL_DEFAULT_PRESET_ID = "codex-local-default";
 export const CLAUDE_LOCAL_DEFAULT_PRESET_ID = "claude-local-default";
+export const DSH_DEFAULT_PRESET_ID = "dsh-default";
 export const HERMES_DEFAULT_PRESET_ID = "hermes-default";
 export const OPENCODE_DEFAULT_PRESET_ID = "opencode-default";
 export const OPENCLAW_DEFAULT_PRESET_ID = "openclaw-default";
@@ -548,6 +549,12 @@ const LEGACY_PROVIDER_PRESETS: AgentProviderPreset[] = [
     baseUrl: "https://example.com/v1",
     usesApiKey: true,
     models: [defaultModelOption()],
+  },
+  {
+    id: DSH_DEFAULT_PRESET_ID,
+    label: "Default",
+    runtimeAgentId: "dsh",
+    models: FALLBACK_MODEL_OPTIONS.dsh,
   },
   {
     id: HERMES_DEFAULT_PRESET_ID,

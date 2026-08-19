@@ -30,6 +30,7 @@
   --hermes: #8b5cf6;
   --opencode: #2563eb;
   --openclaw: #f5654a;
+  --dsh: #4d6bfe;
 
   display: flex;
   width: 100%;
@@ -323,6 +324,7 @@
 .automation-runtime-content .runtime-sidebar-item[data-runtime="hermes"] { --runtime-item-accent: var(--hermes); }
 .automation-runtime-content .runtime-sidebar-item[data-runtime="opencode"] { --runtime-item-accent: var(--opencode); }
 .automation-runtime-content .runtime-sidebar-item[data-runtime="openclaw"] { --runtime-item-accent: var(--openclaw); }
+.automation-runtime-content .runtime-sidebar-item[data-runtime="dsh"] { --runtime-item-accent: var(--dsh); }
 
 .automation-runtime-content .runtime-sidebar-item > span:last-child {
   display: grid;
@@ -389,6 +391,7 @@
 .automation-runtime-content .runtime-config-summary[data-runtime="hermes"] { --runtime-accent: var(--hermes); }
 .automation-runtime-content .runtime-config-summary[data-runtime="opencode"] { --runtime-accent: var(--opencode); }
 .automation-runtime-content .runtime-config-summary[data-runtime="openclaw"] { --runtime-accent: var(--openclaw); }
+.automation-runtime-content .runtime-config-summary[data-runtime="dsh"] { --runtime-accent: var(--dsh); }
 
 .automation-runtime-content .runtime-summary-main {
   display: grid;
@@ -519,6 +522,40 @@
 
 .automation-runtime-content .runtime-connection-fields .agent-provider-key-field {
   max-width: none;
+}
+
+.automation-runtime-content .runtime-dsh-model-note {
+  display: grid;
+  gap: 7px;
+  padding: 12px;
+  border: 1px solid color-mix(in srgb, var(--dsh) 24%, var(--border));
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--dsh) 6%, var(--panel-subtle));
+}
+
+.automation-runtime-content .runtime-dsh-model-note strong {
+  color: var(--text);
+  font-size: 12px;
+}
+
+.automation-runtime-content .runtime-dsh-model-note span {
+  max-width: 760px;
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1.55;
+}
+
+.automation-runtime-content .runtime-dsh-model-note code {
+  width: fit-content;
+  max-width: 100%;
+  overflow: hidden;
+  padding: 4px 7px;
+  border-radius: 6px;
+  background: var(--panel-bg);
+  color: var(--dsh);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .automation-runtime-content .runtime-config-status,

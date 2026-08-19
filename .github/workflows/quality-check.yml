@@ -81,6 +81,10 @@ jobs:
         if: runner.os != 'Linux'
         run: npm --prefix "${{ matrix.directory }}" run test:scripts
 
+      - name: Test DeepSeek Harness Windows process integration
+        if: runner.os == 'Windows' && matrix.app == 'v2'
+        run: npm --prefix "${{ matrix.directory }}" exec -- vitest run src/automation/engine/main/agents/dsh/dsh-windows-launcher.test.ts src/automation/engine/main/agents/dsh/dsh-runner.test.ts
+
       - name: Typecheck and smoke-test packaged application
         run: |
           npm --prefix "${{ matrix.directory }}" run typecheck

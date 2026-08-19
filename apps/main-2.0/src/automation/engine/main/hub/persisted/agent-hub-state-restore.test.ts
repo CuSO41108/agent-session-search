@@ -58,4 +58,33 @@ describe("restoreConfiguredAgentState", () => {
       revision: 3,
     });
   });
+
+  test("restores a DeepSeek Harness Agent with its Default-only channel", () => {
+    const dshChannel = {
+      id: "dsh-default",
+      label: "DeepSeek Harness",
+      agentId: "dsh" as const,
+      presetId: "dsh-default",
+      models: [{ id: "default", label: "Default" }],
+    };
+    const restored = restoreConfiguredAgentState({
+      id: "dsh-agent",
+      name: "DSH Agent",
+      runtimeAgentId: "dsh",
+      channelId: "dsh-default",
+      modelId: "default",
+      createdAt: 1,
+      updatedAt: 2,
+    }, {
+      channels: [dshChannel],
+      channelById: (id) => id === dshChannel.id ? dshChannel : undefined,
+    }, 3);
+
+    expect(restored).toMatchObject({
+      id: "dsh-agent",
+      runtimeAgentId: "dsh",
+      channelId: "dsh-default",
+      modelId: "default",
+    });
+  });
 });

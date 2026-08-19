@@ -1062,6 +1062,12 @@ textarea:focus-visible {
   color: var(--openclaw);
 }
 
+.agent-badge.mini.agent-dsh {
+  border-color: color-mix(in srgb, var(--dsh) 30%, transparent);
+  background: color-mix(in srgb, var(--dsh) 10%, transparent);
+  color: var(--dsh);
+}
+
 /* ---- chat surface: flat, centered reading column ---- */
 
 .chat-content {
