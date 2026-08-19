@@ -19,11 +19,13 @@ import {
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
   type FormEvent,
   type KeyboardEvent,
+  type MouseEvent as ReactMouseEvent,
   type ReactElement,
 } from "react";
 import type {
@@ -68,6 +70,10 @@ interface MemberContextMenu {
   x: number;
   y: number;
 }
+
+type PendingDeleteFocus =
+  | { kind: "trigger"; element: HTMLButtonElement }
+  | { kind: "room"; preferredRoomId?: string; origin: HTMLButtonElement };
 
 const INITIAL_CONNECTION: TeamChatConnectionStatus = { state: "connecting" };
 
@@ -167,31 +173,129 @@ export function TeamChatPage({
   const [rooms, setRooms] = useState<TeamChatRoomSummary[]>([]);
   const [selectedRoomId, setSelectedRoomId] = useState<string>();
   const selectedRoomIdRef = useRef<string | undefined>(undefined);
+  const roomEpochRef = useRef(0);
+  const roomDetailRequestIdRef = useRef(0);
+  const roomsGenerationRef = useRef(0);
   const [activeRoom, setActiveRoom] = useState<TeamChatRoom>();
   const [messages, setMessages] = useState<TeamChatMessage[]>([]);
   const [nextBefore, setNextBefore] = useState<string>();
   const [loadingRooms, setLoadingRooms] = useState(false);
   const [loadingMessages, setLoadingMessages] = useState(false);
   const [loadingEarlier, setLoadingEarlier] = useState(false);
+  const loadingEarlierRef = useRef(false);
+  const earlierRequestIdRef = useRef(0);
   const [feedback, setFeedback] = useState<string>();
+  const roomListFeedbackRef = useRef(false);
   const [composer, setComposer] = useState("");
+  const composerRevisionRef = useRef(0);
   const [composerCursor, setComposerCursor] = useState(0);
   const [mentionMenuOpen, setMentionMenuOpen] = useState(false);
   const [mentionIndex, setMentionIndex] = useState(0);
   const [sending, setSending] = useState(false);
+  const sendingRequestIdRef = useRef<number | undefined>(undefined);
+  const nextSendingRequestIdRef = useRef(0);
   const [activeRootMessageId, setActiveRootMessageId] = useState<string>();
   const [streams, setStreams] = useState<Record<string, StreamDraft>>({});
   const [resettingAgentIds, setResettingAgentIds] = useState<Set<string>>(() => new Set());
+  const resettingAgentRequestIdsRef = useRef(new Map<string, number>());
   const [removingAgentIds, setRemovingAgentIds] = useState<Set<string>>(() => new Set());
+  const removingAgentRequestIdsRef = useRef(new Map<string, number>());
+  const nextRoomOperationIdRef = useRef(0);
   const [memberContextMenu, setMemberContextMenu] = useState<MemberContextMenu>();
   const [createOpen, setCreateOpen] = useState(false);
   const [addEmployeeOpen, setAddEmployeeOpen] = useState(false);
   const [roomActionsOpen, setRoomActionsOpen] = useState(false);
+  const [deletingRoomId, setDeletingRoomId] = useState<string>();
+  const deletingRoomIdRef = useRef<string | undefined>(undefined);
+  const deletingRoomSelectionRef = useRef<{
+    roomId: string;
+    preferredRoomId?: string;
+  } | undefined>(undefined);
+  const [pendingDeleteFocus, setPendingDeleteFocus] = useState<PendingDeleteFocus>();
+  const newRoomButtonRef = useRef<HTMLButtonElement>(null);
+  const roomSelectButtonRefs = useRef(new Map<string, HTMLButtonElement>());
   const composerRef = useRef<HTMLTextAreaElement>(null);
   const transcriptEndRef = useRef<HTMLDivElement>(null);
   const skipNextAutoScrollRef = useRef(false);
 
-  selectedRoomIdRef.current = selectedRoomId;
+  const isCurrentRoomScope = useCallback((roomId: string, epoch: number): boolean =>
+    selectedRoomIdRef.current === roomId && roomEpochRef.current === epoch, []);
+
+  const setContextFeedback = useCallback((value?: string): void => {
+    roomListFeedbackRef.current = false;
+    setFeedback(value);
+  }, []);
+
+  const commitAuthoritativeRoom = useCallback((room: TeamChatRoom): void => {
+    roomDetailRequestIdRef.current += 1;
+    setActiveRoom(room);
+  }, []);
+
+  const selectRoom = useCallback((nextRoomId?: string): void => {
+    if (selectedRoomIdRef.current === nextRoomId) return;
+    selectedRoomIdRef.current = nextRoomId;
+    roomEpochRef.current += 1;
+    roomDetailRequestIdRef.current += 1;
+    earlierRequestIdRef.current += 1;
+    loadingEarlierRef.current = false;
+    nextSendingRequestIdRef.current += 1;
+    sendingRequestIdRef.current = undefined;
+    setSelectedRoomId(nextRoomId);
+    setActiveRoom(undefined);
+    setMessages([]);
+    setNextBefore(undefined);
+    setLoadingMessages(false);
+    setLoadingEarlier(false);
+    setSending(false);
+    setActiveRootMessageId(undefined);
+    setStreams({});
+    setResettingAgentIds(new Set());
+    setRemovingAgentIds(new Set());
+    setMemberContextMenu(undefined);
+    setRoomActionsOpen(false);
+    setAddEmployeeOpen(false);
+    setMentionMenuOpen(false);
+    setContextFeedback(undefined);
+  }, [setContextFeedback]);
+
+  const updateComposer = useCallback((value: string): void => {
+    composerRevisionRef.current += 1;
+    setComposer(value);
+  }, []);
+
+  useLayoutEffect(() => {
+    if (!pendingDeleteFocus) return;
+    const origin = pendingDeleteFocus.kind === "trigger"
+      ? pendingDeleteFocus.element
+      : pendingDeleteFocus.origin;
+    const requested = pendingDeleteFocus.kind === "trigger"
+      ? pendingDeleteFocus.element
+      : pendingDeleteFocus.preferredRoomId
+        ? roomSelectButtonRefs.current.get(pendingDeleteFocus.preferredRoomId)
+        : undefined;
+    const fallback = selectedRoomIdRef.current
+      ? roomSelectButtonRefs.current.get(selectedRoomIdRef.current)
+      : undefined;
+    const target = requested?.isConnected
+      ? requested
+      : fallback?.isConnected
+        ? fallback
+        : [...roomSelectButtonRefs.current.values()].find((button) => button.isConnected)
+          ?? newRoomButtonRef.current;
+    const activeElement = document.activeElement;
+    if (
+      activeElement !== document.body
+      && activeElement !== origin
+      && activeElement !== target
+      && activeElement?.isConnected
+    ) {
+      setPendingDeleteFocus(undefined);
+      return;
+    }
+    target?.focus();
+    if (pendingDeleteFocus.kind === "room" && loadingRooms) return;
+    setPendingDeleteFocus(undefined);
+  }, [loadingRooms, pendingDeleteFocus, rooms]);
 
   const mentionContext = useMemo(
     () => activeMentionContext(composer, composerCursor),
@@ -229,32 +333,64 @@ export function TeamChatPage({
     return resolveMentionedMemberIds(composer, routable);
   }, [activeRoom, composer, snapshot.configuredAgents]);
 
-  const loadRooms = useCallback(async (preferredRoomId?: string): Promise<void> => {
+  const loadRooms = useCallback(async (
+    preferredRoomId?: string,
+  ): Promise<TeamChatRoomSummary[] | undefined> => {
+    const generation = roomsGenerationRef.current + 1;
+    const selectionEpoch = roomEpochRef.current;
+    roomsGenerationRef.current = generation;
     setLoadingRooms(true);
     try {
       const next = await api.listRooms();
+      if (roomsGenerationRef.current !== generation) return undefined;
       setRooms(next);
-      setSelectedRoomId((current) => {
-        if (preferredRoomId && next.some((room) => room.id === preferredRoomId)) return preferredRoomId;
-        if (current && next.some((room) => room.id === current)) return current;
-        return next[0]?.id;
-      });
-      setFeedback(undefined);
+      const currentRoomId = selectedRoomIdRef.current;
+      const deletionSelection = deletingRoomSelectionRef.current;
+      const deletionPreferredRoomId = deletionSelection
+        && deletionSelection.roomId === currentRoomId
+        ? deletionSelection.preferredRoomId
+        : undefined;
+      let nextRoomId: string | undefined;
+      if (
+        roomEpochRef.current === selectionEpoch
+        && preferredRoomId
+        && next.some((room) => room.id === preferredRoomId)
+      ) {
+        nextRoomId = preferredRoomId;
+      } else if (currentRoomId && next.some((room) => room.id === currentRoomId)) {
+        nextRoomId = currentRoomId;
+      } else if (
+        deletionPreferredRoomId
+        && next.some((room) => room.id === deletionPreferredRoomId)
+      ) {
+        nextRoomId = deletionPreferredRoomId;
+      } else {
+        nextRoomId = next[0]?.id;
+      }
+      selectRoom(nextRoomId);
+      if (roomListFeedbackRef.current) {
+        roomListFeedbackRef.current = false;
+        setFeedback(undefined);
+      }
+      return next;
     } catch (error) {
+      if (roomsGenerationRef.current !== generation) return undefined;
+      roomListFeedbackRef.current = true;
       setFeedback(errorMessage(error));
+      return undefined;
     } finally {
-      setLoadingRooms(false);
+      if (roomsGenerationRef.current === generation) setLoadingRooms(false);
     }
-  }, [api]);
+  }, [api, selectRoom]);
 
   const connect = useCallback(async (): Promise<void> => {
     setConnectionBusy(true);
-    setFeedback(undefined);
+    setContextFeedback(undefined);
     try {
       setConnection(await api.connect());
       await loadRooms(preferredRoomId);
     } catch (error) {
-      setFeedback(errorMessage(error));
+      setContextFeedback(errorMessage(error));
       setConnection(await api.getConnectionStatus().catch((): TeamChatConnectionStatus => ({
         state: "error",
         error: errorMessage(error),
@@ -262,7 +398,7 @@ export function TeamChatPage({
     } finally {
       setConnectionBusy(false);
     }
-  }, [api, loadRooms, preferredRoomId]);
+  }, [api, loadRooms, preferredRoomId, setContextFeedback]);
 
   useEffect(() => {
     let active = true;
@@ -277,10 +413,10 @@ export function TeamChatPage({
     }).catch((error) => {
       if (!active) return;
       setConnection({ state: "error", error: errorMessage(error) });
-      setFeedback(errorMessage(error));
+      setContextFeedback(errorMessage(error));
     });
     return () => { active = false; };
-  }, [api, connect, loadRooms, preferredRoomId]);
+  }, [api, connect, loadRooms, preferredRoomId, setContextFeedback]);
 
   useEffect(() => {
     const unsubscribe = api.onEvent((event) => {
@@ -292,16 +428,27 @@ export function TeamChatPage({
         setActiveRootMessageId,
         refreshRooms: () => void loadRooms(),
         refreshActiveRoom: (roomId) => {
+          const epoch = roomEpochRef.current;
+          const requestId = roomDetailRequestIdRef.current + 1;
+          roomDetailRequestIdRef.current = requestId;
           void api.getRoom(roomId).then((room) => {
-            if (selectedRoomIdRef.current === roomId) setActiveRoom(room);
-          }).catch((error) => setFeedback(errorMessage(error)));
+            if (
+              isCurrentRoomScope(roomId, epoch)
+              && roomDetailRequestIdRef.current === requestId
+            ) setActiveRoom(room);
+          }).catch((error) => {
+            if (
+              isCurrentRoomScope(roomId, epoch)
+              && roomDetailRequestIdRef.current === requestId
+            ) setContextFeedback(errorMessage(error));
+          });
         },
       });
     });
     return () => {
       unsubscribe();
     };
-  }, [api, loadRooms]);
+  }, [api, isCurrentRoomScope, loadRooms, setContextFeedback]);
 
   useEffect(() => {
     setActiveRootMessageId(undefined);
@@ -316,24 +463,39 @@ export function TeamChatPage({
       setNextBefore(undefined);
       return;
     }
+    const roomId = selectedRoomId;
+    const epoch = roomEpochRef.current;
+    const roomDetailRequestId = roomDetailRequestIdRef.current + 1;
+    roomDetailRequestIdRef.current = roomDetailRequestId;
     let active = true;
     setLoadingMessages(true);
-    setFeedback(undefined);
-    void Promise.all([
-      api.getRoom(selectedRoomId),
-      api.listMessages({ roomId: selectedRoomId, limit: 100 }),
-    ]).then(([room, page]) => {
-      if (!active) return;
-      setActiveRoom(room);
-      setMessages(page.messages);
+    setContextFeedback(undefined);
+    void api.getRoom(roomId).then((room) => {
+      if (!active || !isCurrentRoomScope(roomId, epoch)) return;
+      if (roomDetailRequestIdRef.current === roomDetailRequestId) {
+        setActiveRoom(room?.id === roomId ? room : undefined);
+      }
+    }).catch((error) => {
+      if (
+        active
+        && isCurrentRoomScope(roomId, epoch)
+        && roomDetailRequestIdRef.current === roomDetailRequestId
+      ) setContextFeedback(errorMessage(error));
+    });
+    void api.listMessages({ roomId, limit: 100 }).then((page) => {
+      if (!active || !isCurrentRoomScope(roomId, epoch)) return;
+      setMessages((current) => mergeMessages(
+        page.messages.filter((message) => message.roomId === roomId),
+        current.filter((message) => message.roomId === roomId),
+      ));
       setNextBefore(page.nextBefore);
     }).catch((error) => {
-      if (active) setFeedback(errorMessage(error));
+      if (active && isCurrentRoomScope(roomId, epoch)) setContextFeedback(errorMessage(error));
     }).finally(() => {
-      if (active) setLoadingMessages(false);
+      if (active && isCurrentRoomScope(roomId, epoch)) setLoadingMessages(false);
     });
     return () => { active = false; };
-  }, [api, connection.state, selectedRoomId]);
+  }, [api, connection.state, isCurrentRoomScope, selectedRoomId, setContextFeedback]);
 
   useEffect(() => {
     if (skipNextAutoScrollRef.current) {
@@ -344,54 +506,121 @@ export function TeamChatPage({
   }, [messages.length, streams]);
 
   const loadEarlierMessages = useCallback(async (): Promise<void> => {
-    if (!selectedRoomId || !nextBefore || loadingEarlier) return;
+    const roomId = selectedRoomIdRef.current;
+    if (!roomId || activeRoom?.id !== roomId || !nextBefore || loadingEarlierRef.current) return;
+    const epoch = roomEpochRef.current;
+    const requestId = earlierRequestIdRef.current + 1;
+    earlierRequestIdRef.current = requestId;
+    loadingEarlierRef.current = true;
     setLoadingEarlier(true);
     try {
-      const page = await api.listMessages({ roomId: selectedRoomId, before: nextBefore, limit: 100 });
+      const page = await api.listMessages({ roomId, before: nextBefore, limit: 100 });
+      if (
+        !isCurrentRoomScope(roomId, epoch)
+        || earlierRequestIdRef.current !== requestId
+      ) return;
       if (page.messages.length > 0) {
         skipNextAutoScrollRef.current = true;
-        setMessages((current) => mergeMessages(page.messages, current));
+        setMessages((current) => mergeMessages(
+          page.messages.filter((message) => message.roomId === roomId),
+          current.filter((message) => message.roomId === roomId),
+        ));
       }
       setNextBefore(page.nextBefore);
     } catch (error) {
-      setFeedback(errorMessage(error));
+      if (
+        isCurrentRoomScope(roomId, epoch)
+        && earlierRequestIdRef.current === requestId
+      ) setContextFeedback(errorMessage(error));
     } finally {
-      setLoadingEarlier(false);
+      if (
+        isCurrentRoomScope(roomId, epoch)
+        && earlierRequestIdRef.current === requestId
+      ) {
+        loadingEarlierRef.current = false;
+        setLoadingEarlier(false);
+      }
     }
-  }, [api, loadingEarlier, nextBefore, selectedRoomId]);
+  }, [activeRoom?.id, api, isCurrentRoomScope, nextBefore, setContextFeedback]);
 
   const sendMessage = useCallback(async (): Promise<void> => {
     const content = composer.trim();
-    if (!selectedRoomId || !content || sending) return;
+    const roomId = selectedRoomIdRef.current;
+    if (
+      !roomId
+      || activeRoom?.id !== roomId
+      || !content
+      || sendingRequestIdRef.current !== undefined
+    ) return;
+    const epoch = roomEpochRef.current;
+    const requestId = nextSendingRequestIdRef.current + 1;
+    const composerRevision = composerRevisionRef.current;
+    const roomAgents = activeRoom.agents;
+    nextSendingRequestIdRef.current = requestId;
+    sendingRequestIdRef.current = requestId;
     setSending(true);
-    setFeedback(undefined);
+    setContextFeedback(undefined);
+    let restoreComposerFocus = false;
     try {
       const result = await api.sendMessage({
-        roomId: selectedRoomId,
+        roomId,
         content,
         targetMemberIds,
       });
-      setMessages((current) => mergeMessages(current, [result.message]));
-      setComposer("");
-      setComposerCursor(0);
-      setMentionMenuOpen(false);
+      if (
+        !isCurrentRoomScope(roomId, epoch)
+        || sendingRequestIdRef.current !== requestId
+      ) return;
+      if (result.message.roomId === roomId) {
+        setMessages((current) => mergeMessages(
+          current.filter((message) => message.roomId === roomId),
+          [result.message],
+        ));
+      }
+      restoreComposerFocus = composerRevisionRef.current === composerRevision;
+      if (restoreComposerFocus) {
+        updateComposer("");
+        setComposerCursor(0);
+        setMentionMenuOpen(false);
+      }
       if (result.rejectedTargetMemberIds.length > 0) {
         const rejectedNames = result.rejectedTargetMemberIds
-          .map((memberId) => activeRoom?.agents
+          .map((memberId) => roomAgents
             .find((member) => member.agentId === memberId)?.displayName ?? memberId)
           .join("、");
-        setFeedback(l(
+        setContextFeedback(l(
           `The room message was saved, but these Runtimes were not started: ${rejectedNames}.`,
           `房间消息已保存，但以下 Runtime 未被唤醒：${rejectedNames}。`,
         ));
       }
     } catch (error) {
-      setFeedback(errorMessage(error));
+      if (
+        isCurrentRoomScope(roomId, epoch)
+        && sendingRequestIdRef.current === requestId
+      ) {
+        restoreComposerFocus = composerRevisionRef.current === composerRevision;
+        setContextFeedback(errorMessage(error));
+      }
     } finally {
-      setSending(false);
-      composerRef.current?.focus();
+      if (
+        isCurrentRoomScope(roomId, epoch)
+        && sendingRequestIdRef.current === requestId
+      ) {
+        sendingRequestIdRef.current = undefined;
+        setSending(false);
+        if (restoreComposerFocus) composerRef.current?.focus();
+      }
     }
-  }, [activeRoom, api, composer, l, selectedRoomId, sending, targetMemberIds]);
+  }, [
+    activeRoom,
+    api,
+    composer,
+    isCurrentRoomScope,
+    l,
+    setContextFeedback,
+    targetMemberIds,
+    updateComposer,
+  ]);
 
   const insertMention = (member: TeamChatRoomAgent, replaceActiveQuery = false): void => {
     const cursor = Math.min(composerCursor, composer.length);
@@ -409,7 +638,7 @@ export function TeamChatPage({
       next = `${composer.slice(0, cursor)}${inserted}${composer.slice(cursor)}`;
       nextCursor = cursor + inserted.length;
     }
-    setComposer(next);
+    updateComposer(next);
     setComposerCursor(nextCursor);
     setMentionMenuOpen(false);
     requestAnimationFrame(() => {
@@ -431,7 +660,7 @@ export function TeamChatPage({
     }
     // Close the gap the mention left behind without reflowing the rest of the draft.
     const { text, cursor } = removeMentionFromText(composer, existing);
-    setComposer(text);
+    updateComposer(text);
     setComposerCursor(cursor);
   };
 
@@ -466,45 +695,92 @@ export function TeamChatPage({
   const archiveRoom = async (): Promise<void> => {
     if (!activeRoom) return;
     if (!window.confirm(l(`Archive “${activeRoom.name}”?`, `归档“${activeRoom.name}”？`))) return;
+    const roomId = activeRoom.id;
+    const epoch = roomEpochRef.current;
     try {
       setRoomActionsOpen(false);
-      await api.archiveRoom(activeRoom.id);
+      await api.archiveRoom(roomId);
+      roomsGenerationRef.current += 1;
+      setRooms((current) => current.filter((room) => room.id !== roomId));
+      if (selectedRoomIdRef.current === roomId) selectRoom(undefined);
       await loadRooms();
     } catch (error) {
-      setFeedback(errorMessage(error));
+      if (isCurrentRoomScope(roomId, epoch)) setContextFeedback(errorMessage(error));
     }
   };
 
-  const deleteRoom = async (): Promise<void> => {
-    if (!activeRoom) return;
+  const deleteRoom = async (
+    room: Pick<TeamChatRoomSummary, "id" | "name">,
+    trigger: HTMLButtonElement,
+  ): Promise<void> => {
+    if (deletingRoomIdRef.current) return;
     const confirmed = window.confirm(l(
-      `Permanently delete “${activeRoom.name}” and all of its messages? This cannot be undone.`,
-      `永久删除“${activeRoom.name}”及其中的全部消息？此操作无法撤销。`,
+      `Permanently delete “${room.name}” and all of its messages? This cannot be undone.`,
+      `永久删除“${room.name}”及其中的全部消息？此操作无法撤销。`,
     ));
     if (!confirmed) return;
-    setRoomActionsOpen(false);
-    setFeedback(undefined);
+    const roomIndex = rooms.findIndex((candidate) => candidate.id === room.id);
+    const preferredFocusRoomId = roomIndex >= 0
+      ? rooms[roomIndex + 1]?.id ?? rooms[roomIndex - 1]?.id
+      : undefined;
+    deletingRoomSelectionRef.current = {
+      roomId: room.id,
+      preferredRoomId: preferredFocusRoomId,
+    };
+    deletingRoomIdRef.current = room.id;
+    setDeletingRoomId(room.id);
+    setContextFeedback(undefined);
     try {
-      await api.deleteRoom(activeRoom.id);
-      setActiveRoom(undefined);
-      setMessages([]);
-      setStreams({});
-      setActiveRootMessageId(undefined);
-      await loadRooms();
+      await api.deleteRoom(room.id);
+      const shouldMoveFocus = document.activeElement === trigger
+        || document.activeElement === document.body;
+      roomsGenerationRef.current += 1;
+      setRooms((current) => current.filter((candidate) => candidate.id !== room.id));
+      setMessages((current) => current.filter((message) => message.roomId !== room.id));
+      const deletedSelectedRoom = selectedRoomIdRef.current === room.id;
+      if (deletedSelectedRoom) selectRoom(preferredFocusRoomId);
+      setRoomActionsOpen(false);
+      if (shouldMoveFocus) {
+        setPendingDeleteFocus({
+          kind: "room",
+          preferredRoomId: preferredFocusRoomId,
+          origin: trigger,
+        });
+      }
+      await loadRooms(deletedSelectedRoom ? preferredFocusRoomId : undefined);
     } catch (error) {
-      setFeedback(errorMessage(error));
+      setContextFeedback(errorMessage(error));
+      if (
+        document.activeElement === trigger
+        || document.activeElement === document.body
+      ) setPendingDeleteFocus({ kind: "trigger", element: trigger });
+    } finally {
+      deletingRoomSelectionRef.current = undefined;
+      deletingRoomIdRef.current = undefined;
+      setDeletingRoomId(undefined);
     }
   };
 
   const renameRoom = async (name: string): Promise<void> => {
     if (!activeRoom) return;
-    const updated = await api.updateRoom({ roomId: activeRoom.id, name });
-    setActiveRoom((current) => current?.id === updated.id ? updated : current);
+    const roomId = activeRoom.id;
+    const epoch = roomEpochRef.current;
+    let updated: TeamChatRoom;
+    try {
+      updated = await api.updateRoom({ roomId, name });
+    } catch (error) {
+      if (isCurrentRoomScope(roomId, epoch)) throw error;
+      return;
+    }
+    if (
+      isCurrentRoomScope(roomId, epoch)
+      && updated.id === roomId
+    ) commitAuthoritativeRoom(updated);
     setRooms((current) => current.map((room) =>
       room.id === updated.id
         ? { ...room, name: updated.name, updatedAt: updated.updatedAt }
         : room));
-    setFeedback(undefined);
+    if (isCurrentRoomScope(roomId, epoch)) setContextFeedback(undefined);
   };
 
   const addRoomEmployee = async (member: {
@@ -512,10 +788,12 @@ export function TeamChatPage({
     displayName: string;
   }): Promise<void> => {
     if (!activeRoom) return;
+    const room = activeRoom;
+    const epoch = roomEpochRef.current;
     const updated = await api.updateRoom({
-      roomId: activeRoom.id,
+      roomId: room.id,
       members: [
-        ...activeRoom.agents.map((existing) => ({
+        ...room.agents.map((existing) => ({
           memberId: existing.agentId,
           configuredAgentId: existing.configuredAgentId,
           displayName: existing.displayName,
@@ -523,13 +801,18 @@ export function TeamChatPage({
         member,
       ],
     });
-    setActiveRoom((current) => current?.id === updated.id ? updated : current);
+    if (
+      isCurrentRoomScope(room.id, epoch)
+      && updated.id === room.id
+    ) commitAuthoritativeRoom(updated);
     setRooms((current) => current.map((room) =>
       room.id === updated.id
         ? { ...room, agentCount: updated.agents.length, updatedAt: updated.updatedAt }
         : room));
-    setAddEmployeeOpen(false);
-    setFeedback(undefined);
+    if (isCurrentRoomScope(room.id, epoch)) {
+      setAddEmployeeOpen(false);
+      setContextFeedback(undefined);
+    }
   };
 
   const removeRoomEmployee = async (member: TeamChatRoomAgent): Promise<void> => {
@@ -538,27 +821,38 @@ export function TeamChatPage({
       `Remove employee “${member.displayName}” from this room?`,
       `从当前房间移除员工“${member.displayName}”？`,
     ))) return;
+    const roomId = activeRoom.id;
+    const epoch = roomEpochRef.current;
+    const requestId = nextRoomOperationIdRef.current + 1;
+    nextRoomOperationIdRef.current = requestId;
+    removingAgentRequestIdsRef.current.set(member.agentId, requestId);
     setRemovingAgentIds((current) => new Set(current).add(member.agentId));
     setMemberContextMenu(undefined);
-    setFeedback(undefined);
+    setContextFeedback(undefined);
     try {
       const updated = await api.removeRoomMember({
-        roomId: activeRoom.id,
+        roomId,
         memberId: member.agentId,
       });
-      setActiveRoom((current) => current?.id === updated.id ? updated : current);
+      if (
+        isCurrentRoomScope(roomId, epoch)
+        && updated.id === roomId
+      ) commitAuthoritativeRoom(updated);
       setRooms((current) => current.map((room) =>
         room.id === updated.id
           ? { ...room, agentCount: updated.agents.length, updatedAt: updated.updatedAt }
           : room));
     } catch (error) {
-      setFeedback(errorMessage(error));
+      if (isCurrentRoomScope(roomId, epoch)) setContextFeedback(errorMessage(error));
     } finally {
-      setRemovingAgentIds((current) => {
-        const next = new Set(current);
-        next.delete(member.agentId);
-        return next;
-      });
+      if (removingAgentRequestIdsRef.current.get(member.agentId) === requestId) {
+        removingAgentRequestIdsRef.current.delete(member.agentId);
+        setRemovingAgentIds((current) => {
+          const next = new Set(current);
+          next.delete(member.agentId);
+          return next;
+        });
+      }
     }
   };
 
@@ -584,22 +878,33 @@ export function TeamChatPage({
       Object.values(streams).some((stream) => stream.agentId === member.agentId) ||
       resettingAgentIds.has(member.agentId)
     ) return;
+    const roomId = activeRoom.id;
+    const epoch = roomEpochRef.current;
+    const requestId = nextRoomOperationIdRef.current + 1;
+    nextRoomOperationIdRef.current = requestId;
+    resettingAgentRequestIdsRef.current.set(member.agentId, requestId);
     setResettingAgentIds((current) => new Set(current).add(member.agentId));
-    setFeedback(undefined);
+    setContextFeedback(undefined);
     try {
       const room = await api.resetAgentSession({
-        roomId: activeRoom.id,
+        roomId,
         agentId: member.agentId,
       });
-      if (selectedRoomIdRef.current === room.id) setActiveRoom(room);
+      if (
+        isCurrentRoomScope(roomId, epoch)
+        && room.id === roomId
+      ) commitAuthoritativeRoom(room);
     } catch (error) {
-      setFeedback(errorMessage(error));
+      if (isCurrentRoomScope(roomId, epoch)) setContextFeedback(errorMessage(error));
     } finally {
-      setResettingAgentIds((current) => {
-        const next = new Set(current);
-        next.delete(member.agentId);
-        return next;
-      });
+      if (resettingAgentRequestIdsRef.current.get(member.agentId) === requestId) {
+        resettingAgentRequestIdsRef.current.delete(member.agentId);
+        setResettingAgentIds((current) => {
+          const next = new Set(current);
+          next.delete(member.agentId);
+          return next;
+        });
+      }
     }
   };
 
@@ -629,26 +934,59 @@ export function TeamChatPage({
           onRetry={() => void connect()}
         />
       ) : (
-        <div className="team-chat-layout">
+        <div className="team-chat-ready">
+          {feedback ? (
+            <div className="team-chat-feedback" role="alert" aria-atomic="true">{feedback}</div>
+          ) : null}
+          <div className="team-chat-layout">
           <aside className="team-chat-room-rail">
             <div className="team-chat-rail-head">
               <span>{l("Rooms", "房间")}</span>
-              <button type="button" onClick={() => setCreateOpen(true)} title={l("New room", "新建房间")}>
+              <button
+                ref={newRoomButtonRef}
+                type="button"
+                onClick={() => setCreateOpen(true)}
+                title={l("New room", "新建房间")}
+                aria-label={l("New room", "新建房间")}
+              >
                 <Plus size={15} />
               </button>
             </div>
             <div className="team-chat-room-list">
               {loadingRooms && rooms.length === 0 ? <LoaderCircle className="spin" size={16} /> : null}
               {rooms.map((room) => (
-                <button
-                  type="button"
+                <div
                   key={room.id}
-                  className={room.id === selectedRoomId ? "active" : ""}
-                  onClick={() => setSelectedRoomId(room.id)}
+                  className={`team-chat-room-item${room.id === selectedRoomId ? " active" : ""}`}
                 >
-                  <strong>{room.name}</strong>
-                  <span>{room.lastMessage || l(`${room.agentCount} employees`, `${room.agentCount} 名员工`)}</span>
-                </button>
+                  <button
+                    className="team-chat-room-select"
+                    type="button"
+                    ref={(element) => {
+                      if (element) roomSelectButtonRefs.current.set(room.id, element);
+                      else roomSelectButtonRefs.current.delete(room.id);
+                    }}
+                    onClick={() => selectRoom(room.id)}
+                  >
+                    <strong>{room.name}</strong>
+                    <span>{room.lastMessage || l(`${room.agentCount} employees`, `${room.agentCount} 名员工`)}</span>
+                  </button>
+                  <button
+                    className="team-chat-room-delete"
+                    type="button"
+                    aria-disabled={deletingRoomId !== undefined || undefined}
+                    aria-busy={deletingRoomId === room.id || undefined}
+                    onClick={(event: ReactMouseEvent<HTMLButtonElement>) => {
+                      void deleteRoom(room, event.currentTarget);
+                    }}
+                    title={l(`Delete room “${room.name}”`, `删除房间“${room.name}”`)}
+                    aria-label={l(`Delete room “${room.name}”`, `删除房间“${room.name}”`)}
+                  >
+                    {deletingRoomId === room.id
+                      ? <LoaderCircle className="spin" size={13} />
+                      : <Trash2 size={13} />}
+                  </button>
+                </div>
               ))}
               {!loadingRooms && rooms.length === 0 ? (
                 <div className="team-chat-room-empty">
@@ -669,7 +1007,7 @@ export function TeamChatPage({
                       room={activeRoom}
                       language={language}
                       onRename={renameRoom}
-                      onError={(error) => setFeedback(errorMessage(error))}
+                      onError={(error) => setContextFeedback(errorMessage(error))}
                     />
                     <span title={activeRoom.workDir}>{activeRoom.workDir || l("No working directory", "未设置工作目录")}</span>
                   </div>
@@ -690,8 +1028,19 @@ export function TeamChatPage({
                           <Archive size={14} />
                           {l("Archive studio", "归档工作室")}
                         </button>
-                        <button className="danger" type="button" role="menuitem" onClick={() => void deleteRoom()}>
-                          <Trash2 size={14} />
+                        <button
+                          className="danger"
+                          type="button"
+                          role="menuitem"
+                          aria-disabled={deletingRoomId !== undefined || undefined}
+                          aria-busy={deletingRoomId === activeRoom.id || undefined}
+                          onClick={(event: ReactMouseEvent<HTMLButtonElement>) => {
+                            void deleteRoom(activeRoom, event.currentTarget);
+                          }}
+                        >
+                          {deletingRoomId === activeRoom.id
+                            ? <LoaderCircle className="spin" size={14} />
+                            : <Trash2 size={14} />}
                           {l("Delete permanently", "永久删除")}
                         </button>
                       </div>
@@ -733,7 +1082,6 @@ export function TeamChatPage({
                   <div ref={transcriptEndRef} />
                 </div>
                 <footer className="team-chat-composer">
-                  {feedback ? <div className="team-chat-feedback" role="alert">{feedback}</div> : null}
                   <div className="team-chat-recipient-picker" aria-label={l("Message recipients", "消息收件员工")}>
                     <span>{l("To", "发送给")}</span>
                     {activeRoom.agents.map((member) => {
@@ -782,7 +1130,7 @@ export function TeamChatPage({
                       onChange={(event) => {
                         const value = event.currentTarget.value;
                         const cursor = event.currentTarget.selectionStart ?? value.length;
-                        setComposer(value);
+                        updateComposer(value);
                         setComposerCursor(cursor);
                         setMentionMenuOpen(Boolean(activeMentionContext(value, cursor)));
                       }}
@@ -881,6 +1229,7 @@ export function TeamChatPage({
               })}
             </div>
           </aside>
+          </div>
         </div>
       )}
 
@@ -1329,7 +1678,10 @@ function handleTeamChatEvent(event: TeamChatEvent, handlers: {
     return;
   }
   if (event.type === "message-created") {
-    if (event.roomId !== handlers.selectedRoomId) return;
+    if (
+      event.roomId !== handlers.selectedRoomId
+      || event.message.roomId !== event.roomId
+    ) return;
     handlers.setMessages((current) => mergeMessages(current, [event.message]));
     if (event.message.senderAgentId) {
       handlers.setStreams((current) => Object.fromEntries(Object.entries(current).filter(([, stream]) =>
@@ -1362,6 +1714,7 @@ function handleTeamChatEvent(event: TeamChatEvent, handlers: {
     return;
   }
   if (event.type === "dispatch-finished") {
+    if (event.roomId !== handlers.selectedRoomId) return;
     handlers.setStreams((current) => {
       if (!current[event.dispatchId]) return current;
       const next = { ...current };
@@ -1371,6 +1724,7 @@ function handleTeamChatEvent(event: TeamChatEvent, handlers: {
     return;
   }
   if (event.type === "turn-finished") {
+    if (event.roomId !== handlers.selectedRoomId) return;
     handlers.setActiveRootMessageId((current) => current === event.rootMessageId ? undefined : current);
   }
 }
