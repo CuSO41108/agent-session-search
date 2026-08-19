@@ -220,13 +220,15 @@ export class SessionCatalogService {
       const prepared = await this.bulkDelete.prepareSingleDelete(request, normalizedOptions);
       const preparedTarget = prepared.allRows.find((target) => target.sessionKey === sessionKey);
       if (!preparedTarget) return false;
-      if (!canDeleteSessionLocally(preparedTarget)) {
+      if (prepared.allRows.some((target) => !canDeleteSessionLocally(target))) {
         throw new Error("Cannot delete sessions stored on SSH remote environments.");
       }
       if (
-        preparedTarget.environmentKind === "wsl"
-        && preparedTarget.sourceAvailable
-        && isSharedSessionSourceDatabase(preparedTarget)
+        prepared.allRows.some((target) => (
+          target.environmentKind === "wsl"
+          && target.sourceAvailable
+          && isSharedSessionSourceDatabase(target)
+        ))
       ) {
         throw new Error("Cannot delete shared source databases on WSL by removing the database file.");
       }

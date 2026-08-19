@@ -161,8 +161,16 @@ describe("SessionCatalogService deletion policy", () => {
     ]);
 
     await expect(service.delete(current.sessionKey)).rejects.toThrow(
-      "Cannot delete sessions stored on SSH remote environments.",
+      SESSION_DELETE_CONFIRMATION_REQUIRED_MESSAGE,
     );
+    const preview = await service.previewBulkDelete({
+      sessionKeys: [current.sessionKey],
+      liveSessionKeys: [],
+    });
+    await expect(service.delete(current.sessionKey, {
+      confirmed: true,
+      confirmationFingerprint: preview.confirmationFingerprint,
+    })).rejects.toThrow("Cannot delete sessions stored on SSH remote environments.");
     expect(store.deleteExactSessionTargets).not.toHaveBeenCalled();
   });
 
