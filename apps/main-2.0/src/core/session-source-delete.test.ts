@@ -1,8 +1,12 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { createRequire } from "node:module";
 import { describe, expect, it } from "vitest";
 import { deleteLocalSessionSources, sessionSourceDeletionPaths } from "./session-source-delete";
+
+const require = createRequire(import.meta.url);
+const { DatabaseSync } = require("node:sqlite") as { DatabaseSync: typeof import("node:sqlite").DatabaseSync };
 
 describe("session source deletion", () => {
   it("rejects relative source paths before deleting anything", () => {
@@ -145,6 +149,42 @@ describe("session source deletion", () => {
       expect(fs.existsSync(parentFile)).toBe(true);
       expect(fs.existsSync(childFile)).toBe(true);
       expect(fs.existsSync(subagentsDirectory)).toBe(true);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("removes stale Codex App state rows when the rollout file is already missing", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "agent-recall-codex-app-state-delete-"));
+    const codexHome = path.join(root, ".codex");
+    const rolloutPath = path.join(codexHome, "sessions", "2026", "08", "18", "rollout-stale.jsonl");
+    const statePath = path.join(codexHome, "state_1.sqlite");
+    const sessionId = "550e8400-e29b-41d4-a716-446655440000";
+    fs.mkdirSync(path.dirname(rolloutPath), { recursive: true });
+    const db = new DatabaseSync(statePath);
+    db.exec(`
+      CREATE TABLE threads (id TEXT PRIMARY KEY, rollout_path TEXT NOT NULL);
+      CREATE TABLE thread_spawn_edges (parent_thread_id TEXT NOT NULL, child_thread_id TEXT NOT NULL PRIMARY KEY);
+    `);
+    db.prepare("INSERT INTO threads (id, rollout_path) VALUES (?, ?)").run(sessionId, rolloutPath);
+    db.prepare("INSERT INTO thread_spawn_edges (parent_thread_id, child_thread_id) VALUES (?, ?)").run(sessionId, "child");
+    db.close();
+
+    try {
+      deleteLocalSessionSources([{
+        source: "codex-app",
+        rawId: sessionId,
+        filePath: rolloutPath,
+        isSubagent: false,
+      }]);
+
+      const verify = new DatabaseSync(statePath);
+      try {
+        expect(verify.prepare("SELECT id FROM threads WHERE id = ?").get(sessionId)).toBeUndefined();
+        expect(verify.prepare("SELECT child_thread_id FROM thread_spawn_edges WHERE parent_thread_id = ?").get(sessionId)).toBeUndefined();
+      } finally {
+        verify.close();
+      }
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }

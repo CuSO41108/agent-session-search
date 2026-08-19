@@ -1,8 +1,14 @@
 import * as fs from "node:fs";
+import { createRequire } from "node:module";
 import * as path from "node:path";
+import type { DatabaseSync as DatabaseSyncType } from "node:sqlite";
 import type { SessionSource } from "./types";
 
+const require = createRequire(import.meta.url);
+const { DatabaseSync } = require("node:sqlite") as { DatabaseSync: typeof DatabaseSyncType };
+
 const CLAUDE_SESSION_FILE_SOURCES = new Set<SessionSource>(["claude-cli", "claude-app"]);
+const CODEX_APP_SESSION_SOURCES = new Set<SessionSource>(["codex-app"]);
 
 export interface SessionSourceDeleteTarget {
   source: SessionSource;
@@ -80,6 +86,95 @@ export function deleteLocalSessionSources(targets: readonly SessionSourceDeleteT
   for (const filePath of deletionPaths.files) deleteRegularFile(filePath);
   for (const directoryPath of deletionPaths.directories) deleteOwnedDirectory(directoryPath);
   for (const directoryPath of deletionPaths.emptyDirectories) removeEmptyDirectory(directoryPath);
+  deleteCodexAppStateRows(targets);
+}
+
+function deleteCodexAppStateRows(targets: readonly SessionSourceDeleteTarget[]): void {
+  const idsByDatabase = new Map<string, Set<string>>();
+  for (const target of targets) {
+    if (!CODEX_APP_SESSION_SOURCES.has(target.source) || !target.rawId) continue;
+    const codexHome = codexHomeForRollout(target.filePath);
+    if (!codexHome) continue;
+    for (const entry of listCodexStateDatabases(codexHome)) {
+      const ids = idsByDatabase.get(entry) ?? new Set<string>();
+      ids.add(target.rawId);
+      idsByDatabase.set(entry, ids);
+    }
+  }
+
+  for (const [databasePath, ids] of idsByDatabase) {
+    const database = openCodexStateDatabase(databasePath);
+    if (!database) continue;
+    try {
+      deleteCodexThreadRows(database, [...ids]);
+    } finally {
+      database.close();
+    }
+  }
+}
+
+function codexHomeForRollout(filePath: string): string | null {
+  let current = path.dirname(filePath);
+  for (;;) {
+    if (path.basename(current).toLowerCase() === "sessions") {
+      const codexHome = path.dirname(current);
+      return path.basename(codexHome).toLowerCase() === ".codex" ? codexHome : null;
+    }
+    const parent = path.dirname(current);
+    if (parent === current) return null;
+    current = parent;
+  }
+}
+
+function listCodexStateDatabases(codexHome: string): string[] {
+  try {
+    return fs.readdirSync(codexHome, { withFileTypes: true })
+      .filter((entry) => entry.isFile() && /^state_\d+\.sqlite$/iu.test(entry.name))
+      .map((entry) => path.join(codexHome, entry.name));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw error;
+  }
+}
+
+function openCodexStateDatabase(databasePath: string): DatabaseSyncType | null {
+  try {
+    return new DatabaseSync(databasePath, { timeout: 5_000 });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
+  }
+}
+
+function deleteCodexThreadRows(database: DatabaseSyncType, sessionIds: string[]): void {
+  const ids = [...new Set(sessionIds.filter(Boolean))];
+  if (ids.length === 0 || !sqliteTableHasColumns(database, "threads", ["id"])) return;
+  const placeholders = ids.map(() => "?").join(", ");
+  database.exec("BEGIN IMMEDIATE");
+  try {
+    if (sqliteTableHasColumns(database, "thread_spawn_edges", ["parent_thread_id", "child_thread_id"])) {
+      database.prepare(
+        `DELETE FROM thread_spawn_edges WHERE parent_thread_id IN (${placeholders}) OR child_thread_id IN (${placeholders})`,
+      ).run(...ids, ...ids);
+    }
+    database.prepare(`DELETE FROM threads WHERE id IN (${placeholders})`).run(...ids);
+    database.exec("COMMIT");
+  } catch (error) {
+    try { database.exec("ROLLBACK"); } catch { /* preserve the original error */ }
+    throw error;
+  }
+}
+
+function sqliteTableHasColumns(database: DatabaseSyncType, table: string, columns: string[]): boolean {
+  const present = database.prepare(
+    "SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = ?",
+  ).get(table);
+  if (!present) return false;
+  const available = new Set(
+    (database.prepare(`PRAGMA table_info("${table.replaceAll('"', '""')}")`).all() as Array<{ name?: unknown }>)
+      .map((column) => typeof column.name === "string" ? column.name : ""),
+  );
+  return columns.every((column) => available.has(column));
 }
 
 function validateDeletionPaths(deletionPaths: SessionSourceDeletionPaths): void {

@@ -317,7 +317,11 @@ export class SessionStore {
       }
       throw new Error("Cannot delete shared Cursor source database.");
     }
-    if (target.sourceAvailable) deleteLocalSessionSources(targets.filter((item) => item.sourceAvailable));
+    if (target.source === "codex-app") {
+      deleteLocalSessionSources(targets);
+    } else if (target.sourceAvailable) {
+      deleteLocalSessionSources(targets.filter((item) => item.sourceAvailable));
+    }
     return this.deleteSessionTargetRecords(targets, requestedSessionKey);
   }
 

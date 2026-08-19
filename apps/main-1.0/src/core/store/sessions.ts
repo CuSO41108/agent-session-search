@@ -763,7 +763,11 @@ export class SessionsStore {
       throw new Error("Cannot delete shared CodeWiz source database.");
     }
 
-    if (row.sourceAvailable) deleteLocalSessionSources(targets.filter((target) => target.sourceAvailable));
+    if (row.source === "codex-app") {
+      deleteLocalSessionSources(targets);
+    } else if (row.sourceAvailable) {
+      deleteLocalSessionSources(targets.filter((target) => target.sourceAvailable));
+    }
     return this.deleteSessionRecords(targets.map((target) => target.sessionKey), false).includes(sessionKey);
   }
 

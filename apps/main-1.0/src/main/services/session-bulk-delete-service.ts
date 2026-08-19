@@ -281,6 +281,12 @@ async function deleteTargetFamily(
 ): Promise<void> {
   const cascadeRoot = targets.find((target) => target.sessionKey === target.cascadeRootSessionKey);
   if (!cascadeRoot) throw new Error("Session deletion family is missing its cascade root.");
+  const staleCodexAppTargets = targets.filter((target) =>
+    target.source === "codex-app"
+    && !target.sourceAvailable
+    && target.environmentKind === "local",
+  );
+  if (staleCodexAppTargets.length > 0) deleteLocalSessionSources(staleCodexAppTargets);
   if (!cascadeRoot.sourceAvailable && !cascadeRoot.orphanedParentSessionId) return;
   const availableTargets = targets.filter((target) => target.sourceAvailable);
   if (availableTargets.length === 0) return;
