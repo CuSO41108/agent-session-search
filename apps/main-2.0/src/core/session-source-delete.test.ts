@@ -160,14 +160,20 @@ describe("session source deletion", () => {
     const rolloutPath = path.join(codexHome, "sessions", "2026", "08", "18", "rollout-stale.jsonl");
     const statePath = path.join(codexHome, "state_1.sqlite");
     const sessionId = "550e8400-e29b-41d4-a716-446655440000";
+    const childId = "650e8400-e29b-41d4-a716-446655440000";
     fs.mkdirSync(path.dirname(rolloutPath), { recursive: true });
+    fs.writeFileSync(
+      path.join(codexHome, "session_index.jsonl"),
+      `${JSON.stringify({ id: sessionId, thread_name: "stale" })}\n${JSON.stringify({ id: "keep", thread_name: "keep" })}\n`,
+    );
     const db = new DatabaseSync(statePath);
     db.exec(`
       CREATE TABLE threads (id TEXT PRIMARY KEY, rollout_path TEXT NOT NULL);
       CREATE TABLE thread_spawn_edges (parent_thread_id TEXT NOT NULL, child_thread_id TEXT NOT NULL PRIMARY KEY);
     `);
     db.prepare("INSERT INTO threads (id, rollout_path) VALUES (?, ?)").run(sessionId, rolloutPath);
-    db.prepare("INSERT INTO thread_spawn_edges (parent_thread_id, child_thread_id) VALUES (?, ?)").run(sessionId, "child");
+    db.prepare("INSERT INTO threads (id, rollout_path) VALUES (?, ?)").run(childId, `${rolloutPath}.child`);
+    db.prepare("INSERT INTO thread_spawn_edges (parent_thread_id, child_thread_id) VALUES (?, ?)").run(sessionId, childId);
     db.close();
 
     try {
@@ -181,10 +187,14 @@ describe("session source deletion", () => {
       const verify = new DatabaseSync(statePath);
       try {
         expect(verify.prepare("SELECT id FROM threads WHERE id = ?").get(sessionId)).toBeUndefined();
+        expect(verify.prepare("SELECT id FROM threads WHERE id = ?").get(childId)).toBeUndefined();
         expect(verify.prepare("SELECT child_thread_id FROM thread_spawn_edges WHERE parent_thread_id = ?").get(sessionId)).toBeUndefined();
       } finally {
         verify.close();
       }
+      expect(fs.readFileSync(path.join(codexHome, "session_index.jsonl"), "utf8")).toBe(
+        `${JSON.stringify({ id: "keep", thread_name: "keep" })}\n`,
+      );
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }

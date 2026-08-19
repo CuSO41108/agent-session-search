@@ -90,26 +90,28 @@ export function deleteLocalSessionSources(targets: readonly SessionSourceDeleteT
 }
 
 function deleteCodexAppStateRows(targets: readonly SessionSourceDeleteTarget[]): void {
-  const idsByDatabase = new Map<string, Set<string>>();
+  const idsByCodexHome = new Map<string, Set<string>>();
   for (const target of targets) {
     if (!CODEX_APP_SESSION_SOURCES.has(target.source) || !target.rawId) continue;
     const codexHome = codexHomeForRollout(target.filePath);
     if (!codexHome) continue;
-    for (const entry of listCodexStateDatabases(codexHome)) {
-      const ids = idsByDatabase.get(entry) ?? new Set<string>();
-      ids.add(target.rawId);
-      idsByDatabase.set(entry, ids);
-    }
+    const ids = idsByCodexHome.get(codexHome) ?? new Set<string>();
+    ids.add(target.rawId);
+    idsByCodexHome.set(codexHome, ids);
   }
 
-  for (const [databasePath, ids] of idsByDatabase) {
-    const database = openCodexStateDatabase(databasePath);
-    if (!database) continue;
-    try {
-      deleteCodexThreadRows(database, [...ids]);
-    } finally {
-      database.close();
+  for (const [codexHome, ids] of idsByCodexHome) {
+    const familyIds = new Set(ids);
+    for (const databasePath of listCodexStateDatabases(codexHome)) {
+      const database = openCodexStateDatabase(databasePath);
+      if (!database) continue;
+      try {
+        for (const id of deleteCodexThreadRows(database, [...familyIds])) familyIds.add(id);
+      } finally {
+        database.close();
+      }
     }
+    deleteCodexSessionIndexRows(codexHome, [...familyIds]);
   }
 }
 
@@ -146,21 +148,83 @@ function openCodexStateDatabase(databasePath: string): DatabaseSyncType | null {
   }
 }
 
-function deleteCodexThreadRows(database: DatabaseSyncType, sessionIds: string[]): void {
+function deleteCodexThreadRows(database: DatabaseSyncType, sessionIds: string[]): string[] {
   const ids = [...new Set(sessionIds.filter(Boolean))];
-  if (ids.length === 0 || !sqliteTableHasColumns(database, "threads", ["id"])) return;
-  const placeholders = ids.map(() => "?").join(", ");
+  if (ids.length === 0 || !sqliteTableHasColumns(database, "threads", ["id"])) return ids;
+  const familyIds = expandCodexThreadIds(database, ids);
+  const placeholders = familyIds.map(() => "?").join(", ");
   database.exec("BEGIN IMMEDIATE");
   try {
     if (sqliteTableHasColumns(database, "thread_spawn_edges", ["parent_thread_id", "child_thread_id"])) {
       database.prepare(
         `DELETE FROM thread_spawn_edges WHERE parent_thread_id IN (${placeholders}) OR child_thread_id IN (${placeholders})`,
-      ).run(...ids, ...ids);
+      ).run(...familyIds, ...familyIds);
     }
-    database.prepare(`DELETE FROM threads WHERE id IN (${placeholders})`).run(...ids);
+    if (sqliteTableHasColumns(database, "thread_dynamic_tools", ["thread_id"])) {
+      database.prepare(`DELETE FROM thread_dynamic_tools WHERE thread_id IN (${placeholders})`).run(...familyIds);
+    }
+    database.prepare(`DELETE FROM threads WHERE id IN (${placeholders})`).run(...familyIds);
     database.exec("COMMIT");
   } catch (error) {
     try { database.exec("ROLLBACK"); } catch { /* preserve the original error */ }
+    throw error;
+  }
+  return familyIds;
+}
+
+function expandCodexThreadIds(database: DatabaseSyncType, sessionIds: string[]): string[] {
+  if (!sqliteTableHasColumns(database, "thread_spawn_edges", ["parent_thread_id", "child_thread_id"])) {
+    return sessionIds;
+  }
+  const placeholders = sessionIds.map(() => "?").join(", ");
+  const rows = database.prepare(`
+    WITH RECURSIVE family(id) AS (
+      SELECT id FROM threads WHERE id IN (${placeholders})
+      UNION
+      SELECT edge.child_thread_id
+      FROM family
+      INNER JOIN thread_spawn_edges edge ON edge.parent_thread_id = family.id
+    )
+    SELECT DISTINCT id FROM family
+  `).all(...sessionIds) as Array<{ id?: unknown }>;
+  return [...new Set([
+    ...sessionIds,
+    ...rows.map((row) => typeof row.id === "string" ? row.id : "").filter(Boolean),
+  ])];
+}
+
+function deleteCodexSessionIndexRows(codexHome: string, sessionIds: string[]): void {
+  const indexPath = path.join(codexHome, "session_index.jsonl");
+  let content: string;
+  try {
+    content = fs.readFileSync(indexPath, "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw error;
+  }
+  const ids = new Set(sessionIds);
+  const lines = content.split(/\r?\n/u);
+  let changed = false;
+  const kept = lines.filter((line) => {
+    if (!line.trim()) return true;
+    try {
+      const parsed = JSON.parse(line) as { id?: unknown };
+      if (typeof parsed.id === "string" && ids.has(parsed.id)) {
+        changed = true;
+        return false;
+      }
+    } catch {
+      // Preserve unrelated malformed rows; the normal Codex indexer will report them.
+    }
+    return true;
+  });
+  if (!changed) return;
+  const tempPath = `${indexPath}.tmp-${process.pid}-${Date.now()}`;
+  try {
+    fs.writeFileSync(tempPath, kept.join("\n"), "utf8");
+    fs.renameSync(tempPath, indexPath);
+  } catch (error) {
+    try { fs.rmSync(tempPath, { force: true }); } catch { /* preserve the original error */ }
     throw error;
   }
 }
