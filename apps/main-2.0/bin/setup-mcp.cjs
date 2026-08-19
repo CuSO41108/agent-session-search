@@ -81,6 +81,87 @@ function nodeCommand() {
   return "node";
 }
 
+// --- DeepSeek Harness (~/.dsh/cordis.patch.yml, YAML patch array) -----------
+
+const DSH_MCP_ROW_ID = "mcp-agent-recall";
+const DSH_PATCH_HEADER = "# Agent Recall MCP server — managed by Agent Recall (setup-mcp).";
+const DSH_PATCH_ENTRY = `- insert:
+    - id: ${DSH_MCP_ROW_ID}
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: agent-recall
+        transport: stdio
+        command: __COMMAND__
+        args: [__SCRIPT__]
+        failOnStartupError: false`;
+
+function yamlScalar(value) {
+  // JSON string literal escaping is a valid YAML double-quoted scalar.
+  return JSON.stringify(value);
+}
+
+function renderDshBlock(command, scriptPath) {
+  return DSH_PATCH_ENTRY
+    .replace("__COMMAND__", yamlScalar(command))
+    .replace("__SCRIPT__", yamlScalar(scriptPath));
+}
+
+function removeDshBlock(contents) {
+  // Drop the managed insert unit (header row + following indented lines), then trim trailing blanks.
+  const lines = (contents || "").split("\n");
+  const out = [];
+  let skipping = false;
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
+    const trimmed = line.trim();
+    // The managed entry is a two-line unit: the "- insert:" opener and the row.
+    if (trimmed === "- insert:" && !skipping) {
+      // Only treat as ours when the next line is the managed row id.
+      const next = lines[index + 1];
+      if (next && next.trim() === `- id: ${DSH_MCP_ROW_ID}`) {
+        skipping = true;
+        continue;
+      }
+    }
+    if (skipping) {
+      if (/^-\s/.test(line) || trimmed === "") {
+        skipping = false;
+      } else {
+        continue;
+      }
+    }
+    out.push(line);
+  }
+  // Remove the header comment if it directly precedes the row.
+  const joined = out.join("\n");
+  return joined
+    .replace(new RegExp(`${DSH_PATCH_HEADER.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*\\n?`), "")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function applyDshConfig(contents, scriptPath, remove, command = "node") {
+  const stripped = removeDshBlock(contents);
+  const meaningful = stripped
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line && !line.startsWith("#"));
+  const emptyPatch = meaningful.length === 0 || (meaningful.length === 1 && meaningful[0] === "[]");
+  if (remove) {
+    if (!emptyPatch) return `${stripped}\n`;
+    const comments = stripped
+      .split("\n")
+      .filter((line) => line.trim().startsWith("#"))
+      .join("\n");
+    return comments ? `${comments}\n[]\n` : "[]\n";
+  }
+  const base = emptyPatch
+    ? stripped.split("\n").filter((line) => line.trim() !== "[]").join("\n").trim()
+    : stripped;
+  const block = `${DSH_PATCH_HEADER}\n${renderDshBlock(command, scriptPath)}`;
+  return base ? `${base}\n\n${block}\n` : `# dsh profile patch layer (user-editable).\n${block}\n`;
+}
+
 // --- Claude (~/.claude.json, JSON) -----------------------------------------
 
 function applyClaudeConfig(config, scriptPath, remove, command = "node") {
@@ -176,6 +257,24 @@ function run(remove, options = {}) {
     messages.push("Skipped CodeBuddy (~/.codebuddy not found).");
   }
 
+  // DeepSeek Harness reads its home-level patch layer ~/.dsh/cordis.patch.yml
+  // (applied over every profile). Register there when the harness is present.
+  // Wrapped separately so a dsh failure never blocks the other registrations.
+  const dshHome = process.env.DSH_HOME?.trim() || path.join(home, ".dsh");
+  if (fs.existsSync(dshHome) && (!remove || fs.existsSync(path.join(dshHome, "cordis.patch.yml")))) {
+    try {
+      const dshPatchPath = path.join(dshHome, "cordis.patch.yml");
+      const current = fs.existsSync(dshPatchPath) ? fs.readFileSync(dshPatchPath, "utf8") : "";
+      const next = applyDshConfig(current, scriptPath, remove, command);
+      writeFileAtomic(dshPatchPath, next);
+      messages.push(`${remove ? "Removed" : "Configured"} MCP server in ${dshPatchPath}`);
+    } catch (error) {
+      messages.push(`Failed to configure DeepSeek Harness MCP (${error instanceof Error ? error.message : String(error)}).`);
+    }
+  } else {
+    messages.push("Skipped DeepSeek Harness (~/.dsh not found).");
+  }
+
   if (!remove) messages.push(`Using node: ${command}`);
   return messages;
 }
@@ -205,7 +304,7 @@ function serverDefinition() {
   };
 }
 
-module.exports = { applyClaudeConfig, applyCodexConfig, removeCodexBlock, run, serverDefinition, status };
+module.exports = { applyClaudeConfig, applyCodexConfig, applyDshConfig, removeCodexBlock, removeDshBlock, run, serverDefinition, status };
 
 if (require.main === module) {
   const remove = process.argv.includes("uninstall") || process.argv.includes("--remove");

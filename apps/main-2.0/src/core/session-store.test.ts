@@ -318,6 +318,34 @@ describe("SessionStore PostgreSQL facade", () => {
     }
   });
 
+  it("deletes DeepSeek Harness parent and descendant session directories together", async () => {
+    const store = createStore();
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "agent-recall-v2-dsh-tree-delete-"));
+    const parentFile = path.join(root, "sessions", "--work--", "parent", "session.jsonl.zstd");
+    const childFile = path.join(root, "sessions", "--work--", "child", "session.jsonl.zstd");
+    for (const filePath of [parentFile, childFile]) {
+      fs.mkdirSync(path.dirname(filePath), { recursive: true });
+      fs.writeFileSync(filePath, "fixture");
+    }
+    await store.upsertIndexedSession(indexedSession({
+      sessionKey: "deepseek:parent", rawId: "parent", source: "deepseek-cli", filePath: parentFile,
+    }), messages);
+    await store.upsertIndexedSession(indexedSession({
+      sessionKey: "deepseek:child", rawId: "child", source: "deepseek-cli", filePath: childFile,
+      isSubagent: true, parentSessionId: "parent",
+    }), messages);
+
+    try {
+      await expect(store.deleteSession("deepseek:parent")).resolves.toBe(true);
+      expect(fs.existsSync(path.dirname(parentFile))).toBe(false);
+      expect(fs.existsSync(path.dirname(childFile))).toBe(false);
+      await expect(store.getSession("deepseek:parent")).resolves.toBeNull();
+      await expect(store.getSession("deepseek:child")).resolves.toBeNull();
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("finds orphaned subagent trees after an explicit record-only prune", async () => {
     const store = createStore();
     await store.upsertIndexedSession(indexedSession({ sessionKey: "codex:parent", rawId: "parent" }), messages);

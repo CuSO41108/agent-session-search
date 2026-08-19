@@ -3,6 +3,8 @@ export type SessionSource =
   | "claude-app"
   | "codex-cli"
   | "codex-app"
+  | "stepcode-claude"
+  | "stepcode-codex"
   | "tclaude-cli"
   | "tcodex-cli"
   | "codebuddy-cli"
@@ -15,8 +17,9 @@ export type SessionSource =
   | "cursor-agent"
   | "trae"
   | "qoder"
-  | "pi-cli";
-export type SessionFormat = "claude" | "codex" | "codebuddy" | "workbuddy" | "codewiz" | "openclaw" | "hermes" | "opencode" | "zcode" | "cursor" | "trae" | "qoder" | "pi";
+  | "pi-cli"
+  | "deepseek-cli";
+export type SessionFormat = "claude" | "codex" | "codebuddy" | "workbuddy" | "codewiz" | "openclaw" | "hermes" | "opencode" | "zcode" | "cursor" | "trae" | "qoder" | "pi" | "deepseek";
 export type SessionSortBy = "smart" | "activity" | "created";
 export type EnvironmentKind = "local" | "wsl" | "ssh";
 export type EnvironmentSyncState = "idle" | "syncing" | "watching" | "disconnected" | "error";
@@ -89,7 +92,7 @@ export interface SessionMessageEvent {
   timestamp: number;
 }
 
-export type MigrationAgent = "claude" | "codex" | "codebuddy" | "codewiz" | "cursor";
+export type MigrationAgent = "claude" | "codex" | "codebuddy" | "codewiz" | "cursor" | "deepseek";
 export type MigrationTarget = MigrationAgent | "tclaude" | "tcodex";
 export type RemoteSessionAgent = MigrationAgent | "hermes" | "pi";
 export type SessionMigrationStrategy = "complete" | "ai-compressed" | "locally-truncated";
@@ -342,7 +345,7 @@ export interface LoadedSession {
   };
 }
 
-export type SessionSourceFilter = SessionSource | "claude" | "codex" | "all";
+export type SessionSourceFilter = SessionSource | "claude" | "codex" | "stepcode" | "all";
 
 export interface SearchOptions {
   query?: string;
@@ -404,6 +407,7 @@ export interface SessionSearchResult extends IndexedSession {
   favorited: boolean;
   hidden: boolean;
   sourceAvailable?: boolean;
+  availableSources?: SessionSource[];
   tags: string[];
   matchSnippet: string | null;
   lastOpenedAt: number | null;

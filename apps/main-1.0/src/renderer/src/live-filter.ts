@@ -1,5 +1,5 @@
 import type { SessionSource } from "../../core/types";
-import { sessionSourceDescriptor } from "../../core/session-sources";
+import { isSessionSource, sessionSourceDescriptor } from "../../core/session-sources";
 import { LIVE_SESSION_INACTIVITY_TIMEOUT_MS } from "../../core/refresh-policy";
 
 export type LiveSessionState = "open" | "closed";
@@ -12,6 +12,9 @@ export interface LiveFilterableSession {
 }
 
 export function liveSessionKeyForSession(session: LiveFilterableSession): string | null {
+  // Persisted sessions can outlive a source rename or a development branch.
+  // Treat an unknown runtime value as non-live instead of crashing the list.
+  if (!isSessionSource(session.source)) return null;
   const family = sessionSourceDescriptor(session.source).liveFamily;
   if (!family) return null;
   return `${family}:${session.rawId}`;

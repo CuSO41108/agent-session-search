@@ -37,6 +37,7 @@ import type {
 } from "../types";
 import type { SessionStoreDatabase } from "./database";
 import { EnvironmentStore, localEnvironment } from "./environments";
+import { deleteDeepSeekCliSessionDirectory } from "../deepseek-harness";
 import { deleteHermesSessions } from "../hermes-session-writer";
 import { deleteLocalSessionSources } from "../session-source-delete";
 import { SESSION_SOURCE_DESCRIPTORS, sessionSourceDescriptor } from "../session-sources";
@@ -59,6 +60,7 @@ const LIVE_SESSION_KEY_SQL = `
     WHEN source = 'cursor-agent' THEN 'cursor:' || raw_id
     WHEN source = 'trae' THEN 'trae:' || raw_id
     WHEN source = 'qoder' THEN 'qoder:' || raw_id
+    WHEN source = 'deepseek-cli' THEN 'deepseek:' || raw_id
     ELSE NULL
   END
 `;
@@ -732,6 +734,13 @@ export class SessionsStore {
           idsByFilePath.set(target.filePath, rawIds);
         }
         for (const [filePath, rawIds] of idsByFilePath) deleteHermesSessions(filePath, rawIds);
+      }
+      return this.deleteSessionRecords(targets.map((target) => target.sessionKey), false).includes(sessionKey);
+    }
+    if (row.source === "deepseek-cli") {
+      for (const target of targets) {
+        if (!target.sourceAvailable) continue;
+        deleteDeepSeekCliSessionDirectory(target.filePath);
       }
       return this.deleteSessionRecords(targets.map((target) => target.sessionKey), false).includes(sessionKey);
     }

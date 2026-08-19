@@ -11,6 +11,8 @@ export function registerSessionCommandIpc(
   ipc.handle("command:copy-resume", (_event, sessionKey: string) =>
     service.copyResumeCommand(sessionKey));
   ipc.handle("command:resume", (_event, sessionKey: string) => service.resume(sessionKey));
+  ipc.handle("command:resume-stepcode", (_event, sessionKey: string) =>
+    service.resumeWithStepcode(sessionKey));
   ipc.handle("command:resume-iterm", (_event, sessionKey: string) =>
     service.resumeInIterm(sessionKey));
   ipc.handle("command:open-app", (_event, sessionKey: string) => service.openApp(sessionKey));

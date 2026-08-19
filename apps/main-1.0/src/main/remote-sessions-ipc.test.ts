@@ -123,8 +123,8 @@ describe("Remote sessions IPC", () => {
       "image",
     );
     await handlers.get(REMOTE_SESSIONS_IPC.chooseProject.channel)?.(event);
-    await handlers.get(REMOTE_SESSIONS_IPC.restore.channel)?.(event, " remote-1 ", "codex", " /tmp/project ");
-    await handlers.get(REMOTE_SESSIONS_IPC.restoreToSource.channel)?.(event, "remote-1", "claude");
+    await handlers.get(REMOTE_SESSIONS_IPC.restore.channel)?.(event, " remote-1 ", "codex", " /tmp/project ", true);
+    await handlers.get(REMOTE_SESSIONS_IPC.restoreToSource.channel)?.(event, "remote-1", "claude", true);
     await handlers.get(REMOTE_SESSIONS_IPC.delete.channel)?.(event, " remote-1 ");
     await handlers.get(REMOTE_SESSIONS_IPC.deleteMany.channel)?.(event, [" remote-1 ", "remote-2"]);
 
@@ -133,7 +133,8 @@ describe("Remote sessions IPC", () => {
     expect(service.list).toHaveBeenNthCalledWith(1, "");
     expect(service.list).toHaveBeenNthCalledWith(2, " query ");
     expect(service.getDetail).toHaveBeenCalledWith("remote-1");
-    expect(service.restore).toHaveBeenCalledWith("remote-1", "codex", " /tmp/project ", expect.any(Function));
+    expect(service.restore).toHaveBeenCalledWith("remote-1", "codex", " /tmp/project ", expect.any(Function), true);
+    expect(service.restoreToSource).toHaveBeenCalledWith("remote-1", "claude", expect.any(Function), true);
     expect(service.deleteMany).toHaveBeenCalledWith(["remote-1", "remote-2"]);
     expect(send).toHaveBeenNthCalledWith(1, "session:migration-progress", {
       sessionKey: "remote-1",
@@ -155,7 +156,7 @@ describe("Remote sessions IPC", () => {
 
     await handlers.get(REMOTE_SESSIONS_IPC.restore.channel)?.(event, "remote-1", "codex", "");
 
-    expect(service.restore).toHaveBeenCalledWith("remote-1", "codex", "", expect.any(Function));
+    expect(service.restore).toHaveBeenCalledWith("remote-1", "codex", "", expect.any(Function), false);
   });
 
   it("rejects malformed or oversized input before calling the service", () => {
@@ -231,8 +232,8 @@ describe("Remote sessions IPC", () => {
       [REMOTE_SESSIONS_IPC.listSyncItems.channel],
       [REMOTE_SESSIONS_IPC.getDetail.channel, "remote-1"],
       [REMOTE_SESSIONS_IPC.chooseProject.channel],
-      [REMOTE_SESSIONS_IPC.restore.channel, "remote-1", "codex", "/tmp/project"],
-      [REMOTE_SESSIONS_IPC.restoreToSource.channel, "remote-2", "claude"],
+      [REMOTE_SESSIONS_IPC.restore.channel, "remote-1", "codex", "/tmp/project", false],
+      [REMOTE_SESSIONS_IPC.restoreToSource.channel, "remote-2", "claude", false],
       [REMOTE_SESSIONS_IPC.delete.channel, "remote-1"],
       [REMOTE_SESSIONS_IPC.deleteMany.channel, ["remote-1", "remote-2"]],
     ]);

@@ -18,6 +18,8 @@ export type TraceEventDraft = Omit<SessionTraceEvent, "index">;
 
 export interface SessionLoadOptions {
   homeDir?: string;
+  includeStepcode?: boolean;
+  stepcodeSessionAgents?: ReadonlyMap<string, "claude" | "codex">;
   includeTclaude?: boolean;
   includeTcodex?: boolean;
   includeCodeBuddyCli?: boolean;
@@ -31,12 +33,14 @@ export interface SessionLoadOptions {
   includeTrae?: boolean;
   includeQoder?: boolean;
   includePi?: boolean;
+  includeDeepSeekCli?: boolean;
   cursorStateDbPath?: string;
   cursorWorkspacePathMap?: ReadonlyMap<string, string>;
   shouldSkipFile?: (
     filePath: string,
     stat: VirtualSessionFileStat,
     dependencyMtimeMs?: number,
+    source?: SessionSource,
   ) => boolean;
   onSkippedFile?: (filePath: string, stat: VirtualSessionFileStat) => void;
   incrementalCodexSessions?: ReadonlyMap<string, { offset: number; loaded: LoadedSession }>;
@@ -74,8 +78,9 @@ export function shouldSkipFile(
   filePath: string,
   stat = safeStat(filePath),
   dependencyMtimeMs = 0,
+  source?: SessionSource,
 ): boolean {
-  if (!options.shouldSkipFile?.(filePath, stat, dependencyMtimeMs)) return false;
+  if (!options.shouldSkipFile?.(filePath, stat, dependencyMtimeMs, source)) return false;
   options.onSkippedFile?.(filePath, stat);
   return true;
 }
@@ -292,6 +297,9 @@ export function createIndexedSession(input: {
   keyPrefix:
     | "claude"
     | "codex"
+    | "stepcode"
+    | "stepcode-claude"
+    | "stepcode-codex"
     | "tclaude"
     | "tcodex"
     | "codebuddy"
@@ -304,7 +312,8 @@ export function createIndexedSession(input: {
     | "cursor"
     | "trae"
     | "qoder"
-    | "pi";
+    | "pi"
+    | "deepseek";
   rawId: string;
   source: SessionSource;
   projectPath: string;

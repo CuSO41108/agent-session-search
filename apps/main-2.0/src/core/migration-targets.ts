@@ -2,9 +2,10 @@ import type { MigrationAgent, MigrationTarget, SessionSource } from "./types";
 
 export type OptionalMigrationTargetSetting =
   | "includeTclaude"
-  | "includeTcodex";
+  | "includeTcodex"
+  | "includeDeepSeekCli";
 
-export type MigrationTargetSettings = Record<OptionalMigrationTargetSetting, boolean>;
+export type MigrationTargetSettings = Partial<Record<OptionalMigrationTargetSetting, boolean>>;
 
 export interface MigrationTargetDescriptor {
   id: MigrationTarget;
@@ -52,6 +53,13 @@ export const MIGRATION_TARGETS: readonly MigrationTargetDescriptor[] = [
     source: "tcodex-cli",
     enabledSetting: "includeTcodex",
   },
+  {
+    id: "deepseek",
+    label: "DeepSeek Harness",
+    family: "deepseek",
+    source: "deepseek-cli",
+    enabledSetting: "includeDeepSeekCli",
+  },
 ] as const satisfies readonly MigrationTargetDescriptor[];
 
 export const MIGRATION_TARGET_IDS = [
@@ -62,6 +70,7 @@ export const MIGRATION_TARGET_IDS = [
   "cursor",
   "tclaude",
   "tcodex",
+  "deepseek",
 ] as const satisfies readonly MigrationTarget[];
 
 export const BASE_MIGRATION_TARGETS = ["claude", "codex", "codebuddy", "codewiz", "cursor"] as const satisfies readonly MigrationTarget[];

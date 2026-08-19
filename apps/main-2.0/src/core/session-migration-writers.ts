@@ -19,6 +19,15 @@ import {
   parseCursorTranscriptPath,
   parseJsonlText,
 } from "./session-loader";
+import {
+  DEEPSEEK_HARNESS_LOG_NAME,
+  DEEPSEEK_HARNESS_NO_CWD_DIR,
+  encodeDeepSeekPathSegment,
+  encodeDeepSeekProjectKey,
+  parseDeepSeekSessionLog,
+  projectDeepSeekSession,
+  serializeDeepSeekSessionLog,
+} from "./deepseek-harness";
 import { loadMigrationTargetRuntimeMetadata, type MigrationTargetRuntimeMetadata } from "./migration-target-runtime";
 import { migrationTargetDescriptor } from "./migration-targets";
 import type { LoadedSession, MigrationTarget, PortableSession } from "./types";
@@ -61,6 +70,12 @@ export async function writeMigratedSession(options: WriteMigratedSessionOptions)
   if (options.target === "codewiz") {
     return writeMigratedCodeWizSession({ ...options, homeDir, now, idFactory: createId }, sessionId);
   }
+  if (options.target === "deepseek") {
+    const deepSeekHome = options.homeDir === undefined
+      ? process.env.DSH_HOME?.trim() || path.join(homeDir, ".dsh")
+      : path.join(homeDir, ".dsh");
+    return writeMigratedDeepSeekSession({ ...options, homeDir, deepSeekHome, now }, sessionId);
+  }
   const session = migrationTargetDescriptor(options.target).family === "codex"
     ? normalizeCodexSession(options.session)
     : options.session;
@@ -92,6 +107,61 @@ export async function writeMigratedSession(options: WriteMigratedSessionOptions)
     finalFileCreated = true;
     await updateCodexSessionIndex(options.target, targetHome, session, sessionId, now);
     updateCodexAppServerState(options.target, targetHome, filePath, session, sessionId, now, runtimeMetadata, codexRuntimeCwd);
+    return { sessionId, filePath };
+  } catch (error) {
+    await fs.promises.rm(tempPath, { force: true });
+    if (finalFileCreated) await fs.promises.rm(filePath, { force: true });
+    throw error;
+  }
+}
+
+async function writeMigratedDeepSeekSession(
+  options: WriteMigratedSessionOptions & { deepSeekHome: string; homeDir: string; now: Date },
+  sessionId: string,
+): Promise<WrittenMigratedSession> {
+  const projectPath = options.session.projectPath.trim();
+  const cwd = projectPath || options.homeDir;
+  const projectDir = projectPath ? encodeDeepSeekProjectKey(cwd) : DEEPSEEK_HARNESS_NO_CWD_DIR;
+  const filePath = path.join(
+    options.deepSeekHome,
+    "sessions",
+    projectDir,
+    encodeDeepSeekPathSegment(sessionId),
+    DEEPSEEK_HARNESS_LOG_NAME,
+  );
+
+  const startedAt = Date.parse(options.session.startedAt);
+  const createdAt = Number.isFinite(startedAt) && startedAt > 0 ? startedAt : options.now.getTime();
+  const payload = serializeDeepSeekSessionLog({
+    sessionId,
+    createdAt,
+    cwd,
+    title: cleanTitle(options.session.title),
+    messages: options.session.messages.map((message) => ({
+      role: message.role,
+      content: message.content,
+      time: Date.parse(message.timestamp) || createdAt,
+    })),
+  });
+
+  const tempPath = `${filePath}.tmp-${crypto.randomUUID()}`;
+  let finalFileCreated = false;
+  await fs.promises.mkdir(path.dirname(filePath), { recursive: true });
+  try {
+    await fs.promises.writeFile(tempPath, payload);
+    const parsed = parseDeepSeekSessionLog(payload);
+    if (!parsed || parsed.header.id !== sessionId) {
+      throw new Error("DeepSeek migration writer produced an unreadable session log.");
+    }
+    const view = projectDeepSeekSession(parsed);
+    const loadedMessages = view.messages.map((message) => ({ role: message.role, content: message.content }));
+    const expected = options.session.messages.map((message) => ({ role: message.role, content: message.content }));
+    if (JSON.stringify(loadedMessages) !== JSON.stringify(expected)) {
+      throw new Error("DeepSeek migration round trip did not preserve the transcript.");
+    }
+    await fs.promises.chmod(tempPath, 0o600);
+    await fs.promises.rename(tempPath, filePath);
+    finalFileCreated = true;
     return { sessionId, filePath };
   } catch (error) {
     await fs.promises.rm(tempPath, { force: true });
@@ -610,6 +680,12 @@ export function targetFilePath(
     );
   }
 
+  if (target === "deepseek") {
+    const key = encodeDeepSeekProjectKey(projectPath);
+    const dshHome = process.env.DSH_HOME?.trim() || path.join(homeDir, root);
+    return path.join(dshHome, "sessions", key, encodeDeepSeekPathSegment(sessionId), DEEPSEEK_HARNESS_LOG_NAME);
+  }
+
   return path.join(homeDir, root, "projects", encodeCodeBuddyProjectDir(projectPath), `${sessionId}.jsonl`);
 }
 
@@ -631,6 +707,7 @@ const TARGET_ROOTS: Record<MigrationTarget, string> = {
   codebuddy: ".codebuddy",
   codewiz: path.join(".local", "share", "codewiz"),
   cursor: ".cursor",
+  deepseek: ".dsh",
 };
 const NO_PROJECT_DIRECTORY = "empty-window";
 

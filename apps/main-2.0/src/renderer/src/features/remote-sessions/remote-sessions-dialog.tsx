@@ -257,7 +257,7 @@ export function RemoteSessionsDialog({
     }
   }
 
-  async function confirmRestore(withoutProjectPath: boolean): Promise<void> {
+  async function confirmRestore(withoutProjectPath: boolean, bind: boolean): Promise<void> {
     if (!restoreRequest) return;
     const { remote, destination } = restoreRequest;
     setRestoringId(remote.id);
@@ -265,7 +265,7 @@ export function RemoteSessionsDialog({
     try {
       let result: SessionMigrationResult;
       if (destination === "source") {
-        result = await window.sessionSearch.restoreRemoteSessionToSourceEnvironment(remote.id, restoreTarget);
+        result = await window.sessionSearch.restoreRemoteSessionToSourceEnvironment(remote.id, restoreTarget, bind);
       } else {
         let projectPath = withoutProjectPath ? "" : localProjectPath.trim();
         if (!withoutProjectPath && !projectPath) {
@@ -274,7 +274,7 @@ export function RemoteSessionsDialog({
           projectPath = selected;
           setLocalProjectPath(selected);
         }
-        result = await window.sessionSearch.restoreRemoteSession(remote.id, restoreTarget, projectPath);
+        result = await window.sessionSearch.restoreRemoteSession(remote.id, restoreTarget, projectPath, bind);
       }
       onRestored(result);
       setRestoreRequest(null);
@@ -512,7 +512,7 @@ export function RemoteSessionsDialog({
             restoring={restoringId === restoreRequest.remote.id}
             onTargetChange={setRestoreTarget}
             onChooseProject={() => void chooseProject()}
-            onConfirm={(withoutProjectPath) => void confirmRestore(withoutProjectPath)}
+            onConfirm={(withoutProjectPath, bind) => void confirmRestore(withoutProjectPath, bind)}
             onCancel={() => setRestoreRequest(null)}
           />
          ) : null}
@@ -669,13 +669,14 @@ function RemoteRestoreDialog({
   restoring: boolean;
   onTargetChange: (target: MigrationAgent) => void;
   onChooseProject: () => void;
-  onConfirm: (withoutProjectPath: boolean) => void;
+  onConfirm: (withoutProjectPath: boolean, bind: boolean) => void;
   onCancel: () => void;
 }): ReactElement {
   const l = (en: string, zh: string) => localize(language, en, zh);
   const [withoutProjectPath, setWithoutProjectPath] = useState(
     () => request.destination === "local" && !request.remote.projectPath.trim(),
   );
+  const [bind, setBind] = useState(false);
   return (
     <div className="dialog-backdrop" onMouseDown={onCancel}>
       <div className="command-dialog remote-restore-dialog" onMouseDown={(event) => event.stopPropagation()}>
@@ -748,10 +749,27 @@ function RemoteRestoreDialog({
               <span className="migration-project-switch" aria-hidden="true"><span /></span>
             </button>
           ) : null}
+          <button
+            type="button"
+            className="migration-project-option"
+            role="switch"
+            aria-checked={bind}
+            disabled={restoring}
+            onClick={() => setBind((selected) => !selected)}
+          >
+            <span className="migration-project-copy">
+              <strong>{l("Bind to the cloud session", "绑定到原云端会话")}</strong>
+              <small>{l(
+                "Off: restore an independent copy that creates a new cloud session on upload. On: continue updating this cloud session; a shorter local visible branch will be rejected.",
+                "关闭：恢复为独立副本，之后上传会创建新的云端会话。开启：之后继续更新此云端会话；本地可见分支较短时会拒绝覆盖。",
+              )}</small>
+            </span>
+            <span className="migration-project-switch" aria-hidden="true"><span /></span>
+          </button>
         </div>
         <div className="dialog-actions">
           <button type="button" onClick={onCancel}>{restoring ? l("Continue in background", "转到后台") : l("Cancel", "取消")}</button>
-          <button type="button" className="primary-action" onClick={() => onConfirm(withoutProjectPath)} disabled={restoring}>
+          <button type="button" className="primary-action" onClick={() => onConfirm(withoutProjectPath, bind)} disabled={restoring}>
             {restoring ? l("Restoring...", "正在恢复...") : l("Restore", "恢复")}
           </button>
         </div>

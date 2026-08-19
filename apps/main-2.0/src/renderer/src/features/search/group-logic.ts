@@ -1,5 +1,5 @@
 import { codexTaskWorkspaceDate } from "../../../../core/project-identity";
-import { sessionSourceDescriptor } from "../../../../core/session-sources";
+import { isSessionSource, sessionSourceDescriptor } from "../../../../core/session-sources";
 import type { SessionSource } from "../../../../core/types";
 
 export type GroupMode = "flat" | "project" | "source" | "time";
@@ -48,7 +48,9 @@ export function isNoProjectGroupKey(key: string): boolean {
 }
 
 function projectGroupKey(session: GroupableSession): string {
-  const sourceFamily = sessionSourceDescriptor(session.source).family;
+  const sourceFamily = isSessionSource(session.source)
+    ? sessionSourceDescriptor(session.source).family
+    : String(session.source);
   const isCodexTaskWorkspace = sourceFamily === "codex"
     && codexTaskWorkspaceDate(session.projectPath) !== null;
   return !session.projectPath || isCodexTaskWorkspace

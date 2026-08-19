@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "runtimeVersion": "0.4.11-r4",
+  "runtimeVersion": "0.4.11-r5",
   "nodeVersion": "22.23.1",
   "rustToolchain": "1.97.1",
   "fingerprintFiles": [

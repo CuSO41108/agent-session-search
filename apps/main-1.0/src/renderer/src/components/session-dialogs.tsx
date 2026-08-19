@@ -143,6 +143,11 @@ export function DeleteSessionDialog({
                 "This permanently deletes this Hermes session and its messages from the local Hermes database. Other Hermes sessions stay intact. This cannot be undone.",
                 "这会从本地 Hermes 数据库永久删除该会话及其消息，不影响其他 Hermes 会话，无法撤销。",
               )
+            : session.source === "deepseek-cli"
+            ? l(
+                "This permanently deletes this DeepSeek Harness session and its messages from the local DeepSeek Harness log. Other DeepSeek Harness sessions stay intact. This cannot be undone.",
+                "这会从本地 DeepSeek Harness 日志永久删除该会话及其消息，不影响其他 DeepSeek Harness 会话，无法撤销。",
+              )
             : l(
                 "This deletes the original Codex or Claude Code session file and removes it from this app. This cannot be undone.",
                 "这会删除 Codex 或 Claude Code 的原始会话文件，并从本应用移除，无法撤销。",
