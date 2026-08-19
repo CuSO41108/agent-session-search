@@ -102,16 +102,29 @@ function deleteCodexAppStateRows(targets: readonly SessionSourceDeleteTarget[]):
 
   for (const [codexHome, ids] of idsByCodexHome) {
     const familyIds = new Set(ids);
-    for (const databasePath of listCodexStateDatabases(codexHome)) {
-      const database = openCodexStateDatabase(databasePath);
-      if (!database) continue;
+    let databasePaths: string[] = [];
+    try {
+      databasePaths = listCodexStateDatabases(codexHome);
+    } catch {
+      // Codex state is auxiliary; an unavailable home must not block deletion.
+    }
+    for (const databasePath of databasePaths) {
+      let database: DatabaseSyncType | null = null;
       try {
+        database = openCodexStateDatabase(databasePath);
+        if (!database) continue;
         for (const id of deleteCodexThreadRows(database, [...familyIds])) familyIds.add(id);
+      } catch {
+        // Codex may hold a write lock while the app is running. State cleanup is best-effort.
       } finally {
-        database.close();
+        try { database?.close(); } catch { /* preserve the best-effort boundary */ }
       }
     }
-    deleteCodexSessionIndexRows(codexHome, [...familyIds]);
+    try {
+      deleteCodexSessionIndexRows(codexHome, [...familyIds]);
+    } catch {
+      // A stale native index must never turn a successful source deletion into a failure.
+    }
   }
 }
 

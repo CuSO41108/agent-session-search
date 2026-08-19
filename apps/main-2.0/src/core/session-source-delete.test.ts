@@ -199,4 +199,42 @@ describe("session source deletion", () => {
       fs.rmSync(root, { recursive: true, force: true });
     }
   });
+
+  it("does not fail source deletion when Codex state cleanup is unavailable", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "agent-recall-codex-app-state-best-effort-"));
+    const codexHome = path.join(root, ".codex");
+    const rolloutPath = path.join(codexHome, "sessions", "2026", "08", "19", "rollout-busy.jsonl");
+    const statePath = path.join(codexHome, "state_1.sqlite");
+    const sessionId = "750e8400-e29b-41d4-a716-446655440000";
+    fs.mkdirSync(path.dirname(rolloutPath), { recursive: true });
+    fs.writeFileSync(rolloutPath, "fixture", "utf8");
+    fs.writeFileSync(
+      path.join(codexHome, "session_index.jsonl"),
+      `${JSON.stringify({ id: sessionId, thread_name: "busy" })}\n`,
+    );
+    const db = new DatabaseSync(statePath);
+    db.exec(`
+      CREATE TABLE threads (id TEXT PRIMARY KEY, rollout_path TEXT NOT NULL);
+      CREATE TRIGGER block_thread_delete
+      BEFORE DELETE ON threads
+      BEGIN
+        SELECT RAISE(ABORT, 'state cleanup blocked');
+      END;
+    `);
+    db.prepare("INSERT INTO threads (id, rollout_path) VALUES (?, ?)").run(sessionId, rolloutPath);
+    db.close();
+
+    try {
+      expect(() => deleteLocalSessionSources([{
+        source: "codex-app",
+        rawId: sessionId,
+        filePath: rolloutPath,
+        isSubagent: false,
+      }])).not.toThrow();
+      expect(fs.existsSync(rolloutPath)).toBe(false);
+      expect(fs.readFileSync(path.join(codexHome, "session_index.jsonl"), "utf8")).toBe("");
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
 });
