@@ -19,6 +19,12 @@ const attachmentPreviewInput = z.tuple([
   z.string().min(1).max(200),
   z.enum(["image", "pdf", "text", "file"]),
 ]);
+const restoreInput = z
+  .tuple([identifier, migrationAgent, projectPath, z.boolean().optional()])
+  .transform((input): [string, z.infer<typeof migrationAgent>, string, boolean] => [input[0], input[1], input[2], input[3] ?? false]);
+const restoreToSourceInput = z
+  .tuple([identifier, migrationAgent, z.boolean().optional()])
+  .transform((input): [string, z.infer<typeof migrationAgent>, boolean] => [input[0], input[1], input[2] ?? false]);
 
 export const REMOTE_SESSIONS_IPC = {
   getStatus: defineIpcRequest("remote-session:status", noInput),
@@ -33,8 +39,8 @@ export const REMOTE_SESSIONS_IPC = {
   getDetail: defineIpcRequest("remote-session:detail", z.tuple([identifier])),
   previewAttachment: defineIpcRequest("remote-session:preview-attachment", attachmentPreviewInput),
   chooseProject: defineIpcRequest("remote-session:choose-project", noInput),
-  restore: defineIpcRequest("remote-session:restore", z.tuple([identifier, migrationAgent, projectPath])),
-  restoreToSource: defineIpcRequest("remote-session:restore-to-source-environment", z.tuple([identifier, migrationAgent])),
+  restore: defineIpcRequest("remote-session:restore", restoreInput),
+  restoreToSource: defineIpcRequest("remote-session:restore-to-source-environment", restoreToSourceInput),
   delete: defineIpcRequest("remote-session:delete", z.tuple([identifier])),
   deleteMany: defineIpcRequest("remote-session:delete-many", z.tuple([identifierList])),
 } as const;

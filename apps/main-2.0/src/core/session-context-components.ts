@@ -36,8 +36,8 @@ export interface SessionContextComponents {
   components: ContextComponent[];
 }
 
-const CODEX_SOURCES = new Set(["codex-cli", "codex-app", "tcodex-cli"]);
-const CLAUDE_SOURCES = new Set(["claude-cli", "claude-app", "tclaude-cli"]);
+const CODEX_SOURCES = new Set(["codex-cli", "codex-app", "stepcode-codex", "tcodex-cli"]);
+const CLAUDE_SOURCES = new Set(["claude-cli", "claude-app", "stepcode-claude", "tclaude-cli"]);
 
 const PREVIEW_CHAR_LIMIT = 12_000;
 /** Cap payload text so React/IPC never materialize multi‑MB strings. */

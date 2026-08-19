@@ -19,6 +19,12 @@ import {
   sanitizeCodexTraceValue,
 } from "./session-loaders/codex-rollout";
 import { truncateTraceDetail } from "./trace-detail";
+import {
+  DEEPSEEK_HARNESS_DIR,
+  DEEPSEEK_HARNESS_LOG_NAME,
+  parseDeepSeekSessionLog,
+  projectDeepSeekSession,
+} from "./deepseek-harness";
 import type {
   CodeBuddyConversationLine,
   ClaudeAppSessionFile,
@@ -69,6 +75,7 @@ export interface SessionLoadOptions {
   includeCursorAgent?: boolean;
   includeTrae?: boolean;
   includeQoder?: boolean;
+  includeDeepSeekCli?: boolean;
   cursorStateDbPath?: string;
   cursorWorkspacePathMap?: ReadonlyMap<string, string>;
   shouldSkipFile?: (filePath: string, stat: VirtualSessionFileStat, dependencyMtimeMs?: number) => boolean;
@@ -198,7 +205,7 @@ function codexTurnContextProjectPath(value: unknown): string {
   return roots.find((root): root is string => typeof root === "string" && usableCodexProjectPath(root))?.trim() || "";
 }
 
-function safeStat(filePath: string): VirtualSessionFileStat {
+export function safeStat(filePath: string): VirtualSessionFileStat {
   try {
     const stat = fs.statSync(filePath);
     return { mtimeMs: stat.mtimeMs, size: stat.size };
@@ -1357,7 +1364,7 @@ function readGitBranchAt(gitPath: string): string | null {
 }
 
 function createIndexedSession(input: {
-  keyPrefix: "claude" | "codex" | "tclaude" | "tcodex" | "codebuddy" | "workbuddy" | "codewiz" | "openclaw" | "hermes" | "opencode" | "zcode" | "cursor" | "trae" | "qoder" | "pi";
+  keyPrefix: "claude" | "codex" | "tclaude" | "tcodex" | "codebuddy" | "workbuddy" | "codewiz" | "openclaw" | "hermes" | "opencode" | "zcode" | "cursor" | "trae" | "qoder" | "pi" | "deepseek";
   rawId: string;
   source: SessionSource;
   projectPath: string;
@@ -2874,6 +2881,80 @@ function createSourceTokenUsage(inputTokens: number, outputTokens: number, cache
   );
 }
 
+export function loadDeepSeekCliSessionFile(filePath: string, stat: VirtualSessionFileStat): LoadedSession | null {
+  let buffer: Buffer;
+  try {
+    buffer = fs.readFileSync(filePath);
+  } catch {
+    return null;
+  }
+  const log = parseDeepSeekSessionLog(buffer, filePath);
+  if (!log) return null;
+  const view = projectDeepSeekSession(log);
+  if (view.messages.length === 0) return null;
+  const question = firstQuestion(view.messages);
+  const usage = createSourceTokenUsage(
+    view.usage.inputTokens,
+    view.usage.outputTokens,
+    view.usage.cacheReadTokens,
+    view.usage.reasoningTokens,
+  );
+  return {
+    session: createIndexedSession({
+      keyPrefix: "deepseek",
+      rawId: log.header.id,
+      source: "deepseek-cli",
+      projectPath: log.header.cwd || "",
+      filePath,
+      originalTitle: view.title || cleanTitle(question) || log.header.id,
+      firstQuestion: cleanTitle(question),
+      timestamp: log.header.createdAt || stat.mtimeMs,
+      tokenUsage: usage,
+      isSubagent: log.header.delegationDepth > 0,
+      parentSessionId: log.header.parentSession ?? null,
+      stat,
+    }),
+    messages: view.messages,
+    tokenEvents: view.tokenEvents,
+    traceEvents: view.traceEvents,
+  };
+}
+
+export function loadDeepSeekCliSessions(deepSeekDir?: string): LoadedSession[] {
+  return [...loadDeepSeekCliSessionsIterator(deepSeekDir)];
+}
+
+export function* loadDeepSeekCliSessionsIterator(
+  deepSeekDir = process.env.DSH_HOME?.trim() || path.join(os.homedir(), DEEPSEEK_HARNESS_DIR),
+  options: SessionLoadOptions = {},
+): Generator<LoadedSession> {
+  const sessionsDir = path.join(deepSeekDir, "sessions");
+  let projectEntries: fs.Dirent[];
+  try {
+    projectEntries = fs.readdirSync(sessionsDir, { withFileTypes: true });
+  } catch {
+    return;
+  }
+  for (const projectEntry of projectEntries) {
+    if (!projectEntry.isDirectory()) continue;
+    const projectDir = path.join(sessionsDir, projectEntry.name);
+    let sessionEntries: fs.Dirent[];
+    try {
+      sessionEntries = fs.readdirSync(projectDir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const sessionEntry of sessionEntries) {
+      if (!sessionEntry.isDirectory()) continue;
+      const filePath = path.join(projectDir, sessionEntry.name, DEEPSEEK_HARNESS_LOG_NAME);
+      const stat = safeStat(filePath);
+      if (shouldSkipFile(options, filePath, stat)) continue;
+      const loaded = loadDeepSeekCliSessionFile(filePath, stat);
+      if (loaded) yield loaded;
+    }
+  }
+}
+
 export function loadHermesSessions(hermesDir = path.join(os.homedir(), ".hermes")): LoadedSession[] {
   const dbPath = path.join(hermesDir, "state.db");
   const db = readOnlyDatabase(dbPath);
@@ -3838,6 +3919,12 @@ export function* loadDefaultSessionsIterator(options: SessionLoadOptions = {}): 
     for (const dirName of TRAE_DIR_NAMES) yield* loadTraeSessionsIterator(path.join(homeDir, dirName), options);
   }
   if (options.includeQoder) yield* loadQoderSessionsIterator(path.join(homeDir, QODER_DIR), options);
+  if (options.includeDeepSeekCli) {
+    const deepSeekDir = options.homeDir === undefined
+      ? process.env.DSH_HOME?.trim() || path.join(homeDir, DEEPSEEK_HARNESS_DIR)
+      : path.join(homeDir, DEEPSEEK_HARNESS_DIR);
+    yield* loadDeepSeekCliSessionsIterator(deepSeekDir, options);
+  }
   if (options.includeTclaude) yield* loadClaudeCliSessionsIterator(path.join(homeDir, TCLAUDE_DIR), "tclaude-cli", options);
   if (options.includeTcodex) yield* loadCodexSessionsIterator(path.join(homeDir, TCODEX_DIR), "tcodex-cli", options);
   if (options.includeCodeBuddyCli) yield* loadCodeBuddyCliSessionsIterator(path.join(homeDir, CODEBUDDY_DIR), options);
@@ -3869,6 +3956,12 @@ export async function* loadDefaultSessionsAsyncIterator(options: SessionLoadOpti
     for (const dirName of TRAE_DIR_NAMES) yield* loadTraeSessionsIterator(path.join(homeDir, dirName), options);
   }
   if (options.includeQoder) yield* loadQoderSessionsIterator(path.join(homeDir, QODER_DIR), options);
+  if (options.includeDeepSeekCli) {
+    const deepSeekDir = options.homeDir === undefined
+      ? process.env.DSH_HOME?.trim() || path.join(homeDir, DEEPSEEK_HARNESS_DIR)
+      : path.join(homeDir, DEEPSEEK_HARNESS_DIR);
+    yield* loadDeepSeekCliSessionsIterator(deepSeekDir, options);
+  }
   if (options.includeTclaude) yield* loadClaudeCliSessionsIterator(path.join(homeDir, TCLAUDE_DIR), "tclaude-cli", options);
   if (options.includeTcodex) yield* loadCodexSessionsAsyncIterator(path.join(homeDir, TCODEX_DIR), "tcodex-cli", options);
   if (options.includeCodeBuddyCli) yield* loadCodeBuddyCliSessionsIterator(path.join(homeDir, CODEBUDDY_DIR), options);
