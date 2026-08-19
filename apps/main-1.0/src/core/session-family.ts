@@ -99,7 +99,13 @@ export function findSessionFamily(
       AND sessions.environment_id = ?
       AND sessions.hidden = 0
   `).all(target.source, target.environment_id) as unknown as SessionFamilyRow[];
-  const originTurnIndexes = findOriginTurnIndexes(db, rows, target.source, target.environment_id);
+  const originTurnIndexes = findOriginTurnIndexes(
+    db,
+    rows,
+    target.source,
+    target.environment_id,
+    collectFamilyParentSessionKeys(rows, target),
+  );
 
   rows.sort(compareRows);
   const rowsByRawId = new Map<string, SessionFamilyRow>();
@@ -187,34 +193,71 @@ interface OriginBoundaryRow {
   source_turn_id: string | null;
 }
 
+function collectFamilyParentSessionKeys(
+  rows: readonly SessionFamilyRow[],
+  target: Pick<SessionFamilyRow, "session_key" | "raw_id" | "parent_session_id">,
+): string[] {
+  const rowsByRawId = new Map(rows.map((row) => [row.raw_id, row]));
+  const childrenByParentId = new Map<string, SessionFamilyRow[]>();
+  for (const row of rows) {
+    if (!row.parent_session_id) continue;
+    const children = childrenByParentId.get(row.parent_session_id) ?? [];
+    children.push(row);
+    childrenByParentId.set(row.parent_session_id, children);
+  }
+
+  const keys = new Set<string>();
+  const parent = target.parent_session_id ? rowsByRawId.get(target.parent_session_id) : undefined;
+  if (parent) keys.add(parent.session_key);
+  const stack = [target.raw_id];
+  const visited = new Set<string>();
+  while (stack.length > 0) {
+    const rawId = stack.pop();
+    if (!rawId || visited.has(rawId)) continue;
+    visited.add(rawId);
+    const row = rowsByRawId.get(rawId);
+    if (row) keys.add(row.session_key);
+    else if (rawId === target.raw_id) keys.add(target.session_key);
+    for (const child of childrenByParentId.get(rawId) ?? []) {
+      stack.push(child.raw_id);
+    }
+  }
+  return [...keys];
+}
+
 function findOriginTurnIndexes(
   db: SessionStoreDatabase,
   rows: readonly SessionFamilyRow[],
   source: SessionSource,
   environmentId: string,
+  parentSessionKeys: readonly string[],
 ): Map<string, number> {
-  if (rows.length === 0) return new Map();
+  if (rows.length === 0 || parentSessionKeys.length === 0) return new Map();
+  const keyPlaceholders = parentSessionKeys.map(() => "?").join(", ");
   const traces = db.prepare(`
     SELECT trace_events.session_key, trace_events.trace_index, trace_events.timestamp,
       trace_events.source_turn_id, trace_events.event_type, trace_events.attributes_json
     FROM trace_events
     JOIN sessions ON sessions.session_key = trace_events.session_key
     WHERE sessions.source = ? AND sessions.environment_id = ?
+      AND trace_events.session_key IN (${keyPlaceholders})
       AND trace_events.event_type IN (
         'codex.collaboration.tool',
         'codex.collaboration.activity',
         'codex.turn.started'
       )
     ORDER BY trace_events.session_key, trace_events.trace_index
-  `).all(source, environmentId) as unknown as OriginTraceRow[];
+  `).all(source, environmentId, ...parentSessionKeys) as unknown as OriginTraceRow[];
   const userBoundaries = db.prepare(`
     SELECT messages.session_key, messages.message_index AS boundary_order,
       messages.timestamp, messages.source_turn_id
     FROM messages
     JOIN sessions ON sessions.session_key = messages.session_key
-    WHERE sessions.source = ? AND sessions.environment_id = ? AND messages.role = 'user'
+    WHERE sessions.source = ? AND sessions.environment_id = ?
+      AND messages.session_key IN (${keyPlaceholders})
+      AND messages.role = 'user'
     ORDER BY messages.session_key, messages.message_index
-  `).all(source, environmentId) as unknown as OriginBoundaryRow[];
+  `).all(source, environmentId, ...parentSessionKeys) as unknown as OriginBoundaryRow[];
 
   const rowsByRawId = new Map(rows.map((row) => [row.raw_id, row]));
   const tracesBySessionKey = groupBySession(traces);
@@ -264,9 +307,17 @@ function uniqueTurnBoundaries(rows: readonly OriginBoundaryRow[]): OriginBoundar
   const sorted = [...rows].sort((left, right) =>
     Date.parse(left.timestamp) - Date.parse(right.timestamp)
     || left.boundary_order - right.boundary_order);
+  const identifiedTimestamps = sorted
+    .filter((row) => row.source_turn_id)
+    .map((row) => Date.parse(row.timestamp))
+    .filter((value) => Number.isFinite(value));
   const seenSourceTurnIds = new Set<string>();
   return sorted.filter((row) => {
-    if (!row.source_turn_id) return true;
+    if (!row.source_turn_id) {
+      const timestamp = Date.parse(row.timestamp);
+      if (!Number.isFinite(timestamp)) return true;
+      return !identifiedTimestamps.some((candidate) => Math.abs(candidate - timestamp) <= 1_000);
+    }
     if (seenSourceTurnIds.has(row.source_turn_id)) return false;
     seenSourceTurnIds.add(row.source_turn_id);
     return true;
@@ -283,6 +334,7 @@ function traceSpawnsChild(trace: OriginTraceRow, childRawId: string): boolean {
         tool?: unknown;
         agentThreadId?: unknown;
         newThreadId?: unknown;
+        receiverThreadId?: unknown;
         receiverThreadIds?: unknown;
       };
     };
@@ -298,6 +350,7 @@ function traceSpawnsChild(trace: OriginTraceRow, childRawId: string): boolean {
     const spawn = collaboration?.tool === "spawn_agent" || rawType.startsWith("collab_spawn");
     if (!spawn) return false;
     return collaboration?.newThreadId === childRawId
+      || collaboration?.receiverThreadId === childRawId
       || (Array.isArray(collaboration?.receiverThreadIds)
         && collaboration.receiverThreadIds.includes(childRawId));
   } catch {

@@ -67,7 +67,31 @@ export async function findSessionFamily(
   if (!target) return EMPTY_FAMILY;
 
   const rowsResult = await database.query<SessionFamilyRow>(`
-    with visible_parent_turns as (
+    with recursive family_descendants as (
+      select session_key, raw_id, parent_session_id
+      from agent_recall.sessions
+      where session_key = $3
+      union
+      select child.session_key, child.raw_id, child.parent_session_id
+      from agent_recall.sessions child
+      inner join family_descendants ancestor
+        on child.parent_session_id = ancestor.raw_id
+      where child.source = $1
+        and child.environment_id = $2
+        and child.hidden = false
+    ), family_parent as (
+      select parent.session_key
+      from agent_recall.sessions target
+      inner join agent_recall.sessions parent
+        on parent.raw_id = target.parent_session_id
+        and parent.source = target.source
+        and parent.environment_id = target.environment_id
+      where target.session_key = $3
+    ), family_scope as (
+      select session_key from family_descendants
+      union
+      select session_key from family_parent
+    ), visible_parent_turns as (
       select
         turns.*,
         row_number() over (
@@ -75,13 +99,16 @@ export async function findSessionFamily(
           order by turns.turn_index
         ) - 1 as visible_turn_index
       from agent_recall.session_turns turns
-      where turns.synthetic = false
-        or exists (
-          select 1
-          from agent_recall.trace_spans trigger_spans
-          where trigger_spans.turn_id = turns.id
-            and trigger_spans.attributes #>> '{eventType}' = 'codex.collaboration.message'
-            and trigger_spans.attributes #>> '{collaboration,triggerTurn}' = 'true'
+      where turns.session_key in (select session_key from family_scope)
+        and (
+          turns.synthetic = false
+          or exists (
+            select 1
+            from agent_recall.trace_spans trigger_spans
+            where trigger_spans.turn_id = turns.id
+              and trigger_spans.attributes #>> '{eventType}' = 'codex.collaboration.message'
+              and trigger_spans.attributes #>> '{collaboration,triggerTurn}' = 'true'
+          )
         )
     ), spawn_events as (
       select distinct on (child_sessions.session_key)
@@ -92,6 +119,8 @@ export async function findSessionFamily(
         spans.span_index as spawn_span_index,
         spans.started_at as spawned_at
       from agent_recall.sessions child_sessions
+      join family_descendants child_scope
+        on child_scope.session_key = child_sessions.session_key
       join agent_recall.sessions parent_sessions
         on parent_sessions.raw_id = child_sessions.parent_session_id
         and parent_sessions.source = child_sessions.source
@@ -115,6 +144,7 @@ export async function findSessionFamily(
             )
             and (
               spans.attributes #>> '{collaboration,newThreadId}' = child_sessions.raw_id
+              or spans.attributes #>> '{collaboration,receiverThreadId}' = child_sessions.raw_id
               or (spans.attributes #> '{collaboration,receiverThreadIds}')
                 @> jsonb_build_array(child_sessions.raw_id)
             )
@@ -157,7 +187,7 @@ export async function findSessionFamily(
     where sessions.source = $1
       and sessions.environment_id = $2
       and sessions.hidden = false
-  `, [target.source, target.environment_id]);
+  `, [target.source, target.environment_id, target.session_key]);
   const rows = rowsResult.rows;
 
   rows.sort(compareRows);
