@@ -236,13 +236,14 @@ export function OpenVikingMemorySettings({
         <label className="settings-field openviking-recall-budget-field">
           <div className="settings-field-text">
             <span className="settings-field-title">{l("Automatic recall budget", "自动召回预算")}</span>
-            <span className="settings-field-description">{l(
+            <span className="settings-field-sub">{l(
               "Limits injected memory by estimated model Tokens instead of characters.",
               "按照模型 Token 估算限制自动注入，不再使用字符数预算。",
             )}</span>
           </div>
           <input
             type="number"
+            className="settings-number"
             min={MIN_OPENVIKING_RECALL_TOKEN_BUDGET}
             max={MAX_OPENVIKING_RECALL_TOKEN_BUDGET}
             step={128}
