@@ -1738,6 +1738,85 @@ describe("SessionStore", () => {
     }
   });
 
+  it("deletes only the indexed Hermes tree without silently expanding unindexed delegates", () => {
+    const store = createInMemoryStore();
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "session-search-delete-hermes-tree-"));
+    const filePath = path.join(dir, "state.db");
+    const { DatabaseSync } = require("node:sqlite") as {
+      DatabaseSync: new (path: string) => import("node:sqlite").DatabaseSync;
+    };
+    const db = new DatabaseSync(filePath);
+    db.exec(`
+      PRAGMA foreign_keys = ON;
+      CREATE TABLE sessions (
+        id TEXT PRIMARY KEY,
+        parent_session_id TEXT REFERENCES sessions(id),
+        model_config TEXT,
+        started_at REAL NOT NULL
+      );
+      CREATE TABLE messages (id INTEGER PRIMARY KEY, session_id TEXT, timestamp REAL NOT NULL);
+    `);
+    const insert = db.prepare(
+      "INSERT INTO sessions (id, parent_session_id, model_config, started_at) VALUES (?, ?, ?, ?)",
+    );
+    insert.run("parent", null, "{}", 1);
+    insert.run("delegate", "parent", JSON.stringify({ _delegate_from: "parent" }), 2);
+    insert.run("unindexed", "parent", JSON.stringify({ _delegate_from: "parent" }), 3);
+    db.close();
+
+    store.upsertIndexedSession(
+      sampleSession({ sessionKey: "hermes:parent", source: "hermes", rawId: "parent", filePath }),
+      messages,
+    );
+    store.upsertIndexedSession(
+      sampleSession({
+        sessionKey: "hermes:delegate",
+        source: "hermes",
+        rawId: "delegate",
+        filePath,
+        isSubagent: true,
+        parentSessionId: "parent",
+      }),
+      messages,
+    );
+
+    expect(store.getSessionDeletionTargets(["hermes:parent"]).map((target) => target.sessionKey)).toEqual([
+      "hermes:parent",
+      "hermes:delegate",
+    ]);
+    expect(store.deleteSession("hermes:parent")).toBe(true);
+    expect(store.getSession("hermes:parent")).toBeNull();
+    expect(store.getSession("hermes:delegate")).toBeNull();
+
+    const verify = new DatabaseSync(filePath);
+    try {
+      expect(verify.prepare("SELECT id, parent_session_id FROM sessions").all()).toEqual([
+        { id: "unindexed", parent_session_id: null },
+      ]);
+    } finally {
+      verify.close();
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it.each(["opencode-cli", "codewiz-cli"] as const)(
+    "deletes an unavailable %s cache without touching its shared database",
+    (source) => {
+      const store = createInMemoryStore();
+      const sessionKey = `${source}:cached`;
+      store.upsertIndexedSession(sampleSession({
+        sessionKey,
+        rawId: "cached",
+        source,
+        filePath: `/synthetic/${source}.db`,
+      }), messages);
+      store.setSessionSourceAvailable(sessionKey, false);
+
+      expect(store.deleteSession(sessionKey)).toBe(true);
+      expect(store.getSession(sessionKey)).toBeNull();
+    },
+  );
+
   it("rejects Pi source deletion while record-only source pruning keeps the file", () => {
     const store = createInMemoryStore();
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "session-search-delete-pi-"));

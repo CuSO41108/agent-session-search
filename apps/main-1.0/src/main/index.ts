@@ -106,7 +106,13 @@ import type {
   SessionIndexWorkerInput,
   SessionIndexWorkerResult,
 } from "./session-index-worker-protocol";
-import { liveSessionDeleteKey, type SessionBulkDeleteRequest } from "../core/session-bulk-delete";
+import {
+  SESSION_DELETE_CONFIRMATION_REQUIRED_MESSAGE,
+  SESSION_DELETE_LIVE_CHECK_CONFIRMATION_REQUIRED_MESSAGE,
+  liveSessionDeleteKey,
+  normalizeSessionDeleteOptions,
+  type SessionBulkDeleteRequest,
+} from "../core/session-bulk-delete";
 import {
   AUTO_INDEX_REFRESH_INTERVAL_MS,
   INITIAL_INDEX_DELAY_MS,
@@ -1858,6 +1864,7 @@ function stopAutoIndexRefresh(): void {
 }
 
 function registerIpc(): void {
+  let openSessionKey: string | undefined;
   const loadConfiguredLiveSessions = (fresh = false) => loadCachedLiveSessionSnapshot({
     fresh,
     includeTrae: getSettings().includeTrae,
@@ -1872,15 +1879,18 @@ function registerIpc(): void {
   });
   const withFreshLiveSessions = async (request: SessionBulkDeleteRequest): Promise<SessionBulkDeleteRequest> => {
     const liveSessionKeys = new Set(request.liveSessionKeys);
+    let liveSessionCheckFailed = request.liveSessionCheckFailed === true;
     try {
       const snapshot = await loadConfiguredLiveSessions(true);
+      if (snapshot.error) liveSessionCheckFailed = true;
       for (const session of snapshot.sessions) liveSessionKeys.add(liveSessionDeleteKey(session));
     } catch {
-      // Keep the exact live-session keys from the confirmed preview when a refresh fails.
+      liveSessionCheckFailed = true;
     }
     return {
       ...request,
       liveSessionKeys: [...liveSessionKeys],
+      liveSessionCheckFailed,
     };
   };
   ipcMain.handle("markdown:open-external", (_event, value: unknown) => {
@@ -2183,35 +2193,89 @@ function registerIpc(): void {
     retrySqliteWrite(() => store.setFavorited(sessionKey, favorited)));
   ipcMain.handle("hide:set", (_event, sessionKey: string, hidden: boolean) =>
     retrySqliteWrite(() => store.setHidden(sessionKey, hidden)));
+  ipcMain.handle("session:set-open", (_event, sessionKey?: string) => {
+    openSessionKey = sessionKey?.trim() || undefined;
+  });
   const sessionBulkDeleteService = new SessionBulkDeleteService(store);
   ipcMain.handle("session:bulk-delete-preview", (_event, request: SessionBulkDeleteRequest) =>
-    sessionBulkDeleteService.preview(request));
+    sessionBulkDeleteService.preview({ ...request, openSessionKey }));
   ipcMain.handle("session:bulk-delete", async (_event, request: SessionBulkDeleteRequest) =>
-    sessionBulkDeleteService.delete(await withFreshLiveSessions(request)));
-  ipcMain.handle("session:delete", async (_event, sessionKey: string) => {
+    sessionBulkDeleteService.delete(await withFreshLiveSessions({ ...request, openSessionKey })));
+  ipcMain.handle("session:delete", async (_event, sessionKey: string, options: unknown) => {
+    const {
+      confirmed,
+      allowLiveSessions,
+      allowUnverifiedLiveSessions,
+      confirmationFingerprint,
+    } = normalizeSessionDeleteOptions(options);
     const session = store.getSession(sessionKey);
+    if (confirmed && !confirmationFingerprint) {
+      throw new Error(SESSION_DELETE_CONFIRMATION_REQUIRED_MESSAGE);
+    }
     if (session?.source === "pi-cli" || session?.source === "workbuddy-cli") {
       throw new Error(`${sessionSourceDescriptor(session.source).label} session source files are read-only.`);
     }
     if (session && !canDeleteSessionLocally(session)) {
       throw new Error("Cannot delete sessions stored on SSH remote environments.");
     }
-    if (!session || session.environmentKind === "ssh") return store.deleteSession(sessionKey);
-    if (session.environmentKind === "wsl" && isSharedSessionSourceDatabase(session)) {
-      if (session.sourceAvailable === false) return store.deleteSessionRecords([sessionKey]).includes(sessionKey);
+    if (!session) return store.deleteSession(sessionKey);
+    const isWslSharedDatabase = session.environmentKind === "wsl" && isSharedSessionSourceDatabase(session);
+    if (isWslSharedDatabase && session.sourceAvailable !== false) {
       throw new Error("Cannot delete shared source databases on WSL by removing the database file.");
     }
-    const request = await withFreshLiveSessions({ sessionKeys: [sessionKey], liveSessionKeys: [] });
-    if (isSharedSessionSourceDatabase(session)) {
-      const preview = sessionBulkDeleteService.preview(request);
-      if (preview.skipped.some((issue) => issue.reason === "live")) {
-        throw new Error("A related session is currently live. Stop it before deleting this session tree.");
+    const request = await withFreshLiveSessions({
+      sessionKeys: [sessionKey],
+      liveSessionKeys: [],
+      openSessionKey,
+    });
+    const preview = sessionBulkDeleteService.preview(request);
+    if (confirmed && confirmationFingerprint !== preview.confirmationFingerprint) {
+      throw new Error(SESSION_DELETE_CONFIRMATION_REQUIRED_MESSAGE);
+    }
+    if (preview.liveSessionCheckFailed && !allowUnverifiedLiveSessions) {
+      throw new Error(SESSION_DELETE_LIVE_CHECK_CONFIRMATION_REQUIRED_MESSAGE);
+    }
+    if (
+      (!confirmed && preview.expandedCount > 1)
+      || (!confirmed && preview.includesOpenSession)
+      || (!allowLiveSessions && preview.skipped.some((issue) => issue.reason === "live"))
+    ) {
+      throw new Error(SESSION_DELETE_CONFIRMATION_REQUIRED_MESSAGE);
+    }
+    if (session.environmentKind === "ssh") {
+      const targets = store.getSessionDeletionTargets([sessionKey]);
+      const rootTarget = targets.find((target) => target.sessionKey === sessionKey);
+      if (!rootTarget) return false;
+      if (targets.some((target) => target.sourceAvailable)) {
+        throw new Error("Cannot delete sessions stored on SSH remote environments.");
       }
+      return store.deleteSessionRecords(
+        targets.map((target) => target.sessionKey),
+        false,
+      ).includes(sessionKey);
+    }
+    if (isWslSharedDatabase) {
+      const targets = store.getSessionDeletionTargets([sessionKey]);
+      if (targets.some((target) => target.sourceAvailable && isSharedSessionSourceDatabase(target))) {
+        throw new Error("Cannot delete shared source databases on WSL by removing the database file.");
+      }
+      return store.deleteSessionRecords(
+        targets.map((target) => target.sessionKey),
+        false,
+      ).includes(sessionKey);
+    }
+    if (isSharedSessionSourceDatabase(session)) {
       return store.deleteSession(sessionKey);
     }
-    const result = await sessionBulkDeleteService.delete(request);
+    const result = await sessionBulkDeleteService.delete(request, {
+      confirmed,
+      allowLiveSessions,
+      allowUnverifiedLiveSessions,
+      confirmationFingerprint,
+      requireSingleSession: true,
+    });
     if (result.skipped.some((issue) => issue.reason === "live")) {
-      throw new Error("A related session is currently live. Stop it before deleting this session tree.");
+      throw new Error(SESSION_DELETE_CONFIRMATION_REQUIRED_MESSAGE);
     }
     if (result.failed[0]) throw new Error(result.failed[0].message);
     return result.deletedSessionKeys.includes(sessionKey);

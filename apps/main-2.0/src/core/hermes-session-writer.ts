@@ -87,17 +87,34 @@ function deleteSessionRows(db: DatabaseSyncType, sessionIds: readonly string[]):
   }
 }
 
-/** Permanently removes one Hermes session while keeping the shared state.db and other sessions intact. */
+/** Permanently removes exactly the requested Hermes sessions without expanding delegate relationships. */
+export function deleteHermesSessions(dbPath: string, sessionIds: readonly string[]): string[] {
+  return deleteHermesSessionIds(dbPath, sessionIds, false);
+}
+
+/** Permanently removes one Hermes session and its delegate descendants. */
 export function deleteHermesSession(dbPath: string, sessionId: string): boolean {
-  const normalizedPath = assertHermesDatabasePath(dbPath);
   const normalizedId = sessionId.trim();
-  if (!SESSION_ID_PATTERN.test(normalizedId)) throw new Error("Hermes session id is invalid.");
+  return deleteHermesSessionIds(dbPath, [normalizedId], true).includes(normalizedId);
+}
+
+function deleteHermesSessionIds(
+  dbPath: string,
+  sessionIds: readonly string[],
+  includeDelegateChildren: boolean,
+): string[] {
+  const normalizedPath = assertHermesDatabasePath(dbPath);
+  const normalizedIds = [...new Set(sessionIds.map((sessionId) => sessionId.trim()))];
+  if (normalizedIds.some((sessionId) => !SESSION_ID_PATTERN.test(sessionId))) {
+    throw new Error("Hermes session id is invalid.");
+  }
+  if (normalizedIds.length === 0) return [];
 
   let stat: fs.Stats;
   try {
     stat = fs.statSync(normalizedPath);
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
     throw error;
   }
   if (!stat.isFile()) throw new Error("Hermes database path is not a regular file.");
@@ -112,16 +129,18 @@ export function deleteHermesSession(dbPath: string, sessionId: string): boolean 
 
     db.exec("BEGIN IMMEDIATE");
     try {
-      const exists = Boolean(db.prepare("SELECT 1 FROM sessions WHERE id = ? LIMIT 1").get(normalizedId));
-      if (!exists) {
+      const existingIds = normalizedIds.filter((sessionId) =>
+        Boolean(db.prepare("SELECT 1 FROM sessions WHERE id = ? LIMIT 1").get(sessionId)));
+      if (existingIds.length === 0) {
         db.exec("COMMIT");
-        return false;
+        return [];
       }
 
-      const delegateIds = collectDelegateChildIds(db, [normalizedId]);
-      deleteSessionRows(db, [...delegateIds, normalizedId]);
+      const delegateIds = includeDelegateChildren ? collectDelegateChildIds(db, existingIds) : [];
+      const deletionIds = [...new Set([...delegateIds, ...existingIds])];
+      deleteSessionRows(db, deletionIds);
       db.exec("COMMIT");
-      return true;
+      return deletionIds;
     } catch (error) {
       db.exec("ROLLBACK");
       throw error;

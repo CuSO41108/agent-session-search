@@ -2,7 +2,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { describe, expect, it } from "vitest";
-import { deleteHermesSession } from "./hermes-session-writer";
+import { deleteHermesSession, deleteHermesSessions } from "./hermes-session-writer";
 
 const { DatabaseSync } = require("node:sqlite") as {
   DatabaseSync: new (path: string) => import("node:sqlite").DatabaseSync;
@@ -144,5 +144,27 @@ describe("Hermes session writer", () => {
     expect(deleteHermesSession(path.join(root, "missing", "state.db"), "sess-delete")).toBe(false);
     expect(() => deleteHermesSession(path.join(root, "hermes.db"), "sess-delete")).toThrow(/non-Hermes database path/);
     fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  it("deletes only explicit ids without silently expanding delegate descendants", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "agent-recall-hermes-delete-exact-"));
+    const dbPath = databasePath(root);
+    createFixture(dbPath);
+
+    expect(deleteHermesSessions(dbPath, ["sess-delete"])).toEqual(["sess-delete"]);
+    const db = new DatabaseSync(dbPath);
+    try {
+      expect(db.prepare("SELECT id FROM sessions ORDER BY id").all()).toEqual([
+        { id: "sess-branch" },
+        { id: "sess-delegate" },
+        { id: "sess-keep" },
+      ]);
+      expect(db.prepare("SELECT parent_session_id FROM sessions WHERE id = ?").get("sess-delegate")).toEqual({
+        parent_session_id: null,
+      });
+    } finally {
+      db.close();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   });
 });
