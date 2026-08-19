@@ -109,6 +109,33 @@ describe("SessionsStore tree deletion", () => {
     }
   });
 
+  it("deletes DeepSeek Harness parent and descendant session directories together", () => {
+    const { database, store } = createStore();
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "agent-recall-v1-dsh-tree-delete-"));
+    const parentFile = path.join(root, "sessions", "--work--", "parent", "session.jsonl.zstd");
+    const childFile = path.join(root, "sessions", "--work--", "child", "session.jsonl.zstd");
+    for (const filePath of [parentFile, childFile]) {
+      fs.mkdirSync(path.dirname(filePath), { recursive: true });
+      fs.writeFileSync(filePath, "fixture");
+    }
+    insertSession(database, {
+      sessionKey: "deepseek:parent", rawId: "parent", source: "deepseek-cli", filePath: parentFile,
+    });
+    insertSession(database, {
+      sessionKey: "deepseek:child", rawId: "child", source: "deepseek-cli", filePath: childFile,
+      parentSessionId: "parent",
+    });
+
+    try {
+      expect(store.deleteSession("deepseek:parent")).toBe(true);
+      expect(fs.existsSync(path.dirname(parentFile))).toBe(false);
+      expect(fs.existsSync(path.dirname(childFile))).toBe(false);
+      expect(database.prepare("SELECT session_key FROM sessions").all()).toEqual([]);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("deletes a ZCode parent and descendants in one shared database operation", () => {
     const { database, store } = createStore();
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "agent-recall-v1-zcode-tree-delete-"));

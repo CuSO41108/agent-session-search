@@ -3,10 +3,18 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 
 const require = createRequire(import.meta.url);
-const { applyClaudeConfig, applyCodexConfig, removeCodexBlock } = require(path.resolve("bin", "setup-mcp.cjs")) as {
+const {
+  applyClaudeConfig,
+  applyCodexConfig,
+  applyDshConfig,
+  removeCodexBlock,
+  removeDshBlock,
+} = require(path.resolve("bin", "setup-mcp.cjs")) as {
   applyClaudeConfig: (config: unknown, scriptPath: string, remove: boolean) => Record<string, unknown>;
   applyCodexConfig: (toml: string, scriptPath: string, remove: boolean, command?: string) => string;
+  applyDshConfig: (yaml: string, scriptPath: string, remove: boolean, command?: string) => string;
   removeCodexBlock: (toml: string) => string;
+  removeDshBlock: (yaml: string) => string;
 };
 
 describe("setup-mcp Claude config", () => {
@@ -50,5 +58,43 @@ describe("setup-mcp Codex config", () => {
     const toml = applyCodexConfig("", "C:\\Users\\me\\bin\\server.mjs", false, "C:\\Program Files\\nodejs\\node.exe");
     expect(toml).toContain('args = ["C:\\\\Users\\\\me\\\\bin\\\\server.mjs"]');
     expect(toml).toContain('command = "C:\\\\Program Files\\\\nodejs\\\\node.exe"');
+  });
+});
+
+describe("setup-mcp DeepSeek Harness config", () => {
+  it("appends the mcp-client insert and is idempotent", () => {
+    const once = applyDshConfig("- id: llm-pi-ai\n  config: {}\n", "/abs/server.mjs", false, "/usr/bin/node");
+    expect(once).toContain("- insert:");
+    expect(once).toContain("- id: mcp-agent-recall");
+    expect(once).toContain("name: '@deepseek-ai/dsh-mcp-client'");
+    expect(once).toContain("serverName: agent-recall");
+    expect(once).toContain('command: "/usr/bin/node"');
+    expect(once).toContain('args: ["/abs/server.mjs"]');
+    const twice = applyDshConfig(once, "/abs/server.mjs", false, "/usr/bin/node");
+    expect(twice.match(/id: mcp-agent-recall/g)).toHaveLength(1);
+    expect(twice).toContain("llm-pi-ai");
+  });
+
+  it("removes only our insert, preserving user rows", () => {
+    const withBlock = applyDshConfig("- id: user-row\n  config: {}\n", "/abs/server.mjs", false);
+    const removed = removeDshBlock(withBlock);
+    expect(removed).not.toContain("mcp-agent-recall");
+    expect(removed).toContain("user-row");
+    expect(applyDshConfig(removed, "/abs/server.mjs", true)).toBe(`${removed}\n`);
+  });
+
+  it("keeps an empty patch valid after uninstall and allows reinstall", () => {
+    const installed = applyDshConfig("", "/abs/server.mjs", false);
+    const removed = applyDshConfig(installed, "/abs/server.mjs", true);
+    expect(removed).toContain("[]");
+    const reinstalled = applyDshConfig(removed, "/abs/server.mjs", false);
+    expect(reinstalled.match(/id: mcp-agent-recall/g)).toHaveLength(1);
+    expect(reinstalled).not.toMatch(/^\[\]\s*\n-/m);
+  });
+
+  it("escapes command and script into valid YAML scalars", () => {
+    const yaml = applyDshConfig("", "/path/with space/server.mjs", false, "/opt/node 22/bin/node");
+    expect(yaml).toContain('command: "/opt/node 22/bin/node"');
+    expect(yaml).toContain('args: ["/path/with space/server.mjs"]');
   });
 });

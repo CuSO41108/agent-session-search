@@ -9,6 +9,12 @@ import {
   extractCursorUserQuery,
   isMeaningfulUserMessage,
 } from "../format-adapters";
+import {
+  DEEPSEEK_HARNESS_DIR,
+  DEEPSEEK_HARNESS_LOG_NAME,
+  parseDeepSeekSessionLog,
+  projectDeepSeekSession,
+} from "../deepseek-harness";
 import type {
   LoadedSession,
   SessionFormat,
@@ -607,6 +613,80 @@ function createSourceTokenUsage(inputTokens: number, outputTokens: number, cache
     Math.max(0, cachedInputTokens),
     Math.max(0, reasoningOutputTokens),
   );
+}
+
+export function loadDeepSeekCliSessionFile(filePath: string, stat: VirtualSessionFileStat): LoadedSession | null {
+  let buffer: Buffer;
+  try {
+    buffer = fs.readFileSync(filePath);
+  } catch {
+    return null;
+  }
+  const log = parseDeepSeekSessionLog(buffer, filePath);
+  if (!log) return null;
+  const view = projectDeepSeekSession(log);
+  if (view.messages.length === 0) return null;
+  const question = firstQuestion(view.messages);
+  const usage = createSourceTokenUsage(
+    view.usage.inputTokens,
+    view.usage.outputTokens,
+    view.usage.cacheReadTokens,
+    view.usage.reasoningTokens,
+  );
+  return {
+    session: createIndexedSession({
+      keyPrefix: "deepseek",
+      rawId: log.header.id,
+      source: "deepseek-cli",
+      projectPath: log.header.cwd || "",
+      filePath,
+      originalTitle: view.title || cleanTitle(question) || log.header.id,
+      firstQuestion: cleanTitle(question),
+      timestamp: log.header.createdAt || stat.mtimeMs,
+      tokenUsage: usage,
+      isSubagent: log.header.delegationDepth > 0,
+      parentSessionId: log.header.parentSession ?? null,
+      stat,
+    }),
+    messages: view.messages,
+    tokenEvents: view.tokenEvents,
+    traceEvents: view.traceEvents,
+  };
+}
+
+export function loadDeepSeekCliSessions(deepSeekDir?: string): LoadedSession[] {
+  return [...loadDeepSeekCliSessionsIterator(deepSeekDir)];
+}
+
+export function* loadDeepSeekCliSessionsIterator(
+  deepSeekDir = process.env.DSH_HOME?.trim() || path.join(os.homedir(), DEEPSEEK_HARNESS_DIR),
+  options: SessionLoadOptions = {},
+): Generator<LoadedSession> {
+  const sessionsDir = path.join(deepSeekDir, "sessions");
+  let projectEntries: fs.Dirent[];
+  try {
+    projectEntries = fs.readdirSync(sessionsDir, { withFileTypes: true });
+  } catch {
+    return;
+  }
+  for (const projectEntry of projectEntries) {
+    if (!projectEntry.isDirectory()) continue;
+    const projectDir = path.join(sessionsDir, projectEntry.name);
+    let sessionEntries: fs.Dirent[];
+    try {
+      sessionEntries = fs.readdirSync(projectDir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const sessionEntry of sessionEntries) {
+      if (!sessionEntry.isDirectory()) continue;
+      const filePath = path.join(projectDir, sessionEntry.name, DEEPSEEK_HARNESS_LOG_NAME);
+      const stat = safeStat(filePath);
+      if (shouldSkipFile(options, filePath, stat)) continue;
+      const loaded = loadDeepSeekCliSessionFile(filePath, stat);
+      if (loaded) yield loaded;
+    }
+  }
 }
 
 export function loadHermesSessions(hermesDir = path.join(os.homedir(), ".hermes")): LoadedSession[] {

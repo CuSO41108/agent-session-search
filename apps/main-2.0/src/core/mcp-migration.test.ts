@@ -16,6 +16,7 @@ import {
   loadCursorTranscriptFile,
   parseJsonlText,
 } from "./session-loader";
+import { parseDeepSeekSessionLog, projectDeepSeekSession } from "./deepseek-harness";
 import { migrationTargetDescriptor } from "./migration-targets";
 import { defaultSettings } from "./platform";
 import type { IndexedSession, MigrationTarget, SessionMessage, SessionSource } from "./types";
@@ -65,6 +66,10 @@ async function seedLocalSession(
 
 function loadMigratedSessionFileForTest(target: MigrationTarget, filePath: string) {
   if (target === "cursor") return loadCursorTranscriptFile(filePath);
+  if (target === "deepseek") {
+    const log = parseDeepSeekSessionLog(fs.readFileSync(filePath));
+    return log ? projectDeepSeekSession(log) : null;
+  }
 
   const descriptor = migrationTargetDescriptor(target);
   if (descriptor.family === "codebuddy") return loadCodeBuddyCliSessionFile(filePath);
@@ -83,6 +88,7 @@ const allMigrationTargetsEnabled = {
   ...defaultSettings,
   includeTclaude: true,
   includeTcodex: true,
+  includeDeepSeekCli: true,
 };
 
 const targetSources: Record<MigrationTarget, SessionSource> = {
@@ -93,6 +99,7 @@ const targetSources: Record<MigrationTarget, SessionSource> = {
   cursor: "cursor-agent",
   tclaude: "tclaude-cli",
   tcodex: "tcodex-cli",
+  deepseek: "deepseek-cli",
 };
 
 describe("migrateSessionForMcp — happy path", () => {
@@ -115,6 +122,11 @@ describe("migrateSessionForMcp — happy path", () => {
         expect(result.strategy).toBe("complete");
         expect(result.resumeCommand).toContain(result.targetSessionId);
         expect(result.resumeCommand).toContain(projectPath);
+        if (target === "deepseek") {
+          expect(result.resumeCommand).toContain("dsh");
+          expect(result.resumeCommand).toContain("--profile");
+          expect(result.resumeCommand).toContain("tui");
+        }
         expect(result.indexed).toBe(true);
         expect(fs.existsSync(result.targetFilePath)).toBe(true);
 
@@ -123,7 +135,9 @@ describe("migrateSessionForMcp — happy path", () => {
         expect(loaded?.messages.length).toBeGreaterThan(0);
 
         // The migrated session is immediately searchable in the DB.
-        const indexedSessionKey = loaded?.session.sessionKey ?? `${target}:${result.targetSessionId}`;
+        const indexedSessionKey = (loaded && "session" in loaded && loaded.session)
+          ? (loaded as { session: { sessionKey: string } }).session.sessionKey
+          : `${target}:${result.targetSessionId}`;
         const found = await store.getSession(indexedSessionKey);
         expect(found).not.toBeNull();
         expect(found?.source).toBe(targetSources[target]);

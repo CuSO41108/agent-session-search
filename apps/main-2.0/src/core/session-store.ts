@@ -1,3 +1,4 @@
+import { deleteDeepSeekCliSessionDirectory } from "./deepseek-harness";
 import { deleteHermesSession } from "./hermes-session-writer";
 import {
   canDeleteSessionLocally,
@@ -275,6 +276,12 @@ export class SessionStore {
     if (target.source === "hermes") {
       if (target.sourceAvailable) deleteHermesSession(target.filePath, target.rawId);
       return this.deleteSessionTargetRecords(targets, requestedSessionKey);
+    }
+    if (target.source === "deepseek-cli") {
+      for (const item of targets) {
+        if (item.sourceAvailable) deleteDeepSeekCliSessionDirectory(item.filePath);
+      }
+      return this.deleteSessionTargetRecords(targets, sessionKey);
     }
     if (target.source === "opencode-cli") throw new Error("Cannot delete shared OpenCode source database.");
     if (target.source === "codewiz-cli") throw new Error("Cannot delete shared CodeWiz source database.");
@@ -846,8 +853,8 @@ export class SessionStore {
 }
 
 function openVikingAgentForSessionSource(source: SessionSource): string | null {
-  if (source === "codex-cli" || source === "codex-app") return "codex";
-  if (source === "claude-cli" || source === "claude-app") return "claude";
+  if (source === "codex-cli" || source === "codex-app" || source === "stepcode-codex") return "codex";
+  if (source === "claude-cli" || source === "claude-app" || source === "stepcode-claude") return "claude";
   if (source === "opencode-cli") return "opencode";
   return null;
 }

@@ -40,6 +40,7 @@ import type { UsageDelta } from "../session-ui";
 export type SidebarTreeGroup = {
   environment: SessionEnvironment | null;
   projects: Array<ProjectSummary & { tags: string[] }>;
+  emptyProjects: Array<ProjectSummary & { tags: string[] }>;
 };
 
 export type ViewMode = "default" | "favorites" | "hidden";
@@ -132,6 +133,7 @@ export function Sidebar(props: SidebarProps): ReactElement {
     onSelectVisibility,
   } = props;
   const t = (en: string, zh: string) => localize(language, en, zh);
+  const [expandedEmptyGroups, setExpandedEmptyGroups] = useState<ReadonlySet<string>>(() => new Set());
 
   return (
     <section className="sidebar">
@@ -221,7 +223,8 @@ export function Sidebar(props: SidebarProps): ReactElement {
             <span>{t("All Sessions", "全部会话")}</span>
           </button>
           {sidebarTree.map((group) => {
-            const groupId = group.projects[0]?.environmentId ?? "unknown";
+            const groupId = group.projects[0]?.environmentId ?? group.emptyProjects[0]?.environmentId ?? "unknown";
+            const groupSessionCount = group.projects.reduce((total, project) => total + project.sessionCount, 0);
             const envCollapsed = collapsedProjectGroups.has(groupId);
             const envActive = environmentId === groupId && !projectPath && !tag;
             return (
@@ -242,7 +245,7 @@ export function Sidebar(props: SidebarProps): ReactElement {
                   >
                     {group.environment?.kind === "local" ? <Laptop size={13} /> : group.environment?.kind === "wsl" ? <Container size={13} /> : <Server size={13} />}
                     <span>{group.environment?.label ?? t("Unknown", "未知")}</span>
-                    <em className="tree-count">{group.projects.length}</em>
+                    <em className="tree-count">{groupSessionCount}</em>
                   </button>
                 </div>
                 {!envCollapsed && group.projects.map((project) => {
@@ -252,7 +255,7 @@ export function Sidebar(props: SidebarProps): ReactElement {
                   const projActive = projectPath === project.path && projectEnvironmentId === project.environmentId && !tag;
                   return (
                     <div key={projectKey} className="tree-group">
-                      <div className="tree-row tree-proj-row">
+                      <div className={`tree-row tree-proj-row ${project.sessionCount === 0 ? "tree-empty-project" : ""}`}>
                         {project.tags.length > 0 ? (
                           <button
                             className="tree-chevron"
@@ -272,9 +275,14 @@ export function Sidebar(props: SidebarProps): ReactElement {
                         >
                           <Folder size={13} />
                           <span>{projectDisplayLabel(project, language)}</span>
-                          <em>{formatRelativeTime(projectSortTimestamp(project), language)}</em>
+                          <em>{project.sessionCount > 0
+                            ? `${project.sessionCount} · ${formatRelativeTime(projectSortTimestamp(project), language)}`
+                            : t("No sessions", "暂无会话")}</em>
                         </button>
                       </div>
+                      {!projCollapsed && project.tags.length > 0 ? (
+                        <div className="tree-subsection-label">{t("Filters", "筛选")}</div>
+                      ) : null}
                       {!projCollapsed && project.tags.map((tagName) => (
                         <div
                           key={tagName}
@@ -304,6 +312,37 @@ export function Sidebar(props: SidebarProps): ReactElement {
                     </div>
                   );
                 })}
+                {!envCollapsed && group.emptyProjects.length > 0 ? (
+                  <div className="tree-empty-workspaces">
+                    <button
+                      type="button"
+                      className="tree-empty-toggle"
+                      aria-expanded={expandedEmptyGroups.has(groupId)}
+                      onClick={() => setExpandedEmptyGroups((current) => {
+                        const next = new Set(current);
+                        if (next.has(groupId)) next.delete(groupId); else next.add(groupId);
+                        return next;
+                      })}
+                    >
+                      {expandedEmptyGroups.has(groupId) ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+                      <span>{t("Empty workspaces", "空工作区")}</span>
+                      <em>{group.emptyProjects.length}</em>
+                    </button>
+                    {expandedEmptyGroups.has(groupId) ? group.emptyProjects.map((project) => (
+                      <button
+                        key={`${project.environmentId}:${project.path}`}
+                        type="button"
+                        className={`tree-empty-workspace-row ${projectPath === project.path && projectEnvironmentId === project.environmentId ? "active" : ""}`}
+                        onClick={() => onSelectProject(project)}
+                        title={project.path}
+                      >
+                        <Folder size={13} />
+                        <span>{projectDisplayLabel(project, language)}</span>
+                        <em>{t("No sessions", "暂无会话")}</em>
+                      </button>
+                    )) : null}
+                  </div>
+                ) : null}
               </div>
             );
           })}

@@ -81,11 +81,14 @@ export interface AppSettings {
   globalShortcut: GlobalShortcut;
   claudeBinary: string;
   codexBinary: string;
+  stepcodeBinary: string;
   codeBuddyBinary: string;
   codeWizBinary: string;
   cursorBinary: string;
   tclaudeBinary: string;
   tcodexBinary: string;
+  includeStepcode: boolean;
+  deepseekBinary: string;
   includeTclaude: boolean;
   includeTcodex: boolean;
   includeCodeBuddyCli: boolean;
@@ -99,6 +102,7 @@ export interface AppSettings {
   includeTrae: boolean;
   includeQoder: boolean;
   includePi: boolean;
+  includeDeepSeekCli: boolean;
   rulesSyncEnabled: boolean;
   memoriesSyncEnabled: boolean;
   evalEnabled: boolean;
@@ -172,11 +176,14 @@ export const defaultSettings: AppSettings = {
   globalShortcut: DEFAULT_GLOBAL_SHORTCUT,
   claudeBinary: "claude",
   codexBinary: "codex",
+  stepcodeBinary: "stepcode",
   codeBuddyBinary: "codebuddy",
   codeWizBinary: "codewiz",
   cursorBinary: "cursor-agent",
   tclaudeBinary: "tclaude",
   tcodexBinary: "tcodex",
+  includeStepcode: false,
+  deepseekBinary: "dsh",
   includeTclaude: false,
   includeTcodex: false,
   includeCodeBuddyCli: false,
@@ -190,6 +197,7 @@ export const defaultSettings: AppSettings = {
   includeTrae: false,
   includeQoder: false,
   includePi: false,
+  includeDeepSeekCli: false,
   rulesSyncEnabled: false,
   memoriesSyncEnabled: false,
   evalEnabled: false,
@@ -322,6 +330,7 @@ export function migrationBinary(target: MigrationTarget, settings: AppSettings):
   if (target === "codebuddy") return settings.codeBuddyBinary;
   if (target === "codewiz") return settings.codeWizBinary;
   if (target === "cursor") return settings.cursorBinary;
+  if (target === "deepseek") return settings.deepseekBinary;
   return settings.codexBinary;
 }
 
@@ -332,6 +341,7 @@ function migrationTargetDisplayName(target: MigrationTarget): string {
   if (target === "codebuddy") return "CodeBuddy";
   if (target === "codewiz") return "CodeWiz";
   if (target === "cursor") return "Cursor";
+  if (target === "deepseek") return "DeepSeek Harness";
   return "Codex";
 }
 
@@ -340,6 +350,8 @@ function migrationResumeArgs(target: MigrationTarget, sessionId: string): string
     ? ["resume", sessionId]
     : target === "codewiz"
       ? ["--session", sessionId]
+      : target === "deepseek"
+        ? ["--profile", "tui", "--resume", sessionId]
     : ["--resume", sessionId];
 }
 
@@ -385,6 +397,7 @@ const MIGRATION_CLI_VERSION_RULES: Record<MigrationTarget, VersionRule[]> = {
     { label: "@tencent/tcodex", pattern: /^\s*@tencent\/tcodex\s*:?[ \t]*v?(\d+\.\d+\.\d+)[ \t]*$/im, minimum: version(0, 0, 13) },
     { label: "@openai/codex", pattern: /^\s*@openai\/codex\s*:?[ \t]*v?(\d+\.\d+\.\d+)[ \t]*$/im, minimum: version(0, 142, 4) },
   ],
+  deepseek: [{ label: "dsh", pattern: /^\s*v?(\d+\.\d+\.\d+)(?:-[\w.-]+)?\s*$/im, minimum: version(0, 0, 0) }],
 };
 
 function migrationTargetForResumeSource(source: SessionSource): MigrationTarget | null {
@@ -430,7 +443,14 @@ function buildResumeRuntimeProcessSpec(
     throw new Error(`Resume is not supported for ${sourceDisplayName(session.source)} sessions yet.`);
   }
 
-  const args = migrationResumeArgs(target, session.rawId);
+  const stepcodeAgent = session.source === "stepcode-codex"
+    ? "codex"
+    : session.source === "stepcode-claude"
+      ? "claude"
+      : null;
+  const args = stepcodeAgent
+    ? [stepcodeAgent, ...migrationResumeArgs(target, session.rawId)]
+    : migrationResumeArgs(target, session.rawId);
   const legacyProvider = legacyMigratedCodexProvider(session, target);
   if (legacyProvider) args.splice(1, 0, "-c", `model_provider=${JSON.stringify(legacyProvider)}`);
   if (skipPermissions) {
@@ -442,7 +462,7 @@ function buildResumeRuntimeProcessSpec(
   }
 
   return {
-    command: migrationBinary(target, settings),
+    command: stepcodeAgent ? settings.stepcodeBinary : migrationBinary(target, settings),
     args,
     cwd: session.projectPath || undefined,
   };
@@ -1146,6 +1166,56 @@ export async function openMigrationResumeInTerminal(
   }
 
   await openCommandInTerminal(commands, projectPath, settings, deps);
+}
+
+export async function openDeepSeekWebInTerminal(
+  projectPath: string,
+  settings: AppSettings,
+  deps: {
+    platform?: NodeJS.Platform;
+    runProcess?: ProcessRunner;
+    spawnDetached?: typeof spawnDetached;
+    resolveMacApplicationName?: typeof resolveMacApplicationName;
+  } = {},
+): Promise<void> {
+  const spec = { command: settings.deepseekBinary, args: ["--profile", "web"] };
+  const commands = buildMigrationResumeCommands(spec, projectPath, (deps.platform ?? process.platform) !== "win32");
+  const run = deps.runProcess ?? runProcess;
+  if ((deps.platform ?? process.platform) === "darwin" && settings.defaultTerminal === "Warp") {
+    await runWarpCommand(commands.posix, run);
+    return;
+  }
+  await openCommandInTerminal(commands, projectPath, settings, deps);
+}
+
+export async function probeDeepSeekWeb(
+  fetchImpl: typeof fetch = fetch,
+  timeoutMs = 1200,
+): Promise<boolean> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetchImpl("http://127.0.0.1:3080/", { signal: controller.signal, redirect: "manual" });
+    return response.status < 500;
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+export async function waitForDeepSeekWeb(
+  probe: () => Promise<boolean> = () => probeDeepSeekWeb(),
+  timeoutMs = 8_000,
+  intervalMs = 200,
+): Promise<boolean> {
+  const deadline = Date.now() + Math.max(0, timeoutMs);
+  for (;;) {
+    if (await probe()) return true;
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) return false;
+    await new Promise((resolve) => setTimeout(resolve, Math.min(Math.max(0, intervalMs), remaining)));
+  }
 }
 
 export async function resolveMacApplicationName(names: string[], runner: ProcessRunner = runProcess): Promise<string | null> {

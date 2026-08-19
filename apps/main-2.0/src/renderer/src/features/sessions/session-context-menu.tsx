@@ -33,6 +33,7 @@ export function SessionContextMenu({
   revealLabel,
   showMacActions,
   canResume,
+  canStepcodeResume,
   canMigrate,
   onRename,
   onAddTag,
@@ -40,6 +41,7 @@ export function SessionContextMenu({
   onFavorite,
   onHide,
   onResume,
+  onStepcodeResume,
   onResumeIterm,
   onOpenApp,
   onMigrate,
@@ -55,6 +57,7 @@ export function SessionContextMenu({
   revealLabel: string;
   showMacActions: boolean;
   canResume: boolean;
+  canStepcodeResume: boolean;
   canMigrate: boolean;
   onRename(): void;
   onAddTag(): void;
@@ -62,6 +65,7 @@ export function SessionContextMenu({
   onFavorite(): void;
   onHide(): void;
   onResume(): void;
+  onStepcodeResume(): void;
   onResumeIterm(): void;
   onOpenApp(): void;
   onMigrate(): void;
@@ -118,6 +122,11 @@ export function SessionContextMenu({
           {state.session.source === "codex-app"
             ? l("Open in Codex", "在 Codex 中打开")
             : l("Resume in Terminal", "在终端恢复")}
+        </button>
+      ) : null}
+      {canStepcodeResume ? (
+        <button onClick={onStepcodeResume}>
+          <Play size={14} /> {l("Resume with StepCode", "使用 StepCode 恢复")}
         </button>
       ) : null}
       {canResume && showMacActions && state.session.source !== "codex-app" ? (

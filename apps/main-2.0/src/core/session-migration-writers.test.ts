@@ -1099,6 +1099,30 @@ describe("writeMigratedSession", () => {
     },
   );
 
+  it("uses DSH_HOME normally but keeps an explicit test home isolated", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "migration-writer-dsh-home-"));
+    const explicitHome = path.join(root, "explicit-home");
+    const dshHome = path.join(root, "custom-dsh-home");
+    const previous = process.env.DSH_HOME;
+    try {
+      process.env.DSH_HOME = dshHome;
+      const isolated = await writeMigratedSession({
+        target: "deepseek", session: portable(), sessionId: SESSION_ID, homeDir: explicitHome, now: NOW,
+      });
+      expect(isolated.filePath.startsWith(path.join(explicitHome, ".dsh"))).toBe(true);
+      expect(isolated.filePath.startsWith(dshHome)).toBe(false);
+
+      const configured = await writeMigratedSession({
+        target: "deepseek", session: portable(), sessionId: SESSION_ID, now: NOW,
+      });
+      expect(configured.filePath.startsWith(dshHome)).toBe(true);
+    } finally {
+      if (previous === undefined) delete process.env.DSH_HOME;
+      else process.env.DSH_HOME = previous;
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("rejects a tampered Codex model provider before rename", async () => {
     await expectTamperedSessionRejected("codex", (rows) => {
       rows[0].payload.model_provider = "tampered-provider";

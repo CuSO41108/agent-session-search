@@ -98,6 +98,7 @@ import { useAutomation } from "./features/automation/automation-provider";
 import { selectWorkbenchWorkflows, selectWorkbenchWorkflowSummaries } from "./features/automation/workbench-workflows";
 import {
   canMigrateSession,
+  isSidebarProjectVisible,
   isBranchTag,
   displayTagName,
   resumeActionLabel,
@@ -148,7 +149,7 @@ type PendingSourceKey = (typeof OPTIONAL_SESSION_SOURCE_DESCRIPTORS)[number]["pe
 const OPTIONAL_SOURCE_SETTINGS = OPTIONAL_SESSION_SOURCE_DESCRIPTORS.map((descriptor) => ({
   key: descriptor.optionalSetting,
   pendingKey: descriptor.pendingKey,
-  filter: descriptor.id,
+  filter: descriptor.optionalSetting === "includeStepcode" ? "stepcode" : descriptor.id,
 }));
 const OPTIONAL_SOURCE_REFRESH_SETTLE_MS = 120;
 
@@ -781,14 +782,23 @@ export function App(): ReactElement {
     for (const entry of projectTags) {
       tagMap.set(`${entry.environmentId}\0${entry.projectPath}`, entry.tags);
     }
-    const groups = new Map<string, { environment: SessionEnvironment | null; projects: Array<ProjectSummary & { tags: string[] }> }>();
+    const groups = new Map<string, {
+      environment: SessionEnvironment | null;
+      projects: Array<ProjectSummary & { tags: string[] }>;
+      emptyProjects: Array<ProjectSummary & { tags: string[] }>;
+    }>();
     for (const project of projects) {
       const environment = environments.find((env) => env.id === project.environmentId) ?? null;
       const key = project.environmentId;
       const projectTagsList = tagMap.get(`${project.environmentId}\0${project.path}`) ?? [];
       const group = groups.get(key);
-      if (group) group.projects.push({ ...project, tags: projectTagsList });
-      else groups.set(key, { environment, projects: [{ ...project, tags: projectTagsList }] });
+      const target = isSidebarProjectVisible(project, projectPath, projectEnvironmentId) ? "projects" : "emptyProjects";
+      if (group) group[target].push({ ...project, tags: projectTagsList });
+      else groups.set(key, {
+        environment,
+        projects: target === "projects" ? [{ ...project, tags: projectTagsList }] : [],
+        emptyProjects: target === "emptyProjects" ? [{ ...project, tags: projectTagsList }] : [],
+      });
     }
     return [...groups.values()].sort(
       (a, b) =>
@@ -2058,6 +2068,18 @@ export function App(): ReactElement {
           revealLabel={FILE_MANAGER_LABEL}
           showMacActions={IS_MAC}
           canResume={supportsResumeSource(contextMenu.session.source)}
+          canStepcodeResume={Boolean(
+            appSettings?.includeStepcode
+            && contextMenu.session.environmentKind === "local"
+            && (
+              contextMenu.session.source === "claude-cli"
+              || contextMenu.session.source === "claude-app"
+              || contextMenu.session.source === "stepcode-claude"
+              || contextMenu.session.source === "codex-cli"
+              || contextMenu.session.source === "codex-app"
+              || contextMenu.session.source === "stepcode-codex"
+            )
+          )}
           canMigrate={canMigrateSession(contextMenu.session, appSettings ?? DEFAULT_MIGRATION_TARGET_SETTINGS)}
           onRename={() => beginRename(contextMenu.session)}
           onAddTag={() => beginAddTag(contextMenu.session)}
@@ -2078,6 +2100,13 @@ export function App(): ReactElement {
           }
           onResume={() =>
             void runAction(resumeActionLabel(contextMenu.session.source, language), () => window.sessionSearch.resumeSession(contextMenu.session.sessionKey), (result) => resumeRouteMessage(result, language))
+          }
+          onStepcodeResume={() =>
+            void runAction(
+              t("Opening StepCode", "正在通过 StepCode 恢复"),
+              () => window.sessionSearch.resumeSessionWithStepcode(contextMenu.session.sessionKey),
+              t("StepCode resume command sent to terminal.", "StepCode 恢复命令已发送到终端。"),
+            )
           }
           onResumeIterm={() =>
             void runAction(t("Opening iTerm", "正在打开 iTerm"), () => window.sessionSearch.resumeSessionInIterm(contextMenu.session.sessionKey), t("Resume command sent to iTerm.", "Resume 命令已发送到 iTerm。"))
