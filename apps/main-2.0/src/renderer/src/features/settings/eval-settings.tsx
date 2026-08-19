@@ -90,7 +90,12 @@ export function EvalSettings({
           </span>
         </div>
         {hookInstalled === false ? (
-          <button type="button" disabled={!enabled || hookBusy} onClick={() => void installHook()}>
+          <button
+            type="button"
+            className="settings-action-button"
+            disabled={!enabled || hookBusy}
+            onClick={() => void installHook()}
+          >
             {hookBusy ? l("Installing...", "安装中...") : l("Install hook", "安装 Hook")}
           </button>
         ) : null}
