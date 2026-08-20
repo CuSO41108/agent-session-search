@@ -244,6 +244,24 @@ describe("PostgresSessionRepository", () => {
         index: 1,
         kind: "event",
         source: "codex",
+        title: "Agent message",
+        detail: "continue the delegated task",
+        timestamp: "2026-07-30T08:00:00.100Z",
+        eventType: "codex.collaboration.message",
+        status: "completed",
+        sourceTurnId: "turn-1",
+        attributes: {
+          collaboration: {
+            direction: "incoming",
+            triggerTurn: true,
+            messageType: "new_task",
+          },
+        },
+      },
+      {
+        index: 2,
+        kind: "event",
+        source: "codex",
         title: "Turn completed",
         detail: "",
         timestamp: "2026-07-30T08:00:03.000Z",
@@ -257,7 +275,7 @@ describe("PostgresSessionRepository", () => {
         },
       },
       {
-        index: 2,
+        index: 3,
         kind: "event",
         source: "codex",
         title: "Turn started",
@@ -300,11 +318,15 @@ describe("PostgresSessionRepository", () => {
         durationMs: 3_000,
         timeToFirstTokenMs: 200,
         spanCount: 0,
+        agentTriggered: true,
+        subagentExecutionStart: true,
       },
       {
         sourceTurnId: "turn-2",
         status: "running",
         spanCount: 0,
+        agentTriggered: false,
+        subagentExecutionStart: false,
       },
     ]);
     expect(await turnsRepository.getAllMessages("codex:lifecycle")).toMatchObject([
@@ -318,6 +340,11 @@ describe("PostgresSessionRepository", () => {
     ]);
     expect(await turnsRepository.getTraceEvents("codex:lifecycle")).toMatchObject([
       { sourceTurnId: "turn-1", eventType: "codex.turn.started" },
+      {
+        sourceTurnId: "turn-1",
+        eventType: "codex.collaboration.message",
+        attributes: { collaboration: { triggerTurn: true, messageType: "new_task" } },
+      },
       {
         sourceTurnId: "turn-1",
         eventType: "codex.turn.completed",

@@ -202,6 +202,442 @@ describe("TurnAccordion search match positioning", () => {
   });
 });
 
+describe("TurnAccordion subagent labels", () => {
+  let container: HTMLDivElement;
+  let root: Root;
+
+  beforeEach(() => {
+    Reflect.set(globalThis, "IS_REACT_ACT_ENVIRONMENT", true);
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+  });
+
+  afterEach(async () => {
+    await act(async () => root.unmount());
+    container.remove();
+  });
+
+  it("shows lifecycle-backed subagent work as an agent-triggered Turn", async () => {
+    const subagentTurn = {
+      id: "subagent-turn-1",
+      turnIndex: 0,
+      sourceMessageIndex: null,
+      sourceTurnId: "source-turn-1",
+      agentTriggered: true,
+      synthetic: true,
+      status: "aborted",
+      startedAt: "2026-08-12T09:05:00.000Z",
+      endedAt: "2026-08-12T09:13:47.000Z",
+      userPreview: "",
+      assistantPreview: "",
+      inputTokens: 0,
+      outputTokens: 0,
+      cachedInputTokens: 0,
+      reasoningOutputTokens: 0,
+      totalTokens: 0,
+      errorCount: 0,
+      toolNames: [],
+      messageCount: 0,
+      spanCount: 2,
+    } satisfies SessionTurnSummary;
+
+    await act(async () => {
+      root.render(
+        <TurnAccordion
+          sessionKey="codex:subagent-1"
+          turns={[subagentTurn]}
+          loading={false}
+          matchedTurnId={null}
+          matchedMessageIndex={null}
+          showTools
+          query=""
+          language="zh"
+          onLoadTurn={async () => null}
+        />,
+      );
+    });
+
+    expect(container.textContent).toContain("第 1 轮 · Agent 触发");
+    expect(container.textContent).toContain("由 Agent 触发，任务文本未记录");
+    expect(container.textContent).not.toContain("前置轨迹");
+  });
+
+  it("does not infer an Agent trigger from a source Turn id alone", async () => {
+    const lifecycleTurn = {
+      id: "background-turn-1",
+      turnIndex: 0,
+      sourceMessageIndex: null,
+      sourceTurnId: "source-turn-1",
+      agentTriggered: false,
+      synthetic: false,
+      status: "completed",
+      startedAt: "2026-08-12T09:05:00.000Z",
+      endedAt: "2026-08-12T09:06:00.000Z",
+      userPreview: "",
+      assistantPreview: "background work",
+      inputTokens: 0,
+      outputTokens: 0,
+      cachedInputTokens: 0,
+      reasoningOutputTokens: 0,
+      totalTokens: 0,
+      errorCount: 0,
+      toolNames: [],
+      messageCount: 0,
+      spanCount: 0,
+    } satisfies SessionTurnSummary;
+
+    await act(async () => {
+      root.render(
+        <TurnAccordion
+          sessionKey="codex:subagent-1"
+          turns={[lifecycleTurn]}
+          loading={false}
+          matchedTurnId={null}
+          matchedMessageIndex={null}
+          showTools
+          query=""
+          language="zh"
+          onLoadTurn={async () => null}
+        />,
+      );
+    });
+
+    expect(container.textContent).toContain("第 1 轮");
+    expect(container.textContent).not.toContain("Agent 触发");
+  });
+
+  it("separates forked parent context from the subagent's own Turns", async () => {
+    const turn = (
+      id: string,
+      turnIndex: number,
+      overrides: Partial<SessionTurnSummary> = {},
+    ) => ({
+      id,
+      turnIndex,
+      sourceMessageIndex: turnIndex < 2 ? turnIndex : null,
+      sourceTurnId: `source-${id}`,
+      agentTriggered: false,
+      synthetic: false,
+      status: "completed" as const,
+      startedAt: `2026-08-12T09:0${turnIndex}:00.000Z`,
+      endedAt: `2026-08-12T09:0${turnIndex}:30.000Z`,
+      userPreview: turnIndex < 2 ? `parent request ${turnIndex + 1}` : "",
+      assistantPreview: turnIndex < 2 ? `parent result ${turnIndex + 1}` : `subagent result ${turnIndex - 1}`,
+      inputTokens: 0,
+      outputTokens: 0,
+      cachedInputTokens: 0,
+      reasoningOutputTokens: 0,
+      totalTokens: 0,
+      errorCount: 0,
+      toolNames: [],
+      messageCount: 1,
+      spanCount: 0,
+      ...overrides,
+    });
+    const turns = [
+      turn("parent-1", 0),
+      turn("parent-2", 1),
+      turn("child-1", 2, {
+        agentTriggered: true,
+        subagentExecutionStart: true,
+      }),
+      turn("child-2", 3),
+    ] satisfies SessionTurnSummary[];
+
+    await act(async () => {
+      root.render(
+        <TurnAccordion
+          sessionKey="codex:subagent-1"
+          turns={turns}
+          loading={false}
+          matchedTurnId={null}
+          matchedMessageIndex={null}
+          showTools
+          query=""
+          language="zh"
+          isSubagent
+          onLoadTurn={async () => null}
+        />,
+      );
+    });
+
+    expect(container.textContent).toContain("继承自父会话的上下文");
+    expect(container.textContent).toContain("以下 2 个 Turn 为创建子 Agent 时继承的会话上下文");
+    expect(container.textContent).toContain("子 Agent 任务执行");
+    expect(container.textContent).toContain("以下 Turn 为该子 Agent 的任务执行记录");
+    expect(container.textContent).toContain("父会话第 1 轮 · Fork 继承");
+    expect(container.textContent).toContain("子 Agent 第 1 轮 · Agent 触发");
+    expect(container.textContent).toContain("子 Agent 第 2 轮");
+    expect(container.querySelectorAll('[data-turn-origin="inherited"]')).toHaveLength(2);
+    expect(container.querySelectorAll('[data-turn-origin="subagent"]')).toHaveLength(2);
+  });
+
+  it("labels unnumbered synthetic Turns as Session setup in both subagent sections", async () => {
+    const turn = (
+      id: string,
+      turnIndex: number,
+      overrides: Partial<SessionTurnSummary> = {},
+    ) => ({
+      id,
+      turnIndex,
+      sourceMessageIndex: turnIndex,
+      sourceTurnId: `source-${id}`,
+      agentTriggered: false,
+      synthetic: false,
+      status: "completed" as const,
+      startedAt: `2026-08-12T09:0${turnIndex}:00.000Z`,
+      endedAt: `2026-08-12T09:0${turnIndex}:30.000Z`,
+      userPreview: `request ${turnIndex + 1}`,
+      assistantPreview: `result ${turnIndex + 1}`,
+      inputTokens: 0,
+      outputTokens: 0,
+      cachedInputTokens: 0,
+      reasoningOutputTokens: 0,
+      totalTokens: 0,
+      errorCount: 0,
+      toolNames: [],
+      messageCount: 1,
+      spanCount: 0,
+      ...overrides,
+    });
+    const turns = [
+      turn("parent-setup", 0, {
+        sourceMessageIndex: null,
+        sourceTurnId: null,
+        synthetic: true,
+        userPreview: "",
+      }),
+      turn("parent-1", 1),
+      turn("child-1", 2, {
+        sourceMessageIndex: null,
+        agentTriggered: true,
+        synthetic: true,
+        subagentExecutionStart: true,
+        userPreview: "",
+      }),
+      turn("child-setup", 3, {
+        sourceMessageIndex: null,
+        sourceTurnId: null,
+        synthetic: true,
+        userPreview: "",
+      }),
+      turn("child-2", 4),
+    ] satisfies SessionTurnSummary[];
+
+    await act(async () => {
+      root.render(
+        <TurnAccordion
+          sessionKey="codex:subagent-1"
+          turns={turns}
+          loading={false}
+          matchedTurnId={null}
+          matchedMessageIndex={null}
+          showTools
+          query=""
+          language="zh"
+          isSubagent
+          onLoadTurn={async () => null}
+        />,
+      );
+    });
+
+    expect(container.textContent?.match(/会话准备/g)).toHaveLength(2);
+    expect(container.textContent).toContain("父会话第 1 轮 · Fork 继承");
+    expect(container.textContent).toContain("子 Agent 第 1 轮 · Agent 触发");
+    expect(container.textContent).toContain("子 Agent 第 2 轮");
+    expect(container.textContent).not.toMatch(/第 0 轮/);
+  });
+
+  it("does not split Fork vs execution without an incoming NEW_TASK", async () => {
+    const turn = (
+      id: string,
+      turnIndex: number,
+      overrides: Partial<SessionTurnSummary> = {},
+    ) => ({
+      id,
+      turnIndex,
+      sourceMessageIndex: turnIndex === 2 ? null : turnIndex,
+      sourceTurnId: `source-${id}`,
+      agentTriggered: turnIndex === 2,
+      synthetic: turnIndex === 2,
+      status: "completed" as const,
+      startedAt: `2026-08-12T09:0${turnIndex}:00.000Z`,
+      endedAt: `2026-08-12T09:0${turnIndex}:30.000Z`,
+      userPreview: turnIndex === 2 ? "" : `parent request ${turnIndex + 1}`,
+      assistantPreview: turnIndex === 2 ? "" : `parent result ${turnIndex + 1}`,
+      inputTokens: 0,
+      outputTokens: 0,
+      cachedInputTokens: 0,
+      reasoningOutputTokens: 0,
+      totalTokens: 0,
+      errorCount: 0,
+      toolNames: [],
+      messageCount: 1,
+      spanCount: 0,
+      ...overrides,
+    });
+    const turns = [
+      turn("parent-1", 0),
+      turn("parent-2", 1),
+      turn("child-1", 2),
+    ] satisfies SessionTurnSummary[];
+
+    await act(async () => {
+      root.render(
+        <TurnAccordion
+          sessionKey="codex:subagent-1"
+          turns={turns}
+          loading={false}
+          matchedTurnId={null}
+          matchedMessageIndex={null}
+          showTools
+          query=""
+          language="zh"
+          isSubagent
+          onLoadTurn={async () => null}
+        />,
+      );
+    });
+
+    expect(container.querySelector(".turn-phase-divider")).toBeNull();
+    expect(container.querySelector("[data-turn-origin]")).toBeNull();
+    expect(container.textContent).not.toContain("继承自父会话的上下文");
+    expect(container.textContent).not.toContain("子 Agent 任务执行");
+    expect(container.textContent).toContain("第 3 轮 · Agent 触发");
+    expect(container.textContent).not.toContain("Fork 继承");
+  });
+
+  it("splits only at the first incoming NEW_TASK and ignores a followup NEW_TASK", async () => {
+    const turn = (
+      id: string,
+      turnIndex: number,
+      overrides: Partial<SessionTurnSummary> = {},
+    ) => ({
+      id,
+      turnIndex,
+      sourceMessageIndex: turnIndex < 2 ? turnIndex : null,
+      sourceTurnId: `source-${id}`,
+      agentTriggered: turnIndex >= 2,
+      synthetic: false,
+      status: "completed" as const,
+      startedAt: `2026-08-12T09:0${turnIndex}:00.000Z`,
+      endedAt: `2026-08-12T09:0${turnIndex}:30.000Z`,
+      userPreview: turnIndex < 2 ? `parent request ${turnIndex + 1}` : "",
+      assistantPreview: turnIndex < 2 ? `parent result ${turnIndex + 1}` : `subagent result ${turnIndex - 1}`,
+      inputTokens: 0,
+      outputTokens: 0,
+      cachedInputTokens: 0,
+      reasoningOutputTokens: 0,
+      totalTokens: 0,
+      errorCount: 0,
+      toolNames: [],
+      messageCount: 1,
+      spanCount: 0,
+      ...overrides,
+    });
+    const turns = [
+      turn("parent-1", 0),
+      turn("parent-2", 1),
+      turn("child-1", 2, { subagentExecutionStart: true }),
+      turn("child-2", 3, { subagentExecutionStart: true }),
+    ] satisfies SessionTurnSummary[];
+
+    await act(async () => {
+      root.render(
+        <TurnAccordion
+          sessionKey="codex:subagent-1"
+          turns={turns}
+          loading={false}
+          matchedTurnId={null}
+          matchedMessageIndex={null}
+          showTools
+          query=""
+          language="zh"
+          isSubagent
+          onLoadTurn={async () => null}
+        />,
+      );
+    });
+
+    expect(container.querySelectorAll(".turn-phase-divider.inherited")).toHaveLength(1);
+    expect(container.querySelectorAll(".turn-phase-divider.subagent")).toHaveLength(1);
+    expect(container.querySelectorAll('[data-turn-origin="inherited"]')).toHaveLength(2);
+    expect(container.querySelectorAll('[data-turn-origin="subagent"]')).toHaveLength(2);
+    expect(container.textContent).toContain("子 Agent 第 1 轮 · Agent 触发");
+    expect(container.textContent).toContain("子 Agent 第 2 轮 · Agent 触发");
+  });
+
+  it("keeps nested-fork agentTriggered turns in inherited context until NEW_TASK", async () => {
+    const turn = (
+      id: string,
+      turnIndex: number,
+      overrides: Partial<SessionTurnSummary> = {},
+    ) => ({
+      id,
+      turnIndex,
+      sourceMessageIndex: null,
+      sourceTurnId: `source-${id}`,
+      agentTriggered: false,
+      synthetic: false,
+      status: "completed" as const,
+      startedAt: `2026-08-12T09:0${turnIndex}:00.000Z`,
+      endedAt: `2026-08-12T09:0${turnIndex}:30.000Z`,
+      userPreview: `request ${turnIndex + 1}`,
+      assistantPreview: `result ${turnIndex + 1}`,
+      inputTokens: 0,
+      outputTokens: 0,
+      cachedInputTokens: 0,
+      reasoningOutputTokens: 0,
+      totalTokens: 0,
+      errorCount: 0,
+      toolNames: [],
+      messageCount: 1,
+      spanCount: 0,
+      ...overrides,
+    });
+    const turns = [
+      turn("parent-1", 0, { sourceMessageIndex: 0, userPreview: "parent request 1" }),
+      turn("inherited-trigger", 1, {
+        agentTriggered: true,
+        userPreview: "",
+      }),
+      turn("child-1", 2, {
+        agentTriggered: true,
+        subagentExecutionStart: true,
+        userPreview: "",
+      }),
+    ] satisfies SessionTurnSummary[];
+
+    await act(async () => {
+      root.render(
+        <TurnAccordion
+          sessionKey="codex:nested-subagent"
+          turns={turns}
+          loading={false}
+          matchedTurnId={null}
+          matchedMessageIndex={null}
+          showTools
+          query=""
+          language="zh"
+          isSubagent
+          onLoadTurn={async () => null}
+        />,
+      );
+    });
+
+    const inherited = [...container.querySelectorAll('[data-turn-origin="inherited"]')]
+      .map((element) => element.getAttribute("data-turn-id"));
+    const subagent = [...container.querySelectorAll('[data-turn-origin="subagent"]')]
+      .map((element) => element.getAttribute("data-turn-id"));
+    expect(inherited).toEqual(["parent-1", "inherited-trigger"]);
+    expect(subagent).toEqual(["child-1"]);
+    expect(container.querySelectorAll(".turn-phase-divider.subagent")).toHaveLength(1);
+    expect(container.textContent).toContain("父会话第 2 轮 · Fork 继承");
+    expect(container.textContent).toContain("子 Agent 第 1 轮 · Agent 触发");
+  });
+});
+
 describe("TurnAccordion span payloads", () => {
   let container: HTMLDivElement;
   let root: Root;

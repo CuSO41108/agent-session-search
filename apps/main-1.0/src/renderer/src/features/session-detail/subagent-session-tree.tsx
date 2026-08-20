@@ -57,7 +57,12 @@ export function SubagentSessionTree({
         <div className="subagent-parent">
           <span className="subagent-relation-label">
             <CornerUpLeft size={13} />
-            {l("Parent session", "父会话")}
+            {family.parentOriginTurnIndex === null || family.parentOriginTurnIndex === undefined
+              ? l("Parent session", "父会话")
+              : l(
+                  `Parent session · started in Turn ${family.parentOriginTurnIndex + 1}`,
+                  `父会话 · 由第 ${family.parentOriginTurnIndex + 1} 轮发起`,
+                )}
           </span>
           <SessionSummaryButton
             session={family.parent}
@@ -173,6 +178,12 @@ function SessionSummaryButton({
     >
       <strong>{session.title}</strong>
       <span className="subagent-session-meta">
+        {session.originTurnIndex === null || session.originTurnIndex === undefined
+          ? null
+          : <>{l(
+              `Started in parent Turn ${session.originTurnIndex + 1}`,
+              `由父会话第 ${session.originTurnIndex + 1} 轮发起`,
+            )} · </>}
         {source} · {session.environmentLabel} ·{" "}
         {l(`${session.messageCount} messages`, `${session.messageCount} 条消息`)} ·{" "}
         {formatRelativeTime(session.lastActivityAt, language)}

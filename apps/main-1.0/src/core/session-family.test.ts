@@ -113,6 +113,117 @@ describe("findSessionFamily", () => {
     });
   });
 
+  it("reports the parent Turn that spawned each subagent", () => {
+    const db = setupDb();
+    insertSession(db, { sessionKey: "codex:root", rawId: "root", title: "Root" });
+    insertSession(db, {
+      sessionKey: "codex:child",
+      rawId: "child",
+      title: "Child",
+      parentSessionId: "root",
+    });
+    db.prepare(`
+      INSERT INTO messages (
+        session_key, message_index, role, content, timestamp, source_turn_id
+      ) VALUES
+        ('codex:root', 0, 'user', 'first', '2026-08-12T09:00:00.000Z', 'turn-1'),
+        ('codex:root', 1, 'user', 'delegate', '2026-08-12T09:05:00.000Z', 'turn-2')
+    `).run();
+    db.prepare(`
+      INSERT INTO trace_events (
+        session_key, trace_index, kind, source, title, detail, timestamp,
+        event_type, status, source_turn_id, attributes_json
+      ) VALUES
+        (?, 0, 'event', 'codex', 'Session metadata', '',
+          '2026-08-12T08:59:00.000Z', 'codex.session.metadata', 'completed', NULL, NULL),
+        (?, 1, 'event', 'codex', 'agent · spawn_agent', '', ?,
+          'codex.collaboration.tool', 'completed', 'turn-2', ?)
+    `).run(
+      "codex:root",
+      "codex:root",
+      "2026-08-12T09:05:01.000Z",
+      JSON.stringify({
+        codex: { rawType: "CollabAgentToolCall" },
+        collaboration: { tool: "spawn_agent", receiverThreadIds: ["child"] },
+      }),
+    );
+
+    const rootFamily = findSessionFamily(db, "codex:root");
+    expect(rootFamily.children[0].originTurnIndex).toBe(1);
+    const childFamily = findSessionFamily(db, "codex:child");
+    expect(childFamily.parentOriginTurnIndex).toBe(1);
+    expect(childFamily.parent?.originTurnIndex).toBeNull();
+  });
+
+  it("recognizes the persisted subagent started activity as the spawn origin", () => {
+    const db = setupDb();
+    insertSession(db, { sessionKey: "codex:root", rawId: "root", title: "Root" });
+    insertSession(db, {
+      sessionKey: "codex:child",
+      rawId: "child",
+      title: "Child",
+      parentSessionId: "root",
+    });
+    db.prepare(`
+      INSERT INTO messages (
+        session_key, message_index, role, content, timestamp, source_turn_id
+      ) VALUES
+        ('codex:root', 0, 'user', 'first', '2026-08-12T09:00:00.000Z', 'turn-1'),
+        ('codex:root', 1, 'user', 'delegate', '2026-08-12T09:05:00.000Z', 'turn-2')
+    `).run();
+    db.prepare(`
+      INSERT INTO trace_events (
+        session_key, trace_index, kind, source, title, detail, timestamp,
+        event_type, status, source_turn_id, attributes_json
+      ) VALUES (?, 0, 'event', 'codex', 'subagent · started', '', ?,
+        'codex.collaboration.activity', 'completed', 'turn-2', ?)
+    `).run(
+      "codex:root",
+      "2026-08-12T09:05:01.000Z",
+      JSON.stringify({
+        codex: { rawType: "sub_agent_activity" },
+        collaboration: { kind: "started", agentThreadId: "child" },
+      }),
+    );
+
+    expect(findSessionFamily(db, "codex:root").children[0].originTurnIndex).toBe(1);
+    expect(findSessionFamily(db, "codex:child").parentOriginTurnIndex).toBe(1);
+  });
+
+  it("falls back to the nearest parent Turn when a spawn source Turn is unmatched", () => {
+    const db = setupDb();
+    insertSession(db, { sessionKey: "codex:root", rawId: "root", title: "Root" });
+    insertSession(db, {
+      sessionKey: "codex:child",
+      rawId: "child",
+      title: "Child",
+      parentSessionId: "root",
+    });
+    db.prepare(`
+      INSERT INTO messages (
+        session_key, message_index, role, content, timestamp, source_turn_id
+      ) VALUES
+        ('codex:root', 0, 'user', 'first', '2026-08-12T09:00:00.000Z', 'turn-1'),
+        ('codex:root', 1, 'user', 'delegate', '2026-08-12T09:05:00.000Z', 'turn-2')
+    `).run();
+    db.prepare(`
+      INSERT INTO trace_events (
+        session_key, trace_index, kind, source, title, detail, timestamp,
+        event_type, status, source_turn_id, attributes_json
+      ) VALUES (?, 0, 'event', 'codex', 'agent · spawn_agent', '', ?,
+        'codex.collaboration.tool', 'completed', 'unmatched-turn', ?)
+    `).run(
+      "codex:root",
+      "2026-08-12T09:05:01.000Z",
+      JSON.stringify({
+        collaboration: { tool: "spawn_agent", receiverThreadIds: ["child"] },
+      }),
+    );
+
+    expect(findSessionFamily(db, "codex:root").children[0].originTurnIndex).toBe(1);
+    expect(findSessionFamily(db, "codex:child").parentOriginTurnIndex).toBe(1);
+  });
+
   it("does not cross source or environment boundaries and excludes explicitly hidden children", () => {
     const db = setupDb();
     insertSession(db, { sessionKey: "codex:root", rawId: "root", title: "Root" });
@@ -168,5 +279,158 @@ describe("findSessionFamily", () => {
     expect(family.children.map((node) => node.sessionKey)).toEqual(["codex:cycle-b"]);
     expect(family.children[0].children).toEqual([]);
     expect(family.truncated).toBe(true);
+  });
+
+  it("recognizes spawn_agent newThreadId and singular receiverThreadId", () => {
+    const db = setupDb();
+    insertSession(db, { sessionKey: "codex:root", rawId: "root", title: "Root" });
+    insertSession(db, {
+      sessionKey: "codex:child",
+      rawId: "child",
+      title: "Child",
+      parentSessionId: "root",
+    });
+    db.prepare(`
+      INSERT INTO messages (
+        session_key, message_index, role, content, timestamp, source_turn_id
+      ) VALUES
+        ('codex:root', 0, 'user', 'first', '2026-08-12T09:00:00.000Z', 'turn-1'),
+        ('codex:root', 1, 'user', 'delegate', '2026-08-12T09:05:00.000Z', 'turn-2')
+    `).run();
+    db.prepare(`
+      INSERT INTO trace_events (
+        session_key, trace_index, kind, source, title, detail, timestamp,
+        event_type, status, source_turn_id, attributes_json
+      ) VALUES (?, 0, 'event', 'codex', 'agent · spawn_agent', '', ?,
+        'codex.collaboration.tool', 'completed', 'turn-2', ?)
+    `).run(
+      "codex:root",
+      "2026-08-12T09:05:01.000Z",
+      JSON.stringify({
+        collaboration: { tool: "spawn_agent", newThreadId: "child" },
+      }),
+    );
+    expect(findSessionFamily(db, "codex:root").children[0].originTurnIndex).toBe(1);
+
+    const singular = setupDb();
+    insertSession(singular, { sessionKey: "codex:root", rawId: "root", title: "Root" });
+    insertSession(singular, {
+      sessionKey: "codex:child",
+      rawId: "child",
+      title: "Child",
+      parentSessionId: "root",
+    });
+    singular.prepare(`
+      INSERT INTO messages (
+        session_key, message_index, role, content, timestamp, source_turn_id
+      ) VALUES
+        ('codex:root', 0, 'user', 'first', '2026-08-12T09:00:00.000Z', 'turn-1'),
+        ('codex:root', 1, 'user', 'delegate', '2026-08-12T09:05:00.000Z', 'turn-2')
+    `).run();
+    singular.prepare(`
+      INSERT INTO trace_events (
+        session_key, trace_index, kind, source, title, detail, timestamp,
+        event_type, status, source_turn_id, attributes_json
+      ) VALUES (?, 0, 'event', 'codex', 'collab spawn', '', ?,
+        'codex.collaboration.tool', 'completed', 'turn-2', ?)
+    `).run(
+      "codex:root",
+      "2026-08-12T09:05:01.000Z",
+      JSON.stringify({
+        codex: { rawType: "collab_spawn_agent" },
+        collaboration: { receiverThreadId: "child" },
+      }),
+    );
+    expect(findSessionFamily(singular, "codex:child").parentOriginTurnIndex).toBe(1);
+  });
+
+  it("drops id-less user boundaries when a nearby source_turn_id boundary exists", () => {
+    const db = setupDb();
+    insertSession(db, { sessionKey: "codex:root", rawId: "root", title: "Root" });
+    insertSession(db, {
+      sessionKey: "codex:child",
+      rawId: "child",
+      title: "Child",
+      parentSessionId: "root",
+    });
+    db.prepare(`
+      INSERT INTO messages (
+        session_key, message_index, role, content, timestamp, source_turn_id
+      ) VALUES
+        ('codex:root', 0, 'user', 'first', '2026-08-12T09:00:00.000Z', 'turn-1'),
+        ('codex:root', 1, 'user', 'delegate', '2026-08-12T09:05:00.400Z', NULL)
+    `).run();
+    db.prepare(`
+      INSERT INTO trace_events (
+        session_key, trace_index, kind, source, title, detail, timestamp,
+        event_type, status, source_turn_id, attributes_json
+      ) VALUES
+        (?, 0, 'event', 'codex', 'Turn started', '', ?,
+          'codex.turn.started', 'completed', 'turn-2', NULL),
+        (?, 1, 'event', 'codex', 'agent · spawn_agent', '', ?,
+          'codex.collaboration.tool', 'completed', 'turn-2', ?)
+    `).run(
+      "codex:root",
+      "2026-08-12T09:05:00.000Z",
+      "codex:root",
+      "2026-08-12T09:05:01.000Z",
+      JSON.stringify({
+        collaboration: { tool: "spawn_agent", receiverThreadIds: ["child"] },
+      }),
+    );
+
+    expect(findSessionFamily(db, "codex:root").children[0].originTurnIndex).toBe(1);
+    expect(findSessionFamily(db, "codex:child").parentOriginTurnIndex).toBe(1);
+  });
+
+  it("keeps nested descendant origins scoped to the current family", () => {
+    const db = setupDb();
+    insertSession(db, { sessionKey: "codex:root", rawId: "root", title: "Root" });
+    insertSession(db, {
+      sessionKey: "codex:child",
+      rawId: "child",
+      title: "Child",
+      parentSessionId: "root",
+    });
+    insertSession(db, {
+      sessionKey: "codex:grandchild",
+      rawId: "grandchild",
+      title: "Grandchild",
+      parentSessionId: "child",
+    });
+    insertSession(db, { sessionKey: "codex:unrelated", rawId: "unrelated", title: "Unrelated" });
+    db.prepare(`
+      INSERT INTO messages (
+        session_key, message_index, role, content, timestamp, source_turn_id
+      ) VALUES
+        ('codex:root', 0, 'user', 'first', '2026-08-12T09:00:00.000Z', 'turn-1'),
+        ('codex:root', 1, 'user', 'delegate', '2026-08-12T09:05:00.000Z', 'turn-2'),
+        ('codex:child', 0, 'user', 'first', '2026-08-12T09:00:00.000Z', 'turn-1'),
+        ('codex:child', 1, 'user', 'delegate', '2026-08-12T09:05:00.000Z', 'turn-2'),
+        ('codex:unrelated', 0, 'user', 'noise', '2026-08-12T09:00:00.000Z', 'turn-1')
+    `).run();
+    const spawn = JSON.stringify({
+      collaboration: { tool: "spawn_agent", newThreadId: "child" },
+    });
+    const nested = JSON.stringify({
+      collaboration: { tool: "spawn_agent", receiverThreadId: "grandchild" },
+    });
+    db.prepare(`
+      INSERT INTO trace_events (
+        session_key, trace_index, kind, source, title, detail, timestamp,
+        event_type, status, source_turn_id, attributes_json
+      ) VALUES
+        ('codex:root', 0, 'event', 'codex', 'agent · spawn_agent', '',
+          '2026-08-12T09:05:01.000Z', 'codex.collaboration.tool', 'completed', 'turn-2', ?),
+        ('codex:child', 0, 'event', 'codex', 'agent · spawn_agent', '',
+          '2026-08-12T09:05:01.000Z', 'codex.collaboration.tool', 'completed', 'turn-2', ?),
+        ('codex:unrelated', 0, 'event', 'codex', 'noise', '',
+          '2026-08-12T09:05:01.000Z', 'codex.collaboration.tool', 'completed', 'turn-1', ?)
+    `).run(spawn, nested, spawn);
+
+    const rootFamily = findSessionFamily(db, "codex:root");
+    expect(rootFamily.children[0].originTurnIndex).toBe(1);
+    expect(rootFamily.children[0].children[0].originTurnIndex).toBe(1);
+    expect(findSessionFamily(db, "codex:grandchild").parentOriginTurnIndex).toBe(1);
   });
 });

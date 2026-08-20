@@ -9,7 +9,7 @@ import type {
 } from "../types";
 import { tracePresentation } from "../trace-presentation";
 
-export const TURN_DERIVATION_VERSION = 5;
+export const TURN_DERIVATION_VERSION = 6;
 
 export interface DerivedRawEvent {
   eventIndex: number;
@@ -152,12 +152,19 @@ function lifecycleEndedAtMs(traceEvents: readonly SessionTraceEvent[]): Map<stri
   for (const event of traceEvents) {
     if (!event.sourceTurnId) continue;
     if (event.eventType !== "codex.turn.completed" && event.eventType !== "codex.turn.aborted") continue;
-    const terminalAt = timestampMs(
-      (typeof event.attributes?.endedAt === "string" || typeof event.attributes?.endedAt === "number"
-        ? event.attributes.endedAt
-        : null)
-      ?? event.timestamp,
-    );
+    const rawEndedAt = event.attributes?.endedAt;
+    const explicitEndedAt = typeof rawEndedAt === "string" || typeof rawEndedAt === "number"
+      ? timestampMs(rawEndedAt)
+      : null;
+    const recordedAt = timestampMs(event.timestamp);
+    // Codex lifecycle payloads can truncate completed_at to whole seconds while
+    // the final message and rollout row retain milliseconds. The terminal row
+    // is the later observable boundary for deciding whether a turn id is stale.
+    const terminalAt = explicitEndedAt === null
+      ? recordedAt
+      : recordedAt === null
+        ? explicitEndedAt
+        : Math.max(explicitEndedAt, recordedAt);
     if (terminalAt === null) continue;
     const previous = endedAt.get(event.sourceTurnId);
     if (previous === undefined || terminalAt > previous) endedAt.set(event.sourceTurnId, terminalAt);
@@ -234,11 +241,46 @@ function buildTurnDrafts(
     }
   }
 
+  const lifecycleStartedAt = new Map<TurnDraft, number>();
+  for (const event of [...traceEvents].sort(compareTimestamped)) {
+    if (
+      !event.sourceTurnId
+      || (
+        event.eventType !== "codex.turn.started"
+        && event.eventType !== "codex.turn.completed"
+        && event.eventType !== "codex.turn.aborted"
+      )
+    ) {
+      continue;
+    }
+    let lifecycleTurn = turnsBySourceId.get(event.sourceTurnId);
+    if (!lifecycleTurn) {
+      lifecycleTurn = {
+        ...createSyntheticTurn(),
+        sourceTurnId: event.sourceTurnId,
+      };
+      turnsBySourceId.set(event.sourceTurnId, lifecycleTurn);
+      turns.push(lifecycleTurn);
+    }
+    if (event.eventType !== "codex.turn.started") continue;
+    const rawStartedAt = event.attributes?.startedAt;
+    const startedAt = timestampMs(
+      typeof rawStartedAt === "string" || typeof rawStartedAt === "number"
+        ? rawStartedAt
+        : event.timestamp,
+    );
+    if (startedAt === null) continue;
+    const previous = lifecycleStartedAt.get(lifecycleTurn);
+    if (previous === undefined || startedAt < previous) lifecycleStartedAt.set(lifecycleTurn, startedAt);
+  }
+
   const timestampBoundaries = turns
     .map((turn, order) => ({
       turn,
       order,
-      startedAt: timestampMs(turn.messages.find((message) => message.role === "user")?.timestamp ?? ""),
+      startedAt: timestampMs(turn.messages.find((message) => message.role === "user")?.timestamp ?? "")
+        ?? lifecycleStartedAt.get(turn)
+        ?? null,
     }))
     .filter((boundary): boundary is typeof boundary & { startedAt: number } => boundary.startedAt !== null)
     .sort((left, right) => left.startedAt - right.startedAt || left.order - right.order);
@@ -283,6 +325,13 @@ function buildTurnDrafts(
     }
     target ??= findTurnForTimestamp(occurredAt);
     if (!target) target = ensureSyntheticTurn(turns);
+    if (
+      event.eventType === "codex.turn.started"
+      || event.eventType === "codex.turn.completed"
+      || event.eventType === "codex.turn.aborted"
+    ) {
+      target.synthetic = false;
+    }
     target.traceEvents.push(event);
   }
 
@@ -300,7 +349,20 @@ function buildTurnDrafts(
     target.tokenEvents.push(event);
   }
 
-  return turns.filter((turn) => turn.messages.length > 0 || turn.traceEvents.length > 0);
+  return turns
+    .filter((turn) => turn.messages.length > 0 || turn.traceEvents.length > 0)
+    .map((turn, order) => ({
+      turn,
+      order,
+      startedAt: timestampMs(lifecycleProjection(turn).startedAt ?? turnTimeRange(turn).startedAt ?? ""),
+    }))
+    .sort((left, right) => {
+      if (left.startedAt === null && right.startedAt === null) return left.order - right.order;
+      if (left.startedAt === null) return 1;
+      if (right.startedAt === null) return -1;
+      return left.startedAt - right.startedAt || left.order - right.order;
+    })
+    .map(({ turn }) => turn);
 }
 
 function spanName(title: string): string {

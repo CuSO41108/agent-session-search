@@ -491,7 +491,7 @@ describe("Codex session loading", () => {
       },
       {
         type: "event_msg",
-        timestamp: "2026-07-30T08:00:04Z",
+        timestamp: "2026-07-30T08:00:04.205Z",
         payload: {
           type: "task_complete",
           turn_id: "turn-1",
@@ -519,6 +519,7 @@ describe("Codex session loading", () => {
       },
       {
         eventType: "codex.turn.completed",
+        timestamp: "2026-07-30T08:00:04.205Z",
         status: "completed",
         sourceTurnId: "turn-1",
         attributes: { durationMs: 3_000, timeToFirstTokenMs: 250 },
